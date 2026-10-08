@@ -1,4 +1,4 @@
-"""监管域的三态证据模型（doc §5.4）。
+"""监管域的三态证据模型。
 
 所有进程生死判断共用同一语言：
 
@@ -6,7 +6,7 @@
   调用方通过"空 PID 集"或 ``False`` 自行推断死亡，检查异常必须映射为
   ``UNKNOWN``，绝不制造假死亡证明。
 - :class:`TerminationResult` / :class:`ProcessWaitResult` —— 终止与等待的
-  结构化结果（doc §5.4.4）。
+  结构化结果。
 - :class:`ProcessTreeSnapshot` —— 受管进程树的离环采样快照。
 - 失败码常量与 run-token 派生的 containment id。
 
@@ -42,7 +42,7 @@ TOKEN_DISCOVERY_UNKNOWN = "TOKEN_DISCOVERY_UNKNOWN"
 
 
 class ProcessProbeState(str, enum.Enum):
-    """三态进程探测结果（doc §5.4.1）。
+    """三态进程探测结果。
 
     禁止让调用方通过"空 PID 集"或 ``False`` 自行推断死亡；所有检查异常
     必须映射为 ``UNKNOWN``，而不是制造假死亡证明。
@@ -55,7 +55,7 @@ class ProcessProbeState(str, enum.Enum):
 
 @dataclass(frozen=True)
 class TerminationResult:
-    """终止结果（doc §5.4.4）。
+    """终止结果。
 
     ``confirmed_dead`` 三态语义：
     - ``True``  ：根进程明确退出 + 所有已登记 identity 明确不存在 +
@@ -74,7 +74,7 @@ class TerminationResult:
     error_message: str | None = None
     remaining_pids: tuple[int, ...] = ()
     root_identity_matches: bool | None = None
-    # P1（doc 审计 0c381413 §3.2）：最近一轮 per-spawn 谱系扫描"无法检查"
+    # P1：最近一轮 per-spawn 谱系扫描"无法检查"
     # 的候选 PID。它们只表明扫描不完整（environ 暂时不可读），从未证明
     # 携带本 spawn token；仅作诊断展示（必须标注"无法检查"，不得显示为
     # "确认仍有子进程"），绝不进入 kill/known descendant 路径。
@@ -91,12 +91,12 @@ class ProcessWaitResult:
 
 @dataclass(frozen=True)
 class ProcessTreeSnapshot:
-    """One off-loop process-tree inspection sample (doc §5.4.1/§12)."""
+    """One off-loop process-tree inspection sample."""
 
     state: ProcessProbeState = ProcessProbeState.UNKNOWN
     live_descendant_pids: tuple[int, ...] = ()
     # 身份无法核实（UNKNOWN）的后代：apply_snapshot 必须保留这些 PID，
-    # 绝不能因同一样本中的 LIVE 集合而被遗忘（doc 审计 P0-3A）。
+    # 绝不能因同一样本中的 LIVE 集合而被遗忘。
     unknown_descendant_pids: tuple[int, ...] = ()
     root_return_code: int | None = None
     root_identity_matches: bool | None = None

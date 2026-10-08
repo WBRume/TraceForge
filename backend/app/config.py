@@ -116,7 +116,7 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 30  # 30 days for debug
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
-    # ── OAuth 三方登录（设计文档 §4.1）──
+    # ── OAuth 三方登录 ──
     # 命名约定：OAUTH_{PROVIDER_UPPER}_ 前缀；provider 适配类通过 name.upper() 拼 key 读取
     # （providers/base.oauth_setting）→ 新增 provider 只需在 .env 加键，无需改本文件（NFR-M1）。
     # GitHub（首批唯一 provider，拍板 #2）；CLIENT_ID 留空 = 该 provider 不启用（NFR-M2）
@@ -227,8 +227,7 @@ class Settings(BaseSettings):
     WORKER_SERVICE_NAME: str = "traceforge-api"
     WORKER_INDEX: str = "0"
     AGENT_TERMINATION_TIMEOUT_SECONDS: float = 30.0
-    # 进程树监控采样运行在独立的小型 executor 中，绝不阻塞主事件循环
-    # （doc §12.2）。
+    # 进程树监控采样运行在独立的小型 executor 中，绝不阻塞主事件循环。
     AGENT_PROCESS_INSPECTION_WORKERS: int = 2
     AGENT_PROCESS_MONITOR_INTERVAL_SECONDS: float = 0.25
 

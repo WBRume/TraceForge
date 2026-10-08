@@ -16,8 +16,7 @@ class AgentError(RuntimeError):
     - termination_confirmed_dead: 进程树死亡证明（True/False/None 三态）。
     - process_started: 本地进程是否已启动（None 表示未知/无本地进程）。
     - failure_code: 结构化失败码；禁止通过 error message 字符串推断。
-    - provider_call_id: 产生本异常的 provider 调用 id（doc 审计
-      07e04775 §4.2）；证据必须按 call 身份归属，禁止跨调用冒用。
+    - provider_call_id: 产生本异常的 provider 调用 id；证据必须按 call 身份归属，禁止跨调用冒用。
     """
 
     def __init__(

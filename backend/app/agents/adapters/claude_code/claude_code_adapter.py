@@ -257,7 +257,7 @@ class ClaudeCodeAdapter(AgentBackend):
 
     async def cancel_persisted_session(self, session_id: str) -> AgentStopResult:
         # 本地执行类别不会被远程 reaper 调用；若被调用必须返回结构化
-        # capability 错误而不是 ACK（doc 修复方案 §9.3）。
+        # capability 错误而不是 ACK。
         return AgentStopResult(
             execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
             stop_acknowledged=False,

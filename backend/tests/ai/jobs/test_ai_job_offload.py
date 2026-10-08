@@ -78,7 +78,7 @@ def _seed(SessionLocal):
 def _bound_attempt():
     """Bind the attempt context the way the production queue runner does.
 
-    无 run token 的活动状态写入已被 fail-closed 禁止（doc §4.5.3），因此
+    无 run token 的活动状态写入已被 fail-closed 禁止，因此
     测试必须与生产一致：runner 先绑定 attempt ContextVar。
     """
     attempt = AgentAttemptContext(

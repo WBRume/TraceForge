@@ -1,6 +1,6 @@
 """团队会话阅读进度数据模型。
 
-设计不变量（docs/team-session-reading-progress-development-plan.md 第 4 节）：
+设计不变量：
 
 - 已读事实（receipts）按集合合并，允许乱序/晚到提交合并，不倒退；
 - 续读位置只有一个，使用独立 resume_revision CAS，最后到达不覆盖；

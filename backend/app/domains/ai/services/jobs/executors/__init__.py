@@ -1,7 +1,7 @@
 """作业执行器：按通道/作业类别分派，并统一异常兜底。
 
 - :func:`execute_job` 是队列 runner 的唯一执行入口，必须返回明确的
-  :class:`JobExecutionOutcome`（doc §8.3）——所有分支都不得通过
+  :class:`JobExecutionOutcome`——所有分支都不得通过
   “是否抛异常”推断 provider outcome；内部捕获的异常必须写入 ``error``。
 - 各作业族的业务执行在同级模块：``asset_thread`` / ``task_chat`` /
   ``diagnosis_summary`` / ``task_baseline``。
@@ -42,7 +42,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class JobExecutionOutcome:
-    """一次 ``execute_job`` 的明确执行结果（doc §8.3）。
+    """一次 ``execute_job`` 的明确执行结果。
 
     规则：
     - 只有收到 ``AgentRunResult`` 或明确的 provider terminal/result event，
@@ -148,7 +148,7 @@ async def _run_requirement_preview_job(job_id: str, job_kind: str) -> bool:
 
 
 async def execute_job(job_id: str) -> JobExecutionOutcome:
-    """执行一个 job；必须返回明确的 :class:`JobExecutionOutcome`（doc §8.3）。"""
+    """执行一个 job；必须返回明确的 :class:`JobExecutionOutcome`。"""
     dispatch = await run_db(load_dispatch_context_sync, job_id)
     if dispatch is None:
         return JobExecutionOutcome(requested_status=None)

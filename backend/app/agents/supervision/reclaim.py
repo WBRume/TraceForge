@@ -1,8 +1,7 @@
 """上一轮 boot 遗留进程的回收与验证（reaper / ORPHANED 修复路径）。
 
 worker 重启后 reaper 只持有持久化的 PID + create time + PGID + run token。
-本模块在"身份归属未验证之前绝不发送信号"的前提下收回这些进程（doc 修复
-方案 §5.4 + 审计 P0-1/P0-3）：
+本模块在"身份归属未验证之前绝不发送信号"的前提下收回这些进程：
 
 - root identity 探测；root 不存在只表示 root 已死亡，不代表 containment
   为空；
@@ -158,7 +157,7 @@ async def _signal_persisted_group(pid, group_id, pid_reused, may_signal_root, si
     if group.state != ProcessProbeState.CONFIRMED_DEAD or may_signal_root:
         # may_signal_root 时即使组已空也必须升级到 SIGKILL：
         # root 的 pgid 可能与持久化 PGID 不一致（陈旧行），组空不代表
-        # root 已退出（doc 修复方案 §5.4 的等待/升级语义）。
+        # root 已退出。
         if group_id is not None:
             try:
                 os.killpg(group_id, signal.SIGKILL)
@@ -184,7 +183,7 @@ def _persisted_termination_result(pid, pid_reused, final_root, group, token_unkn
     state, failure_code, error_message, live_pids = aggregate_persisted_snapshots(final_root, group)
     if token_unknown is not None:
         # 扫描不完整：UNKNOWN 是独立状态，不依赖未知 PID 是否可填写
-        # （doc 审计 P0-3B）；remaining 保留全部未确认身份。
+        # ；remaining 保留全部未确认身份。
         unconfirmed = set(live_pids) | set(token_unknown.unknown_pids)
         return _result(
             None,
@@ -223,7 +222,7 @@ def _persisted_termination_result(pid, pid_reused, final_root, group, token_unkn
             root_identity_matches=final_root.root_identity_matches,
         )
     # 确认死亡的返回点：不变量检查——不得携带未决来源或非空 remaining
-    # （doc 审计 P0-3B）。防御性分支：任何未决证据都必须保持 UNKNOWN。
+    # 。防御性分支：任何未决证据都必须保持 UNKNOWN。
     if remaining:
         return _result(
             None,
@@ -254,7 +253,7 @@ async def stop_persisted(
 ) -> TerminationResult:
     """Stop a process from a previous boot only after ownership checks.
 
-    Linux 顺序（doc 修复方案 §5.4 + 审计 P0-1/P0-3）：
+    Linux 顺序：
     1. 探测 root identity；root 不存在只表示 root 已死亡，不代表
        containment 为空（P0-1）；
     2. root 身份未复用时，PGID 仍存活即使 root 已消失也发送
@@ -262,7 +261,7 @@ async def stop_persisted(
     3. root 身份已被复用（或探测 UNKNOWN/存活但身份无法核实）时，数字
        PGID 不可信：逐成员验证归属，只对验证过的残留目标用稳定句柄
        单独发信号（发送前重新比较原身份）；归属不明/混合归属组绝不
-       整组发信号，保持 UNKNOWN（doc 审计 P0-1）；
+       整组发信号，保持 UNKNOWN；
     4. 等待 root 与 PGID 的聚合三态快照收敛；
     5. 提供持久化 run token 时执行完整 token discovery，捕获脱离原
        PGID 的后代；token 的存活/未知证据参与最终 state（P0-3B）；
@@ -339,7 +338,7 @@ async def stop_persisted(
         # 句柄单独发信号（发送前再次比较原身份）；归属不明/混合归属组
         # 绝不发信号，保持 UNKNOWN 交上层保留 ownership/ORPHANED。root
         # 明确消失（未被复用占用）时不受此限：pgid 数字无人占用，killpg
-        # 只会命中原组残留成员（正常清理路径，doc §5.4）。
+        # 只会命中原组残留成员。
         group = await stop_reused_group_members(
             tuple(group.live_pids),
             old_root_started_at=process_started_at,
@@ -457,7 +456,7 @@ async def verify_persisted_cleanup(
     cannot accidentally terminate a PID that has since been reused.
 
     权限/探测错误保留为 UNKNOWN（``confirmed_dead=None`` + 结构化
-    failure code），绝不被折叠成"组为空"（doc 修复方案 §6.4）。
+    failure code），绝不被折叠成"组为空"。
     """
     started = time.monotonic()
     if not pid or process_started_at is None:
@@ -565,7 +564,7 @@ async def stop_by_run_token_discovery(
     authoritative "no token-carrying process exists" proof: every local
     CLI and its descendants inherit the exact token at spawn time.
 
-    扫描快照三态语义（doc 修复方案 §6.4）：
+    扫描快照三态语义：
     - 权限/IO 错误使扫描不完整 -> ``confirmed_dead=None`` +
       ``TOKEN_DISCOVERY_UNKNOWN``，绝不允许把 double-empty 当死亡证明；
     - 单个 PID 在扫描中消失属正常情况，不会使整个快照 UNKNOWN；

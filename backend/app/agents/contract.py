@@ -89,7 +89,7 @@ class AttemptFinalizerEvidence:
     source: str
     remote_session_started: bool = False
     provider_outcome_seen: bool = False
-    # P0（doc 审计 0c381413 §2.3）：per-call 未决证据是终局决策的独立输入。
+    # P0：per-call 未决证据是终局决策的独立输入。
     # 存在 STARTED/UNKNOWN 调用时决策层必须先 ORPHANED，任何旧 result /
     # 旧 attempt 级 ACK 都不得旁路覆盖。空默认值保持既有调用签名兼容。
     unresolved_provider_call_ids: tuple[str, ...] = ()
@@ -161,7 +161,7 @@ class ProcessTerminationEvidence:
 
 
 class ProviderCallState(str, Enum):
-    """单次 provider 调用的生命周期状态（doc 审计 07e04775 §4.2）。
+    """单次 provider 调用的生命周期状态。
 
     证据必须在 result 事件到达时登记（早于 JSON 解析、业务落库、错误转换
     和广播），而不是 helper 函数返回后补记。禁止把 ENDED 改回 STARTED：
@@ -202,7 +202,7 @@ class ProviderCallEvidence:
 
 @dataclass(frozen=True)
 class ProviderStopEvidence:
-    """绑定到单个 provider call 的停止证据（doc 审计 0c381413 §2.3/§2.4）。
+    """绑定到单个 provider call 的停止证据。
 
     attempt 级单槽 ACK 只作日志/兼容诊断：一次 ACK 的语义只针对其目标
     session，不能授权同 attempt 其他未决 call 的终态。证据必须同时携带
@@ -262,13 +262,13 @@ class AgentAttemptRuntimeState:
     # 远程会话是否已经建立（session_started 已发生）；用于把“从未建立远程
     # 会话”的取消与“会话存在但停止未被确认”区分开。
     remote_session_started: bool = False
-    # provider 调用证据（doc 审计 07e04775 §4.2）：按 call_id 登记、按
+    # provider 调用证据：按 call_id 登记、按
     # attempt_key 隔离。终局 result 事件到达时必须立即写 ENDED，早于任何
     # 解析/落库/错误转换；异常路径只允许 STARTED -> UNKNOWN，已 ENDED 的
     # 证据绝不能被异常覆盖。进程重启后内存证据丢失仍按 durable locator /
     # reaper 流程处理，空 runtime 不等于“从未开始”。
     provider_calls: dict[str, ProviderCallEvidence] = field(default_factory=dict)
-    # P0（doc 审计 0c381413 §2.4）：按 call_id 绑定的停止证据。旧 attempt
+    # P0：按 call_id 绑定的停止证据。旧 attempt
     # 级单槽（remote_stop_result）保留为日志/兼容诊断；存在 per-call 记录
     # 时，单槽 ACK 不得再作为终态授权来源。
     provider_stops: dict[str, ProviderStopEvidence] = field(default_factory=dict)
@@ -313,7 +313,7 @@ class AgentAttemptRuntimeState:
         self.remote_stop_result = stop_result
 
     def record_provider_call_stop(self, stop: ProviderStopEvidence | None) -> bool:
-        """Bind stop evidence to one provider call (doc 审计 0c381413 §2.4).
+        """Bind stop evidence to one provider call.
 
         校验规则（任一不匹配即拒绝，返回 ``False``）：
         - call 必须已按该 call_id 登记在本 runtime；
@@ -581,7 +581,7 @@ def record_attempt_provider_call_stop(
 ) -> bool:
     """Bind a REMOTE_SESSION stop result to one specific call.
 
-    P0（doc 审计 0c381413 §2.4）：single-turn 调用层在拿到停止结果后必须
+    P0：single-turn 调用层在拿到停止结果后必须
     把它包装成按 call 绑定的证据——停止语义只针对该 call 的 session，一次
     ACK 不能授权其他未决 call。``runtime`` 缺省使用当前绑定的 attempt
     runtime；返回 ``False`` 表示证据被拒绝（call 未知/归属/session 不匹配）。
@@ -614,7 +614,7 @@ def record_provider_call_session_started(call: ProviderCallEvidence | None, sess
     """Register the provider session id on one call (NOT_STARTED -> STARTED).
 
     某些 bridge 的 session_id 晚于 result 到达：ENDED 是终局状态，绝不
-    回退为 STARTED（doc 审计 07e04775 §4.3）。
+    回退为 STARTED。
     """
     if call is None:
         return
@@ -784,7 +784,7 @@ class AgentBackend(ABC):
 
     @abstractmethod
     async def cancel_persisted_session(self, session_id: str) -> AgentStopResult:
-        """按持久化 provider session id 停止远程会话（doc 修复方案 §9.3）。
+        """按持久化 provider session id 停止远程会话。
 
         供 reaper 等无内存 runtime 的调用方使用：目标必须是显式传入的
         durable session id，禁止用 attempt ``run_id`` 或 adapter 内存的

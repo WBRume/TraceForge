@@ -1,6 +1,6 @@
 """增量阅读窗口服务：固定窗口、筛选、keyset 分页、AI 轮次分组键。
 
-合同（docs/team-session-reading-progress-development-plan.md 第 8.3/9 节）：
+合同：
 
 - window_token 绑定 user/workspace/task/epoch、lower_seq、upper_seq 与有效期；
 - 当前窗口是变更范围，不是旧正文快照：条目更新超出 upper_seq 后从窗口移除；

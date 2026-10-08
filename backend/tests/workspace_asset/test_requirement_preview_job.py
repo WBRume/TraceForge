@@ -209,7 +209,7 @@ def test_execute_job_dispatches_split_preview(monkeypatch):
     assert calls == ["split-job-1"]
 
 
-# ── P1-4（doc 修复方案 §10）：异常分支必须携带事件循环已捕获的 attempt 证据 ──
+# ── P1-4：异常分支必须携带事件循环已捕获的 attempt 证据 ──
 
 
 def _seed_split_preview_target(db, tmp_path):
@@ -327,7 +327,7 @@ def test_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, monkeypatc
 
 
 def test_split_preview_cancel_keeps_termination_state(tmp_path, monkeypatch):
-    """统一取消通道（doc §9.1）：用户取消 → runner 清内存信号直接返回，
+    """统一取消通道：用户取消 → runner 清内存信号直接返回，
     不写 FAILED（TERMINATING 交由 runner 退出收敛 CANCELLED），不落批次。"""
     from app.agents.errors import AgentCancelledError
 
@@ -437,7 +437,7 @@ def test_preview_unknown_death_failure_stays_orphaned(tmp_path, monkeypatch):
 
 
 def test_import_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, monkeypatch):
-    """import preview 与 split preview 使用相同 helper（doc 修复方案 §10.4）。"""
+    """import preview 与 split preview 使用相同 helper。"""
     SessionLocal = _build_session()
     db = SessionLocal()
     _seed_workspace(db, tmp_path)
@@ -483,10 +483,10 @@ def test_import_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, mon
     assert saved.process_pid is None
 
 
-# ─────────── P1（doc: docs/agent-job-07e04775-audit-pseudocode-plan.md §4）───────────
+# ─────────── P1 ───────────
 # 远程需求预览（import/split）必须把 provider 终局证据传入 finalizer evidence：
 # 会话已建立且 provider 正常返回时，收敛不得判 ORPHANED。调用链测试必须包含
-# 真实 single-turn helper，不只 mock 返回 dict（doc 审计 §4.5）。
+# 真实 single-turn helper，不只 mock 返回 dict。
 
 
 def _bind_remote_attempt(job_id: str):
@@ -667,7 +667,7 @@ def test_remote_import_preview_evidence_enables_convergence(monkeypatch):
 
 def test_remote_split_parse_failure_keeps_provider_outcome_evidence(monkeypatch):
     """provider 正常返回（明确 result）但解析失败：落 FAILED，outcome 仍
-    保留，绝不误判远程仍在运行（doc 审计 §4.5 验收）。"""
+    保留，绝不误判远程仍在运行。"""
     owner, binding = _bind_remote_attempt("audit-job")
     captured = {}
 
@@ -709,7 +709,7 @@ def test_remote_split_parse_failure_keeps_provider_outcome_evidence(monkeypatch)
 
 def test_real_single_turn_error_outcome_survives_preview_failure(monkeypatch):
     """明确失败 result（真实 helper 调用链）：业务 FAILED 而非 ORPHANED
-    （07e04775 §4.1 repro：result 到达时登记证据，异常路径不丢失）。"""
+    （result 到达时登记证据，异常路径不丢失）。"""
     owner, binding = _bind_remote_attempt("audit-job")
     captured = {}
 

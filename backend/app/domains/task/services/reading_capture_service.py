@@ -1,6 +1,6 @@
 """任务域阅读条目捕获服务（事务内 helper；调用方拥有提交权）。
 
-规范（docs/team-session-reading-progress-development-plan.md 第 4/5/7 节）：
+规范：
 
 - 所有源写入入口使用相同锁顺序：task → 源消息/轮次 → reading item；
 - helper 绝不 commit / rollback，与业务源修改处于同一个 DB 事务；

@@ -8,7 +8,7 @@ OAuth Provider 基础设施层（B-10）。
 - ``oauth_setting``：按 ``OAUTH_{PROVIDER_UPPER}_{SUFFIX}`` 约定读配置
   （新增 provider 无需改 config.py，NFR-M1 前提）。
 
-🔴 依赖规则（设计文档 §1.5）：本包**不得** import ``services/`` 或 ``models/``，
+🔴 依赖规则：本包**不得** import ``services/`` 或 ``models/``，
 保持纯协议适配、可单测；只允许依赖 ``app.config`` 与 ``app.domains.auth.errors``。
 """
 
@@ -153,6 +153,6 @@ class OAuthCodeInvalidError(OAuthUpstreamError):
     """code 换 token 失败（失效 / 重复使用，E-4c）的内部信号。
 
     继承 ``OAuthUpstreamError``：未专门捕获时按 502 上游错误处理（错误码
-    ``OAUTH_UPSTREAM_ERROR``，与 §4.5 错误码表一致）；T02 的 callback 可
+    ``OAUTH_UPSTREAM_ERROR``，与 错误码表一致）；T02 的 callback 可
     专门捕获本异常并映射为 302 ``error=code_invalid``。
     """

@@ -89,7 +89,7 @@ const init = async (): Promise<void> => {
   }
   ticket.value = queryTicket
   try {
-    // resolve 为幂等读，可重复调用（§2.1.3 备注）
+    // resolve 为幂等读，可重复调用
     const result = await resolveOAuthTicket(queryTicket)
     if (result.status !== 'REGISTER_REQUIRED') {
       await applyStatusLocally(result.status)

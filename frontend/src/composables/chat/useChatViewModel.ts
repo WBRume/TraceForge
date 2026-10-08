@@ -375,7 +375,7 @@ export function useChatViewModel() {
         ElMessage.info(t('reading.resume_none'))
         return
       }
-      // 确认当前整批未读（§8.4 显式确认：仅覆盖签名窗口上界）
+      // 确认当前整批未读（显式确认：仅覆盖签名窗口上界）
       await readingProgress.acknowledgeAll(taskId)
       // 若正处于锚定定位（搜索/引用跳转），先回到最新视图
       if (historyContext.anchored.value || String(route.query.messageId || '')) {

@@ -1,6 +1,6 @@
 """身份绑定与安全信号发送（P0 安全路径的唯一归属）。
 
-审计 P0-1/P0-2 的核心不变量：任何凭"数字 PID"发送的信号都是 PID 复用
+核心不变量：任何凭"数字 PID"发送的信号都是 PID 复用
 误杀窗口；只有"重探身份 + pidfd 绑定校验（同一 /proc starttime 的两次
 读取精确一致，禁止容差放宽）"之后的发送才被允许。
 
@@ -14,7 +14,7 @@
   终止引擎（绝不整组 killpg）。
 
 迟到的身份探测结果（等待方已取消）由强引用回收任务接收并恰好关闭一次
-pidfd，避免 fd 泄漏耗尽 inspection worker（doc 审计 P1-2）。
+pidfd，避免 fd 泄漏耗尽 inspection worker。
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ logger = get_logger(__name__, category="agent_process")
 
 
 class MemberBindingState(str, enum.Enum):
-    """身份探测/绑定结果的显式状态（doc 审计 07e04775 P0-2.2）。
+    """身份探测/绑定结果的显式状态。
 
     ``pidfd=None`` 不再同时表达"不支持""打开失败""绑定失败"：只有
     :attr:`BOUND` 携带已验证绑定句柄并授予 Linux 信号发送资格；其余状态
@@ -59,7 +59,7 @@ class MemberBindingState(str, enum.Enum):
 class MemberIdentity:
     """One executor-side identity probe of a candidate group member (P0-1).
 
-    P0（07e04775）：绑定校验失败的探测绝不再返回"旧 create_time +
+    P0：绑定校验失败的探测绝不再返回"旧 create_time +
     pidfd=None"——那种形状会被发送路径重新解释成"无句柄但可按数字 PID
     发送"。任何非 BOUND 状态都不授予发送资格。
     """
@@ -78,7 +78,7 @@ class MemberIdentity:
         return self.state == MemberBindingState.BOUND and self.pidfd is not None
 
 
-# 迟到身份探测结果的回收任务强引用集（doc 审计 P1-2）：取消的等待方离开
+# 迟到身份探测结果的回收任务强引用集：取消的等待方离开
 # 后，工作线程仍会完成并交回打开的 pidfd；必须有人接收结果并恰好关闭
 # 一次，否则 fd 泄漏会耗尽 inspection worker 的文件描述符。
 _LATE_IDENTITY_REAPER_TASKS: set = set()
@@ -108,12 +108,12 @@ def probe_member_identity_sync(pid: int, *, want_pidfd: bool = False) -> MemberI
 
     - NoSuchProcess / zombie -> ``GONE``（明确的该身份死亡证据）；
     - create time 不可读 / 其他错误 -> ``UNVERIFIED``（归属不明），并且
-      不打开任何句柄（没有可验证的绑定对象，doc 审计 P0-1）；
+      不打开任何句柄；
     - ``want_pidfd`` 时同时返回 ``pidfd_open`` 稳定句柄：发送路径用它消除
-      身份验证到信号发送之间的 PID 复用窗口（doc 审计 P0-1/P1-2）。句柄
+      身份验证到信号发送之间的 PID 复用窗口。句柄
       在同一探测流程内取得并做绑定校验：打开后立即重读 create time，
       两次读取必须精确一致（同一 /proc starttime 的同一浮点值；禁止
-      容差放宽，doc 审计 07e04775 P0-2.1）。不一致/不可读说明探测期间
+      容差放宽）。不一致/不可读说明探测期间
       PID 已被复用，句柄无法证明绑定到已验证身份 → 关闭句柄并返回
       ``UNVERIFIED``（绝不退回"旧身份 + fd=None"）。调用方负责在发送
       完成后关闭 BOUND 句柄。
@@ -224,7 +224,7 @@ async def probe_member_identity(
 def signal_verified_member(pidfd: int | None, sig: int) -> bool:
     """Send one signal through the verified pidfd binding only (P0-1).
 
-    P0（07e04775）：只有已绑定的 pidfd 允许发送。句柄缺失、平台缺
+    P0：只有已绑定的 pidfd 允许发送。句柄缺失、平台缺
     ``pidfd_send_signal``、或发送失败都按"未确认"处理——禁止退回
     ``os.kill(数字 PID)``，那会把"校验明确失败"重新解释成"无句柄但
     可发送"，在 PID 复用窗口内误杀无关进程。句柄由调用方
@@ -260,8 +260,7 @@ async def signal_after_identity_recheck(
     - 只有 ``BOUND`` 状态（句柄绑定成功 + 身份精确一致）才允许发送；
       ``expected_create_time`` 为 None（原身份从未验证）、重探身份不可读、
       与原身份不完全相等、或平台不支持安全句柄时，绝不发送，返回
-      ``"unverified"`` 交上层保留 ownership（doc 审计 07e04775 P0-2.4：
-      绑定失败禁止 fallback 到 os.kill/killpg 数字 PID）；
+      ``"unverified"`` 交上层保留 ownership（绑定失败禁止 fallback 到 os.kill/killpg 数字 PID）；
     - 返回 ``"dead"``（目标已消失或绑定句柄发送时已退出）/ ``"sent"`` /
       ``"unverified"``。``sent`` 不是死亡证明，调用方仍必须重扫确认。
     """
@@ -304,7 +303,7 @@ async def terminate_verified_members(
     """SIGTERM → wait → SIGKILL per verified identity (never whole-group).
 
     保存 immutable identity（PID -> 已验证 create time）而不是 PID 集合；
-    每次发送前都重新探测目标身份并比较原身份（doc 审计 P0-1）：身份
+    每次发送前都重新探测目标身份并比较原身份：身份
     不可读、与原身份不符时绝不发送。返回"未确认死亡"的成员集合
     （仍存活、身份变化或身份不可读）。
     """

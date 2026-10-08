@@ -2,7 +2,7 @@
 
 所有本地 CLI 及其后代在 spawn 时继承精确 token（attempt 级
 ``TRACEFORGE_RUN_TOKEN`` + per-spawn ``TRACEFORGE_SPAWN_TOKEN``），同 UID
-进程的 environ 精确 NUL 分隔匹配因此是谱系归属证据（doc 修复方案 §6.4）。
+进程的 environ 精确 NUL 分隔匹配因此是谱系归属证据。
 
 扫描完整性语义：任何"无法检查"（权限/IO 错误）的候选 PID 都会把整个
 快照降级为 UNKNOWN——空 ``matches`` 只有在没有任何 UNKNOWN 时才是死亡
@@ -61,7 +61,7 @@ class DiscoveredTokenProcess:
 
 @dataclass(frozen=True)
 class TokenDiscoverySnapshot:
-    """One complete run-token /proc discovery sample (doc 修复方案 §6.4).
+    """One complete run-token /proc discovery sample.
 
     ``matches`` 只包含 environ 精确命中且仍在扫描时存活的进程；任何无法
     检查（权限/IO 错误）的 PID 记录在 ``unknown_pids`` 并把整个快照降级为
@@ -189,7 +189,7 @@ def scan_token_processes_sync(
 
     仅同 UID 进程、environ 精确 NUL 分隔匹配（``env_var``；默认 attempt 级
     run token，spawn 谱系扫描传 :data:`SPAWN_TOKEN_ENV_VAR`）、排除自身。
-    异常语义（doc 修复方案 §6.4 + 审计 P0-2）：
+    异常语义：
     - 单个 PID NoSuchProcess / zombie -> 该 PID 已消失，继续扫描；
     - environ 不可读的候选：命令名不是归属证据（普通工具子进程同样继承
       token），只有 :func:`candidate_predates_attempt` 的可验证排除成立时
@@ -414,7 +414,7 @@ async def converge_token_kill(
     同一收敛循环；两处差异仅在入口预检（discovery 的 double-scan grace）与
     结果映射，循环体完全一致：
 
-    - 初始快照 UNKNOWN 立即失败（调用方保持 ownership，doc 审计 P0-3B）；
+    - 初始快照 UNKNOWN 立即失败（调用方保持 ownership）；
     - 身份冲突绝不发送、绝不盲杀（不盲杀复用后的新进程）；
     - 每轮只对"重探身份一致"的目标发送；``sent`` 不是死亡证明，必须重扫；
     - 截止后取最后一次快照作为结构化证据。
@@ -423,7 +423,7 @@ async def converge_token_kill(
         return TokenContainmentOutcome(state=ProcessProbeState.UNKNOWN, unknown=initial)
     if not initial.matches:
         # 没有可发送目标：取一次最终快照作为证据（不在收敛循环中追加
-        # 杀死迟到匹配——由调用方下次重试时自然覆盖，doc §6.4）。
+        # 杀死迟到匹配——由调用方下次重试时自然覆盖）。
         final = await token_snapshot(run_token, not_before)
         return _outcome_of_final(final)
     good, conflicts = partition_token_matches(initial.matches, not_before=not_before, not_after=not_after)

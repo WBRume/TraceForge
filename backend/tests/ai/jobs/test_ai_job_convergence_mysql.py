@@ -1,4 +1,4 @@
-"""真实 MySQL 双 Session 并发验收（doc §4.4 / §12.2）。
+"""真实 MySQL 双 Session 并发验收。
 
 SQLite ``StaticPool`` 无法验证 ``SELECT ... FOR UPDATE``；本模块使用两个
 真正独立的 MySQL 连接覆盖：

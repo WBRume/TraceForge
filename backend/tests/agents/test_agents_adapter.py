@@ -754,7 +754,7 @@ class RegistryTest(unittest.TestCase):
 
 
 class PersistedSessionStopContractTest(unittest.IsolatedAsyncioTestCase):
-    """durable remote stop 契约（doc 修复方案 §9.3）。
+    """durable remote stop 契约。
 
     reaper 每次新建 adapter（内存 session 为空），持久化 session id 必须
     通过显式参数到达 provider stop API；测试 fake 的方法签名与正式

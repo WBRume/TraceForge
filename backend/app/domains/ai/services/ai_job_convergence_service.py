@@ -1,4 +1,4 @@
-"""唯一 attempt 证据解析器 + 唯一 job 终态事务（doc V3 §6/§8）。
+"""唯一 attempt 证据解析器 + 唯一 job 终态事务。
 
 职责边界：
 - ``resolve_attempt_evidence``：attempt 证据的唯一解析入口。identity-aware
@@ -61,7 +61,7 @@ class AttemptFencedError(RuntimeError):
 
 
 class ConvergenceIntent(str, Enum):
-    """收敛来源（doc §8.2 第 5 步：按 intent 决定允许的来源状态）。"""
+    """收敛来源（按 intent 决定允许的来源状态）。"""
 
     NORMAL_FINALIZE = "NORMAL_FINALIZE"
     TERMINATION_FINALIZE = "TERMINATION_FINALIZE"
@@ -88,7 +88,7 @@ def _verified_provider_result(
 ) -> bool:
     """Whether ``provider_result`` is a verified terminal provider outcome.
 
-    P1（doc 审计 07e04775 §4.4）：现有 ``provider_result is not None`` 的
+    P1：现有 ``provider_result is not None`` 的
     输入收紧为经过验证且属于当前 call 的结果——统一适配层的真实
     ``AgentRunResult`` 直接承认；single-turn 的普通展示字典必须携带当前
     attempt 下已 ENDED 调用的 ``provider_call_id``，绝不再把任意非空
@@ -118,7 +118,7 @@ def _provider_call_evidence(
     attempt_key: tuple | None,
     provider_result: Any,
 ) -> tuple[bool, bool]:
-    """Read per-call provider evidence for one attempt (07e04775 §4.4).
+    """Read per-call provider evidence for one attempt.
 
     返回 ``(provider_outcome_seen, any_call_started)``：
     - ``provider_outcome_seen``：本 attempt 存在携带真实 result 的 ENDED
@@ -148,7 +148,7 @@ def _bound_call_stop_acknowledged(
     runtime: AgentAttemptRuntimeState,
     call: ProviderCallEvidence,
 ) -> bool:
-    """Whether one call carries an accepted per-call stop ACK (0c381413 §2.4).
+    """Whether one call carries an accepted per-call stop ACK.
 
     只认 ``provider_stops`` 中按 call_id 绑定且 ``acknowledged=True`` 的
     证据；attempt 级单槽 ACK 绝不在这里兜底。
@@ -161,7 +161,7 @@ def _remote_per_call_evidence(
     runtime: AgentAttemptRuntimeState | None,
     attempt_key: tuple,
 ) -> tuple[tuple[str, ...], bool, bool, bool] | None:
-    """Read authoritative per-call evidence for one attempt (0c381413 §2.5).
+    """Read authoritative per-call evidence for one attempt.
 
     返回 ``(unresolved_call_ids, provider_outcome_seen, remote_stop_acknowledged,
     any_call_started)``，``None`` 表示该 attempt 没有任何 per-call 记录
@@ -231,10 +231,10 @@ def _resolve_remote_evidence(
             error_message = str(candidate)
             break
     if per_call is not None:
-        # P0（doc 审计 0c381413 §2.5）：per-call 记录存在时证据以
+        # P0：per-call 记录存在时证据以
         # per-call 为权威。provider outcome 只能来自已 ENDED 且携带
         # 真实 result 的调用；attempt 级单槽 ACK 与 supplied result
-        # 一律不得旁路未决检查。停止 ACK 必须按 call 绑定（§2.4）。
+        # 一律不得旁路未决检查。停止 ACK 必须按 call 绑定。
         unresolved_ids, provider_seen, remote_ack, any_call_started = per_call
         remote_started = (bool(runtime.remote_session_started) if runtime is not None else False) or any_call_started
         return AttemptFinalizerEvidence(
@@ -336,7 +336,7 @@ def resolve_attempt_evidence(
     fallback_remaining_pids: tuple[int, ...] = (),
     attempt_key: tuple | None = None,
 ) -> AttemptFinalizerEvidence:
-    """按固定优先级合并 attempt 证据（doc §6.2）。
+    """按固定优先级合并 attempt 证据。
 
     1. execution kind 由调用方取 durable job/attempt context，不从 PID 推断；
     2. runtime 有明确 True/False 时直接使用，禁止合并 fallback；
@@ -347,7 +347,7 @@ def resolve_attempt_evidence(
     5. 多个无身份 fallback 互相冲突时返回 None 并写 EVIDENCE_CONFLICT；
     6. failure code 和 remaining PIDs 只作诊断，不反向改变死亡状态。
 
-    P1（doc 审计 07e04775 §4.4）：provider 终局证据由 attempt runtime 的
+    P1：provider 终局证据由 attempt runtime 的
     per-call 记录统一读取（``provider_calls``，按 attempt_key 隔离）；进程
     重启后内存证据丢失仍按 durable locator/reaper 流程处理，空 runtime 不
     等于“从未开始”。
@@ -487,7 +487,7 @@ def evidence_from_stop_result(
 
 @dataclass(frozen=True)
 class AttemptConvergenceRequest:
-    """统一终态事务请求（doc §8.1）。"""
+    """统一终态事务请求。"""
 
     job_id: str
     run_token: str
@@ -530,7 +530,7 @@ def _has_local_ownership(job: SddAiJob) -> bool:
 
 
 def _clear_ownership_fields(job: SddAiJob) -> None:
-    """仅当统一事务判定允许进入业务终态时调用（doc C2/§8.4）。"""
+    """仅当统一事务判定允许进入业务终态时调用。"""
     job.heartbeat_at = None
     job.lease_expires_at = None
     job.process_pid = None
@@ -733,7 +733,7 @@ def _apply_orphaned_in_txn(
     default_failure_code: str,
     now: datetime,
 ) -> None:
-    """ORPHANED：ownership 必须完整保留（doc §8.4）。"""
+    """ORPHANED：ownership 必须完整保留。"""
     reason = str(request.reason or default_failure_code)
     job.status = AiJobStatus.ORPHANED
     job.message = request.message or "Agent process could not be confirmed dead"
@@ -775,19 +775,19 @@ def _decide_final_status(
     request: AttemptConvergenceRequest,
     execution_kind: ExecutionKind,
 ) -> tuple[AiJobStatus, str]:
-    """决策表（doc §8.3）的唯一实现；返回 (final_status, orphan_failure_code)。"""
+    """决策表的唯一实现；返回 (final_status, orphan_failure_code)。"""
     evidence = request.evidence
     intent = request.intent
     str(request.reason or "")
     if execution_kind == EXECUTION_KIND_REMOTE_SESSION and evidence.unresolved_provider_call_ids:
-        # P0（doc 审计 0c381413 §2.5）：未决 provider call 是终局决策的
+        # P0：未决 provider call 是终局决策的
         # 独立输入，优先于一切 outcome / stop ACK 证据——这是防止其他
         # 调用方遗漏检查的第二层保护。任何旧 result / 旧 attempt 级 ACK
         # 都不能把仍有未决调用的 attempt 收敛成业务终态。
         return AiJobStatus.ORPHANED, REMOTE_CALL_UNRESOLVED
     if intent == ConvergenceIntent.NORMAL_FINALIZE:
         if execution_kind == EXECUTION_KIND_REMOTE_SESSION:
-            # 远程会话的证据底线（doc 修复方案 §8.3）：业务终态必须以
+            # 远程会话的证据底线：业务终态必须以
             # provider outcome、明确 stop ACK 或“会话从未建立”三者之一为
             # 依据。异常断线（无 outcome、无 ACK）绝不允许清 ownership。
             if evidence.provider_outcome_seen:
@@ -834,7 +834,7 @@ def converge_job_attempt_in_txn(
     db: Session,
     request: AttemptConvergenceRequest,
 ) -> ConvergenceResult:
-    """唯一 job 终态事务核心（doc §8.2 / 修复方案 §7.3.1）。
+    """唯一 job 终态事务核心。
 
     事务顺序固定：行锁 SELECT FOR UPDATE -> 幂等检查 -> run token / worker
     boot id 校验 -> TASK_CHAT session revision 校验 -> 按 intent 校验来源
@@ -955,7 +955,7 @@ def converge_job_attempt_sync(
     db: Session,
     request: AttemptConvergenceRequest,
 ) -> ConvergenceResult:
-    """拥有 commit 的终态 wrapper（doc §7.3.1）。
+    """拥有 commit 的终态 wrapper。
 
     仅当调用方自己拥有独立事务（自建 Session / 独立 ``SessionLocal()``）时
     使用本入口；嵌套在 ``run_db_txn()`` 中的调用方必须改用
@@ -979,7 +979,7 @@ TerminationMode = Literal["CANCEL", "INTERRUPT", "WORKER_SHUTDOWN"]
 
 @dataclass(frozen=True)
 class AttemptTerminationRequest:
-    """唯一取消/中断请求（doc §4.5.1）。
+    """唯一取消/中断请求。
 
     所有取消路径（单任务取消、批量取消、任务中断、worker shutdown）都必须
     通过 :func:`request_attempt_termination_in_txn` 写入 job 状态；禁止任何
@@ -1037,7 +1037,7 @@ def request_attempt_termination_in_txn(
     db: Session,
     request: AttemptTerminationRequest,
 ) -> TerminationRequestResult:
-    """唯一取消/中断请求事务核心（doc §4.5.1）。
+    """唯一取消/中断请求事务核心。
 
     规则：
     1. 使用 ``with_for_update()`` 锁定 job 行（与业务 finalizer 共享行锁）；
@@ -1076,7 +1076,7 @@ def request_attempt_termination_in_txn(
         AiJobStatus.CANCELLED,
         AiJobStatus.REVERTED,
     }:
-        # 幂等：终态永不回退（doc §4.5.1 规则 3）。
+        # 幂等：终态永不回退。
         return _result(False)
 
     resolved_session_id = str(request.interrupt_session_id or (job.session_id or "")).strip() or None

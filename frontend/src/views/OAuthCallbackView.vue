@@ -11,7 +11,7 @@ import OAuthErrorBanner from '@/components/auth/OAuthErrorBanner.vue'
 import type { OAuthResolveResult } from '@/types/oauth'
 
 /**
- * OAuth 回调页（T04 / F-07，§3.8.1 状态机）
+ * OAuth 回调页（T04 / F-07）
  * 后端 302 落地：/oauth/callback?ticket=xxx&status=xxx&client_type=web
  *           或 /oauth/callback?error=<语义化错误码>&provider=xxx
  * 流程：ticket → POST /oauth/resolve（幂等读）→ 按 status 分发：

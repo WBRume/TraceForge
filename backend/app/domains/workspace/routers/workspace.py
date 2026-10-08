@@ -693,7 +693,7 @@ def revoke_workspace_invite_link(
     _ensure_member_manager(db, ws_id, current_user.id)
 
     # 服务只加锁并 flush（与 accept 相同的锁顺序 Workspace → Link）；
-    # commit/rollback 归路由（doc 审计 0c381413 §4.2）。撤销即删除，
+    # commit/rollback 归路由。撤销即删除，
     # 响应返回删除快照（status=REVOKED，行已不存在）。
     link = workspace_service.revoke_invite_link_in_txn(db, ws_id, link_id)
     if not link:

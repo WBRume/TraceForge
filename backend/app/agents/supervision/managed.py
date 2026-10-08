@@ -9,13 +9,12 @@
   已确认死亡的结果被缓存，重复 close/interrupt 直接返回）；
 - 终止阶梯：graceful（CTRL_BREAK / SIGINT）→ TERM/taskkill tree →
   force kill，每步之后用三态树采样确认；
-- 全树完成检查：本地快照与 per-spawn 谱系扫描是两个必需证据来源
-  （doc 审计 07e04775 §3.4），聚合规则"任一 LIVE -> 未死；无 LIVE 但有
+- 全树完成检查：本地快照与 per-spawn 谱系扫描是两个必需证据来源，聚合规则"任一 LIVE -> 未死；无 LIVE 但有
   UNKNOWN -> 未确认；全部 DEAD -> 已死"。
 
 :func:`monitor_tree` 是周期采样循环：psutil 的 recursive children 扫描
 绝不在事件循环上执行；每个受管进程同一时刻最多一个在飞 inspection
-（doc §12 有界 gate）。
+（有界 gate）。
 """
 
 from __future__ import annotations
@@ -61,7 +60,7 @@ class ManagedAgentProcess:
     job_handle: int | None = None
     reader_tasks: list = field(default_factory=list)
     known_descendant_pids: set = field(default_factory=set)
-    # P1（doc 审计 0c381413 §3.2）：最近一轮谱系扫描"无法检查"的候选 PID
+    # P1：最近一轮谱系扫描"无法检查"的候选 PID
     # （从未证明携带本 spawn token）。仅诊断；每轮以最新扫描替换，绝不
     # 累加过期候选，也绝不混入 known_descendant_pids。
     last_uninspected_candidates: tuple = field(default_factory=tuple)
@@ -79,7 +78,7 @@ class ManagedAgentProcess:
     # 同一进程的终止操作必须串行化；已确认死亡的结果会被缓存，
     # 重复 close/interrupt 直接返回权威死亡证明（doc 4.4）。
     _termination_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    # 同一进程同一时刻最多一个在飞树采样（doc §9.4 有界 gate）。
+    # 同一进程同一时刻最多一个在飞树采样。
     _inspection_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _last_termination: TerminationResult | None = None
     _monitor_wake: asyncio.Event | None = None
@@ -103,7 +102,7 @@ class ManagedAgentProcess:
     def apply_snapshot(self, snapshot: ProcessTreeSnapshot | None) -> None:
         """Merge one executor-produced tree sample into tracked descendants.
 
-        合并规则（doc §5.4.3 + 审计 P0-3A）：
+        合并规则：
         - LIVE        ：已知集合 = 本次 LIVE 身份 ∪ 本次 UNKNOWN 身份；
                         混合 LIVE/UNKNOWN 后代不能因 LIVE 替换被遗忘；
         - CONFIRMED_DEAD：identity 明确不存在后才移除；
@@ -116,7 +115,7 @@ class ManagedAgentProcess:
         self.known_descendant_pids = merged
 
     async def inspect_tree(self) -> ProcessTreeSnapshot:
-        """唯一异步树检查入口（doc §9.4）。
+        """唯一异步树检查入口。
 
         所有 psutil / Job Object / 进程 identity 检查只在 inspection
         executor 中执行；同一 managed process 同时最多一个在飞采样，取消
@@ -157,7 +156,7 @@ class ManagedAgentProcess:
         self.reader_tasks.append(task)
 
     async def _wait_for_exit(self, timeout: float) -> bool:
-        """等待根进程退出，并通过 inspect_tree() 获得三态树快照（doc §9.4）。"""
+        """等待根进程退出，并通过 inspect_tree() 获得三态树快照。"""
         if self.process.returncode is None:
             try:
                 await asyncio.wait_for(asyncio.shield(self.process.wait()), timeout=max(0.01, timeout))
@@ -278,7 +277,7 @@ class ManagedAgentProcess:
         tree_kill_used = False
         error_code: str | None = None
         error_message: str | None = None
-        # 终止流程立即触发一次树采样，不必等待普通监控周期（doc §12.2）。
+        # 终止流程立即触发一次树采样，不必等待普通监控周期。
         self.request_immediate_inspection()
         try:
             snapshot = await self.inspect_tree()
@@ -352,8 +351,8 @@ class ManagedAgentProcess:
     ) -> TerminationResult:
         """Build the termination result from local snapshot + lineage evidence.
 
-        本方法绝不再次同步扫描进程树（doc §9.4）；没有快照时先通过
-        inspection executor 取一次三态采样。P1（07e04775 §3.4）：本地快照
+        本方法绝不再次同步扫描进程树；没有快照时先通过
+        inspection executor 取一次三态采样。P1：本地快照
         与 per-spawn 谱系扫描是两个必需证据来源，脱组后代清理不再以"本地
         快照已死"为前置条件——已被采样登记的脱组后代会让本地快照一直
         LIVE，而组 killpg 打不到它。聚合规则：任一来源 LIVE -> 未死；无
@@ -366,7 +365,7 @@ class ManagedAgentProcess:
         lineage_result: lineage.SpawnLineageCleanup | None = None
         if os.name != "nt" and psutil is not None and self.spawn_token:
             lineage_result = await self._cleanup_spawn_lineage(signal_list)
-            # P1（doc 审计 0c381413 §3.2）：归属证据与扫描完整性分离。只有
+            # P1：归属证据与扫描完整性分离。只有
             # "已验证 token/谱系归属"的 remaining PID 才进入已知后代集合；
             # ``unknown_pids`` 只是 environ 暂时不可读的任意进程（从未证明
             # 归属），绝不能按数字 PID 提升为 owned descendant——否则无关
@@ -392,7 +391,7 @@ class ManagedAgentProcess:
         if lineage_result is None:
             confirmed_dead = local_dead
         else:
-            # 结构化聚合（doc 审计 07e04775 §3.2/§3.4）。
+            # 结构化聚合。
             if ProcessProbeState.LIVE in (snapshot.state, lineage_result.state):
                 confirmed_dead = False
                 if lineage_result.state == ProcessProbeState.LIVE:
@@ -437,7 +436,7 @@ class ManagedAgentProcess:
         )
 
     async def wait(self) -> ProcessWaitResult:
-        """等待 root 退出并按唯一收尾入口收敛全树（07e04775 §3.4）。
+        """等待 root 退出并按唯一收尾入口收敛全树。
 
         root 退出不是全树死亡证明：wait 与 close 共用同一串行化收尾
         （``close`` → ``_terminate`` → ``_result``），避免两份不同的条件表。
@@ -469,7 +468,7 @@ async def monitor_tree(managed: ManagedAgentProcess) -> None:
 
     psutil 的 recursive children / pid_exists 扫描绝不在事件循环上执行；
     每个受管进程同一时刻最多一个在飞 inspection，上一次采样未结束时不
-    排队累积下一次（doc §12）。
+    排队累积下一次。
     """
     interval = monitor_interval_seconds()
     try:

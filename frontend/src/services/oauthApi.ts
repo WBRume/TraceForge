@@ -1,8 +1,8 @@
 /**
  * OAuth 三方登录 —— 9 端点 API 封装（T04 / F-02）
  *
- * 契约来源：docs/design-oauth-login.md §2.3。
- * 约束（§4.8-5）：统一复用 src/utils/api.ts 的 axios 实例，本模块不得新建实例。
+ * 契约来源：见下方端点定义。
+ * 约束：统一复用 src/utils/api.ts 的 axios 实例，本模块不得新建实例。
  *
  * dev mock：设置环境变量 VITE_OAUTH_MOCK=1 启用（后端 T02 未就绪时可独立跑通三页面）。
  * mock ticket 一览（直接访问 /oauth/callback?ticket=<mock ticket> 即可）：

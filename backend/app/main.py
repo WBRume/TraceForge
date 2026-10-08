@@ -190,7 +190,7 @@ app.add_middleware(
 
 app.add_middleware(LoggingMiddleware)
 
-# ── OAuth 统一业务异常输出：{"detail": ..., "code": "OAUTH_XXX", **extra}（§4.5）──
+# ── OAuth 统一业务异常输出：{"detail": ..., "code": "OAUTH_XXX", **extra} ──
 app.add_exception_handler(OAuthAPIError, oauth_api_error_handler)
 
 

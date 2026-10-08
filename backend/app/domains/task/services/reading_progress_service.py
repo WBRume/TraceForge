@@ -1,6 +1,6 @@
 """个人阅读状态服务：基线初始化、回执合并、前缀压缩、续读 CAS、显式确认。
 
-事务契约（docs/team-session-reading-progress-development-plan.md 第 6/8 节）：
+事务契约：
 
 - 确认使用 task → 个人 state → receipts 的锁顺序，任务行锁只在短事务内持有；
 - 服务端接收最多 50 个 (item_key, change_seq) 确切版本回执，不接受客户端

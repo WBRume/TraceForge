@@ -1,9 +1,9 @@
-"""Agent attempt 收敛验收（原 test_ai_job_convergence.py，doc V3 §14）。
+"""Agent attempt 收敛验收（原 test_ai_job_convergence.py）。
 
 覆盖：
 - 14.1 证据权威性：identity-aware runtime 不被无身份 fallback 覆盖；
 - 14.5 DB 并发状态机：cancel/finalize 两种锁顺序、双 finalizer、旧 token；
-- P0-1 CAS 写入 fail-closed（doc §4.5.3）。
+- P0-1 CAS 写入 fail-closed。
 """
 
 from __future__ import annotations
@@ -343,7 +343,7 @@ def test_termination_convergence_proven_dead_leaves_orphaned_to_business_state()
     assert saved.process_pid is None
 
 
-# ────────────── P0-1：CAS 写入 fail-closed（doc §4.5.3） ──────────────
+# ────────────── P0-1：CAS 写入 fail-closed ──────────────
 
 
 def _seed_owned_running(db, *, token="run-1", status=AiJobStatus.RUNNING, cancel_requested=False):
@@ -359,7 +359,7 @@ def _seed_owned_running(db, *, token="run-1", status=AiJobStatus.RUNNING, cancel
 
 
 def test_active_state_write_without_run_token_is_rejected(monkeypatch):
-    """无 token 的迟到状态写必须 fail-closed：不得把已取消 job 写回 RUNNING（doc §4.3）。"""
+    """无 token 的迟到状态写必须 fail-closed：不得把已取消 job 写回 RUNNING。"""
     factory = _session_factory()
     db = factory()
     _seed_owned_running(db)

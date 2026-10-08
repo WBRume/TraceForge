@@ -5,7 +5,7 @@ import { getOAuthErrorKey } from '@/utils/error'
 
 /**
  * OAuth 错误提示横幅（T04 / F-06）
- * §3.8.3：后端 code / error → 统一文案映射；
+ * 后端 code / error → 统一文案映射；
  * state_expired / state_invalid / code_invalid 三者文案必须完全相同（E-4d）。
  */
 const props = defineProps<{

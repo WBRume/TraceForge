@@ -154,7 +154,7 @@ def build_agent_run_request(
         project_path=project_path,
         session_id=session_id,
         env=env_overrides,
-        # 显式执行类别（doc §7 数据流）：与 backend capability
+        # 显式执行类别（数据流）：与 backend capability
         # 声明一致，不得通过"是否有本地 PID"推断。
         execution_kind=getattr(
             getattr(backend, "capabilities", None),

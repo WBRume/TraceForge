@@ -184,7 +184,7 @@ async def _recover_orphaned_job(
         ),
     )
     if payload:
-        # final 判定由 payload 状态决定（doc §5 C5/§9.2）。
+        # final 判定由 payload 状态决定。
         await broadcast_job_payload(payload)
         reschedule_if_pending(payload)
     audit_log(

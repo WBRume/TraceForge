@@ -1,6 +1,6 @@
 """历史数据回填与核对服务（可恢复、有界、短事务）。
 
-约束（docs/team-session-reading-progress-development-plan.md 第 12 节）：
+约束：
 
 - 按任务处理历史，按 (created_at, sort_seq, id) keyset 有界回填，不一次加载全库正文；
 - 每批短事务锁 task，仅补缺失 item；在线写入已建立 item 的不能被旧扫描覆盖；

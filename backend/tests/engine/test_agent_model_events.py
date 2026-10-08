@@ -69,7 +69,7 @@ class TaskAgentEngineModelEventTest(unittest.IsolatedAsyncioTestCase):
 
 
 class RemoteStopAfterErrorTest(unittest.IsolatedAsyncioTestCase):
-    """异常出口的远程会话兜底停止（doc 修复方案 §8.3）。
+    """异常出口的远程会话兜底停止。
 
     - attempt runtime 已有 stop 证据（interrupt ACK）时绝不覆盖；
     - 停止超时/异常必须落结构化 NACK，不得伪造 ACK；

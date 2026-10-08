@@ -1,4 +1,4 @@
-"""Agent attempt 收敛验收（原 test_ai_job_convergence.py，doc V3 §14）。
+"""Agent attempt 收敛验收（原 test_ai_job_convergence.py）。
 
 覆盖：
 - 14.3b 远程 adapter 停止结果协议（opencode / dsh / legacy shim）；
@@ -379,6 +379,6 @@ def test_legacy_shim_cancel_none_return_is_unacknowledged():
 
     result = asyncio.run(shim.cancel())
 
-    # 远程 cancel 的 None 返回值绝不能被视作成功（doc §17）。
+    # 远程 cancel 的 None 返回值绝不能被视作成功。
     assert result.stop_acknowledged is False
     assert result.failure_code == REMOTE_STOP_UNCONFIRMED

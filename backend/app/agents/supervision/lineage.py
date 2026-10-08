@@ -5,7 +5,7 @@
 即使已被采样登记，本地快照也只会一直报 LIVE。spawn 时注入的
 ``TRACEFORGE_SPAWN_TOKEN`` 是本 spawn 专属谱系标记（uuid4 仅注入本次
 子进程 env）：任何携带者都可证明属于本 spawn 的后代，因此无论本地
-快照是否已经报死，都必须按本 token 清理谱系（doc 审计 07e04775 §3.2：
+快照是否已经报死，都必须按本 token 清理谱系（
 清理不再以 local DEAD 为前置条件）。
 
 语义（结构化返回，绝不只给 bool）：
@@ -42,14 +42,14 @@ from app.agents.supervision.model import (
     ProcessProbeState,
 )
 
-# P1（07e04775）：谱系清理的 TERM 宽限秒数；拒绝 TERM 的后代在此之后升级
+# P1：谱系清理的 TERM 宽限秒数；拒绝 TERM 的后代在此之后升级
 # SIGKILL（升级粒度以身份验证发送为单位，绝不整组 killpg）。
 _SPAWN_LINEAGE_TERM_GRACE_SECONDS = 1.5
 
 
 @dataclass(frozen=True)
 class SpawnLineageCleanup:
-    """One structured per-spawn lineage cleanup result (doc 审计 07e04775 §3.2).
+    """One structured per-spawn lineage cleanup result.
 
     清理必须返回结构化快照而不是 bool：本地快照与谱系扫描是两个必需证据
     来源，调用方按"任一 LIVE -> 未死；无 LIVE 但有 UNKNOWN -> 未确认；全部
@@ -71,7 +71,7 @@ async def cleanup_spawn_lineage(
     signals: list,
     max_wait: float = 6.0,
 ) -> SpawnLineageCleanup:
-    """P0-3/P1：本 spawn 谱系后代的结构化清理（07e04775 §3.3）。"""
+    """P0-3/P1：本 spawn 谱系后代的结构化清理。"""
     if os.name == "nt" or psutil is None or not spawn_token:
         return SpawnLineageCleanup()
     not_before = datetime.fromtimestamp(max(0.0, float(created_at) - 2.0), tz=timezone.utc)
@@ -80,7 +80,7 @@ async def cleanup_spawn_lineage(
     phase = signal.SIGTERM
     phase_name = "SIGTERM"
     signals_sent: list = []
-    # P1（doc 审计 0c381413 §3.3）：候选集合不跨轮累加——新的完整扫描
+    # P1：候选集合不跨轮累加——新的完整扫描
     # 能解除"暂时未知"，deadline 结果只取最终一次扫描；``proven_pids``
     # 记录曾经验证过 token 归属的身份，它们随后不可读时仍保留 owned
     # 归属，绝不能降级为"从未证明"的候选。
@@ -101,8 +101,8 @@ async def cleanup_spawn_lineage(
     while True:
         scan = await discovery.token_snapshot(spawn_token, not_before, env_var=SPAWN_TOKEN_ENV_VAR)
         if scan.state == ProcessProbeState.UNKNOWN:
-            # 扫描不完整：UNKNOWN 保留 ownership（doc 审计 P0-3）。
-            # 候选 PID 不跨轮累加（0c381413 §3.3），只保留失败诊断。
+            # 扫描不完整：UNKNOWN 保留 ownership。
+            # 候选 PID 不跨轮累加，只保留失败诊断。
             failure_code = failure_code or scan.failure_code
             error_message = error_message or scan.error_message
         good, conflicts = discovery.partition_token_matches(scan.matches, not_before=not_before, not_after=None)

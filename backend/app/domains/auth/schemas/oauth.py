@@ -1,5 +1,5 @@
 """
-OAuth 三方登录 Pydantic Schemas（对应设计文档 §2.3 接口契约）。
+OAuth 三方登录 Pydantic Schemas。
 
 所有 schema 仅做数据搬运与基础校验；账号判定逻辑集中在
 ``services/oauth_service.py``（T02），不得前移到 schema 层。
@@ -83,7 +83,7 @@ class ResolveResponse(BaseModel):
     suggested_display_name: str | None = None
     suggested_avatar_url: str | None = None
     email_verified: bool | None = None
-    # CONFIRM_REQUIRED（管理员加绑）：reason="admin_bind" + provider 展示名（§2.3 接口 4 契约）
+    # CONFIRM_REQUIRED（管理员加绑）：reason="admin_bind" + provider 展示名
     provider_display_name: str | None = None
     reason: str | None = None
     bound_at: datetime | None = None
@@ -112,7 +112,7 @@ class OAuthBindConfirmRequest(BaseModel):
 class OAuthRegisterRequest(BaseModel):
     """路径 C 补全注册。🔴 手填优先（拍板 #6）：email 以用户手填为准建号。
 
-    校验顺序见 §2.3 接口 7：原子消费 ticket → status 校验 → normalize →
+    校验顺序：原子消费 ticket → status 校验 → normalize →
     格式 → 域名白名单 → 密码长度 → 邮箱唯一性 → 建号绑定。
     """
 

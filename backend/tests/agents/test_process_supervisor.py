@@ -586,7 +586,7 @@ def test_stop_attempt_handles_all_processes_under_run_token():
     asyncio.run(_run())
 
 
-# ────────────────────── doc §14.6 事件循环延迟 ──────────────────────
+# ────────────────────── 事件循环延迟 ──────────────────────
 
 
 class _FakeManaged:
@@ -670,7 +670,7 @@ def test_monitor_inspection_keeps_event_loop_responsive(monkeypatch):
     assert max_gap < 0.35, f"event loop stalled: max heartbeat gap={max_gap:.3f}s"
 
 
-# ────────────── P0-2：三态探测与假死亡证明防护（doc §5） ──────────────
+# ────────────── P0-2：三态探测与假死亡证明防护 ──────────────
 
 
 def _snapshot_managed(pid: int, *, returncode=None, known=None, job_handle=None, group_id=None):
@@ -696,7 +696,7 @@ def test_access_denied_snapshot_is_unknown_and_keeps_known_descendants(monkeypat
 
     assert snapshot.state == ProcessProbeState.UNKNOWN
     assert snapshot.live_descendant_pids == ()
-    # UNKNOWN 快照不得清空已知 PID（doc §5.4.3）。
+    # UNKNOWN 快照不得清空已知 PID。
     managed_known = {991002}
     fake = SimpleNamespace(
         apply_snapshot=lambda s: None,
@@ -798,7 +798,7 @@ def test_windows_job_query_failure_is_unknown(monkeypatch):
     assert pids == set()
 
 
-# ────────────── P1-4：终止路径检查不在事件循环执行（doc §9） ──────────────
+# ────────────── P1-4：终止路径检查不在事件循环执行 ──────────────
 
 
 def test_inspect_tree_runs_off_loop_and_serializes_per_managed(monkeypatch):
@@ -828,7 +828,7 @@ def test_inspect_tree_runs_off_loop_and_serializes_per_managed(monkeypatch):
 
     snapshots = asyncio.run(_run())
     assert all(s.state == ProcessProbeState.CONFIRMED_DEAD for s in snapshots)
-    # 同一 managed process 同时最多一个在飞采样（有界 gate，doc §9.4）。
+    # 同一 managed process 同时最多一个在飞采样。
     assert in_flight["max"] == 1
 
 

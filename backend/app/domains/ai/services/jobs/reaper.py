@@ -2,7 +2,7 @@
 
 职责：扫描 owner 消失/租约过期的 attempt 并收养（TERMINATING + 新 token），
 按固定顺序停止远程会话与本地进程树，最后经统一 convergence 事务收敛终态。
-死亡未被证明的 attempt 保持 ORPHANED 并退避重试（doc §8/§10.4）。
+死亡未被证明的 attempt 保持 ORPHANED 并退避重试。
 """
 
 from __future__ import annotations
@@ -110,7 +110,7 @@ def list_reclaimable_jobs_sync(task_id: str | None = None) -> list[dict[str, Any
                     "attempt_count": int(job.attempt_count or 0),
                     "worker_boot_id": job.worker_boot_id,
                     "reap_failure_count": int(job.reap_failure_count or 0),
-                    # durable remote stop locator（doc §10.4.1）：reaper 在
+                    # durable remote stop locator：reaper 在
                     # worker 重启后必须能凭持久化行定位并停止远程 provider
                     # session，而不是只做本地进程检查。
                     "execution_kind": str(job.process_execution_kind or "").strip() or None,
@@ -186,12 +186,11 @@ def _reap_failure_code(row: dict[str, Any], result: Any) -> str:
 
 
 async def stop_remote_session(row: dict[str, Any]) -> AgentStopResult:
-    """Stop a remote provider session from durable reaper metadata (doc §10.4.2).
+    """Stop a remote provider session from durable reaper metadata.
 
     - 使用持久化 backend/session id，不依赖内存 runtime；
     - 必须走 ``cancel_persisted_session(session_id)`` durable 契约：真实
-      DSH/OpenCode adapter 忽略 ``cancel(run_id=...)`` 的 run_id（doc 修复
-      方案 §9.3 的 P1-3），持久化 locator 绝不能被静默丢弃；
+      DSH/OpenCode adapter 忽略 ``cancel(run_id=...)`` 的 run_id，持久化 locator 绝不能被静默丢弃；
     - 只有服务端明确成功响应才 ``stop_acknowledged=True``；
     - timeout / 断线 / 找不到 backend / 缺少 session id 一律返回结构化
       NACK/UNKNOWN，绝不因为本地没有 PID 而声称远程 session 已停止；
@@ -254,7 +253,7 @@ async def stop_remote_session(row: dict[str, Any]) -> AgentStopResult:
 
 
 async def stop_attempt_processes(row: dict[str, Any], token: str) -> Any:
-    """Run the fixed reaper order (doc 8 / §10.4.2) for one adopted attempt.
+    """Run the fixed reaper order for one adopted attempt.
 
     0. REMOTE_SESSION 行按持久化 locator 分派 provider stop（durable stop）；
     1. in-memory registration under the current run token;
@@ -282,7 +281,7 @@ async def stop_attempt_processes(row: dict[str, Any], token: str) -> Any:
     if result is None and row.get("process_pid"):
         # root PID 已消失不代表进程组已消失：stop_persisted 会对 PGID 继续
         # 发送信号，并在提供持久化 run token 时执行完整 token discovery
-        # 兜底（doc 修复方案 §5.4）。
+        # 兜底。
         result = await process_supervisor.stop_persisted(
             row["process_pid"],
             row.get("process_started_at"),
@@ -330,7 +329,7 @@ async def reap_stale_jobs(*, task_id: str | None = None) -> int:
         result = await stop_attempt_processes(row, token)
         if isinstance(result, AgentStopResult):
             # 远程 reaper：ACK 才允许业务终态并清 ownership；NACK/UNKNOWN
-            # 落 ORPHANED 并更新 backoff（doc §10.4.3）。
+            # 落 ORPHANED 并更新 backoff。
             payload = await run_db(
                 attempt_ops.finish_termination_sync,
                 row["job_id"],
@@ -370,8 +369,7 @@ async def reap_stale_jobs(*, task_id: str | None = None) -> int:
 def mark_worker_jobs_terminating_sync(reason: str) -> list[dict[str, Any]]:
     """Durably fence attempts before their in-process owners are stopped.
 
-    所有 RUNNING -> TERMINATING 写入都走唯一 termination request 事务
-    （doc §4.5.2）；本函数只负责收集 reaper/stop 需要的行元数据。
+    所有 RUNNING -> TERMINATING 写入都走唯一 termination request 事务；本函数只负责收集 reaper/stop 需要的行元数据。
     """
     db = SessionLocal()
     try:

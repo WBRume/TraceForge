@@ -46,7 +46,7 @@ def accept_invite(
     db: Session = Depends(get_db),
 ):
     # 服务只加锁并 flush（锁顺序 Workspace → Link）；commit/rollback 归路由
-    # （doc 审计 0c381413 §4.2）。并发名额竞争失败按 unavailable 返回 400。
+    # 。并发名额竞争失败按 unavailable 返回 400。
     try:
         member, link, already_member = workspace_service.accept_invite_in_txn(db, token, current_user.id)
         db.commit()

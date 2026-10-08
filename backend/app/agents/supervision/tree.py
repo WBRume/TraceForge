@@ -2,7 +2,7 @@
 
 :func:`inspect_process_tree_snapshot` 是受管进程（含 Windows Job Object /
 POSIX 进程组 containment）的离环采样实现，由 :mod:`...inspection` 的
-bounded executor 执行。三态聚合规则（doc §5.4.3）：
+bounded executor 执行。三态聚合规则：
 
 - 任一 identity 明确存活 -> LIVE；
 - 无存活但存在 UNKNOWN（探测异常/Job Object 查询失败/无 psutil 能力）
@@ -28,7 +28,7 @@ def windows_job_probe(managed) -> tuple[ProcessProbeState, set]:
     """Probe Windows Job Object containment (executor-side only).
 
     - 查询成功且为空集合：该 containment 的明确空证据（CONFIRMED_DEAD）；
-    - 查询失败：UNKNOWN，绝不返回 False（doc §5.4.2）；
+    - 查询失败：UNKNOWN，绝不返回 False；
     - 没有 Job Object：无 containment 可查，返回 CONFIRMED_DEAD（空证据，
       死亡证明由 root returncode + known identities + group probe 决定）。
     """
@@ -73,7 +73,7 @@ def posix_group_probe(managed) -> tuple[ProcessProbeState, set]:
 
 
 def probe_known_pid(pid: int) -> ProcessProbeState:
-    """Three-state probe of one known immutable identity (doc §5.4.2)."""
+    """Three-state probe of one known immutable identity."""
     if psutil is None:
         return ProcessProbeState.UNKNOWN
     try:
@@ -82,7 +82,7 @@ def probe_known_pid(pid: int) -> ProcessProbeState:
         # 该特定 identity 明确不存在。
         return ProcessProbeState.CONFIRMED_DEAD
     except psutil.ZombieProcess:
-        # 明确的已退出语义（doc §5.4.2）。
+        # 明确的已退出语义。
         return ProcessProbeState.CONFIRMED_DEAD
     except psutil.AccessDenied:
         return ProcessProbeState.UNKNOWN
@@ -137,7 +137,7 @@ def _root_identity_matches(managed, root_pid):
 def inspect_process_tree_snapshot(managed) -> ProcessTreeSnapshot:
     """Pure synchronous psutil snapshot; never call directly from the event loop.
 
-    三态聚合规则（doc §5.4.3）：任一 identity 明确存活 -> LIVE；没有存活
+    三态聚合规则：任一 identity 明确存活 -> LIVE；没有存活
     但存在 UNKNOWN -> UNKNOWN；仅当 root 明确退出、所有已登记 identity
     明确不存在且 containment 明确为空时 -> CONFIRMED_DEAD。
     """
@@ -147,7 +147,7 @@ def inspect_process_tree_snapshot(managed) -> ProcessTreeSnapshot:
     live: set = set()
     unknown: set = set()
     # containment（Job Object / POSIX 进程组）探测不确定：即使没有可填写
-    # 的 UNKNOWN PID 也必须保持 UNKNOWN 状态（doc 审计 P0-3A）。
+    # 的 UNKNOWN PID 也必须保持 UNKNOWN 状态。
     containment_unknown = False
     failure_code: str | None = None
     error_message: str | None = None

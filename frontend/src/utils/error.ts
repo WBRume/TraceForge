@@ -309,7 +309,7 @@ export const formatApiError = (error: unknown, fallback: string, t?: Translator)
 }
 
 /* ------------------------------------------------------------------ */
-/* OAuth 错误码 → i18n key 映射（T04 / F-19，§3.8.3 / §4.5）            */
+/* OAuth 错误码 → i18n key 映射（T04 / F-19）            */
 /* ------------------------------------------------------------------ */
 
 const OAUTH_ERROR_KEY_MAP: Record<string, string> = {
@@ -320,7 +320,7 @@ const OAUTH_ERROR_KEY_MAP: Record<string, string> = {
   code_invalid: 'auth.oauth.errors.session_invalid',
   provider_unavailable: 'auth.oauth.errors.provider_unavailable',
   provider_disabled: 'auth.oauth.errors.provider_disabled',
-  // API 错误码（§4.5 错误码全表）
+  // API 错误码
   OAUTH_TICKET_INVALID: 'auth.oauth.errors.ticket_invalid',
   OAUTH_TICKET_EXPIRED: 'auth.oauth.errors.ticket_expired',
   OAUTH_TICKET_LOCKED: 'auth.oauth.errors.ticket_locked',
@@ -353,7 +353,7 @@ export const getOAuthErrorCode = (error: unknown): string | null => {
 
 /**
  * OAuth API 错误 → 用户文案。
- * 优先按 code 映射 §3.8.3 文案；无 code 时回退到 formatApiError（读 detail）。
+ * 优先按 code 映射 文案；无 code 时回退到 formatApiError（读 detail）。
  */
 export const formatOAuthApiError = (error: unknown, fallback: string, t: Translator): string => {
   const key = getOAuthErrorKey(getOAuthErrorCode(error))

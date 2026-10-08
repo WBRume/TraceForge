@@ -17,7 +17,7 @@ Create Date: 2026-08-27
        drop 操作，真跑会删表。
     验证方式：``alembic upgrade b7e4a1c9d3f6 --sql``（离线输出 SQL 人工核对）。
 
-表结构依据：docs/design-oauth-login.md §2.1。
+表结构依据：见下方安全要点。
 🔴 安全要点：
 - ``oauth_identities`` 的 ``uq_oauth_provider_uid``（UNIQUE(provider, provider_uid)）
   是账号判定的唯一可信依据，不得删除或放宽；

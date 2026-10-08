@@ -128,7 +128,7 @@ def row_execution_kind(job: SddAiJob) -> str:
 
 
 def resolve_execution_kind_for_backend(backend_name: str | None) -> str:
-    """Map a backend name to its declared execution kind (doc §7 chain)."""
+    """Map a backend name to its declared execution kind."""
     name = str(backend_name or "").strip() or "claude-code"
     if name in ("claude-code", "mock"):
         return EXECUTION_KIND_LOCAL_PROCESS
@@ -153,7 +153,7 @@ def resolve_execution_kind_for_claim(
     task_id: str | None,
     workspace_id: str | None,
 ) -> str:
-    """Claim 时在同一事务内解析并写入 execution kind（doc §7.2）。"""
+    """Claim 时在同一事务内解析并写入 execution kind。"""
     name: str | None = None
     if task_id:
         row = db.query(SddTask.agent_backend).filter(SddTask.id == task_id).first()
@@ -822,7 +822,7 @@ def take_next_pending_job_id_sync(queue_key: str) -> str | None:
         if not job_id:
             return None
 
-        # Claim 必须在同一事务内解析并写入显式 execution kind（doc §7.2/C4），
+        # Claim 必须在同一事务内解析并写入显式 execution kind，
         # 运行中的 job 不允许长期保持 None。
         claim_target = db.query(SddAiJob.workspace_id, SddAiJob.task_id).filter(SddAiJob.id == job_id).first()
         execution_kind = resolve_execution_kind_for_claim(

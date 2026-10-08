@@ -810,7 +810,7 @@ class DshServerAdapter(AgentBackend):
 
     async def interrupt(self, run_id: str | None = None) -> AgentStopResult:
         """Remote interrupt: only a successful ``session.cancel`` RPC response
-        counts as acknowledged (doc §5.2); errors/timeouts/disconnects are
+        counts as acknowledged; errors/timeouts/disconnects are
         returned as structured failures, never swallowed."""
         from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
 
@@ -869,7 +869,7 @@ class DshServerAdapter(AgentBackend):
         """Reaper durable stop：目标必须是显式传入的持久化 session id。
 
         禁止回退到 ``self._session_id``（reaper 每次新建 adapter，内存
-        session 必然为空；doc 修复方案 §9.3 的 P1-3 修复）。
+        session 必然为空；P1-3 修复）。
         """
         from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
 

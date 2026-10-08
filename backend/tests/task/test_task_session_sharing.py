@@ -1,6 +1,6 @@
 """任务会话免登录分享：权限矩阵、投影、幂等、生命周期。
 
-覆盖 docs/task-session-sharing-implementation-plan.md §15 的核心行为：
+覆盖核心行为：
 1. 创建/撤销权限（SHARE_TASK_SESSION）；
 2. exchange/resolve 视图分流（INPUT 永远 INPUT_ONLY；READ 登录跳转）；
 3. 公开历史白名单投影（不泄漏 metadata / NULL generation 不放行）；
@@ -552,7 +552,7 @@ def test_revoked_share_is_deleted_and_rejects_access(owner_client):
     assert res_exchange.status_code == 404
     assert res_exchange.json()["detail"]["code"] == "SHARE_NOT_FOUND"
 
-    # 撤销前已收到的输入保留（规格 §2.7）：先提交一条再撤销验证
+    # 撤销前已收到的输入保留：先提交一条再撤销验证
     created2 = _create_share(client, mode="INPUT").json()
     access2 = _exchange(client, created2["share_token"]).json()["access_token"]
     receipt = _submit(client, access2, "撤销前收到的输入", "keep-1").json()
