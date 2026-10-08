@@ -142,6 +142,7 @@ def capture_flush(db):
             continue
         metadata = message.metadata_json if isinstance(message.metadata_json, dict) else {}
         confirmation = metadata.get("confirmation")
+        resolution = metadata.get("confirmation_resolution")
         job = None
         prompt = None
         if value(message.role) == "assistant" and isinstance(confirmation, dict):
@@ -151,6 +152,17 @@ def capture_flush(db):
                 if interaction:
                     job.awareness_pending_json = list(dict.fromkeys([*(job.awareness_pending_json or []), interaction]))
                     prompt = message.content
+        elif value(message.role) == "assistant" and isinstance(resolution, dict):
+            job = (
+                db.query(SddAiJob)
+                .filter(SddAiJob.id == resolution.get("job_id"), SddAiJob.task_id == message.task_id)
+                .with_for_update()
+                .first()
+            )
+            if job and job.awareness_state:
+                job.awareness_pending_json = [
+                    item for item in job.awareness_pending_json or [] if item != resolution.get("interaction_id")
+                ]
         elif value(message.role) == "user" and metadata.get("interaction_id"):
             parent = db.get(ChatMessage, metadata.get("reply_to_message_id"))
             parent_meta = parent.metadata_json if parent and isinstance(parent.metadata_json, dict) else {}

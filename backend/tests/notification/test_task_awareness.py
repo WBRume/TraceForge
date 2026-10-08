@@ -130,6 +130,31 @@ def test_reads_and_historical_errors_never_create_events(seeded):
     assert db.query(TaskAwarenessEvent).count() == 0
 
 
+def test_provider_resolution_resumes_awareness_only_after_all_questions_are_closed(seeded):
+    db, _, user, workspace, task = seeded
+    job = start(db, user, workspace, task)
+    confirmation(db, task, user)
+    confirmation(db, task, user, id="p2", interaction="i2")
+    assert job.awareness_state == "AI_HITL_SUSPENDED"
+    for interaction, expected in [("i1", "AI_HITL_SUSPENDED"), ("i2", "AI_RUNNING")]:
+        db.add(
+            ChatMessage(
+                task_id=task.id,
+                workspace_id=workspace.id,
+                creator_id=user.id,
+                role="assistant",
+                content="提问已取消",
+                metadata_json={
+                    "confirmation_resolution": {"interaction_id": interaction, "job_id": job.id, "status": "cancelled"}
+                },
+            )
+        )
+        db.commit()
+        assert job.awareness_state == expected
+    assert job.awareness_pending_json == []
+    assert latest(db, "AI_RUNNING") is not None
+
+
 def test_transition_is_transactional_and_repeated_progress_is_inert(seeded):
     db, _, user, workspace, task = seeded
     job = start(db, user, workspace, task)

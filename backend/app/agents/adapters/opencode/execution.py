@@ -1,12 +1,13 @@
 """Observe one durable OpenCode inbox item across transport/worker restarts.
 
-SSE is volatile. Only an idle message after our input proves its terminal state;
-the global session outcome may still belong to the previous input.
+SSE is volatile. Terminal evidence must belong to our input, never just the
+session. Native question cancellation may omit idle but leaves an aborted tool.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import random
@@ -46,17 +47,38 @@ def turn_messages(messages: list[dict], prompt_id: str) -> list[dict]:
     return result
 
 
+def aborted_tool_turn(messages: list[dict]) -> bool:
+    """Recognize a completed interruption within the owned input's message slice."""
+    if not messages:
+        return False
+    last = messages[-1]
+    if (
+        last.get("type") != "assistant"
+        or last.get("finish") != "error"
+        or not (last.get("time") or {}).get("completed")
+    ):
+        return False
+    return any(
+        part.get("type") == "tool"
+        and (part.get("state") or {}).get("status") == "error"
+        and isinstance((part.get("state") or {}).get("error"), dict)
+        and part["state"]["error"].get("type") == "aborted"
+        for part in last.get("content", [])
+    )
+
+
 class ExecutionMonitor:
     def __init__(self, adapter, session_id, request, on_event):
         self.adapter, self.session_id = adapter, session_id
         self.request, self.on_event = request, on_event
-        self.checkpoint = dict(request.execution_checkpoint or {})
+        self.checkpoint = copy.deepcopy(request.execution_checkpoint or {})
         self.restoring = bool(self.checkpoint)
         self.checkpoint.setdefault("version", 1)
         self.checkpoint.setdefault("session_id", session_id)
         self.checkpoint.setdefault("prompt_id", "msg_" + uuid.uuid4().hex)
         self.checkpoint.setdefault("deadline", time.time() + request.timeout_seconds)
         self.checkpoint.setdefault("phase", "prepared")
+        self.interactions = self.checkpoint.get("interactions", {})
         self.adapter._user_message_id = self.checkpoint["prompt_id"]
         self.adapter._execution_checkpoint = self.checkpoint
         self.seen_types: set[str] = set()
@@ -68,7 +90,7 @@ class ExecutionMonitor:
     async def save(self):
         if self.request.on_execution_checkpoint:
             try:
-                await self.request.on_execution_checkpoint(dict(self.checkpoint))
+                await self.request.on_execution_checkpoint(copy.deepcopy(self.checkpoint))
             except AgentExecutionDetached:
                 raise
             except Exception as exc:
@@ -104,6 +126,22 @@ class ExecutionMonitor:
     async def emit(self, event: AgentEvent, key: str = ""):
         if key and key in self.delivered:
             return
+        if event.type in {"ask_user", "ask_user_resolved"}:
+            rid = str(event.payload.get("ask_user_id") or "")
+            if not rid:
+                return
+            entry = self.interactions.setdefault(rid, {})
+            self.checkpoint["interactions"] = self.interactions
+            field = "request" if event.type == "ask_user" else "resolution"
+            if field == "request" and entry.get("resolution"):
+                return
+            if field == "resolution" and entry.get("resolution"):
+                event.payload = entry["resolution"]
+            entry[field] = dict(event.payload)
+            # Persist before publication so worker recovery can replay a lost callback.
+            await self.save()
+            if field == "resolution":
+                self.adapter._complete_ask(rid)
         if event.type == "text" and key:
             event.payload["provider_event_key"] = key
         await self.on_event(event)
@@ -160,9 +198,9 @@ class ExecutionMonitor:
                             f"tool_result:{tid}",
                         )
 
-    async def restore_asks(self):
+    async def restore_asks(self, *, terminal: bool = False):
         pending = set()
-        for suffix, kind in (("form", "form.created"), ("permission", "permission.asked")):
+        for suffix, kind in () if terminal else (("form", "form.created"), ("permission", "permission.asked")):
             rows = await self.get_data(self.adapter._session_url(self.session_id, "/" + suffix))
             for row in rows:
                 rid = str(row.get("id") or "")
@@ -170,8 +208,25 @@ class ExecutionMonitor:
                 data = {"form": row} if suffix == "form" else {**row, "sessionID": self.session_id}
                 for event in map_opencode_event({"type": kind, "data": data}):
                     await self.emit(event, f"ask:{rid}")
-        for rid in self.adapter._pending_asks - pending:
-            self.adapter._complete_ask(rid)
+        for rid, entry in list(self.interactions.items()):
+            if entry.get("resolution"):
+                await self.emit(
+                    AgentEvent(type="ask_user_resolved", payload=entry["resolution"], provider="opencode"),
+                    f"resolved:{rid}",
+                )
+                continue
+            if rid in pending:
+                continue
+            # Recreate the public question if the worker died before publishing it.
+            if entry.get("request"):
+                await self.emit(
+                    AgentEvent(type="ask_user", payload=entry["request"], provider="opencode"), f"ask:{rid}"
+                )
+            resolution = await self.adapter.get_interaction_resolution(rid)
+            if resolution:
+                await self.emit(
+                    AgentEvent(type="ask_user_resolved", payload=resolution, provider="opencode"), f"resolved:{rid}"
+                )
 
     async def reconcile(self):
         if self.watchdog:
@@ -181,6 +236,7 @@ class ExecutionMonitor:
         current = turn_messages(messages, self.checkpoint["prompt_id"])
         await self.restore_messages(current)
         terminal = next((row for row in current if row.get("type") == "idle"), None)
+        await self.restore_asks(terminal=bool(terminal))
         self.last_check = time.monotonic()
         if terminal and terminal.get("outcome") in {"succeeded", "failed", "interrupted"}:
             outcome = terminal["outcome"]
@@ -190,11 +246,12 @@ class ExecutionMonitor:
             }
         active = await self.get_data(self.adapter.server_url + "/api/session/active")
         inbox = await self.get_data(self.adapter._session_url(self.session_id, "/inbox"))
+        if self.session_id not in active and not inbox and aborted_tool_turn(current):
+            return {"success": False, "finish_reason": "interrupted"}
         admitted = any(row.get("id") == self.checkpoint["prompt_id"] for row in [*messages, *inbox])
         if admitted and self.checkpoint["phase"] != "submitted":
             self.checkpoint["phase"] = "submitted"
             await self.save()
-        await self.restore_asks()
         if self.watchdog:
             if not self.adapter._pending_asks:
                 # Do not reset a genuinely idle execution on every successful GET.
@@ -235,8 +292,6 @@ class ExecutionMonitor:
         if self.checkpoint["phase"] != "submitted" or opencode_event_session_id(event) != self.session_id:
             return None
         data = event.get("data") or {}
-        if kind in {"form.replied", "form.cancelled", "permission.replied"}:
-            self.adapter._complete_ask(str((data.get("form") or {}).get("id") or data.get("id") or ""))
         if kind in {"session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"}:
             # A prior execution can finish while our input is still queued.
             # Session ID alone never establishes ownership of this terminal.
@@ -259,6 +314,8 @@ class ExecutionMonitor:
                 key = f"{unified.type}:{unified.payload.get('tool_use_id')}"
             elif unified.type == "ask_user":
                 key = f"ask:{unified.payload.get('ask_user_id')}"
+            elif unified.type == "ask_user_resolved":
+                key = f"resolved:{unified.payload.get('ask_user_id')}"
             await self.emit(unified, key)
         return None
 

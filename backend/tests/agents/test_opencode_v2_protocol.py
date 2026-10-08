@@ -103,6 +103,8 @@ async def test_v2_form_filters_nested_session_owner_before_mapping():
         nonlocal prompt_id
         if request.url.path == "/api/event":
             return httpx.Response(200, text="".join("data: " + json.dumps(e) + "\n\n" for e in events))
+        if request.url.path.endswith("/form/frm_test"):
+            return httpx.Response(404)
         if request.url.path.endswith("/message"):
             return httpx.Response(
                 200,

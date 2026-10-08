@@ -23,7 +23,13 @@ from app.agents.contract import (
     AgentStopResult,
     TokenUsage,
 )
-from app.agents.errors import AgentError, AgentExecutionDetached, AgentTimeoutError, SessionForkError
+from app.agents.errors import (
+    AgentError,
+    AgentExecutionDetached,
+    AgentInteractionClosedError,
+    AgentTimeoutError,
+    SessionForkError,
+)
 from app.agents.events import AgentEvent
 from app.agents.http_transport import agent_ssl_context
 
@@ -808,6 +814,14 @@ class OpenCodeAdapter(AgentBackend):
         self._retired_clients.clear()
 
     async def respond_to_ask_user(self, ask_user_id: str, response: str) -> None:
+        try:
+            await self._respond_to_ask_user(ask_user_id, response)
+        except httpx.HTTPError as exc:
+            raise AgentError(
+                "OpenCode reply could not be confirmed. Refresh the conversation before retrying."
+            ) from exc
+
+    async def _respond_to_ask_user(self, ask_user_id: str, response: str) -> None:
         sid = self._session_id
         if not sid or not ask_user_id:
             raise AgentError("OpenCode HITL reply requires active session and ask_user_id")
@@ -818,6 +832,14 @@ class OpenCodeAdapter(AgentBackend):
             body = {"decision": reply}
         elif ask_user_id.startswith("frm_"):
             detail = await client.get(self._session_url(sid, f"/form/{ask_user_id}"))
+            if detail.status_code == 404 or (
+                detail.status_code == 200
+                and (
+                    detail.json().get("data") is None
+                    or (detail.json()["data"].get("state") or {}).get("status", "pending") != "pending"
+                )
+            ):
+                await self._reject_closed_interaction(ask_user_id)
             self._check_response(detail, "get form")
             fields = detail.json().get("data", {}).get("fields", [])
             try:
@@ -833,8 +855,41 @@ class OpenCodeAdapter(AgentBackend):
         else:
             raise AgentError("OpenCode v2 requires a permission or form request id")
         result = await client.post(url, json=body)
+        if result.status_code in {404, 409}:
+            await self._reject_closed_interaction(ask_user_id)
         self._check_response(result, "HITL reply")
         self._complete_ask(ask_user_id)
+
+    async def get_interaction_resolution(self, ask_user_id: str) -> dict | None:
+        """Recover a terminal form state without inventing an answer on cache expiry."""
+        client = await self._ensure_client()
+        kind = "form" if ask_user_id.startswith("frm_") else "permission"
+        response = await client.get(
+            self._session_url(
+                self._session_id or self._execution_checkpoint.get("session_id", ""), f"/{kind}/{ask_user_id}"
+            )
+        )
+        if response.status_code == 404:
+            return {"ask_user_id": ask_user_id, "status": "closed", "answer": None}
+        response.raise_for_status()
+        detail = response.json().get("data")
+        if detail is None:
+            return {"ask_user_id": ask_user_id, "status": "closed", "answer": None}
+        state = detail.get("state") or {}
+        if kind == "permission" or state.get("status", "pending") == "pending":
+            return None
+        return {"ask_user_id": ask_user_id, "status": state["status"], "answer": state.get("answer")}
+
+    async def _reject_closed_interaction(self, ask_user_id: str) -> None:
+        resolution = await self.get_interaction_resolution(ask_user_id)
+        monitor = getattr(self, "_execution_monitor", None)
+        if resolution and monitor:
+            await monitor.emit(
+                AgentEvent(type="ask_user_resolved", payload=resolution, provider="opencode"), f"resolved:{ask_user_id}"
+            )
+        raise AgentInteractionClosedError(
+            "This question has already been answered or closed. Refresh the conversation."
+        )
 
     def _complete_ask(self, ask_user_id: str) -> None:
         if ask_user_id not in self._pending_asks:

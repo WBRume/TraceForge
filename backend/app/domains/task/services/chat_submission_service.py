@@ -495,6 +495,11 @@ def build_session_state(db, task_id, *, actor_id, client_message_ids=None):
     for job in list_task_jobs(db, task_id=task_id, active_only=True):
         jobs.setdefault(job.id, job)
 
+    from app.domains.task.services.task_confirmation_service import snapshot_messages
+
+    for message in snapshot_messages(db, task_id, int(task.session_generation or 0), list(jobs)):
+        messages.setdefault(message.id, message)
+
     ordered = task_conversation_history.sort_chat_messages(list(messages.values()))
     return {
         "task_id": task_id,

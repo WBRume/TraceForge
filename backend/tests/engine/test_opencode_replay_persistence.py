@@ -16,7 +16,16 @@ from app.engine.session.frontend import FrontendFeed
 @pytest.fixture
 def engine_factory(db, monkeypatch):
     monkeypatch.setattr("app.engine.session.frontend.SessionLocal", sessionmaker(bind=db.get_bind()))
-    db.add(SddTask(id="replay-task", workspace_id="workspace", creator_id="user", name="Replay"))
+    db.add(
+        SddTask(
+            id="replay-task",
+            workspace_id="workspace",
+            creator_id="user",
+            name="Replay",
+            session_generation=1,
+            agent_backend="opencode",
+        )
+    )
     db.add(
         SddAiJob(
             id="replay-job",
@@ -78,3 +87,63 @@ async def test_pending_form_recovers_same_public_id_and_private_reply_route(db, 
     assert messages[0].metadata_json["confirmation"]["interaction_id"] == original_id
     assert await recovered.deliver_confirmation_response(original_id, '{"answer":"yes"}')
     recovered.cli.respond_to_ask_user.assert_awaited_once_with("frm_private", '{"answer":"yes"}')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,answer", [("answered", {"answer": "external"}), ("cancelled", None), ("closed", None)])
+async def test_provider_resolution_is_durable_deduplicated_and_not_attributed_as_user(
+    db, engine_factory, status, answer
+):
+    from app.domains.task.services.task_confirmation_service import (
+        ConfirmationClosedError,
+        snapshot_messages,
+        validate_reply_sync,
+    )
+
+    first = engine_factory()
+    await first._on_ask_user(
+        {
+            "ask_user_id": "frm_private",
+            "question": "Choose",
+            "kind": "form",
+            "fields": [{"key": "answer", "type": "string"}],
+        }
+    )
+    interaction = next(iter(first._pending_confirmations))
+    prompt = db.query(ChatMessage).filter_by(task_id="replay-task").one()
+    assert validate_reply_sync(db, "replay-task", interaction, prompt.id)["delivery_mode"] == "live"
+    event = {"ask_user_id": "frm_private", "status": status, "answer": answer}
+    await first._on_ask_user_resolved(event)
+    await engine_factory()._on_ask_user_resolved(event)
+    assert not first.can_deliver_confirmation(interaction)
+    db.expire_all()
+    rows = snapshot_messages(db, "replay-task", 1, ["replay-job"])
+    assert len(rows) == 2
+    resolution = next(row for row in rows if "confirmation_resolution" in row.metadata_json)
+    assert resolution.role == "assistant"
+    assert resolution.metadata_json["confirmation_resolution"]["answer"] == answer
+    assert "frm_private" not in str(resolution.metadata_json)
+    with pytest.raises(ConfirmationClosedError):
+        validate_reply_sync(db, "replay-task", interaction, prompt.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stale", ["generation", "job", "task", "parent"])
+async def test_stale_native_question_is_rejected_even_without_a_resolution(db, engine_factory, stale):
+    from app.domains.task.services.task_confirmation_service import ConfirmationClosedError, validate_reply_sync
+
+    engine = engine_factory()
+    await engine._on_ask_user({"ask_user_id": "frm_private", "question": "Choose", "kind": "text"})
+    interaction = next(iter(engine._pending_confirmations))
+    prompt = db.query(ChatMessage).filter_by(task_id="replay-task").one()
+    if stale == "generation":
+        db.get(SddTask, "replay-task").session_generation += 1
+    elif stale == "job":
+        db.get(SddAiJob, "replay-job").status = AiJobStatus.SUCCESS
+    elif stale == "task":
+        db.get(SddTask, "replay-task").status = "INTERRUPTED"
+    else:
+        prompt.role = "user"
+    db.commit()
+    with pytest.raises(ConfirmationClosedError):
+        validate_reply_sync(db, "replay-task", interaction, prompt.id)

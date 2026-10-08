@@ -545,7 +545,33 @@ def _map_message_metadata(
 
 def _map_interaction_event(event: dict[str, Any], data: dict[str, Any], event_type: str) -> list[AgentEvent]:
     events: list[AgentEvent] = []
-    if event_type == "form.created":
+    if event_type in {"form.replied", "form.cancelled", "permission.replied"}:
+        decision = data.get("reply") or data.get("decision")
+        status = (
+            "cancelled"
+            if event_type == "form.cancelled"
+            else "answered"
+            if event_type == "form.replied"
+            else "rejected"
+            if decision == "reject"
+            else "approved"
+            if decision in {"once", "always"}
+            else "closed"
+        )
+        events.append(
+            AgentEvent(
+                type="ask_user_resolved",
+                payload={
+                    "ask_user_id": _text(data.get("id") or data.get("requestID")),
+                    "status": status,
+                    "answer": data.get("answer") if event_type == "form.replied" else decision,
+                },
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        )
+    elif event_type == "form.created":
         form = data.get("form") if isinstance(data.get("form"), dict) else {}
         fields = form.get("fields")
         if form.get("id") and isinstance(fields, list) and fields:
@@ -625,7 +651,16 @@ def map_opencode_event(event: dict[str, Any]) -> list[AgentEvent]:
         return _map_part_delta(event, data)
     if event_type in ("session.updated", "message.updated"):
         return _map_message_metadata(event, data, event_type, session_id)
-    if event_type in ("form.created", "permission.v2.asked", "permission.asked", "question.v2.asked", "question.asked"):
+    if event_type in (
+        "form.created",
+        "form.replied",
+        "form.cancelled",
+        "permission.replied",
+        "permission.v2.asked",
+        "permission.asked",
+        "question.v2.asked",
+        "question.asked",
+    ):
         return _map_interaction_event(event, data, event_type)
     if event_type in (
         "session.text.started",
