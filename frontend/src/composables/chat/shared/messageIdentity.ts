@@ -57,6 +57,7 @@ export type ChatMessageFields = {
   session_turn_id: string | null
   session_generation: number | null
   can_undo: boolean
+  delivery_status?: string
   /** 共享内容版本（阅读条目身份）；旧帧/临时气泡缺失时先不确认已读 */
   reading_item_key?: string | null
   reading_change_seq?: string | null

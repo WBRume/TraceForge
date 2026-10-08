@@ -2,6 +2,7 @@
 import type { TerminalTimelineEntry } from '@/utils/chat-terminal/timeline-types'
 import TerminalStatusBlock from './TerminalStatusBlock.vue'
 import TerminalToolUseBlock from './TerminalToolUseBlock.vue'
+import ConfirmationHistory from '../ConfirmationHistory.vue'
 
 const props = defineProps<{
   entries: TerminalTimelineEntry[]
@@ -60,7 +61,8 @@ const isHighlightedLog = (entry: TerminalTimelineEntry): boolean => (
           <span class="meta-title message-role">{{ entry.role }}</span>
           <span class="meta-time">{{ props.formatTime(entry.createdAt) }}</span>
         </div>
-        <pre class="line-content">{{ entry.content }}</pre>
+        <ConfirmationHistory v-if="entry.confirmation" :record="entry.confirmation" appearance="terminal" />
+        <pre v-else class="line-content">{{ entry.content }}</pre>
       </div>
 
       <TerminalToolUseBlock

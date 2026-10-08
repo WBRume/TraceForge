@@ -339,4 +339,7 @@ def serialize_history_messages(db, task, msg_query, workspace_id, task_id):
             }
         )
 
+    from app.domains.task.services.task_confirmation_service import enrich_history
+
+    enrich_history(db, task_id, messages)
     return messages

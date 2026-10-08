@@ -128,6 +128,41 @@ async def test_provider_resolution_is_durable_deduplicated_and_not_attributed_as
 
 
 @pytest.mark.asyncio
+async def test_answer_page_and_provider_event_include_full_question_context(db, engine_factory):
+    from app.domains.task.services.conversation.history import serialize_history_messages
+
+    engine = engine_factory()
+    fields = [{"key": "q0", "type": "string", "title": "项目类型", "description": "你想创建哪种项目？"}]
+    await engine._on_ask_user({"ask_user_id": "frm_private", "question": "Questions", "kind": "form", "fields": fields})
+    interaction = next(iter(engine._pending_confirmations))
+    parent = db.query(ChatMessage).filter_by(task_id="replay-task").one()
+    reply = ChatMessage(
+        id="user-answer",
+        task_id="replay-task",
+        workspace_id="workspace",
+        creator_id="user",
+        role="user",
+        content='{"q0":"AI"}',
+        session_generation=1,
+        metadata_json={"interaction_id": interaction, "reply_to_message_id": parent.id},
+    )
+    db.add(reply)
+    db.commit()
+    await engine._on_ask_user_resolved({"ask_user_id": "frm_private", "status": "answered", "answer": {"q0": "AI"}})
+    pushed = engine.frontend.push.await_args.args[1]
+    assert pushed["metadata"]["confirmation_context"]["fields"] == fields
+    assert pushed["metadata"]["confirmation_context"]["answer_message_id"] == reply.id
+    task = db.get(SddTask, "replay-task")
+    page = serialize_history_messages(db, task, [reply], "workspace", "replay-task")
+    assert page[0]["metadata"]["confirmation_context"]["fields"] == fields
+    assert "confirmation_context" not in reply.metadata_json
+    reply.session_generation = 2
+    db.flush()
+    page = serialize_history_messages(db, task, [reply], "workspace", "replay-task")
+    assert "confirmation_context" not in page[0]["metadata"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stale", ["generation", "job", "task", "parent"])
 async def test_stale_native_question_is_rejected_even_without_a_resolution(db, engine_factory, stale):
     from app.domains.task.services.task_confirmation_service import ConfirmationClosedError, validate_reply_sync
