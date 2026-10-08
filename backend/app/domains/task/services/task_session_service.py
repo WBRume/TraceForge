@@ -33,7 +33,7 @@ from app.domains.task.models.session_turn import (
     TaskSessionTurnStatus,
 )
 from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.task.services import task_session_snapshot_service
+from app.domains.task.services import task_confirmation_service, task_session_snapshot_service
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.websocket.ws.manager import manager
 from app.domains.workspace_asset.models.workspace_asset import SddAiOutput, SddDecision, SddEvidence
@@ -589,6 +589,7 @@ def _persist_confirmation_reply_sync(
             "reply_to_message_id": reply_to_message_id,
             "interaction_id": interaction_id,
             "confirmation_value": confirmation_value,
+            "confirmation_context": task_confirmation_service.question_context(parent),
             **(
                 {
                     "submission_id": parent_metadata["submission_id"],

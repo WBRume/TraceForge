@@ -12,6 +12,7 @@ import DiagnosisResultCard from './DiagnosisResultCard.vue'
 import ChatMessageContent from './ChatMessageContent.vue'
 import { diagnosisPayloadFromMessage } from '@/types/diagnosis'
 import type { ChatDecisionPayload } from '@/composables/useChatDecision'
+import { confirmationHistoryRecord, confirmationHistoryText } from '@/composables/chat/message/confirmationHistory'
 
 const props = defineProps<{
   msg: Record<string, any>
@@ -106,7 +107,8 @@ async function writeClipboardText(text: string): Promise<boolean> {
 
 async function handleCopyMessage() {
   if (!canCopyMessage.value || copyState.value === 'done') return
-  const ok = await writeClipboardText(String(props.msg?.content || ''))
+  const confirmation = confirmationHistoryRecord(props.msg, props.vm.messages)
+  const ok = await writeClipboardText(confirmation ? confirmationHistoryText(confirmation, t) : String(props.msg?.content || ''))
   copyState.value = ok ? 'done' : 'failed'
   window.clearTimeout(copyResetTimer)
   copyResetTimer = window.setTimeout(() => {
@@ -151,6 +153,7 @@ function openDiagnosisCase(caseId: string) {
 <template>
   <ChatMessageContent
     :msg="msg"
+    :related-messages="vm.messages"
     :author-label="vm.messageAuthorLabel(msg)"
     :time-label="vm.formatMessageTime(msg.created_at)"
     :content="displayContent"

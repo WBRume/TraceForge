@@ -13,6 +13,61 @@ class ConfirmationClosedError(RuntimeError):
     """A stale question must not become a new task submission."""
 
 
+def question_context(message: ChatMessage) -> dict:
+    """Snapshot the public question so an answer remains readable on its own."""
+    confirmation = (message.metadata_json or {}).get("confirmation") or {}
+    return {
+        "prompt": message.content,
+        "kind": confirmation.get("kind", "text"),
+        "fields": confirmation.get("fields", []),
+        "options": confirmation.get("options", []),
+    }
+
+
+def enrich_history(db: Session, task_id: str, messages: list[dict]) -> None:
+    """Attach question context across page boundaries without rewriting history."""
+    targets = {}
+    for message in messages:
+        metadata = message.get("metadata") or {}
+        resolution = metadata.get("confirmation_resolution") or {}
+        interaction_id = resolution.get("interaction_id") or metadata.get("interaction_id")
+        if interaction_id:
+            targets.setdefault(interaction_id, []).append(message)
+    if not targets:
+        return
+    rows = (
+        db.query(ChatMessage)
+        .filter(
+            ChatMessage.task_id == task_id,
+            or_(
+                ChatMessage.metadata_json["confirmation"]["interaction_id"].as_string().in_(list(targets)),
+                (ChatMessage.role == "user")
+                & ChatMessage.metadata_json["interaction_id"].as_string().in_(list(targets)),
+            ),
+        )
+        .all()
+    )
+    questions, answers = {}, {}
+    for row in rows:
+        metadata = row.metadata_json or {}
+        if row.role == "assistant" and metadata.get("confirmation"):
+            questions[metadata["confirmation"]["interaction_id"]] = row
+        elif row.role == "user" and metadata.get("interaction_id"):
+            answers[metadata["interaction_id"], row.session_generation] = row.id
+    for interaction_id, items in targets.items():
+        question = questions.get(interaction_id)
+        for item in items:
+            if not question or item.get("session_generation") != question.session_generation:
+                continue
+            item["metadata"] = {
+                **(item.get("metadata") or {}),
+                "confirmation_context": {
+                    **question_context(question),
+                    "answer_message_id": answers.get((interaction_id, question.session_generation)),
+                },
+            }
+
+
 def validate_reply_sync(db: Session, task_id: str, interaction_id: str, message_id: str) -> dict:
     task = db.get(SddTask, task_id)
     parent = db.get(ChatMessage, message_id)
@@ -54,7 +109,7 @@ def validate_reply_sync(db: Session, task_id: str, interaction_id: str, message_
             or task.status in {"INTERRUPTED", "DONE", "FAILED", "BASELINED"}
         ):
             raise ConfirmationClosedError("The execution owning this question has ended.")
-    return {"delivery_mode": mode, "job_id": confirmation.get("job_id")}
+    return {"delivery_mode": mode, "job_id": confirmation.get("job_id"), "context": question_context(parent)}
 
 
 async def validate_reply(task_id: str, interaction_id: str, message_id: str) -> dict:

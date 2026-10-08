@@ -391,6 +391,9 @@ class FrontendFeed:
                 reading_item_key=reading_item_key,
                 reading_change_seq=reading_change_seq,
             ).model_dump()
+            from app.domains.task.services.task_confirmation_service import enrich_history
+
+            enrich_history(db, owner.task_id, [payload])
             return payload
         finally:
             db.close()

@@ -5,6 +5,8 @@ import { Bot } from '@/components/icons'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 import { messageAuthorColor, memberColorFor, memberColorRgba } from '@/composables/chat/message/memberColor'
 import type { ChatMessageFields } from '@/composables/chat/shared/messageIdentity'
+import ConfirmationHistory from './ConfirmationHistory.vue'
+import { confirmationHistoryRecord, isRedundantConfirmationReceipt } from '@/composables/chat/message/confirmationHistory'
 
 // 只负责消息展示；交互和诊断结果由主会话通过插槽提供。
 const props = defineProps<{
@@ -16,11 +18,13 @@ const props = defineProps<{
   isCurrentUser?: boolean
   highlighted?: boolean
   diagnosisResult?: boolean
+  relatedMessages?: Partial<ChatMessageFields>[]
 }>()
 
 const { t } = useI18n()
 const msgRole = computed(() => String(props.msg?.role || '').toLowerCase())
 const memberColor = computed(() => messageAuthorColor(props.msg))
+const confirmation = computed(() => confirmationHistoryRecord(props.msg, props.relatedMessages))
 
 const metadata = computed(() => {
   const meta = props.msg?.metadata
@@ -74,6 +78,7 @@ const showTrailingAvatar = computed(() => (
 
 <template>
   <div
+    v-if="!isRedundantConfirmationReceipt(confirmation)"
     class="message-wrapper"
     :data-message-id="msg.id"
     :class="[
@@ -84,6 +89,8 @@ const showTrailingAvatar = computed(() => (
         'is-highlighted': highlighted,
         'is-collab-preinput': isCollabPreInput,
         'is-diagnosis-result': diagnosisResult,
+        'is-confirmation-history': Boolean(confirmation),
+        'is-confirmation-receipt': confirmation?.kind === 'resolution' && !confirmation.rows.length,
       }
     ]"
     :style="{ '--member-color': memberColor }"
@@ -119,7 +126,8 @@ const showTrailingAvatar = computed(() => (
       <slot name="body">
         <div class="message-bubble">
           <!-- 协作预输入：字符级归属渲染（作者色下划线，悬停可见原作者/修改者） -->
-          <div v-if="isCollabPreInput && collabSegments.length > 0" class="collab-doc">
+          <ConfirmationHistory v-if="confirmation" :record="confirmation" />
+          <div v-else-if="isCollabPreInput && collabSegments.length > 0" class="collab-doc">
             <span
               v-for="(seg, index) in collabSegments"
               :key="index"
@@ -156,6 +164,12 @@ const showTrailingAvatar = computed(() => (
 .message-wrapper.is-diagnosis-result .message-stack {
   width: 100%;
 }
+.message-wrapper.is-confirmation-history { width: min(86%, 600px); max-width: 100%; flex-shrink: 0; }
+.is-confirmation-history .message-stack, .is-confirmation-history .message-bubble { width: 100%; }
+.is-confirmation-history .message-bubble { box-shadow: none; padding: 14px 18px; border-radius: 12px; }
+.message-wrapper.is-confirmation-receipt { width: auto; }
+.is-confirmation-receipt .message-bubble { background: transparent; border-color: transparent; padding: 4px 0; }
+@media (max-width: 600px) { .message-wrapper.is-confirmation-history { width: 100%; } }
 /* 用户消息一律右对齐；assistant/system 左对齐 */
 .role-user {
   align-self: flex-end;

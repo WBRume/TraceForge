@@ -104,6 +104,7 @@ watch(() => [props.workspaceId, props.taskId], () => {
         v-for="msg in displayMessages"
         :key="msg.id"
         :msg="msg"
+        :related-messages="messages"
         :author-label="msg.senderLabel"
         :time-label="formatMessageTime(msg.created_at)"
         :is-expert="msg.isExpert"

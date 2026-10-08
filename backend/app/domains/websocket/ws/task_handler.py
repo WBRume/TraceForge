@@ -260,6 +260,8 @@ class TaskWebSocketHandler:
                 )
                 # Use the persisted question's job, never a client-supplied locator.
                 request.metadata["job_id"] = confirmation["job_id"]
+                if confirmation.get("context"):
+                    request.metadata["confirmation_context"] = confirmation["context"]
                 live_delivery = await ai_job_task_chat.confirmation_delivery_available(
                     task_id=self._task_id,
                     interaction_id=interaction_id,

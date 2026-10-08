@@ -2,6 +2,7 @@ import type {
   TerminalLocalEcho,
   TerminalTimelineEntry,
 } from './timeline-types'
+import { confirmationHistoryRecord, isRedundantConfirmationReceipt } from '@/composables/chat/message/confirmationHistory'
 
 interface MergeTerminalTimelineInput {
   messages: any[]
@@ -33,6 +34,8 @@ export const mergeTerminalTimeline = (input: MergeTerminalTimelineInput): Termin
   const hasStructuredToolEntries = input.terminalLogs.some((item) => item?.type === 'tool_use' || item?.type === 'tool_result')
 
   for (const [index, message] of input.messages.entries()) {
+    const confirmation = confirmationHistoryRecord(message, input.messages)
+    if (isRedundantConfirmationReceipt(confirmation)) continue
     const time = coerceTime(message?.created_at, Date.now() + index)
     entries.push({
       id: `msg-${message?.id || index}`,
@@ -40,6 +43,7 @@ export const mergeTerminalTimeline = (input: MergeTerminalTimelineInput): Termin
       role: String(message?.role || 'system'),
       content: String(message?.content || ''),
       messageType: String(message?.message_type || 'text'),
+      confirmation,
       createdAt: time.createdAt,
       createdMs: time.createdMs,
       seq: seq++,
