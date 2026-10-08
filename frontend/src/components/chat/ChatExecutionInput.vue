@@ -240,7 +240,7 @@ watch(isPreInput, (active) => {
   if (active) {
     settleTimer = window.setTimeout(() => {
       controlsSettled.value = true
-    }, 360)
+    }, 320)
   } else {
     controlsSettled.value = false
   }
@@ -661,25 +661,25 @@ defineExpose({ resetPreInputForm, focusInput })
   justify-content: center;
 }
 
-/* ── 协作控件：丝滑展开 ── */
+/* ── 协作控件：丝滑展开与渐显渐隐 ── */
 .preinput-controls {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 0;
   opacity: 0;
-  transform: translateX(-10px);
   overflow: hidden;
-  transition: max-width 0.32s cubic-bezier(0.4, 0, 0.2, 1),
-    opacity 0.24s ease,
-    transform 0.32s cubic-bezier(0.4, 0, 0.2, 1);
   pointer-events: none;
+  will-change: max-width, opacity;
+  transition: max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.26s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .preinput-controls.is-open {
-  max-width: 560px;
+  max-width: 360px;
   opacity: 1;
-  transform: none;
   pointer-events: auto;
+  transition: max-width 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.28s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* 展开动画结束后放开裁切，提及面板 / BaseSelect 弹层才能向上露出可交互 */
@@ -692,11 +692,19 @@ defineExpose({ resetPreInputForm, focusInput })
   align-items: center;
   gap: 6px;
   white-space: nowrap;
+  width: max-content;
 }
 
 .tool-select {
   width: 132px;
   flex: 0 0 auto;
+}
+
+.tool-select :deep(.select-trigger) {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: var(--color-surface-white, #FFFFFF);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .tool-select--narrow {
