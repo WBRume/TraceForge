@@ -219,7 +219,7 @@ export function useChatSend(options: {
     if (!response || options.isUndoing()) return
     const card = options.findHitlCard(cardId)
     if (!card) return
-    const sent = await sendChatContent(response, {
+    await sendChatContent(response, {
       displayContent: response,
       metadata: {
         reply_to_message_id: card?.message_id,
@@ -228,10 +228,6 @@ export function useChatSend(options: {
         job_id: card?.job_id || undefined,
       },
     })
-    if (sent && card) {
-      card.answered = true
-      card.answer = response
-    }
   }
 
   // ─── 执行高阶 MCP 验证 ───

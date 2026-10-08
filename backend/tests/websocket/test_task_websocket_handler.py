@@ -38,6 +38,66 @@ class _FakeWebSocket:
         self.sent_json.append(payload)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_status", ["CODING", "INTERRUPTED"])
+async def test_stale_native_confirmation_never_falls_back_to_new_turn(monkeypatch, task_status):
+    handler = _handler()
+    monkeypatch.setattr(task_handler, "run_db", AsyncMock(side_effect=[None, task_status]))
+    handler._claim_chat_message = AsyncMock(return_value=object())
+    handler._mark_chat_claim_failed = AsyncMock()
+    handler._persist_chat_message = AsyncMock()
+    handler._resume_interrupted_task = AsyncMock()
+    monkeypatch.setattr(
+        task_handler.task_confirmation_service,
+        "validate_reply",
+        AsyncMock(return_value={"delivery_mode": "live", "job_id": "real-job"}),
+    )
+    monkeypatch.setattr(task_handler.ai_job_task_chat, "confirmation_delivery_available", AsyncMock(return_value=False))
+    await handler._handle_chat_message(
+        {
+            "type": "chat_message",
+            "payload": {
+                "content": "late",
+                "client_message_id": "late-id",
+                "metadata": {
+                    "interaction_id": "interaction",
+                    "reply_to_message_id": "question",
+                    "job_id": "forged-job",
+                },
+            },
+        }
+    )
+    handler._persist_chat_message.assert_not_awaited()
+    handler._resume_interrupted_task.assert_not_awaited()
+    handler._mark_chat_claim_failed.assert_awaited_once()
+    task_handler.ai_job_task_chat.confirmation_delivery_available.assert_awaited_once_with(
+        task_id="task-1", interaction_id="interaction", job_id="real-job"
+    )
+    assert handler._manager.outbound.sent_json[-1]["payload"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_provider_rejection_never_persists_a_successful_user_answer(monkeypatch):
+    from app.agents.errors import AgentInteractionClosedError
+
+    handler = _handler()
+    handler._mark_chat_claim_failed = AsyncMock()
+    monkeypatch.setattr(
+        task_handler.ai_job_task_chat,
+        "deliver_confirmation_response",
+        AsyncMock(side_effect=AgentInteractionClosedError("Already closed")),
+    )
+    persist = AsyncMock()
+    monkeypatch.setattr(task_handler.task_session_service, "create_confirmation_reply_message", persist)
+    request = task_handler._ChatMessageRequest(
+        content="late", client_message_id="late-id", metadata={"interaction_id": "i", "job_id": "j"}
+    )
+    await handler._persist_confirmation_reply(request, object())
+    persist.assert_not_awaited()
+    assert not handler._manager.room_messages
+    assert handler._manager.outbound.sent_json[-1]["payload"]["status"] == "failed"
+
+
 class _DisconnectedWebSocket(_FakeWebSocket):
     async def send_json(self, payload):
         raise WebSocketDisconnect

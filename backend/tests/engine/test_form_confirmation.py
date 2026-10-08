@@ -1,10 +1,63 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from app.agents.events import AgentEvent
 from app.domains.task.models.context_token import SddContextTokenSegment, SddContextTokenSnapshot
 from app.engine.session.engine import TaskAgentEngine
 from app.engine.session.persistence import ContextSegmentBatcher
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["opencode", "claude-code", "dsh"])
+@pytest.mark.parametrize(
+    "status,label,answer",
+    [
+        ("answered", "提问已回答", {"build": "Maven"}),
+        ("cancelled", "提问已取消", None),
+        ("approved", "请求已批准", True),
+        ("rejected", "请求已拒绝", False),
+        ("closed", "交互已关闭，具体处理结果无法恢复", None),
+        ("unknown", "交互已关闭，具体处理结果无法恢复", None),
+    ],
+)
+async def test_interaction_resolution_uses_the_same_contract_for_every_provider(provider, status, label, answer):
+    engine = object.__new__(TaskAgentEngine)
+    engine.is_current = lambda: True
+    engine.ws_id, engine.task_id, engine.user_id = "workspace", "task", "user"
+    engine.session_id, engine.current_job_id = "session", "job"
+    engine.frontend = SimpleNamespace(push_chat=AsyncMock())
+    request_id = "provider-private-request"
+    interaction_id = engine._confirmation_id(request_id)
+    engine._pending_confirmations = {interaction_id: request_id, "other-interaction": "other-request"}
+
+    await engine.handle_agent_event(
+        AgentEvent(
+            type="ask_user_resolved",
+            provider=provider,
+            payload={"ask_user_id": request_id, "status": status, "answer": answer},
+        )
+    )
+
+    expected_content = label if answer is None else label + "：\n" + json.dumps(answer, ensure_ascii=False, indent=2)
+    engine.frontend.push_chat.assert_awaited_once_with(
+        "assistant",
+        expected_content,
+        metadata={
+            "confirmation_resolution": {
+                "interaction_id": interaction_id,
+                "job_id": "job",
+                "status": status,
+                "answer": answer,
+                "source": "provider",
+            },
+            "provider_event_key": f"confirmation-resolution:{interaction_id}",
+        },
+    )
+    assert engine._pending_confirmations == {"other-interaction": "other-request"}
 
 
 def test_questionnaire_is_persisted_as_chat_confirmation_without_provider_locator():

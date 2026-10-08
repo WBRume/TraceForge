@@ -133,6 +133,7 @@ class TurnOutcomeClassificationTest(unittest.TestCase):
         self.assertEqual(classify_turn_outcome("boom", is_error=True, finish_reason="completed"), "failed")
         self.assertEqual(classify_turn_outcome("boom", is_error=False, finish_reason="error"), "failed")
         self.assertEqual(classify_turn_outcome("boom", is_error=False, finish_reason="aborted"), "failed")
+        self.assertEqual(classify_turn_outcome("", is_error=False, finish_reason="interrupted"), "failed")
 
     def test_success(self):
         self.assertEqual(classify_turn_outcome("ok", is_error=False, finish_reason="completed"), "success")

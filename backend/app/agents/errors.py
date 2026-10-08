@@ -39,6 +39,10 @@ class AgentExecutionDetached(AgentError):
     """Observation stopped; the durable remote execution must remain recoverable."""
 
 
+class AgentInteractionClosedError(AgentError):
+    """The provider no longer accepts replies to this interaction."""
+
+
 class AgentTimeoutError(AgentError):
     """Agent 回合超时。"""
 

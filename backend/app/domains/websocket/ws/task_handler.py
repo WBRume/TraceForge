@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
+from app.agents.errors import AgentError
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.logging import get_logger
 from app.core.offload import run_db
@@ -23,6 +24,7 @@ from app.domains.ai.services.jobs.executors import task_chat as ai_job_task_chat
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import (
     pre_input_service,
+    task_confirmation_service,
     task_session_control_service,
     task_session_service,
 )
@@ -249,6 +251,31 @@ class TaskWebSocketHandler:
         claim = await self._claim_chat_message(self._task_id, request)
         if claim is None:
             return
+        interaction_id = str(request.metadata.get("interaction_id") or "").strip()
+        reply_to_message_id = str(request.metadata.get("reply_to_message_id") or "").strip()
+        if interaction_id or reply_to_message_id:
+            try:
+                confirmation = await task_confirmation_service.validate_reply(
+                    self._task_id, interaction_id, reply_to_message_id
+                )
+                # Use the persisted question's job, never a client-supplied locator.
+                request.metadata["job_id"] = confirmation["job_id"]
+                live_delivery = await ai_job_task_chat.confirmation_delivery_available(
+                    task_id=self._task_id,
+                    interaction_id=interaction_id,
+                    job_id=confirmation["job_id"],
+                )
+                if live_delivery:
+                    await self._persist_confirmation_reply(request, claim)
+                    return
+                if confirmation["delivery_mode"] == "live":
+                    raise task_confirmation_service.ConfirmationClosedError(
+                        "This question is closed or its execution is recovering. Refresh and retry."
+                    )
+            except task_confirmation_service.ConfirmationClosedError as exc:
+                await self._mark_chat_claim_failed(claim)
+                await self._send_chat_ack(request, status="failed", message=str(exc))
+                return
         if task_status == str(getattr(TaskStatus.INTERRUPTED, "value", TaskStatus.INTERRUPTED)):
             from app.domains.task.services.chat_submission_service import SubmissionError
 
@@ -263,17 +290,6 @@ class TaskWebSocketHandler:
                 await self._mark_chat_claim_failed(claim)
                 await self._send_chat_ack(request, status="failed", message=str(exc))
             return
-        interaction_id = str(request.metadata.get("interaction_id") or "").strip()
-        reply_to_message_id = str(request.metadata.get("reply_to_message_id") or "").strip()
-        if interaction_id and reply_to_message_id:
-            live_delivery = await ai_job_task_chat.confirmation_delivery_available(
-                task_id=self._task_id,
-                interaction_id=interaction_id,
-                job_id=str(request.metadata.get("job_id") or "") or None,
-            )
-            if live_delivery:
-                await self._persist_confirmation_reply(request, claim)
-                return
         created = await self._persist_chat_message(request, claim)
 
         if created is not None:
@@ -420,6 +436,17 @@ class TaskWebSocketHandler:
     ) -> None:
         try:
             async with lock_task(self._task_id):
+                # Provider acceptance precedes a successful user-answer record.
+                delivered = await ai_job_task_chat.deliver_confirmation_response(
+                    task_id=self._task_id,
+                    interaction_id=str(request.metadata.get("interaction_id") or ""),
+                    response=request.content,
+                    job_id=str(request.metadata.get("job_id") or "") or None,
+                )
+                if not delivered:
+                    raise task_confirmation_service.ConfirmationClosedError(
+                        "This question is no longer accepting answers."
+                    )
                 created = await task_session_service.create_confirmation_reply_message(
                     task_id=self._task_id,
                     actor_user_id=self._user.id,
@@ -468,18 +495,9 @@ class TaskWebSocketHandler:
                     ).model_dump(),
                 ),
             )
-            delivered = await ai_job_task_chat.deliver_confirmation_response(
-                task_id=self._task_id,
-                interaction_id=str(request.metadata.get("interaction_id") or ""),
-                response=request.content,
-                job_id=str(request.metadata.get("job_id") or "") or None,
-            )
-            if not delivered:
-                task_logger.warning(
-                    "Confirmation reply persisted but provider delivery was lost: task=%s",
-                    self._task_id,
-                )
         except (
+            AgentError,
+            task_confirmation_service.ConfirmationClosedError,
             task_session_service.TaskSessionUndoError,
             task_session_control_service.TaskSessionControlError,
             LockAcquireTimeout,

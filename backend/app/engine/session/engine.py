@@ -73,7 +73,7 @@ def classify_turn_outcome(result_text: str, *, is_error: bool, finish_reason: st
     """
     normalized = str(result_text or "").lower()
     timeout_like = any(marker in normalized for marker in _TIMEOUT_TEXT_MARKERS)
-    failed = is_error or finish_reason in ("error", "aborted")
+    failed = is_error or finish_reason in ("error", "aborted", "interrupted")
     if finish_reason == "timeout" or (failed and timeout_like):
         return "timeout"
     if failed:
@@ -690,8 +690,6 @@ class TaskAgentEngine:
                 await self._observe_model(payload.get("model"))
             if event_type == "session_started":
                 await self._on_session_started(payload)
-            elif event_type == "model":
-                pass
             elif event_type == "text":
                 await self._on_text(payload)
             elif event_type == "thinking":
@@ -702,6 +700,8 @@ class TaskAgentEngine:
                 await self._on_tool_result(payload)
             elif event_type == "ask_user":
                 await self._on_ask_user(payload)
+            elif event_type == "ask_user_resolved":
+                await self._on_ask_user_resolved(payload)
             elif event_type == "usage":
                 self.segments.update_snapshot(usage=payload, raw_usage_json=payload.get("raw_usage"), status="RUNNING")
             elif event_type == "context_compacted":
@@ -843,6 +843,42 @@ class TaskAgentEngine:
             fields=payload.get("fields") if isinstance(payload.get("fields"), list) else None,
         )
 
+    def _confirmation_id(self, provider_request_id: str) -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{self.current_job_id}:{self.session_id}:{provider_request_id}"))
+
+    async def _on_ask_user_resolved(self, payload: dict) -> None:
+        """Persist a provider-neutral outcome from the normalized interaction event."""
+        if not self.is_current() or not payload.get("ask_user_id"):
+            return
+        interaction_id = self._confirmation_id(str(payload["ask_user_id"]))
+        self._pending_confirmations.pop(interaction_id, None)
+        status = str(payload.get("status") or "closed")
+        labels = {
+            "answered": "提问已回答",
+            "cancelled": "提问已取消",
+            "approved": "请求已批准",
+            "rejected": "请求已拒绝",
+            "closed": "交互已关闭，具体处理结果无法恢复",
+        }
+        content = labels.get(status, labels["closed"])
+        answer = payload.get("answer")
+        if answer is not None:
+            content += "：\n" + json.dumps(answer, ensure_ascii=False, indent=2)
+        await self.frontend.push_chat(
+            "assistant",
+            content,
+            metadata={
+                "confirmation_resolution": {
+                    "interaction_id": interaction_id,
+                    "job_id": self.current_job_id,
+                    "status": status,
+                    "answer": answer,
+                    "source": "provider",
+                },
+                "provider_event_key": f"confirmation-resolution:{interaction_id}",
+            },
+        )
+
     async def _push_hitl(
         self,
         prompt: str,
@@ -855,11 +891,7 @@ class TaskAgentEngine:
         """Persist a visible confirmation message and register its private provider locator."""
         if not self.is_current():
             return
-        interaction_id = (
-            str(uuid.uuid5(uuid.NAMESPACE_URL, f"{self.current_job_id}:{self.session_id}:{provider_request_id}"))
-            if provider_request_id
-            else str(uuid.uuid4())
-        )
+        interaction_id = self._confirmation_id(provider_request_id) if provider_request_id else str(uuid.uuid4())
         if hitl_type == "form" and fields:
             normalized_kind = "form"
         elif hitl_type in {"boolean", "approval"}:
@@ -872,6 +904,7 @@ class TaskAgentEngine:
             "options": list(options or []),
             "allow_custom_input": normalized_kind != "select",
             "job_id": self.current_job_id,
+            "delivery_mode": "live" if provider_request_id else "turn",
         }
         if normalized_kind == "form":
             confirmation["fields"] = fields

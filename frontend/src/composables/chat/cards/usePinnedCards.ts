@@ -92,7 +92,12 @@ export function usePinnedCards(options: {
       const interactionId = String(confirmation.interaction_id)
       const answer = messages.find((candidate) => (
         candidate?.role === 'user'
+        && (!candidate.delivery_status || candidate.delivery_status === 'sent')
         && String(candidate?.metadata?.interaction_id || '') === interactionId
+      ))
+      const resolution = messages.find((candidate) => (
+        candidate?.role === 'assistant'
+        && String(candidate?.metadata?.confirmation_resolution?.interaction_id || '') === interactionId
       ))
       const existing = cards.value.find((card): card is HitlCard => card.type === 'hitl' && card.interaction_id === interactionId)
       const nextCard: HitlCard = {
@@ -107,8 +112,8 @@ export function usePinnedCards(options: {
         context: String(message.metadata.context || ''),
         job_id: String(confirmation.job_id || message.metadata.job_id || ''),
         session_generation: message.session_generation ?? null,
-        answered: Boolean(answer) || Boolean(existing?.answered),
-        answer: answer?.content || existing?.answer || '',
+        answered: Boolean(resolution) || Boolean(answer) || Boolean(existing?.answered),
+        answer: resolution?.content || answer?.content || existing?.answer || '',
         tempInput: existing?.tempInput || '',
         created_at: message.created_at || new Date().toISOString(),
       }

@@ -21,6 +21,30 @@ const createStore = (getMessages: () => any[]) => {
 }
 
 describe('usePinnedCards', () => {
+  it.each(['answered', 'cancelled', 'approved', 'rejected', 'closed'])('closes a %s provider interaction while its job keeps running, including after reload', (status) => {
+    const messages: any[] = [confirmationMessage('m1', 'i1')]
+    const { store } = createStore(() => messages)
+    store.syncConfirmationCards()
+    expect(store.activeHitlCards.value).toHaveLength(1)
+    messages.push({ id: 'r1', role: 'assistant', content: `provider-${status}`, metadata: {
+      confirmation_resolution: { interaction_id: 'i1', status, answer: { q0: 'A' } },
+    } })
+    store.syncConfirmationCards()
+    expect(store.activeHitlCards.value).toHaveLength(0)
+    expect((store.cards.value[0] as any).answer).toBe(`provider-${status}`)
+    const reloaded = createStore(() => messages).store
+    reloaded.syncConfirmationCards()
+    expect(reloaded.activeHitlCards.value).toHaveLength(0)
+  })
+
+  it.each(['failed', 'sending', 'processing', 'conflict', 'pending', 'unknown'])('does not treat a %s local submission as an accepted answer', (status) => {
+    const messages: any[] = [confirmationMessage('m1', 'i1'),
+      { role: 'user', content: 'late', delivery_status: status, metadata: { interaction_id: 'i1' } },
+    ]
+    const { store } = createStore(() => messages)
+    store.syncConfirmationCards()
+    expect(store.activeHitlCards.value).toHaveLength(1)
+  })
   it('restores a questionnaire and its job from persisted confirmation metadata', () => {
     const fields = [{ key: 'build', type: 'string', title: '构建工具' }]
     const message = confirmationMessage('m1', 'i1', 'form')
