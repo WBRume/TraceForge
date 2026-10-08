@@ -1,6 +1,6 @@
 """Requirement preview 作业执行器：三段式（准备段 → CLI → 收尾段）。
 
-事务与证据规则（doc §6/§7/§8）：
+事务与证据规则：
 - DB 阶段在 ``run_db_txn`` 的 executor 线程内执行，CLI 调用期间不持有任何
   session；
 - attempt 证据只能在事件循环线程解析（DB 线程读不到 attempt ContextVar），
@@ -50,7 +50,7 @@ logger = get_logger(__name__, category="workspace_asset")
 
 
 # ---------------------------------------------------------------------------
-# Fence：无 ContextVar 依赖的 attempt 归属校验（DB 线程安全，doc §6.3）
+# Fence：无 ContextVar 依赖的 attempt 归属校验
 # ---------------------------------------------------------------------------
 
 
@@ -98,7 +98,7 @@ def update_preview_job_state(
     worker_boot_id: str | None = None,
     evidence: Any | None = None,
 ) -> None:
-    """preview job 状态写入（doc §6.3/§7.3）。
+    """preview job 状态写入。
 
     evidence 与 run token / worker boot id 必须由调用方显式传入；本函数
     读取 attempt ContextVar（在 DB executor 线程中为空，导致 runtime
@@ -117,7 +117,7 @@ def update_preview_job_state(
         raise AttemptFencedError(f"Requirement preview attempt is fenced: job_id={job.id}")
     finalizing = status in {AiJobStatus.SUCCESS, AiJobStatus.FAILED, AiJobStatus.CANCELLED}
     if finalizing:
-        # 统一 ownership 收敛（doc §11 / 修复方案 §7.3.1）：事务内核心，
+        # 统一 ownership 收敛：事务内核心，
         # 提交所有权归最外层 run_db_txn；fence 时抛出 AttemptFencedError
         # 让外层整体 rollback batch/items/audit。
         convergence_result = converge_job_attempt_in_txn(
@@ -303,7 +303,7 @@ def finalize_requirement_import_sync(
     worker_boot_id: str | None = None,
     evidence: Any | None = None,
 ) -> dict[str, Any]:
-    """import preview 收尾段（线程内单事务，doc §7.3.2）。
+    """import preview 收尾段。
 
     正确顺序：先 ``FOR UPDATE`` 锁 job -> fence 校验 -> 创建 batch/items/
     audit -> 通过事务内 convergence 落业务终态。fence 失败抛出
@@ -417,7 +417,7 @@ def finalize_requirement_split_sync(
     worker_boot_id: str | None = None,
     evidence: Any | None = None,
 ) -> dict[str, Any]:
-    """split preview 收尾段（线程内单事务，doc §7.3.2：先锁 job 再建副作用）。"""
+    """split preview 收尾段。"""
     from app.domains.workspace_asset.models.workspace_asset import RequirementAuditAction
 
     job = db.query(SddAiJob).filter(SddAiJob.id == job_id).with_for_update().first()
@@ -510,14 +510,14 @@ async def run_requirement_import_preview_job(job_id: str, run_token: str | None 
     输入内容在作业创建时已解析并持久化到 job.context_json，
     服务重启后可由 recover_pending_queues 重新调度执行。
 
-    返回 True 表示 CLI 产出了明确 result（provider outcome，doc §8.3）；
-    evidence 在事件循环线程解析后显式传入 DB finalizer（doc §6.3）。
+    返回 True 表示 CLI 产出了明确 result；
+    evidence 在事件循环线程解析后显式传入 DB finalizer。
     """
     attempt = _prepare_attempt()
     run_token = run_token or _attempt_run_token(attempt)
     worker_boot_id = _attempt_boot_id(attempt)
     provider_outcome_seen = False
-    # attempt-local 证据（doc 修复方案 §10.4）：只能在绑定 attempt runtime
+    # attempt-local 证据：只能在绑定 attempt runtime
     # 的事件循环 task 中解析；异常分支必须把已捕获证据显式传入 DB finalizer，
     # 绝不在 DB executor 线程重新读取 ContextVar。
     attempt_evidence: Any | None = None
@@ -552,8 +552,8 @@ async def run_requirement_import_preview_job(job_id: str, run_token: str | None 
             **({"run_token": run_token} if run_token else {}),
         )
         # 证据必须在事件循环线程解析：DB executor 线程读取不到 attempt
-        # ContextVar（doc §6.1）。provider 的终局结果对象必须在此处进入
-        # evidence（doc 审计 P1-1）：远程会话已建立且 provider 正常返回时，
+        # ContextVar。provider 的终局结果对象必须在此处进入
+        # evidence：远程会话已建立且 provider 正常返回时，
         # 收敛必须看到 provider_outcome_seen=True，否则业务 finalizer 先
         # 执行会被判 ORPHANED。
         attempt_evidence = resolve_attempt_evidence(
@@ -606,10 +606,10 @@ async def run_requirement_import_preview_job(job_id: str, run_token: str | None 
     except Exception as exc:
         # 异常分支在事件循环线程补齐证据后显式传入 DB transaction；CLI 已
         # 确认退出的确定性解析失败必须落 FAILED，不得错误进入 ORPHANED
-        # 重试（doc 修复方案 §10.2/§10.4）。
+        # 重试。
         if attempt_evidence is None:
             attempt_evidence = _resolve_evidence_or_none(resolved_execution_kind, exc)
-        # 统一取消路径（doc §9.1）：cancel 事务已写 TERMINATING 并触发内存
+        # 统一取消路径：cancel 事务已写 TERMINATING 并触发内存
         # 取消信号；这里清掉信号即可，CANCELLED 终态由 runner 退出收敛
         # （queue_runner._converge_runner_exit）负责，绝不写成 FAILED。
         if isinstance(exc, AgentCancelledError) or ai_job_runtime.is_cancel_requested(job_id):
@@ -635,13 +635,13 @@ async def run_requirement_import_preview_job(job_id: str, run_token: str | None 
 async def run_requirement_split_preview_job(job_id: str, run_token: str | None = None) -> bool:
     """三段式：准备段（DB 线程）→ CLI（零 session）→ 收尾段（DB 线程）。
 
-    evidence 在事件循环线程解析后显式传入 DB finalizer（doc §6.3）。
+    evidence 在事件循环线程解析后显式传入 DB finalizer。
     """
     attempt = _prepare_attempt()
     run_token = run_token or _attempt_run_token(attempt)
     worker_boot_id = _attempt_boot_id(attempt)
     provider_outcome_seen = False
-    # attempt-local 证据（doc 修复方案 §10.4）：与 import preview 使用相同
+    # attempt-local 证据：与 import preview 使用相同
     # helper，避免一条路径再次漏传。
     attempt_evidence: Any | None = None
     resolved_execution_kind = _resolve_execution_kind(attempt)
@@ -664,8 +664,8 @@ async def run_requirement_split_preview_job(job_id: str, run_token: str | None =
             backend_name=backend_name,
             **({"run_token": run_token} if run_token else {}),
         )
-        # 证据必须在事件循环线程解析（doc §6.1）。provider 的终局结果对象
-        # 必须在此处进入 evidence（doc 审计 P1-1）：远程会话已建立且
+        # 证据必须在事件循环线程解析。provider 的终局结果对象
+        # 必须在此处进入 evidence：远程会话已建立且
         # provider 正常返回时，收敛必须看到 provider_outcome_seen=True，
         # 否则业务 finalizer 先执行会被判 ORPHANED。
         attempt_evidence = resolve_attempt_evidence(
@@ -696,12 +696,11 @@ async def run_requirement_split_preview_job(job_id: str, run_token: str | None =
         )
         return provider_outcome_seen
     except Exception as exc:
-        # 异常分支在事件循环线程补齐证据后显式传入 DB transaction（doc
-        # 修复方案 §10.4）：已确认退出的解析失败 → FAILED；死亡未证实的
+        # 异常分支在事件循环线程补齐证据后显式传入 DB transaction：已确认退出的解析失败 → FAILED；死亡未证实的
         # 失败 → ORPHANED 保留 ownership。
         if attempt_evidence is None:
             attempt_evidence = _resolve_evidence_or_none(resolved_execution_kind, exc)
-        # 统一取消路径（doc §9.1）：与 import preview 相同，CANCELLED 终态
+        # 统一取消路径：与 import preview 相同，CANCELLED 终态
         # 由 runner 退出收敛负责，绝不把用户取消写成 FAILED。
         if isinstance(exc, AgentCancelledError) or ai_job_runtime.is_cancel_requested(job_id):
             ai_job_runtime.clear_cancel(job_id)

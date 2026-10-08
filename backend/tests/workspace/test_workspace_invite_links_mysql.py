@@ -1,11 +1,11 @@
 """Workspace invite-link concurrency integration tests (MySQL instance).
 
-doc 审计 0c381413 §4.3：在独立 MySQL 测试库上验证真实行锁与事务边界
+在独立 MySQL 测试库上验证真实行锁与事务边界
 （SQLite 结果不能称为 MySQL 实测）。实例不可达时整体跳过。测试库为
 独立 schema（``traceforge_invite_link_audit``），测完即删，不触碰
 ``sdd_platform`` 数据。
 
-验收项（§4.3）：
+验收项：
 1. max_uses=1，两个用户同时 accept：恰好一个新增成功，另一个
    unavailable；used_count=1。
 2. 同用户并发 accept（不同链接）：一条成员记录，只扣一次。
@@ -156,7 +156,7 @@ def _outcomes(results):
 
 
 def test_concurrent_accept_single_use_link_exactly_one_wins(clean_tables):
-    """§4.3-1：max_uses=1 两个用户同时 accept → 恰好一个成功，另一个 unavailable。"""
+    """max_uses=1 两个用户同时 accept → 恰好一个成功，另一个 unavailable。"""
     factory = _factory(clean_tables)
     with factory() as db:
         _create_link(db, "tok-1", max_uses=1)
@@ -185,7 +185,7 @@ def test_concurrent_accept_single_use_link_exactly_one_wins(clean_tables):
 
 
 def test_same_user_concurrent_accept_via_two_links_is_idempotent(clean_tables):
-    """§4.3-2：同用户并发 accept（不同链接）→ 一条成员记录，只扣一次。"""
+    """同用户并发 accept（不同链接）→ 一条成员记录，只扣一次。"""
     factory = _factory(clean_tables)
     with factory() as db:
         _create_link(db, "tok-l1", max_uses=1)
@@ -221,7 +221,7 @@ def test_same_user_concurrent_accept_via_two_links_is_idempotent(clean_tables):
 
 
 def test_revoke_before_accept_rejects_late_locker(clean_tables):
-    """§4.3-3a：revoke 先持有相同锁并提交，accept 后取得锁 → 必须拒绝。"""
+    """revoke 先持有相同锁并提交，accept 后取得锁 → 必须拒绝。"""
     factory = _factory(clean_tables)
     with factory() as db:
         link = _create_link(db, "tok-r1", max_uses=5)
@@ -258,7 +258,7 @@ def test_revoke_before_accept_rejects_late_locker(clean_tables):
 
 
 def test_accept_before_revoke_keeps_completed_claim(clean_tables):
-    """§4.3-3b：反向顺序 → 允许先完成的领取成功，随后 revoke 正常生效。"""
+    """反向顺序 → 允许先完成的领取成功，随后 revoke 正常生效。"""
     factory = _factory(clean_tables)
     with factory() as db:
         link = _create_link(db, "tok-r2", max_uses=5)
@@ -281,7 +281,7 @@ def test_accept_before_revoke_keeps_completed_claim(clean_tables):
 
 
 def test_link_expires_while_lock_is_held_rejects_after_acquire(clean_tables):
-    """§4.3-4：持锁等待期间链接过期 → 取得锁后拒绝，不新增成员。"""
+    """持锁等待期间链接过期 → 取得锁后拒绝，不新增成员。"""
     factory = _factory(clean_tables)
     with factory() as db:
         _create_link(db, "tok-x", max_uses=5)
@@ -324,7 +324,7 @@ def test_link_expires_while_lock_is_held_rejects_after_acquire(clean_tables):
 
 
 def test_failure_injection_before_commit_rolls_back_member_and_count(clean_tables):
-    """§4.3-5：成员插入与提交之间故障注入 → 成员与计数均回滚。"""
+    """成员插入与提交之间故障注入 → 成员与计数均回滚。"""
     factory = _factory(clean_tables)
     with factory() as db:
         _create_link(db, "tok-f", max_uses=3)

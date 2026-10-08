@@ -1,11 +1,11 @@
 """
-OAuth Provider 注册表（B-09，NFR-M1 落地，对应设计文档 §4.3）。
+OAuth Provider 注册表（B-09，NFR-M1 落地）。
 
 机制：装饰器注册，模块导入即生效。``get_provider`` 负责两级校验：
 1. 未注册 → ``OAuthProviderNotFoundError``（404 OAUTH_PROVIDER_NOT_FOUND）
 2. 已注册但未配置 client_id/secret → ``OAuthProviderDisabledError``（404 OAUTH_PROVIDER_DISABLED）
 
-新增 provider 只需两步：新增适配文件 + 本文件底部加一行 import（见 §1.4）。
+新增 provider 只需两步：新增适配文件 + 本文件底部加一行 import。
 """
 
 from typing import TYPE_CHECKING

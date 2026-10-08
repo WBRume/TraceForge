@@ -1,4 +1,4 @@
-"""Linux persisted process supervisor 验收（doc 修复方案 §5/§6/§7/§12.1）。
+"""Linux persisted process supervisor 验收。
 
 覆盖：
 - P0-1：root PID 消失但同 PGID 子进程仍存活时，绝不允许 confirmed_dead=True；
@@ -63,7 +63,7 @@ def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool
 
 
 # wrapper 先 fork child 再立即退出：child 留在 wrapper 创建的进程组中
-# （doc §3.3 的 Linux 真实复现）。
+# （Linux 真实复现）。
 _WRAPPER_SOURCE = """
 import os, time
 child = os.fork()
@@ -131,7 +131,7 @@ async def test_stop_persisted_root_gone_does_not_confirm_live_group_dead():
 
 @pytest.mark.asyncio
 async def test_group_permission_error_is_unknown_not_dead(monkeypatch):
-    """P0-2：killpg 权限错误 → UNKNOWN，不清 ownership（doc §6.3）。"""
+    """P0-2：killpg 权限错误 → UNKNOWN，不清 ownership。"""
     missing_pid = _find_absent_pid()
     known_group = _find_absent_pid()
     monkeypatch.setattr(

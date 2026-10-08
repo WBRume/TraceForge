@@ -1,6 +1,6 @@
 /**
  * OAuth 流程编排组合式函数（T04 / F-04）
- * §3.8.2：useOAuthFlow 是「唯一感知双端差异的地方」。
+ * useOAuthFlow 是「唯一感知双端差异的地方」。
  *  - Web：调 authorize 接口拿到 authorize_url 后整页跳转；
  *  - Electron：预留 sddDesktop.oauth.start() 通道（T05 实现 IPC 后无缝切换），
  *    未暴露前回退 Web 行为，页面逻辑不写死 Web-only。
@@ -76,7 +76,7 @@ export const useOAuthFlow = () => {
   }
 
   /**
-   * resolve ticket 并按 §3.8.1 状态机分发。
+   * resolve ticket 并按 状态机分发。
    * 返回 resolve 结果，供回调页决定后续 UI（弹密码确认框等）。
    */
   const resolveAndDispatch = async (

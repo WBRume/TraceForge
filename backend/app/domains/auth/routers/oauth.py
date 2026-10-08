@@ -1,5 +1,5 @@
 """
-OAuth 三方登录路由（B-12 / T02，9 端点，对应设计文档 §2.3 契约）。
+OAuth 三方登录路由（B-12 / T02，9 端点）。
 
 1. GET    /auth/oauth/providers                    已启用 provider 列表
 2. GET    /auth/oauth/{provider}/authorize          返回三方授权 URL（intent=bind 需 JWT）
@@ -68,7 +68,7 @@ def get_optional_current_user(request: Request, db: Session = Depends(get_db)) -
 
 
 def _validate_redirect_after(raw: str | None) -> str | None:
-    """防开放重定向（§2.3 接口 2）：仅接受站内相对路径。
+    """防开放重定向：仅接受站内相对路径。
 
     禁止 ``//`` 开头（协议相对 URL）、禁止含 ``://`` 的绝对 URL；
     非法值静默丢弃（不报错，避免泄露校验规则细节）。

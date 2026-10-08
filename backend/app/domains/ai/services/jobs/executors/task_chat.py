@@ -320,7 +320,7 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> bool | None:
         await finalize_task_chat_job_from_engine(job_id, engine)
         # provider outcome 只能来自引擎收到的真实 provider result；
         # “run/send_message 正常返回”不构成 outcome，引擎异常路径赋的
-        # last_result_success=False 也绝不构成 outcome（doc 审计 P1-1）。
+        # last_result_success=False 也绝不构成 outcome。
         return getattr(engine, "last_result", None) is not None
 
 
@@ -380,7 +380,7 @@ def _finalize_task_chat_job_sync(
 ) -> dict[str, Any] | None:
     """finalize DB 段（线程内执行，由 run_db 包装）；返回 None 表示无需收尾。
 
-    本函数不再拥有独立的死亡证据决策表（doc §11）：只负责把引擎结果和
+    本函数不再拥有独立的死亡证据决策表：只负责把引擎结果和
     attempt 证据构造成统一 convergence 请求，终态由
     ``converge_job_attempt_in_txn()`` 的唯一决策表计算；提交由最外层
     run_db_txn 负责。
@@ -429,7 +429,7 @@ def _finalize_task_chat_job_sync(
         intent=ConvergenceIntent.NORMAL_FINALIZE,
     )
     # 本函数运行在外层 run_db_txn 中：必须使用事务内核心，禁止内部提交
-    # （doc §7.3.1），否则会把外层业务副作用提前提交。
+    # ，否则会把外层业务副作用提前提交。
     result = convergence.converge_job_attempt_in_txn(db, request)
     if not result.changed or not result.payload:
         return None
@@ -442,7 +442,7 @@ def _finalize_task_chat_job_sync(
 
 
 def engine_provider_result(engine: Any) -> AgentRunResult | None:
-    """Extract the provider outcome evidence from an engine (doc 审计 P1-1).
+    """Extract the provider outcome evidence from an engine.
 
     优先使用真实 ``AgentRunResult``（引擎异常/持久化失败都不会设置它）；
     兼容路径仅在 ``last_result_success is True`` 时合成最小 result——异常/
@@ -471,7 +471,7 @@ async def finalize_task_chat_job_from_engine(job_id: str, engine: TaskAgentEngin
     run_token = attempt.run_token if attempt else None
     # Attempt-local runtime evidence is authoritative (it survives CLI exits
     # followed by parse/persist failures); engine attributes are the fallback
-    # consumed by the unique resolver (doc §6.2).
+    # consumed by the unique resolver.
     evidence = attempt_ops.resolve_current_attempt_evidence(
         fallback_dead=getattr(engine, "last_termination_confirmed_dead", None),
         provider_result=engine_provider_result(engine),

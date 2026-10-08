@@ -957,7 +957,7 @@ INVITE_STATUS_EXHAUSTED = "EXHAUSTED"
 class InviteClaimRaceLost(ValueError):
     """名额在锁定有效性检查与原子占用之间被并发请求消耗。
 
-    doc 审计 0c381413 §4.3：同一 ACTIVE/剩余名额快照下只允许一个请求
+    同一 ACTIVE/剩余名额快照下只允许一个请求
     占用名额。输家不新增成员、不扣次数：commit-owning 兼容包装
     (:func:`accept_invite_link`) 将其软化为 ``(None, link, False)``；
     HTTP 层按 unavailable 转换为 400。
@@ -965,7 +965,7 @@ class InviteClaimRaceLost(ValueError):
 
 
 def _lock_workspace_for_member_change(db: Session, workspace_id: str) -> Workspace | None:
-    """Lock the workspace row first (doc 审计 0c381413 §4.2).
+    """Lock the workspace row first.
 
     所有会改变工作区成员集合的路径（accept/revoke）都先锁 Workspace、
     再锁 InviteLink；该顺序短暂串行化同工作区的邀请领取，同时保证
@@ -995,7 +995,7 @@ def accept_invite_in_txn(
     token: str,
     user_id: str,
 ) -> tuple[WorkspaceMember, "WorkspaceInviteLink", bool]:
-    """接受邀请的事务核心（doc 审计 0c381413 §4.2）。
+    """接受邀请的事务核心。
 
     事务边界归调用方：本函数只加锁、写成员与计数并 ``flush``，成功由
     外层 ``commit``、失败由外层 ``rollback``。绝不在此 ``commit`` /
@@ -1041,7 +1041,7 @@ def accept_invite_in_txn(
 
     # 名额占用与成员插入在同一嵌套 savepoint 内：唯一约束兜底（同用户经
     # 不同链接并发加入）冲突时只回滚本次占用+插入，外层事务仍可用，然后
-    # 重读已有成员幂等返回——绝不重复扣次数（doc 审计 0c381413 §4.2）。
+    # 重读已有成员幂等返回——绝不重复扣次数。
     savepoint = db.begin_nested()
     try:
         # 原子名额占用：条件更新让"检查-写入"竞态由数据库裁决，即使行锁
@@ -1202,7 +1202,7 @@ def list_invite_links(db: Session, workspace_id: str) -> list["WorkspaceInviteLi
 
 
 def revoke_invite_link_in_txn(db: Session, workspace_id: str, link_id: str) -> Optional["WorkspaceInviteLink"]:
-    """撤销邀请链接 = 删除链接行（事务核心，doc 审计 0c381413 §4.2）。
+    """撤销邀请链接 = 删除链接行。
 
     与 accept 使用同一锁顺序：先锁 Workspace 行，再以
     ``populate_existing() + FOR UPDATE`` 重读 link；删除基于锁定后的

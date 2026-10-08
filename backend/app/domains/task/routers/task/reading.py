@@ -1,6 +1,6 @@
 """团队会话阅读进度与增量阅读路由。
 
-接口合同（docs/team-session-reading-progress-development-plan.md 第 8 节）：
+接口合同：
 
 - 所有 user_id 从当前登录主体取得，不接受客户端传其他人 user_id；
 - 显式校验 workspace/task 真实关联；无权限沿用 403/404 约定；

@@ -20,7 +20,7 @@ def _guaranteed_absent_pid() -> int:
     supervisor 会 ``os.getpgid(pid)`` 并在收尾时对整组发信号。使用可被
     复用的真实 PID（如 4242）或 PID 1 会在测试窗口内撞上真实进程组，
     ``killpg`` 会误杀系统/工具进程（Windows 上不设 pgid 因此从未暴露，
-    见 doc 修复方案 §12.1 的“测试异常退出后无残留”要求）。
+    见“测试异常退出后无残留”要求）。
     """
     try:
         with open("/proc/sys/kernel/pid_max", encoding="utf-8") as f:

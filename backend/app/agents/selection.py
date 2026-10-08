@@ -268,7 +268,7 @@ class LegacyBridgeShim:
             project_path=project_path,
             session_id=resume_id,
             env=dict(env_overrides or {}),
-            # 显式执行类别（doc §7 数据流）：与 backend capability 声明一致。
+            # 显式执行类别（数据流）：与 backend capability 声明一致。
             execution_kind=getattr(self.backend.capabilities, "execution_kind", "LOCAL_PROCESS") or "LOCAL_PROCESS",
             metadata={
                 "task_id": str((env_overrides or {}).get("TASK_ID") or "").strip() or None,
@@ -289,7 +289,7 @@ class LegacyBridgeShim:
 
         async def _on_event(agent_event) -> None:
             # 远程会话建立标记：供取消/收尾路径区分“从未建立会话”与
-            # “会话存在但停止未被确认”（doc §8.3 REMOTE 分支）。
+            # “会话存在但停止未被确认”（REMOTE 分支）。
             if getattr(agent_event, "type", "") == "session_started":
                 record_attempt_remote_session_started()
             legacy = agent_event_to_legacy_payload(agent_event)
@@ -341,7 +341,7 @@ class LegacyBridgeShim:
         """取消当前回合；必须返回结构化停止结果，禁止吞掉远程取消错误。
 
         服务端明确成功响应才返回 stop_acknowledged=True；方法未抛异常或
-        返回 None 一律视为未确认（doc §5.1/§5.2）。
+        返回 None 一律视为未确认。
         """
         kind = self._execution_kind()
         if self._run_task is not None and not self._run_task.done():

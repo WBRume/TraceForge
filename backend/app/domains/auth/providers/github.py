@@ -1,7 +1,7 @@
 """
 GitHub OAuth 适配器（B-11，首批唯一 provider，拍板 #2）。
 
-全流程仅 3 次 HTTP 调用（设计文档 §1.3 决策 1）：
+全流程仅 3 次 HTTP 调用：
 1. ``POST {TOKEN_ENDPOINT}``     code → access_token
 2. ``GET  {USER_ENDPOINT}``      profile → provider_uid / 资料
 3. ``GET  {EMAILS_ENDPOINT}``    补全 email + email_verified（仅当 profile 未返回 email）

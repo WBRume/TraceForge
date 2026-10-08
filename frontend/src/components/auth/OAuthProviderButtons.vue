@@ -80,7 +80,7 @@ onMounted(() => {
         @click="handleAuthorize(provider)"
       >
         <span v-if="pendingProvider === provider.name" class="provider-spinner" aria-hidden="true"></span>
-        <!-- github 内联 SVG（§5.2：不新增图标依赖） -->
+        <!-- github 内联 SVG（不新增图标依赖） -->
         <svg
           v-else-if="provider.icon_key === 'github'"
           class="provider-icon"

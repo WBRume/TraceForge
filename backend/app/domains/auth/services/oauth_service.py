@@ -1,7 +1,7 @@
 """
 OAuth 三方登录核心服务（B-07 / T02）—— 🔴 三路判定安全红线所在地。
 
-实现设计文档 §2.4 三路判定树与 §4.4 全部函数签名：
+实现三路判定树与函数签名：
 
 - ``build_authorize_url``   authorize 端点：建一次性 state（防 CSRF）
 - ``handle_callback``       回调端点：state 原子消费 → 换 token → 拉 profile → 三路判定 → 建 ticket
@@ -95,7 +95,7 @@ class AuthorizeResult:
 
 @dataclass(frozen=True)
 class CallbackResult:
-    """回调端点只负责 302：成功带 ticket，失败带语义化 error 码（§2.3 接口 3）。"""
+    """回调端点只负责 302：成功带 ticket，失败带语义化 error 码。"""
 
     redirect_url: str
 
@@ -137,7 +137,7 @@ def mask_email(email: str | None) -> str:
 
 
 def _cleanup_expired(db: Session, *, include_states: bool, include_tickets: bool) -> None:
-    """§4.7 顺带清理：authorize 清 states、callback 清 tickets。
+    """顺带清理：authorize 清 states、callback 清 tickets。
 
     只删过期且不在冷却中的行；不设 LIMIT（数据量极小，避免 MySQL 方言纠缠）。
     """
@@ -227,7 +227,7 @@ def _audit_oauth_callback_failed(
     reason: str,
     resource_id: str | None = None,
 ) -> None:
-    """§4.6 ``oauth_callback/failed``：state_invalid 为疑似 CSRF（WARN 语义），
+    """``oauth_callback/failed``：state_invalid 为疑似 CSRF（WARN 语义），
     upstream_error 为三方故障（ERROR 语义）；audit_log 统一 info 落盘，
     级别语义经由 reason 字段承载。
     """
@@ -254,7 +254,7 @@ def build_authorize_url(
     redirect_after: str | None = None,
     loopback_port: int | None = None,
 ) -> AuthorizeResult:
-    """创建一次性 state 并返回三方授权 URL（§2.3 接口 2）。
+    """创建一次性 state 并返回三方授权 URL。
 
     - ``redirect_after`` 仅做防开放重定向校验后由 router 决定去留；
       T01 的 ``oauth_states`` 表无对应列，本实现不持久化（偏离已报备）。
@@ -299,7 +299,7 @@ def handle_callback(
     state: str | None,
     error: str | None,
 ) -> CallbackResult:
-    """三方回调核心（§2.3 接口 3 / §3.1）。
+    """三方回调核心。
 
     所有失败统一返回 302 + 语义化 error 码（浏览器导航场景，不返回 JSON 4xx）；
     ``state_invalid`` 与 ``state_expired`` 文案由前端映射为一致（E-4d）。
@@ -362,7 +362,7 @@ def handle_callback(
         return CallbackResult(redirect_url=_frontend_redirect(base=None, error="provider_disabled", provider=provider))
     # 🔴 此处 access_token 已无引用，生命周期终止；profile 中不含任何 token 字段
 
-    # ── 5. 三路判定（§2.4）+ 建 ticket + 302 ──
+    # ── 5. 三路判定+ 建 ticket + 302 ──
     if state_row.intent == INTENT_BIND:
         status, ticket_user_id, normalized_email = _decide_bind_outcome(
             db, provider=provider, profile=profile, state_user_id=state_row.user_id
@@ -406,7 +406,7 @@ def handle_callback(
 def _decide_login_outcome(
     db: Session, *, provider: str, profile: OAuthProfile
 ) -> tuple[str | None, str | None, str | None]:
-    """登录意图的三路判定（§2.4 分支 1~3）。返回 ``(status, user_id, normalized_email)``。
+    """登录意图的三路判定。返回 ``(status, user_id, normalized_email)``。
 
     🔴 红线：账号归属唯一依据 ``(provider, provider_uid)``；三方 email 只用于
     区分路径 B / 路径 C，绝不自动合并（C-1）。
@@ -456,7 +456,7 @@ def _decide_login_outcome(
 def _decide_bind_outcome(
     db: Session, *, provider: str, profile: OAuthProfile, state_user_id: str | None
 ) -> tuple[str | None, str | None, str | None]:
-    """加绑意图的判定（§2.4 分支 4）。返回 ``(status, user_id, normalized_email)``。
+    """加绑意图的判定。返回 ``(status, user_id, normalized_email)``。
 
     🔴 红线条款 4：加绑场景**不触发路径 B**——用户已持有有效 token，
     身份已确认；该身份已绑他人则直接 BIND_CONFLICT（E-2）。
@@ -495,7 +495,7 @@ def _decide_bind_outcome(
     # 未被任何账号绑定：管理员账号需二次密码确认（拍板 #8 / E-8 / Q9）
     if bool(user.is_admin):
         return TICKET_STATUS_CONFIRM_REQUIRED, state_user_id, None
-    # 普通用户：以 LOGIN_OK 标记 intent=bind（§3.5），凭 ticket 调 /bind 完成绑定
+    # 普通用户：以 LOGIN_OK 标记 intent=bind，凭 ticket 调 /bind 完成绑定
     return TICKET_STATUS_LOGIN_OK, state_user_id, None
 
 
@@ -503,7 +503,7 @@ def _decide_bind_outcome(
 
 
 def resolve_ticket(db: Session, ticket: str) -> ResolveResult:
-    """兑现 ticket 的前置状态（§2.3 接口 4）。
+    """兑现 ticket 的前置状态。
 
     - 幂等：不写库、不消费；仅过期（410）/ 无效（404）/ 冷却（423）时抛错。
     - 🔴 ``BIND_REQUIRED`` 只返回脱敏邮箱 ``email_masked``，严禁完整邮箱。
@@ -689,7 +689,7 @@ def _register_password_failure(db: Session, ticket_row: OAuthTicket) -> None:
 
 
 def confirm_bind(db: Session, ticket: str, password: str) -> TokenResponse:
-    """路径 B 确认绑定（§2.3 接口 6 / §3.3）。
+    """路径 B 确认绑定。
 
     🔴 红线（T03 负向用例逐条守护）：
     1. 密码验证分支**无任何绕过路径**——user 查不到与密码错误返回
@@ -743,7 +743,7 @@ def confirm_bind(db: Session, ticket: str, password: str) -> TokenResponse:
 
 
 def bind_identity(db: Session, ticket: str, password: str | None) -> BindResult:
-    """加绑终态（§2.3 接口 5 / §3.5）。
+    """加绑终态。
 
     - 普通用户（``LOGIN_OK`` + intent=bind）：无需密码（拍板 #8）。
     - 管理员（``CONFIRM_REQUIRED``）：🔴 必须传密码并验证通过（E-8 / Q9）。
@@ -814,12 +814,12 @@ def bind_identity(db: Session, ticket: str, password: str | None) -> BindResult:
 
 
 def complete_register(db: Session, ticket: str, email: str, password: str, display_name: str) -> TokenResponse:
-    """路径 C 补全注册（§2.3 接口 7 / §3.4）。
+    """路径 C 补全注册。
 
     🔴 手填优先（拍板 #6 / E-1）：以用户手填 ``email`` 建号；
     三方 email 仅写 ``provider_email`` 快照，不参与任何账号判定。
 
-    校验顺序（严格按 §2.3）：ticket 有效性 → status → normalize → 白名单 →
+    校验顺序：ticket 有效性 → status → normalize → 白名单 →
     邮箱唯一性（409 且 **ticket 不消费**，E-1b）→ 原子消费 → 建号+绑定同一事务。
     """
     ticket_row = _get_valid_ticket(db, ticket)
@@ -894,7 +894,7 @@ def list_identities(db: Session, user: User) -> list[OAuthIdentity]:
 
 
 def unbind_identity(db: Session, user: User, identity_id: str) -> None:
-    """解绑指定身份（§3.6）。
+    """解绑指定身份。
 
     - 不属于当前用户 → 404（不返回 403，避免泄漏资源存在性）。
     - E-6b 防御：账号无密码（脏数据）→ 400 + WARN 审计。

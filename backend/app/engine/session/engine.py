@@ -139,7 +139,7 @@ class TaskAgentEngine:
         self.last_termination_confirmed_dead: bool | None = None
         # 最近一次真实 provider result（AgentRunResult）。只有 backend 返回
         # 结果对象时才赋值：引擎异常/超时/中断路径不会设置它，finalizer
-        # 以此区分"provider 已结束"与"业务是否成功"（doc 审计 P1-1）。
+        # 以此区分"provider 已结束"与"业务是否成功"。
         self.last_result: AgentRunResult | None = None
         self._hitl_requested_in_turn = False
         self._interrupt_requested = False
@@ -288,7 +288,7 @@ class TaskAgentEngine:
             self.last_termination_confirmed_dead = e.termination_confirmed_dead
         # 远程 adapter 在 session 已建立后的异常出口必须尝试停止并
         # 记录结构化 stop 证据；stop 失败不吞异常语义，而是把
-        # ACK=False/UNKNOWN 交给 convergence（doc 修复方案 §8.3）。
+        # ACK=False/UNKNOWN 交给 convergence。
         # P0-2/P1-2 之前：非 timeout 的 AgentError 直接抛到 failure
         # finalizer，NORMAL_FINALIZE 可能清掉仍存活 session 的 ownership。
         await self._stop_remote_session_after_error()
@@ -406,7 +406,7 @@ class TaskAgentEngine:
                         self.handle_agent_event,
                     )
                     # 真实 provider result 已到达：先登记再持久化。持久化
-                    # 失败不能抹掉"provider 已结束"的证据（doc 审计 P1-1）。
+                    # 失败不能抹掉"provider 已结束"的证据。
                     self.last_result = result
                     self.last_termination_confirmed_dead = getattr(result, "termination_confirmed_dead", None)
                     if result.session_id:
@@ -496,7 +496,7 @@ class TaskAgentEngine:
             db.close()
 
     async def _stop_remote_session_after_error(self) -> None:
-        """异常出口的远程会话兜底停止（doc 修复方案 §8.3）。
+        """异常出口的远程会话兜底停止。
 
         仅当 backend 声明 REMOTE_SESSION 且本回合已建立 provider session、
         且 attempt runtime 尚无任何 stop 证据时才尝试（用户 interrupt 已取得
@@ -737,7 +737,7 @@ class TaskAgentEngine:
 
     async def _on_session_started(self, payload: dict) -> None:
         # 远程会话建立标记：供取消/收尾区分"从未建立会话"与
-        # "会话存在但停止未被确认"（doc §8.3 REMOTE 分支）。
+        # "会话存在但停止未被确认"（REMOTE 分支）。
         record_attempt_remote_session_started()
         sid = str(payload.get("provider_session_id") or "")
         if sid:

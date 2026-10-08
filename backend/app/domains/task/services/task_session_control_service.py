@@ -147,7 +147,7 @@ def _prepare_interrupt_sync(
     reason: str | None,
     engine_job_id: str | None,
 ) -> dict[str, Any]:
-    """中断准备段（单事务）：job/task 加锁 + 唯一 termination request（doc §4.5.1）。
+    """中断准备段（单事务）：job/task 加锁 + 唯一 termination request。
 
     不再直接把 job 写成 TERMINATING：行锁与写路径全部由
     ``request_attempt_termination_in_txn`` 提供，与业务 finalizer 共享同一
@@ -324,7 +324,7 @@ async def interrupt_task(
             termination_error = str(exc) or exc.__class__.__name__
 
         termination_reason = termination_error or str(getattr(termination, "error_message", "") or reason_text)
-        # 统一停止结果协议（doc §5）：REMOTE_SESSION 以 stop_acknowledged 为
+        # 统一停止结果协议：REMOTE_SESSION 以 stop_acknowledged 为
         # 准；LOCAL_PROCESS 以 local_process_confirmed_dead 为准。旧 bridge 的
         # TerminationResult 仍兼容（confirmed_dead 字段）。
         from app.agents.contract import AgentStopResult
@@ -400,7 +400,7 @@ async def interrupt_task(
         )
     )
     for job_id in state["cancelled_ids"]:
-        # final 判定由 publish_job 依据 payload 状态计算（doc §9.2）。
+        # final 判定由 publish_job 依据 payload 状态计算。
         await ai_job_publishing.publish_job(job_id)
     if task is not None:
         await _broadcast_task_event("task_interrupted", task, state["job"])

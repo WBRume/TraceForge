@@ -1,10 +1,10 @@
 """workspace member (workspace_id, user_id) uniqueness
 
-doc 审计 0c381413 §4.2：相同用户通过不同邀请链接同时加入也必须幂等。
+相同用户通过不同邀请链接同时加入也必须幂等。
 增量迁移为 ``workspace_members`` 添加 (workspace_id, user_id) 唯一约束，
 作为服务层 Workspace→Link 锁顺序与条件名额占用之外的数据库兜底。
 
-前置条件：已按 §4.2 完成只读重复成员审计。若生产/开发库仍存在重复的
+前置条件：已完成只读重复成员审计。若生产/开发库仍存在重复的
 (workspace_id, user_id) 记录，本迁移拒绝自动处理——必须先给出明确的数据
 处理方案并人工清理，禁止自动删除开发数据。不重建数据库、不修改历史
 Alembic baseline。

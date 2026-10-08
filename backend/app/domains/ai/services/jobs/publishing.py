@@ -1,6 +1,6 @@
 """作业负载的对外发布：WS 广播、状态回放与入队入口。
 
-广播规则（doc §5 C5/§9.2）：非终态（RUNNING/WAITING_HITL/TERMINATING/
+广播规则：非终态（RUNNING/WAITING_HITL/TERMINATING/
 ORPHANED/INTERRUPTED）只产生 ``*_update``；``*_done``/``*_failed`` 只允许
 真正的 FINAL 状态。调用方无权覆盖 final 判定。
 """

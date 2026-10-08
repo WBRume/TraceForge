@@ -2,7 +2,7 @@
 
 worker 重启后，reaper 只持有持久化的 PID + create time + PGID。本模块在
 inspection executor 中对这三个证据来源做单次三态探测，并提供固定顺序的
-聚合规则（doc 修复方案 §5.4）：
+聚合规则：
 
 - PID 已消失/僵尸 -> 该 root identity 的 CONFIRMED_DEAD 证据；
 - PID 存活但 create time 与持久化身份不符 -> PID_REUSED：原身份已不在
@@ -44,7 +44,7 @@ _TOKEN_PROCESS_COMMAND_MARKERS = ("claude", "node", "traceforge")
 class PersistedProcessSnapshot:
     """One tri-state probe of a persisted root / POSIX process group.
 
-    聚合规则（doc 修复方案 §5.4）：任一来源 LIVE -> LIVE；没有 LIVE 但任一
+    聚合规则：任一来源 LIVE -> LIVE；没有 LIVE 但任一
     来源 UNKNOWN -> UNKNOWN；所有必需来源 CONFIRMED_DEAD -> CONFIRMED_DEAD。
     权限/系统错误只能产生 UNKNOWN，绝不允许被折叠成"组为空"。
     """
@@ -53,7 +53,7 @@ class PersistedProcessSnapshot:
     live_pids: tuple[int, ...] = ()
     root_identity_matches: bool | None = None
     # 当前占用该 PID 的进程 create time（PID_REUSED 时是新占用者的身份
-    # 边界，供复用组逐成员验证使用；doc 审计 P0-1）。
+    # 边界，供复用组逐成员验证使用）。
     pid_create_time: float | None = None
     failure_code: str | None = None
     error_message: str | None = None
@@ -121,7 +121,7 @@ def probe_persisted_root_sync(
             identity_matches = abs(create_time - expected) <= 2.0
             if not identity_matches:
                 # PID 被复用：绝不能对该 PID 发信号；原树的生死由
-                # process-group / run-token 探测独立回答（doc §5.4）。
+                # process-group / run-token 探测独立回答。
                 return PersistedProcessSnapshot(
                     state=ProcessProbeState.CONFIRMED_DEAD,
                     root_identity_matches=False,
@@ -329,11 +329,10 @@ async def group_snapshot(
 def aggregate_persisted_snapshots(
     *snapshots: PersistedProcessSnapshot,
 ) -> tuple[ProcessProbeState, str | None, str | None, tuple[int, ...]]:
-    """Fixed tri-state aggregation across probe sources (doc 修复方案 §5.4).
+    """Fixed tri-state aggregation across probe sources.
 
     任一来源 LIVE -> LIVE；没有 LIVE 但存在 UNKNOWN -> UNKNOWN（UNKNOWN
-    快照携带的未确认 PID 一并保留在 live_pids 中，绝不因聚合丢弃身份，
-    doc 审计 P0-3B）；全部来源明确死亡 -> CONFIRMED_DEAD。
+    快照携带的未确认 PID 一并保留在 live_pids 中，绝不因聚合丢弃身份）；全部来源明确死亡 -> CONFIRMED_DEAD。
     """
     live: list = []
     unconfirmed: list = []
@@ -393,7 +392,7 @@ async def wait_snapshot_gone(
     """Poll a tri-state probe until CONFIRMED_DEAD or the deadline.
 
     UNKNOWN 快照会继续重试直到超时；返回最后一次快照，由调用方聚合
-    （UNKNOWN 永远不会被压成死亡证明，doc 修复方案 §7.4）。
+    （UNKNOWN 永远不会被压成死亡证明）。
     """
     deadline = time.monotonic() + max(0.05, timeout)
     last = await probe()

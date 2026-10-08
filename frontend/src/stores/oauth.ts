@@ -1,6 +1,6 @@
 /**
  * OAuth 流程状态 store（T04 / F-03）
- * 设计约束（§1.3 决策 6）：独立于 stores/auth.ts，不污染认证 store。
+ * 设计约束：独立于 stores/auth.ts，不污染认证 store。
  * stores/auth.ts 仅新增 bound_providers 展示状态。
  */
 import { ref, computed } from 'vue'

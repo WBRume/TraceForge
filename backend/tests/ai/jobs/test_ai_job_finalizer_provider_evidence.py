@@ -1,6 +1,6 @@
-"""远程 TASK_CHAT finalizer 的 provider 证据与收敛回归（doc 审计 P1-1/P0-3）。
+"""远程 TASK_CHAT finalizer 的 provider 证据与收敛回归。
 
-覆盖（doc: docs/agent-job-d21a7118-audit-and-fix-plan.md §6/§5 验收）：
+覆盖：
 - 远程成功：正常 provider result 必须让 finalizer 拿到 outcome 证据，
   正确收敛 SUCCESS（而不是被证据门槛误判 ORPHANED）；
 - 远程明确失败 / 结果后持久化失败：真实 AgentRunResult 到达即
@@ -303,7 +303,7 @@ def test_orphaned_convergence_keeps_ownership_in_db():
     assert result.changed is True
     row = db.query(SddAiJob).filter(SddAiJob.id == "job-1").first()
     assert row.status == AiJobStatus.ORPHANED
-    # ORPHANED：ownership 必须完整保留（doc §8.4）。
+    # ORPHANED：ownership 必须完整保留。
     assert row.process_pid == 5151
     assert row.process_group_id == 5151
     assert row.run_token == "run-1"
@@ -413,7 +413,7 @@ def test_persisted_unknown_evidence_keeps_orphaned_at_decision_layer():
     db.close()
 
 
-# ───────────── P1（doc: docs/agent-job-07e04775-audit-pseudocode-plan.md §4）─────────────
+# ───────────── P1 ─────────────
 # provider 终局证据按 call 身份登记：结果到达时记录，异常/重试共用同一证据源。
 
 

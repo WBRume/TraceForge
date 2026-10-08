@@ -1,9 +1,9 @@
-"""Agent attempt 收敛验收（原 test_ai_job_convergence.py，doc V3 §14）。
+"""Agent attempt 收敛验收（原 test_ai_job_convergence.py）。
 
 覆盖：
 - 14.2 运行中取消：TERMINATING 在 runtime 释放前立即收敛，不等待 lease；
 - 14.4 广播语义：非终态绝不产生 final 事件；
-- P1-2 preview fence 回滚业务副作用（doc §7）。
+- P1-2 preview fence 回滚业务副作用。
 """
 
 from __future__ import annotations
@@ -440,7 +440,7 @@ def test_broadcast_orphaned_never_emits_final_event(monkeypatch):
     assert types and all(t == "chat_job_update" for t in types)
 
 
-# ────────────── P1-2：preview fence 回滚业务副作用（doc §7） ──────────────
+# ────────────── P1-2：preview fence 回滚业务副作用 ──────────────
 
 
 def _seed_preview_job(db, *, token="run-1", cancel_requested=False):
@@ -506,7 +506,7 @@ def test_requirement_preview_fence_rolls_back_batch_and_items(monkeypatch):
 
 
 def test_requirement_preview_success_commits_batch_with_job(monkeypatch):
-    """SUCCESS 与 batch/items/audit 必须同事务提交（doc §7.4）。"""
+    """SUCCESS 与 batch/items/audit 必须同事务提交。"""
     from app.domains.workspace_asset.models.workspace_asset import (
         SddRequirementAuditLog,
         SddRequirementImportBatch,
@@ -561,7 +561,7 @@ def test_requirement_preview_success_commits_batch_with_job(monkeypatch):
 
 
 def test_unknown_death_evidence_converges_orphaned_and_keeps_ownership(monkeypatch):
-    """P0-2 验收：UNKNOWN 探测必须落 ORPHANED 且不清 ownership（doc §5.6）。"""
+    """P0-2 验收：UNKNOWN 探测必须落 ORPHANED 且不清 ownership。"""
     factory = _session_factory()
     db = factory()
     _job(

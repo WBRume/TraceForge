@@ -1,6 +1,6 @@
 """续读位置解析服务：锚点解析、撤回/更新语义、邻近上下文定位。
 
-合同（docs/team-session-reading-progress-development-plan.md 第 7.2/8 节）：
+合同：
 
 - 只读：不修改任何阅读状态；
 - 原消息仍有效：ok / updated（版本改变时偏移归零）；

@@ -5,7 +5,7 @@ OAuth 三方登录数据模型（三张表）：
 - ``oauth_states``      一次性授权请求（防 CSRF，短生命周期，TTL 字段 expires_at）
 - ``oauth_tickets``     一次性结果凭证（短生命周期，TTL 字段 expires_at + 原子消费标记）
 
-🔴 安全红线（设计文档 §2.1 / K-4 / K-9）：
+🔴 安全红线（K-4 / K-9）：
 1. ``oauth_identities`` 的 ``UNIQUE(provider, provider_uid)`` 是账号判定的唯一可信依据，
    从 DB 层杜绝"一个三方账号绑两个 TraceForge 账号"，不得删除或放宽。
 2. 三张表**均不建** access_token / refresh_token 字段（拍板 #9：三方 token 不持久化）。
@@ -109,7 +109,7 @@ class OAuthState(Base):
     """一次性授权请求（防 CSRF，短生命周期）。
 
     生命周期：authorize 端点创建 → 回调校验通过后**立即**原子标记 ``used_at``。
-    清理策略：每次 authorize 时顺带 ``DELETE WHERE expires_at < now()``（§4.7）。
+    清理策略：每次 authorize 时顺带 ``DELETE WHERE expires_at < now()``。
     """
 
     __tablename__ = "oauth_states"
@@ -145,7 +145,7 @@ class OAuthTicket(Base):
 
     生命周期：callback 端点三路判定后创建 → **仅终态接口**原子消费 ``consumed_at``。
     ``resolve`` 是幂等读，不消费（路径 B/C 需多次 resolve）。
-    清理策略：handle_callback 入口顺带 ``DELETE WHERE expires_at < now()``（§4.7）。
+    清理策略：handle_callback 入口顺带 ``DELETE WHERE expires_at < now()``。
     """
 
     __tablename__ = "oauth_tickets"

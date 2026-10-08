@@ -1,4 +1,4 @@
-"""带 fence 的状态写入（doc §4.5.3）。
+"""带 fence 的状态写入。
 
 - :func:`attempt_is_current_sync`：durable attempt fence（与业务写入同事务执行）；
 - :func:`update_job_state_sync`：活动状态 CAS 写入与业务终态 convergence 转交；
@@ -104,8 +104,7 @@ def update_job_state_sync(
     返回 {"payload": ..., "broadcast": bool, "is_final": bool}；
     broadcast=False 表示被 fence/终态幂等拦下，仅回读当前 payload。
 
-    finalize=True 的所有业务终态都必须经过唯一 convergence 事务
-    （doc §8/C2）；本函数不再拥有独立的死亡证据决策表，传入的
+    finalize=True 的所有业务终态都必须经过唯一 convergence 事务；本函数不再拥有独立的死亡证据决策表，传入的
     process_started/termination_confirmed_dead 只作为无身份 fallback 交给
     唯一 resolver。
     """
@@ -155,7 +154,7 @@ def update_job_state_sync(
         if run_token:
             token_text = str(run_token)
         else:
-            # 活动状态写入必须 fail-closed（doc §4.5.3）：无 durable run token
+            # 活动状态写入必须 fail-closed：无 durable run token
             # 的调用方不允许改写活动 attempt 状态（迟到的 callback 可能因
             # 缺少 fence 把已取消的 job 写回 RUNNING）。终态写入已统一走
             # convergence 事务，本分支只剩普通运行态写入。
@@ -178,7 +177,7 @@ def update_job_state_sync(
             job, status, progress, message, error_message, session_id, agent_backend, context_patch, result_patch
         )
 
-        # 单条 affected-row CAS（doc §4.5.3）：token/boot/状态/取消位全部在
+        # 单条 affected-row CAS：token/boot/状态/取消位全部在
         # UPDATE 谓词中判定，消除 SELECT 与 UPDATE 之间的窗口。affected != 1
         # 时按 fenced no-op 处理，不得广播调用方准备的旧 payload。
         affected = (

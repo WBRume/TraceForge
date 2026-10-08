@@ -3,7 +3,7 @@
 职责：把一个 prompt 交给 bridge（legacy 全局或统一适配层），收集文本结果，
 并在事件边界登记 provider 调用证据（session started / result / 停止 ACK），
 供统一 convergence 决策表消费。重试只在「前一次调用已确定终结」的前提下
-发生（doc 审计 §4.3）。
+发生。
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ class _TurnEvents:
         if self.call is not None and self.runtime is not None and self.runtime.matches_current_attempt(self.call):
             # 统一适配边界（Claude 风格 legacy dict）：system/init 携带
             # provider session id；result 是唯一终局事件。证据必须早于
-            # JSON 解析、业务落库、错误转换和广播（doc 审计 §4.3）。
+            # JSON 解析、业务落库、错误转换和广播。
             if event_type == "system" and str(event.get("subtype") or "").lower() == "init":
                 record_provider_call_session_started(self.call, event.get("session_id"))
             elif event_type == "result":
@@ -106,7 +106,7 @@ async def _resolve_turn_timeout(bridge, call, current_attempt, wait_seconds, att
             process_started=process_started or True,
             failure_code=evidence.failure_code or "PROCESS_TREE_STILL_ALIVE",
         ) from exc
-    # P1（07e04775 §4.3）：明确 stop ACK 或已证明死亡的进程树
+    # P1：明确 stop ACK 或已证明死亡的进程树
     # 都意味着该调用已确定不会再产出 result——关闭未决记录
     # （result_success 保持 None，绝不伪造 outcome）。
     attempts.close_unresolved_provider_call(
@@ -129,7 +129,7 @@ async def _resolve_turn_timeout(bridge, call, current_attempt, wait_seconds, att
     # Retry only after the previous tree is proven dead, or when this
     # attempt never started a local process at all.  远程会话不能
     # 因 process_started=False 就与未结束的调用重叠：上一次调用
-    # 必须 ENDED（含 ACK 终止）才允许重试（doc 审计 §4.3）。
+    # 必须 ENDED（含 ACK 终止）才允许重试。
     if attempt_no < attempts_count and (dead is True or not process_started):
         if not attempts.provider_call_ready_for_retry(call, current_attempt):
             raise last_error from exc
@@ -156,7 +156,7 @@ def _collect_turn_result(bridge, events, resumed_session_id, call, attempt_no, a
         )
 
     if call is not None and call.state != ProviderCallState.ENDED:
-        # P1（07e04775 §4.3）：函数正常返回 / assistant 文本 / 非空
+        # P1：函数正常返回 / assistant 文本 / 非空
         # dict 都不是终局结果证明——没有 result 事件绝不伪造 outcome，
         # 交由上层按“无 outcome”收敛（本地已证明死亡 → FAILED；
         # 远程会话未结束 → ORPHANED）。
@@ -228,7 +228,7 @@ async def _run_cli_attempt(
         if backend_name
         else create_cli_bridge()
     )
-    # P1（07e04775 §4.2）：provider 终局证据必须在 result 事件到达时按
+    # P1：provider 终局证据必须在 result 事件到达时按
     # call 身份登记，而不是 helper 返回后补记。每次调用（含重试）新建
     # 记录，绝不复用上一轮 ENDED。
     runtime = current_agent_attempt_runtime()
@@ -322,7 +322,7 @@ async def _run_cli_attempt(
         return _collect_turn_result(bridge, events, resumed_session_id, call, attempt_no, attempts_count)
 
     except BaseException:
-        # P1（07e04775 §4.3）：已收到 result 的 ENDED 不能被异常覆盖；
+        # P1：已收到 result 的 ENDED 不能被异常覆盖；
         # 未结束调用继续保持未决（STARTED -> UNKNOWN），由上层按证据
         # 收敛，绝不伪造结束。
         mark_provider_call_unresolved(call)

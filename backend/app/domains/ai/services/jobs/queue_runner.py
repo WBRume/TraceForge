@@ -2,7 +2,7 @@
 
 runner 是唯一把「作业行」变成「活动 attempt」的地方：认领事务写入
 run token / lease / 执行类别；退出时经 :func:`_converge_runner_exit`
-消费本次 attempt 的运行/停止证据，绝不静默离开 RUNNING（doc §10.2/§8.3）。
+消费本次 attempt 的运行/停止证据，绝不静默离开 RUNNING。
 """
 
 from __future__ import annotations
@@ -152,7 +152,7 @@ async def _converge_runner_exit(
     runtime_state: AgentAttemptRuntimeState,
     outcome: JobExecutionOutcome,
 ) -> None:
-    """唯一 runner 收尾点（doc §10.2 / §8.3）。
+    """唯一 runner 收尾点。
 
     在释放 attempt runtime 之前消费本次 attempt 的运行/停止证据：
     - 真正终态 / WAITING_HITL：幂等返回；
@@ -163,7 +163,7 @@ async def _converge_runner_exit(
       RUNNING。
 
     provider outcome 只能来自 :class:`JobExecutionOutcome` 的明确字段；
-    “异常没有逃出 execute_job”绝不构成 provider outcome（doc §8.3）。
+    “异常没有逃出 execute_job”绝不构成 provider outcome。
     """
     job_id = attempt.job_id
     status = await store.get_job_status(job_id)
@@ -186,7 +186,7 @@ async def _converge_runner_exit(
         )
         if outcome.provider_outcome_seen and not evidence.provider_calls_authoritative:
             # 远程回合在取消请求到达前已自然结束：正常 provider outcome。
-            # P0（doc 审计 0c381413 §2.5）：该旁路只允许给"无 per-call 记
+            # P0：该旁路只允许给"无 per-call 记
             # 录"的旧路径补证据；per-call 记录存在时 outcome 以调用记录为
             # 权威，未决调用绝不能被 runner 的 outcome=True 覆盖。
             evidence = dataclasses.replace(evidence, provider_outcome_seen=True)
@@ -196,8 +196,7 @@ async def _converge_runner_exit(
             or evidence.error_message
             or "USER_CANCEL"
         )
-        # TERMINATING 行只接受 termination 意图（convergence 入口状态校验
-        # §5）；业务终态由 `_derive_termination_business_status` 按取消位/
+        # TERMINATING 行只接受 termination 意图（convergence 入口状态校验）；业务终态由 `_derive_termination_business_status` 按取消位/
         # 渠道推导。
         payload = await run_db(
             attempt_ops.converge_termination_sync,
@@ -220,8 +219,8 @@ async def _converge_runner_exit(
     )
     if outcome.provider_outcome_seen and not evidence.provider_calls_authoritative:
         # 真实 provider result 产生后必须显式传递 outcome；runner 兜底
-        # 绝不从 requested status 推断 provider 已结束（doc 修复方案 §8.3）。
-        # P0（doc 审计 0c381413 §2.5）：per-call 记录存在时 outcome 以调用
+        # 绝不从 requested status 推断 provider 已结束。
+        # P0：per-call 记录存在时 outcome 以调用
         # 记录为权威，未决调用绝不能被旁路覆盖（unresolved 也绝不在此清空）。
         evidence = dataclasses.replace(evidence, provider_outcome_seen=True)
     queue_key = attempt.queue_key or ""
@@ -276,7 +275,7 @@ async def run_queue(queue_key: str, *, recovered_job_id: str | None = None) -> N
             heartbeat_task = asyncio.create_task(job_heartbeat_loop(attempt))
             runtime.heartbeat_tasks[job_id] = heartbeat_task
             # 明确的执行 outcome 哨兵：executor 未产出 outcome / 异常逃逸时，
-            # 收尾依据的是哨兵 error 而不是“正常完成”推断（doc §8.3）。
+            # 收尾依据的是哨兵 error 而不是“正常完成”推断。
             outcome = JobExecutionOutcome(
                 requested_status=None,
                 error=RuntimeError("executor did not produce an outcome"),
@@ -290,7 +289,7 @@ async def run_queue(queue_key: str, *, recovered_job_id: str | None = None) -> N
                     outcome = dataclasses.replace(outcome, error=exc)
                     raise
             finally:
-                # doc §10.1：stop heartbeat -> runner convergence（runtime 仍
+                # stop heartbeat -> runner convergence（runtime 仍
                 # 可读）-> reset runtime/attempt -> 决定是否继续队列。
                 heartbeat_task.cancel()
                 await asyncio.gather(heartbeat_task, return_exceptions=True)

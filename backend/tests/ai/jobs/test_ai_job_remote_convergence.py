@@ -1,10 +1,10 @@
-"""Agent attempt 收敛验收（原 test_ai_job_convergence.py，doc V3 §14）。
+"""Agent attempt 收敛验收（原 test_ai_job_convergence.py）。
 
 覆盖：
 - 14.3 远程 Agent：REMOTE_SESSION ack/失败/未确认的决策表；
-- P1-3 JobExecutionOutcome（doc §8）；
-- P1-5 远程 reaper 使用持久化 stop locator（doc §10）；
-- 远程 NORMAL_FINALIZE 证据底线（doc 修复方案 §8.3）。
+- P1-3 JobExecutionOutcome；
+- P1-5 远程 reaper 使用持久化 stop locator；
+- 远程 NORMAL_FINALIZE 证据底线。
 """
 
 from __future__ import annotations
@@ -192,7 +192,7 @@ def test_evidence_from_remote_stop_result_shapes_decision_inputs():
     assert nack_evidence.remote_session_started is True
 
 
-# ────────────── P1-3：JobExecutionOutcome（doc §8） ──────────────
+# ────────────── P1-3：JobExecutionOutcome ──────────────
 
 
 def _remote_attempt():
@@ -349,7 +349,7 @@ def test_remote_runner_exit_nack_with_provider_outcome_allows_terminal(monkeypat
     assert saved.status == AiJobStatus.CANCELLED
 
 
-# ────────────── P1-5：远程 reaper 使用持久化 stop locator（doc §10） ──────────────
+# ────────────── P1-5：远程 reaper 使用持久化 stop locator ──────────────
 
 
 def _seed_orphaned_remote_job(db, *, token="run-remote", backend="dsh", session_id="persisted-session-1"):
@@ -412,7 +412,7 @@ def test_remote_reaper_uses_persisted_backend_and_session_id(monkeypatch):
 
     reclaimed = asyncio.run(ai_reaper.reap_stale_jobs())
     assert reclaimed == 1
-    # 调用参数来自持久化行，而不是内存 runtime（doc §10.4.2）。
+    # 调用参数来自持久化行，而不是内存 runtime。
     assert fake_backend.calls == ["persisted-session-1"]
 
     db.expire_all()
@@ -445,7 +445,7 @@ def test_remote_reaper_nack_remains_orphaned(monkeypatch):
     db.expire_all()
     saved = db.query(SddAiJob).filter(SddAiJob.id == "remote-reap-job").first()
     assert saved.status == AiJobStatus.ORPHANED
-    # ownership 必须保留（doc §10.4.3）。
+    # ownership 必须保留。
     assert saved.run_token is not None
     assert saved.next_reap_at is not None
 
@@ -473,7 +473,7 @@ def test_remote_reaper_missing_locator_never_claims_remote_death(monkeypatch):
     assert result.failure_code == "REMOTE_STOP_LOCATOR_MISSING"
 
 
-# ────────────────── 远程 NORMAL_FINALIZE 证据底线（doc 修复方案 §8.3）──────────────────
+# ────────────────── 远程 NORMAL_FINALIZE 证据底线 ──────────────────
 
 
 def _remote_normal_request(

@@ -1,7 +1,7 @@
 """
 任务会话分享服务：令牌、生命周期与公开访问解析。
 
-核心约束（docs/task-session-sharing-implementation-plan.md）：
+核心约束：
 - 原始令牌只在创建成功时返回一次，库里只存 SHA-256 哈希；
 - 每次公开请求都重新校验分享状态、任务存在、发起人权限仍在、
   会话代次未变——临时凭证过期不能作为拒绝访问的前提，反之
@@ -138,7 +138,7 @@ def delete_share(db: Session, share: TaskSessionShare) -> TaskSessionShare:
     """撤销即删除分享行（调用方负责 commit）。
 
     表间无外键：建议记录的 share_id 仅作溯源字段，删除分享行不影响
-    已收到的待采纳输入（规格 §2.7）。短期访问凭证随分享失效（每次公开
+    已收到的待采纳输入。短期访问凭证随分享失效（每次公开
     请求都按 share_id 反查分享，查不到即拒绝），这里直接清理到期兜底。
     """
     from app.domains.task.models.session_share import TaskShareAccess

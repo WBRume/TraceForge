@@ -1,5 +1,5 @@
 """
-OAuth 错误体系（B-14，对应设计文档 §4.5 错误码规范）。
+OAuth 错误体系（B-14）。
 
 - ``OAuthAPIError``：携带 ``code`` 的 HTTPException 子类，经 exception handler
   统一输出 ``{"detail": "<中文用户可读文案>", "code": "OAUTH_XXX"}``，
@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
-# ══════════════════ 错误码常量（§4.5 错误码全表） ══════════════════
+# ══════════════════ 错误码常量 ══════════════════
 
 ERR_OAUTH_PROVIDER_NOT_FOUND = "OAUTH_PROVIDER_NOT_FOUND"  # 404 provider 未注册
 ERR_OAUTH_PROVIDER_DISABLED = "OAUTH_PROVIDER_DISABLED"  # 404 provider 未配置 client_id/secret

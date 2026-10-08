@@ -12,7 +12,7 @@ type AuthUser = {
   avatar_svg?: string | null
   is_admin?: boolean
   created_at?: string
-  /** 已绑定的三方 provider 名列表（GET /auth/me 增量字段，§2.3.2 接口 11） */
+  /** 已绑定的三方 provider 名列表（GET /auth/me 增量字段） */
   bound_providers?: string[]
 }
 

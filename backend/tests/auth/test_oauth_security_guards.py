@@ -238,7 +238,7 @@ def _parse_query(url: str) -> dict:
 
 
 def test_password_failure_retry_then_lockout_cooldown(db, github_mock):
-    """T02 实现语义（有意偏离设计文档，以下列语义为准）：
+    """T02 实现语义（以下列语义为准）：
 
     - 未达阈值：ticket 占用被释放（consumed_at 复位）→ 可再次提交；failed_attempts+1；
     - 累计达 5 次（OAUTH_BIND_MAX_ATTEMPTS）：ticket 保持 consumed 且

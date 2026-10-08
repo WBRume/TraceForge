@@ -1,9 +1,9 @@
 /**
  * OAuth 三方登录 —— 前端类型定义（T04）
- * 契约来源：docs/design-oauth-login.md §2.3（接口契约固化，勿随意改动字段名）
+ * 接口契约已固化，勿随意改动字段名
  */
 
-/** ticket 状态（后端 oauth_tickets.status，§2.1.3 / §2.3.2 接口 4） */
+/** ticket 状态（后端 oauth_tickets.status） */
 export type OAuthTicketStatus =
   | 'LOGIN_OK'
   | 'BIND_REQUIRED'
@@ -100,7 +100,7 @@ export type OAuthCompleteResponse = {
   token_type: string
 }
 
-/** 后端 OAuthAPIError 统一错误体（§4.5）：{ detail, code } */
+/** 后端 OAuthAPIError 统一错误体：{ detail, code } */
 export type OAuthErrorBody = {
   detail?: string
   code?: string

@@ -103,7 +103,7 @@ def resolve_current_attempt_evidence(
     fallback_failure_code: str | None = None,
     fallback_remaining_pids: tuple = (),
 ) -> _FinalizerEvidence:
-    """唯一证据解析入口（doc §6.2）：identity-aware runtime 为权威。"""
+    """唯一证据解析入口：identity-aware runtime 为权威。"""
     return resolve_attempt_evidence(
         execution_kind=execution_kind or attempt_execution_kind(),
         runtime=runtime if runtime is not None else current_agent_attempt_runtime(),
@@ -121,7 +121,7 @@ def attempt_evidence(exc: BaseException | None = None) -> tuple[bool, bool | Non
     """Return (process_started, dead) from the attempt runtime + typed exception.
 
     The identity-aware runtime aggregate is authoritative; the typed exception
-    attributes are only a compatibility fallback (doc §6.2 rule 2-4).
+    attributes are only a compatibility fallback.
     """
     evidence = resolve_current_attempt_evidence(typed_error=exc)
     return (evidence.process_started, evidence.termination_confirmed_dead)
@@ -156,7 +156,7 @@ def close_unresolved_provider_call(
 ) -> None:
     """Close an unresolved provider call when its outcome can never arrive.
 
-    P1（07e04775 §4.3/§4.4）：明确 stop ACK（绑定本次 bridge/调用的会话
+    P1：明确 stop ACK（绑定本次 bridge/调用的会话
     停止）或已证明死亡的本地进程树都意味着该调用已确定终结。关闭未决
     记录（STARTED/UNKNOWN -> ENDED，``result_success`` 保持 None）是为了
     让重试产生的新 ENDED 不被旧未决阻塞；它绝不伪造 provider outcome
@@ -168,7 +168,7 @@ def close_unresolved_provider_call(
     if call.state in (ProviderCallState.STARTED, ProviderCallState.UNKNOWN):
         call.state = ProviderCallState.ENDED
     if stop_acknowledged:
-        # P0（doc 审计 0c381413 §2.4）：把本次停止 ACK 绑定到具体 call。
+        # P0：把本次停止 ACK 绑定到具体 call。
         # attempt 级单槽 ACK 只是诊断；只有按 call 绑定（attempt_key /
         # call_id / provider_session_id 一致）的证据才能授权该调用的终态。
         # 绑定被拒时保持已关闭状态不变——被拒绝的 ACK 绝不授权终态。
@@ -187,7 +187,7 @@ def provider_call_ready_for_retry(
 ) -> bool:
     """Retry gate: the previous call must be finished before overlapping.
 
-    P1（07e04775 §4.3）：远程不能因为 ``process_started=False`` 就允许与
+    P1：远程不能因为 ``process_started=False`` 就允许与
     未结束调用重叠——前一次调用必须已 ENDED（真实 result 或绑定 ACK 终止）
     才允许启动下一次。无证据登记能力（runtime 缺失）时保持旧行为。
     """
@@ -228,7 +228,7 @@ def persist_process_identity_sync(job_id: str, run_token: str, identity) -> bool
             return False
         declared_kind = str(job.process_execution_kind or "").strip()
         if declared_kind and declared_kind != EXECUTION_KIND_LOCAL_PROCESS:
-            # 显式声明的非本地执行类别不允许 attach 本地 PID（doc §7.3）。
+            # 显式声明的非本地执行类别不允许 attach 本地 PID。
             logger.error(
                 "Persisted process identity rejected: execution_kind mismatch: job_id={}, kind={}",
                 job.id,
@@ -507,7 +507,7 @@ async def finalize_attempt_termination(
     this after the engine has attempted to stop its CLI.  A missing token is
     deliberately not accepted: without fencing there is no safe owner for a
     durable state transition.  Remote backends must pass structured
-    ``evidence`` built from the unified stop result (doc §5).
+    ``evidence`` built from the unified stop result.
     """
     token = str(run_token or "").strip()
     if not token:
@@ -550,7 +550,7 @@ def mark_task_chat_jobs_cancelled(
     task_id: str,
     message: str = "Task execution stopped",
 ) -> list[str]:
-    """批量取消请求（doc §4.5.2）：候选 id -> 排序 -> 逐个唯一 termination 事务。
+    """批量取消请求：候选 id -> 排序 -> 逐个唯一 termination 事务。
 
     本函数不再直接写 job 状态：所有 TERMINATING/CANCELLED 写入都通过
     :func:`request_attempt_termination_in_txn`（与业务 finalizer 共享行锁）。
@@ -587,7 +587,7 @@ def mark_task_chat_jobs_cancelled(
             job_ids.append(job_id)
     if job_ids:
         db.commit()
-        # commit 之后才触发 runner 的 cancellation signal（doc §9.1）。
+        # commit 之后才触发 runner 的 cancellation signal。
         for job_id in job_ids:
             runtime.request_cancel(job_id)
     return job_ids
@@ -599,7 +599,7 @@ def cancel_job(
     workspace_id: str,
     job_id: str,
 ) -> SddAiJob | None:
-    """取消请求事务（doc §9.1 / §4.5.1）：唯一 termination request 入口。
+    """取消请求事务：唯一 termination request 入口。
 
     与 finalizer 共享同一 job 行锁，因此两种锁顺序只能得到：
     - cancel 先获得锁 -> finalizer 看到 TERMINATING 并转 termination convergence；
@@ -622,6 +622,6 @@ def cancel_job(
     job = db.query(SddAiJob).filter(SddAiJob.id == job_id, SddAiJob.workspace_id == workspace_id).first()
     if job is None:
         return None
-    # commit 后才触发当前 runner 的 cancellation signal（doc §9.1 第 5 步）。
+    # commit 后才触发当前 runner 的 cancellation signal。
     runtime.request_cancel(job.id)
     return job

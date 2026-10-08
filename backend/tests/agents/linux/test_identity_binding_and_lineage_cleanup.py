@@ -6,7 +6,7 @@
   create time 必须精确一致（删除 0.5 秒容差）；只有 BOUND 状态允许发送。
 - P1：已采样的脱组后代同样必须进入 per-spawn 谱系清理——清理不再以本地
   快照 CONFIRMED_DEAD 为前置条件；拒绝 TERM 的后代升级 SIGKILL。
-- 发送后句柄恰好关闭一次；取消期间迟到结果仍被回收（见 bc6ca89 回归）。
+- 发送后句柄恰好关闭一次；取消期间迟到结果仍被回收。
 
 所有信号都发给本测试创建/受控的目标；模拟身份的信号发送全部被拦截。
 """
@@ -50,7 +50,7 @@ async def test_failed_or_different_pidfd_binding_never_sends(second_time):
 
     旧行为：第一例关闭 fd 但返回旧 create_time + pidfd=None，发送路径退回
     os.kill 误杀新占用者；第二例落在 0.5 秒容差内被当成同一身份直接发送。
-    新行为：绑定校验失败 -> UNVERIFIED，零信号（doc 审计 §2.5）。
+    新行为：绑定校验失败 -> UNVERIFIED，零信号。
     """
     samples = [SimpleNamespace(create_time=lambda: 100.0), SimpleNamespace(create_time=lambda: second_time)]
     with (
@@ -167,7 +167,7 @@ async def test_verified_send_closes_pidfd_exactly_once():
 @pytest.mark.asyncio
 async def test_sampled_detached_child_must_be_reclaimed():
     """已采样登记的脱组后代：本地快照一直 LIVE，close 仍必须经 spawn-token
-    清理终止它并出具 confirmed_dead=True（doc 审计 §3.5）。"""
+    清理终止它并出具 confirmed_dead=True。"""
     supervisor = ProcessSupervisor()
     source = """import subprocess, time
 p = subprocess.Popen(["/bin/sleep", "120"], start_new_session=True,
@@ -179,7 +179,7 @@ time.sleep(1)
         [sys.executable, "-c", source],
         cwd=os.getcwd(),
         env=os.environ.copy(),
-        run_token="07e04775-audit",
+        run_token="audit-token",
     )
     child = None
     try:
@@ -291,7 +291,7 @@ print(p.pid, flush=True)
 
 @pytest.mark.asyncio
 async def test_killable_detached_child_does_not_orphan_job():
-    """job 层断言（doc 审计 §3.5）：正常可杀的脱组 child 不再导致 ORPHANED。"""
+    """job 层断言：正常可杀的脱组 child 不再导致 ORPHANED。"""
     from types import SimpleNamespace
 
     from app.agents.contract import (
