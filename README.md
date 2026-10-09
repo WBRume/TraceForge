@@ -452,7 +452,6 @@ npm run dev:electron
 | SKILLS_STORAGE_ROOT | Skills 存储根目录 | storage/skills |
 | API_MOCK_TEMP_ROOT | API Mock 临时目录 | tmp/api_mock_workspace |
 | CLI_STATE_ROOT | CLI 状态目录 | tmp/cli_state |
-| TASK_PLAN_DOC_ROOTS | 计划/规格 Markdown 扫描根目录（相对 task.project_path，逗号分隔；`.` 表示项目根） | docs/superpowers,superpowers/docs/superpowers,. |
 | TASK_RULE_DOC_SCAN_PATHS | 任务执行注入上下文的项目规则/文档路径（逗号分隔；目录会递归扫描 .md/.markdown） | CLAUDE.md,.claude/CLAUDE.md,docs/superpowers,superpowers/docs/superpowers |
 | LOG_LEVEL | 日志级别 | INFO |
 | LOG_DIR | 日志目录 | ./logs |
@@ -460,6 +459,8 @@ npm run dev:electron
 | REDIS_URL | Redis 连接地址 | redis://127.0.0.1:6379/0 |
 | REDIS_PASSWORD | Redis 密码（留空表示无认证） | 空 |
 | DISTRIBUTED_LOCK_BACKEND | 分布式锁后端 | local |
+
+计划文档抽屉的扫描目录在「设置 → 工作区设置 → 计划文档目录」按工作区独立配置，每行一个相对任务根目录的路径，支持任意归档目录。未配置时不扫描；仅显示相对任务创建快照新增或内容变化的 Markdown 文件。缺少初始快照的历史任务会显示提示，不回退为展示全部存量文档。
 
 > **注意**：
 > - 生产或测试环境必须修改 `JWT_SECRET_KEY`

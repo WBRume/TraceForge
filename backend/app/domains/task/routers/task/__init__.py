@@ -8,7 +8,7 @@
                      task_session_control_service）
 - session_control:   会话控制与状态（interrupt / resume / 消息撤销 / 聊天受理 /
                      会话快照 / AI 作业与上下文窗口查询 / 预输入兜底）
-- spec_docs:         spec 资产 / 上传 / spec 基线（bootstrap）/ superpowers 文档
+- spec_docs:         spec 资产 / 上传 / spec 基线（bootstrap）/ 计划文档
 - skill_runtime:     Skills 运行时列表 / 事件 / 运行文件树与读写
 - change_proposals:  变更提案创建（三重分布式锁编排）
 - diagnosis:         问题定位辅助文档 / 定位结果 / 一键转案例 / 一键总结

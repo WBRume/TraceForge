@@ -190,7 +190,7 @@ const closeTraceInspector = () => {
           <span>{{ $t('chat.task_skills_file_tree') }}</span>
           <button type="button" class="btn-micro" :disabled="fileTreeLoading || !selectedSkillId" @click="emit('refreshTree')">
             <RefreshCw class="w-3 h-3" />
-            {{ $t('chat.superpowers_docs_refresh') }}
+            {{ $t('chat.plan_docs_refresh') }}
           </button>
         </div>
         <div v-if="fileTreeLoading" class="panel-state">{{ $t('common.loading') }}</div>

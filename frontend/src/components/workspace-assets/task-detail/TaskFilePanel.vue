@@ -57,7 +57,7 @@ function fileIcon(kind: string) {
   if (kind === 'asset') return FileText
   if (kind === 'ai_output') return Cpu
   if (kind === 'change_proposal') return GitBranch
-  if (kind === 'superpowers_doc') return FileText
+  if (kind === 'plan_doc') return FileText
   if (kind === 'verification_run') return Shield
   if (kind === 'conflict_report') return AlertTriangle
   return FileText

@@ -32,7 +32,7 @@ export function useWorkspaceContext(options: {
   const canManageTaskStatus = computed(() => Boolean(workspacePermissions.value?.manage_task_status))
   const canDeleteTask = computed(() => Boolean(workspacePermissions.value?.delete_task))
   const canExportTask = computed(() => Boolean(workspacePermissions.value?.export_task))
-  const canEditSuperpowersDocs = computed(() => (
+  const canEditPlanDocs = computed(() => (
     Boolean(workspacePermissions.value?.upload_task_spec || workspacePermissions.value?.manage_task_status)
   ))
 
@@ -47,6 +47,6 @@ export function useWorkspaceContext(options: {
     canManageTaskStatus,
     canDeleteTask,
     canExportTask,
-    canEditSuperpowersDocs,
+    canEditPlanDocs,
   }
 }

@@ -3,7 +3,7 @@ import { proxyRefs, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ChevronLeft, ChevronRight, Brain, FileText, GitFork } from '@/components/icons'
 import DocReviewWorkbench from '@/components/doc-review/DocReviewWorkbench.vue'
-import SuperpowersDocsPanel from '@/components/chat/SuperpowersDocsPanel.vue'
+import PlanDocsPanel from '@/components/chat/PlanDocsPanel.vue'
 import { useDiagnosisDocs } from '@/composables/useDiagnosisDocs'
 import DiagnosisDocsPanel from './DiagnosisDocsPanel.vue'
 import DiagnosisCodePathPanel from './DiagnosisCodePathPanel.vue'
@@ -105,12 +105,12 @@ watch(
         </button>
         <button
           class="tab-item"
-          :class="{ active: props.vm.specDrawerTab === 'superpowers_docs' }"
-          @click="props.vm.specDrawerTab = 'superpowers_docs'"
+          :class="{ active: props.vm.specDrawerTab === 'plan_docs' }"
+          @click="props.vm.specDrawerTab = 'plan_docs'"
         >
-          <div v-show="props.vm.specDrawerTab === 'superpowers_docs'" class="pulse-dot-inline"></div>
+          <div v-show="props.vm.specDrawerTab === 'plan_docs'" class="pulse-dot-inline"></div>
           <Brain :size="14" />
-          <span>{{ t('chat.spec_drawer_tab_superpowers') }}</span>
+          <span>{{ t('chat.spec_drawer_tab_plan_docs') }}</span>
         </button>
       </div>
       <div class="spec-tab-panels">
@@ -151,13 +151,13 @@ watch(
         <div
           v-if="!props.vm.isDiagnosisTask"
           class="spec-tab-panel"
-          v-show="props.vm.specDrawerTab === 'superpowers_docs'"
+          v-show="props.vm.specDrawerTab === 'plan_docs'"
         >
-          <SuperpowersDocsPanel
+          <PlanDocsPanel
             :ws-id="String(props.vm.route.params.wsId || '')"
             :task-id="props.vm.currentTask.id"
-            :readonly="!props.vm.canEditSuperpowersDocs"
-            :visible="props.vm.isSpecPanelOpen && props.vm.specDrawerTab === 'superpowers_docs'"
+            :readonly="!props.vm.canEditPlanDocs"
+            :visible="props.vm.isSpecPanelOpen && props.vm.specDrawerTab === 'plan_docs'"
           />
         </div>
       </div>
@@ -395,7 +395,7 @@ watch(
   height: 100%;
 }
 
-.spec-body :deep(.superpowers-docs-panel) {
+.spec-body :deep(.plan-docs-panel) {
   height: 100%;
 }
 
