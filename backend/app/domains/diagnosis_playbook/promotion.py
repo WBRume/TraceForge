@@ -2,11 +2,11 @@
 
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
-from app.domains.ai.services.jobs.constants import FINAL_STATUSES
 from app.domains.case_center.models.case import SddCase
 
 from .analysis_guide import source_snapshot
@@ -58,7 +58,8 @@ def create(db, workspace_id, case_ids, user_id, idempotency_key, *, merge_all=Fa
         raise PlaybookError("CASE_NOT_APPROVED", status=409)
     existing = (
         db.query(SddAiJob)
-        .filter_by(workspace_id=workspace_id, queue_key=f"{KIND}:{workspace_id}")
+        .filter_by(workspace_id=workspace_id)
+        .filter(SddAiJob.queue_key.like(f"{KIND}:%"))
         .order_by(SddAiJob.created_at.desc())
         .all()
     )
@@ -68,19 +69,15 @@ def create(db, workspace_id, case_ids, user_id, idempotency_key, *, merge_all=Fa
             if ctx["case_ids"] != ids:
                 raise PlaybookError("IDEMPOTENCY_PAYLOAD_CONFLICT", status=409)
             return job
-        if (
-            (job.status not in FINAL_STATUSES or (job.result_json or {}).get("review_state") == "PENDING")
-            and ctx.get("case_ids") == ids
-            and job.creator_id == user_id
-        ):
-            return job
     sources = [{"id": case.id, **source_snapshot(case)} for case in sorted(cases, key=lambda c: c.id)]
     if len(json.dumps(sources, ensure_ascii=False)) > 300000:
         raise PlaybookError("PROMOTION_INPUT_TOO_LARGE")
+    job_id = str(uuid4())
     job = SddAiJob(
+        id=job_id,
         workspace_id=workspace_id,
         channel=AiJobChannel.ASSET_THREAD,
-        queue_key=f"{KIND}:{workspace_id}",
+        queue_key=f"{KIND}:{job_id}",
         status=AiJobStatus.PENDING,
         max_attempts=1,
         creator_id=user_id,
@@ -217,7 +214,8 @@ def finalize(db, job_id, result, token, boot, evidence):
 def owned_job(db, workspace_id, job_id, user_id):
     job = (
         db.query(SddAiJob)
-        .filter_by(id=job_id, workspace_id=workspace_id, creator_id=user_id, queue_key=f"{KIND}:{workspace_id}")
+        .filter_by(id=job_id, workspace_id=workspace_id, creator_id=user_id)
+        .filter(SddAiJob.queue_key.like(f"{KIND}:%"))
         .with_for_update()
         .first()
     )

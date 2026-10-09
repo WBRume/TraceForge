@@ -6,6 +6,7 @@ import { createRouter, createMemoryHistory } from 'vue-router'
 import App from '@/App.vue'
 import CasePromotionAction from '../CasePromotionAction.vue'
 import api from '@/utils/api'
+import { useProvisioningStore } from '@/stores/provisioning'
 import { clearWsCursorMemory } from '@/utils/wsCursor'
 
 const mocks = vi.hoisted(() => ({ auth: null as any }))
@@ -26,16 +27,16 @@ class Socket {
   close = vi.fn()
   send = vi.fn()
   constructor() { Socket.connections.push(this) }
-  update(sequence: number) {
+  update(sequence: number, reviewState?: string) {
     this.onmessage?.({ data: JSON.stringify({ type: 'event', epoch: 'epoch', sequence,
       event_id: `event-${sequence}`, event_type: 'notification',
-      payload: { type: 'playbook_promotion_updated', workspace_id: 'ws', job_id: 'job' } }) })
+      payload: { type: 'playbook_promotion_updated', workspace_id: 'ws', job_id: 'job', review_state: reviewState } }) })
   }
 }
 const route = defineComponent({ components: { CasePromotionAction }, template: '<CasePromotionAction workspace-id="ws" :case-ids="[]" />' })
 beforeEach(() => {
   vi.resetAllMocks()
-  sessionStorage.clear(); clearWsCursorMemory(); Socket.connections = []
+  localStorage.clear(); sessionStorage.clear(); clearWsCursorMemory(); Socket.connections = []
   vi.stubGlobal('WebSocket', Socket)
   mocks.auth = reactive({ token: 'token', user: { id: 'user' }, isAuthenticated: true, fetchCurrentUser: vi.fn() })
 })
@@ -56,18 +57,16 @@ it('receives running and completion frames on a route without a notification bel
   socket.onopen?.()
   await flushPromises()
   const action = wrapper.findComponent(CasePromotionAction)
-  await action.get('button').trigger('click')
-  const dialog = action.findComponent({ name: 'RequirementImportDialog' })
-  expect(dialog.props('previewJob').status).toBe('PENDING')
+  const store = useProvisioningStore()
+  expect(store.getTrackedJob('job')?.status).toBe('PENDING')
   state = { ...state, status: 'RUNNING', progress: 15 }
   socket.update(1)
   await flushPromises()
-  expect(dialog.props('previewJob').progress).toBe(15)
+  expect(store.getTrackedJob('job')?.progress).toBe(15)
   state = { ...state, status: 'SUCCESS', progress: 100, result: { review_state: 'CONFIRMED', spec_ids: ['spec'] } }
-  socket.update(2)
+  socket.update(2, 'CONFIRMED')
   await flushPromises()
-  expect(dialog.props('previewJob').status).toBe('SUCCESS')
-  expect(dialog.props('previewJob').progress).toBe(100)
+  expect(store.getTrackedJob('job')).toBeNull()
   expect(action.emitted('completed')).toHaveLength(1)
   expect(action.text()).not.toContain('查看晋升结果')
   mocks.auth.token = null; mocks.auth.user = null; mocks.auth.isAuthenticated = false
@@ -81,7 +80,8 @@ it('restores completed results when opening the page after the CLI has finished'
   const wrapper = mount(CasePromotionAction, { props: { workspaceId: 'ws', caseIds: [], requestedJobId: 'job' },
     global: { plugins: [createPinia()], stubs: { ConfirmActionModal: true, RequirementImportDialog: true } } })
   await flushPromises()
-  expect(wrapper.findComponent({ name: 'RequirementImportDialog' }).props('previewJob').status).toBe('SUCCESS')
+  expect(wrapper.findComponent({ name: 'RequirementImportDialog' }).exists()).toBe(false)
+  expect(wrapper.text()).not.toContain('查看晋升')
   expect(api.post).not.toHaveBeenCalled()
   wrapper.unmount()
 })

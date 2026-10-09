@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, RefreshCw, AlertCircle, Sparkles, CheckCircle2 } from '@/components/icons'
+import { ArrowLeft, RefreshCw, AlertCircle, CheckCircle2 } from '@/components/icons'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 import type { PromotionDraft, PromotionJob } from '@/types/playbookPromotion'
@@ -22,31 +22,31 @@ const error = ref('')
 const job = shallowRef<PromotionJob | null>(null)
 const reviewDraft = ref<PromotionDraft | null>(null)
 
-let pollTimer: ReturnType<typeof setTimeout> | undefined
+let loadVersion = 0
+let draftIdentity = ''
 let regenerationKey = ''
 const discardConfirmOpen = ref(false)
 const mergeConfirmOpen = ref(false)
 
-const isPendingReview = computed(() => job.value?.result?.review_state === 'PENDING')
-const isActive = computed(
-  () => job.value && !['SUCCESS', 'FAILED', 'CANCELLED', 'REVERTED'].includes(job.value.status),
-)
 const isConfirmed = computed(() => job.value?.result?.review_state === 'CONFIRMED')
 const isDiscarded = computed(() => job.value?.result?.review_state === 'DISCARDED')
 
 const loadJob = async () => {
   if (!wsId.value || !jobId.value) return
   error.value = ''
+  const version = ++loadVersion
   try {
     const endpoint = `/workspaces/${wsId.value}/cases/playbook-promotions`
     const { data } = await api.get(endpoint, { params: { job_id: jobId.value } })
     let current: PromotionJob | undefined =
       data.items?.find((item: PromotionJob) => item.job_id === jobId.value) || data.items?.[0]
 
+    if (version !== loadVersion) return
     const visited = new Set<string>()
     while (current?.result?.replacement_job_id && !visited.has(current.job_id)) {
       visited.add(current.job_id)
       const resp = await api.get(endpoint, { params: { job_id: current.result.replacement_job_id } })
+      if (version !== loadVersion) return
       const nextJob = resp.data.items?.[0]
       if (nextJob) {
         current = nextJob
@@ -64,28 +64,24 @@ const loadJob = async () => {
       } else {
         floating.ingestPromotionJob(current)
       }
-      if (current.result?.draft) {
+      const identity = `${current.job_id}:${current.result?.draft_revision || ''}`
+      if (current.result?.draft && identity !== draftIdentity) {
+        draftIdentity = identity
         reviewDraft.value = JSON.parse(JSON.stringify(current.result.draft))
       }
-      // 如果还在进行中，稍后轮询
+      // Execution belongs to the shared background queue, not this review route.
       if (!['SUCCESS', 'FAILED', 'CANCELLED', 'REVERTED'].includes(current.status)) {
-        schedulePoll()
+        floating.expand()
+        goBack()
       }
     } else {
       error.value = '未找到对应的诊断规程晋升任务'
     }
   } catch (e: any) {
-    error.value = e.response?.data?.detail?.message || '加载晋升规程草案失败'
+    if (version === loadVersion) error.value = e.response?.data?.detail?.message || '加载晋升规程草案失败'
   } finally {
-    loading.value = false
+    if (version === loadVersion) loading.value = false
   }
-}
-
-const schedulePoll = () => {
-  clearTimeout(pollTimer)
-  pollTimer = setTimeout(() => {
-    void loadJob()
-  }, 3000)
 }
 
 const goBack = () => {
@@ -122,14 +118,11 @@ const handleConfirm = async () => {
     )
 
     job.value = data
-    clearTimeout(pollTimer)
     floating.dismiss(current.job_id)
     ElMessage.success('诊断规程已成功入库！')
 
     // 跳转回案例中心或规程库
-    setTimeout(() => {
-      goBack()
-    }, 1200)
+    goBack()
   } catch (e: any) {
     const code = e.response?.data?.detail?.code
     if (code === 'PROMOTION_DRAFT_CHANGED') {
@@ -162,13 +155,10 @@ const doDiscard = async () => {
       },
     )
     job.value = data
-    clearTimeout(pollTimer)
     floating.dismiss(current.job_id)
     discardConfirmOpen.value = false
     ElMessage.info('已放弃该诊断规程草案')
-    setTimeout(() => {
-      goBack()
-    }, 600)
+    goBack()
   } catch (e: any) {
     error.value = e.response?.data?.detail?.message || '放弃操作失败'
   } finally {
@@ -199,14 +189,10 @@ const doMerge = async () => {
     regenerationKey = ''
     job.value = data
     jobId.value = data.job_id
-    // 更新路由URL
-    router.replace({
-      name: route.name || 'workspaceCasePromotionReview',
-      params: { wsId: wsId.value, jobId: data.job_id },
-    })
+    floating.ingestPromotionJob(data)
     reviewDraft.value = null
-    schedulePoll()
-    ElMessage.success('已发起合并重新提炼任务，正在处理中...')
+    goBack()
+    ElMessage.success('重新提炼任务已加入后台队列')
   } catch (e: any) {
     error.value = e.response?.data?.detail?.message || '发起重新提炼失败'
   } finally {
@@ -221,14 +207,24 @@ const onUpdate = (event: Event) => {
   }
 }
 
+const onResync = () => { void loadJob() }
+watch(() => route.params.jobId, (id) => {
+  jobId.value = String(id || '')
+  job.value = null
+  reviewDraft.value = null
+  loading.value = true
+  void loadJob()
+})
 onMounted(() => {
   window.addEventListener('playbook-promotion-updated', onUpdate)
+  window.addEventListener('playbook-promotion-resync', onResync)
   void loadJob()
 })
 
 onUnmounted(() => {
-  clearTimeout(pollTimer)
+  loadVersion++
   window.removeEventListener('playbook-promotion-updated', onUpdate)
+  window.removeEventListener('playbook-promotion-resync', onResync)
 })
 </script>
 
@@ -244,7 +240,6 @@ onUnmounted(() => {
         <div class="divider-v" />
         <div class="title-meta">
           <h1 class="page-title">案例晋升诊断规程确认</h1>
-          <span class="sub-text">AI 经验归纳工作台</span>
         </div>
       </div>
 
@@ -271,24 +266,6 @@ onUnmounted(() => {
         </div>
         <h3>正在加载规程草案...</h3>
         <p>正在拉取提炼任务及相关案例规格，请稍候</p>
-      </section>
-
-      <!-- 任务正在执行中态（RUNNING / PENDING） -->
-      <section v-else-if="isActive && !isPendingReview" class="state-card active-state">
-        <div class="sparkles-halo">
-          <Sparkles :size="36" />
-        </div>
-        <h3>AI 正在提炼与聚类诊断规程...</h3>
-        <p class="progress-desc">
-          正在深入分析所选 {{ job?.cases?.length || '多' }} 个案例的调用链特征、排查记录与根本原因，自动归纳定位方法与症状短语。
-        </p>
-        <div class="progress-box">
-          <div class="progress-track">
-            <div class="progress-fill" :style="{ width: `${job?.progress || 35}%` }" />
-          </div>
-          <span class="progress-num">{{ job?.progress || 35 }}%</span>
-        </div>
-        <p class="progress-tip">提炼完成后本页面将自动刷新并展示规程草案，您也可随时离开，任务将在后台持续执行。</p>
       </section>
 
       <!-- 任务已完成入库态 (CONFIRMED) -->

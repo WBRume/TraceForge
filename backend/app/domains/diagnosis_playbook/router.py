@@ -177,7 +177,11 @@ def promotion_jobs(
 
     from .promotion import KIND, view
 
-    query = db.query(SddAiJob).filter_by(workspace_id=ws_id, creator_id=user.id, queue_key=f"{KIND}:{ws_id}")
+    query = (
+        db.query(SddAiJob)
+        .filter_by(workspace_id=ws_id, creator_id=user.id)
+        .filter(SddAiJob.queue_key.like(f"{KIND}:%"))
+    )
     if job_id:
         query = query.filter_by(id=job_id)
     rows = query.order_by(SddAiJob.created_at.desc()).limit(20).all()
@@ -278,7 +282,8 @@ def cancel_promotion(
 
     job = (
         db.query(SddAiJob)
-        .filter_by(id=job_id, workspace_id=ws_id, creator_id=user.id, queue_key=f"{KIND}:{ws_id}")
+        .filter_by(id=job_id, workspace_id=ws_id, creator_id=user.id)
+        .filter(SddAiJob.queue_key.like(f"{KIND}:%"))
         .first()
     )
     if not job:

@@ -41,12 +41,13 @@ logger = get_logger(__name__, category="ai_session")
 class _TurnEvents:
     """Collect one provider call without sharing mutable state across retries."""
 
-    def __init__(self, call, runtime):
+    def __init__(self, call, runtime, persist_session=None):
         self.call = call
         self.runtime = runtime
         self.text_parts: list[str] = []
         self.result_text = ""
         self.result_is_error = False
+        self.persist_session = persist_session
 
     async def on_event(self, event: dict):
         event_type = str(event.get("type") or "")
@@ -56,6 +57,8 @@ class _TurnEvents:
             # JSON 解析、业务落库、错误转换和广播。
             if event_type == "system" and str(event.get("subtype") or "").lower() == "init":
                 record_provider_call_session_started(self.call, event.get("session_id"))
+                if self.persist_session and event.get("session_id"):
+                    await self.persist_session(event["session_id"])
             elif event_type == "result":
                 subtype = str(event.get("subtype") or "").lower()
                 is_error = bool(event.get("is_error")) or subtype == "error"
@@ -89,6 +92,30 @@ async def _persist_turn_process(identity: AgentProcessIdentity, *, current_attem
         effective_run_token or "",
         identity,
     )
+
+
+def _persist_turn_locator_sync(attempt, backend_name, session_id=None):
+    """Persist the stop locator before continuing, fenced to the owning attempt."""
+    from app.database import SessionLocal
+    from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+    from app.domains.ai.services.ai_job_convergence_service import AttemptFencedError
+
+    with SessionLocal.begin() as db:
+        job = db.query(SddAiJob).filter_by(id=attempt.job_id).with_for_update().one()
+        if (
+            job.run_token != attempt.run_token
+            or job.worker_boot_id != attempt.worker_boot_id
+            or job.status not in (AiJobStatus.RUNNING, AiJobStatus.TERMINATING)
+        ):
+            raise AttemptFencedError("Provider session locator belongs to a stale attempt")
+        job.agent_backend = backend_name
+        if session_id:
+            job.session_id = str(session_id)
+
+
+async def _persist_turn_locator(session_id=None, *, attempt, backend_name):
+    if attempt:
+        await run_db(_persist_turn_locator_sync, attempt, backend_name, session_id)
 
 
 async def _resolve_turn_timeout(bridge, call, current_attempt, wait_seconds, attempt_no, attempts_count, exc):
@@ -217,7 +244,7 @@ async def _run_cli_attempt(
     permission_mode,
     run_token,
 ):
-    from app.agents.selection import create_legacy_bridge
+    from app.agents.selection import create_legacy_bridge, default_backend_name
     from app.engine.claude_bridge import create_cli_bridge
 
     current_attempt = current_agent_attempt()
@@ -237,7 +264,11 @@ async def _run_cli_attempt(
     cancelled = False
     session_started = False
 
-    events = _TurnEvents(call, runtime)
+    resolved_backend = backend_name or default_backend_name()
+
+    persist_session = partial(_persist_turn_locator, attempt=current_attempt, backend_name=resolved_backend)
+
+    events = _TurnEvents(call, runtime, persist_session)
 
     env_overrides: dict[str, str] = {}
     if effective_run_token:
@@ -256,6 +287,7 @@ async def _run_cli_attempt(
     monitor_task: asyncio.Task | None = None
     try:
         try:
+            await persist_session()
             resumed_session_id = await bridge.start_session(
                 prompt=prompt,
                 project_path=project_path,
@@ -267,10 +299,11 @@ async def _run_cli_attempt(
                 on_process_started=on_process_started,
             )
             session_started = True
-            # start_session 成功返回是“已确认远程 session 创建”的登记点；
-            # 不能只依赖它（result 可能先于返回值到达），但必须补记。
-            if call is not None:
+            # Remote shims return immediately with an empty ID before creation.
+            # This is not evidence that a provider session was established.
+            if resumed_session_id:
                 record_provider_call_session_started(call, resumed_session_id)
+                await persist_session(resumed_session_id)
             if should_cancel:
 
                 async def _cancel_monitor() -> None:
