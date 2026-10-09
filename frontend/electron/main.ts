@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { registerDesktopCommands } from '../desktop/register'
 import { registerAttentionWindow } from '../desktop/attention'
 import { shutdownSpeech } from './ipc/speech'
+import { shutdownLocalServices } from './ipc/localResources'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
@@ -98,12 +99,12 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
-let speechShutdownComplete = false
+let shutdownComplete = false
 app.on('before-quit', event => {
-  if (speechShutdownComplete) return
+  if (shutdownComplete) return
   event.preventDefault()
-  void shutdownSpeech().finally(() => {
-    speechShutdownComplete = true
+  void Promise.allSettled([shutdownSpeech(), shutdownLocalServices()]).finally(() => {
+    shutdownComplete = true
     app.quit()
   })
 })

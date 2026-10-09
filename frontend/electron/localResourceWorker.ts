@@ -15,6 +15,11 @@ configurePlatform({
 let runtime: Runtime
 parentPort!.on('message', ({ id, kind, payload }) => {
   try {
+    if (kind === 'shutdown') {
+      runtime?.db.close()
+      parentPort!.postMessage({ id, result: true })
+      return
+    }
     if (kind === 'configure') runtime = new Runtime(payload)
     const result = kind === 'inspect' ? runtime.inspect(payload)
       : kind === 'operation' ? runtime.operation(payload) : true

@@ -23,6 +23,7 @@ export function createDesktopApi(bridge: DesktopBridge): SddDesktopApi {
     webhooks: { send: payload => invoke('webhooks:send', payload) },
     resources: {
       configureRoots: payload => invoke('resources:configure-roots', payload),
+      ensure: payload => invoke('resources:ensure', payload),
       start: payload => invoke('resources:start', payload),
     },
     download: { save: payload => invoke('download:save', payload) },

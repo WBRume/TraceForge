@@ -13,6 +13,8 @@ import { getSddDesktop } from '@/utils/runtime'
 const desktopMock = vi.hoisted(() => ({
   platform: 'win32',
   resources: {
+    ensure: vi.fn(),
+    configureRoots: vi.fn(),
     start: vi.fn(() => Promise.resolve({
       service_url: 'http://192.168.1.10:4096',
       resource_service_url: 'http://192.168.1.10:4098',
@@ -59,6 +61,11 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
     vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: '新建本地服务', action: 'confirm' } as any)
     localStorage.clear()
 
+    desktopMock.resources.ensure.mockResolvedValue({
+      resource_service_url: 'http://192.168.1.10:4098',
+      host_token: 'auto-host-token',
+    })
+    desktopMock.resources.configureRoots.mockResolvedValue({ managed: true })
     desktopMock.resources.start.mockImplementation(() => Promise.resolve({
       service_url: 'http://192.168.1.10:4096',
       resource_service_url: 'http://192.168.1.10:4098',
@@ -159,6 +166,9 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
     expect(wrapper.find('.btn-desktop-start').exists()).toBe(true)
     const serviceUrlInput = wrapper.find('#service-url')
     expect(serviceUrlInput.exists()).toBe(true)
+    expect(wrapper.find('#resource-url').exists()).toBe(false)
+    expect(wrapper.find('#host-token').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Host Token')
   })
 
   it('switches between steps when clicking stepper buttons and clicking next button', async () => {
@@ -176,7 +186,7 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
     // Click Step 1: 工作区目录
     await stepButtons[1].trigger('click')
     expect(wrapper.find('#workspace-root').isVisible()).toBe(true)
-    expect(wrapper.find('#host-token').isVisible()).toBe(false)
+    expect(wrapper.find('#agent-token').isVisible()).toBe(false)
 
     // Click Step 2: 代码仓库映射
     await stepButtons[2].trigger('click')
@@ -190,23 +200,22 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
     expect(wrapper.find('#workspace-root').isVisible()).toBe(true)
   })
 
-  it('toggles password visibility for host and agent token', async () => {
+  it('toggles password visibility for the agent token', async () => {
     const wrapper = mount(LocalServiceForm, {
       props: { workspaceId: 'ws-123' },
     })
     await flushPromises()
 
-    expect(wrapper.find('#host-token').isVisible()).toBe(true)
     expect(wrapper.find('#agent-token').isVisible()).toBe(true)
 
-    const hostTokenInput = wrapper.find('#host-token')
-    expect(hostTokenInput.attributes('type')).toBe('password')
+    const agentTokenInput = wrapper.find('#agent-token')
+    expect(agentTokenInput.attributes('type')).toBe('password')
 
     const toggleBtns = wrapper.findAll('.btn-affix-toggle')
     expect(toggleBtns.length).toBeGreaterThanOrEqual(1)
     await toggleBtns[0].trigger('click')
 
-    expect(wrapper.find('#host-token').attributes('type')).toBe('text')
+    expect(agentTokenInput.attributes('type')).toBe('text')
   })
 
   it('loads existing configuration when BaseSelect selects an item', async () => {
@@ -223,9 +232,6 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
     // Form should populate with selected item values
     const serviceUrlInput = wrapper.find<HTMLInputElement>('#service-url')
     expect(serviceUrlInput.element.value).toBe('http://192.168.1.10:4096')
-
-    const resourceUrlInput = wrapper.find<HTMLInputElement>('#resource-url')
-    expect(resourceUrlInput.element.value).toBe('http://192.168.1.10:4098')
 
     await wrapper.findAll('button').find(b => b.text() === '检测')!.trigger('click')
     await flushPromises()
@@ -267,7 +273,6 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
 
     // Fill form
     await wrapper.find('#service-url').setValue('http://192.168.1.50:4096')
-    await wrapper.find('#resource-url').setValue('http://192.168.1.50:4098')
 
     // Submit form
     if (wrapper.findAll('.stepper-item')[2].attributes('disabled') !== undefined) {
@@ -279,6 +284,12 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
     await flushPromises()
 
     expect(api.post).toHaveBeenCalled()
+    expect(api.post).toHaveBeenCalledWith('/workspaces/ws-123/local-resources', expect.objectContaining({
+      resource_service_url: 'http://192.168.1.10:4098', host_token: 'auto-host-token',
+    }))
+    expect(desktopMock.resources.configureRoots).toHaveBeenCalledWith(expect.objectContaining({
+      resourceServiceUrl: 'http://192.168.1.10:4098',
+    }))
     expect(wrapper.emitted('saved')).toBeTruthy()
     expect(ElMessage.success).toHaveBeenCalledWith('本地服务配置已保存')
     expect(wrapper.get('[data-testid="save-feedback"]').text()).toBe('本地服务配置已保存')
@@ -416,15 +427,17 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
     await flushPromises()
     await wrapper.findComponent(BaseSelect).vm.$emit('update:modelValue', '')
     await wrapper.find('#service-url').setValue('http://10.0.0.2:4096')
-    await wrapper.find('#resource-url').setValue('http://10.0.0.2:4098')
-    await wrapper.find('#host-token').setValue('draft-token')
+    await wrapper.find('#agent-token').setValue('manual-agent-token')
+    await wrapper.find('#agent-username').setValue('manual-user')
     await wrapper.findAll('button').find(button => button.text() === '检测')!.trigger('click')
     await flushPromises()
     expect(api.post).toHaveBeenCalledTimes(1)
+    expect(desktopMock.resources.ensure).toHaveBeenCalledWith({ backend: 'opencode' })
+    expect(desktopMock.resources.start).not.toHaveBeenCalled()
     expect(api.post).toHaveBeenCalledWith('/workspaces/ws-123/local-resources/check-connection', {
       resource_id: undefined, backend: 'opencode', service_url: 'http://10.0.0.2:4096',
-      resource_service_url: 'http://10.0.0.2:4098', host_token: 'draft-token',
-      agent_token: undefined, agent_username: 'opencode',
+      resource_service_url: 'http://192.168.1.10:4098', host_token: 'auto-host-token',
+      agent_token: 'manual-agent-token', agent_username: 'manual-user',
     })
     expect(api.put).not.toHaveBeenCalled()
     expect(wrapper.emitted('saved')).toBeUndefined()
@@ -450,18 +463,46 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
     wrapper.unmount()
   })
 
+  it('stops detection when the built-in resource service cannot start', async () => {
+    const wrapper = mount(LocalServiceForm, { props: { workspaceId: 'ws-123' } })
+    await flushPromises()
+    desktopMock.resources.ensure.mockRejectedValueOnce(new Error('内置资源服务启动失败'))
+    await wrapper.findAll('button').find(b => b.text() === '检测')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('内置资源服务启动失败')
+    expect(wrapper.get('.title-row .status-badge').text()).toBe('连接检测失败')
+    expect(api.post).not.toHaveBeenCalled()
+    expect(wrapper.findAll('.stepper-item')[1].attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it('discards automatic pairing if the user changes the address while preparing the resource service', async () => {
+    const wrapper = mount(LocalServiceForm, { props: { workspaceId: 'ws-123' } })
+    await flushPromises()
+    let resolveEnsure!: (value: { resource_service_url: string; host_token: string }) => void
+    desktopMock.resources.ensure.mockImplementationOnce(() => new Promise(resolve => { resolveEnsure = resolve }))
+    await wrapper.findAll('button').find(b => b.text() === '检测')!.trigger('click')
+    await wrapper.find('#service-url').setValue('http://10.0.0.99:4096')
+    resolveEnsure({ resource_service_url: 'http://192.168.1.10:4098', host_token: 'auto-host-token' })
+    await flushPromises()
+    expect(api.post).not.toHaveBeenCalled()
+    expect(Object.keys(useLocalServiceConnectionsStore().checked)).toHaveLength(0)
+    expect(wrapper.get('.title-row .status-badge').text()).toBe('待检测连接')
+    expect(wrapper.findAll('.stepper-item')[1].attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
   it('restores a checked connection from Pinia after remount without persisting credentials', async () => {
     let wrapper = mount(LocalServiceForm, { props: { workspaceId: 'ws-123' } })
     await flushPromises()
-    await wrapper.find('#host-token').setValue('only-in-pinia')
     await wrapper.findAll('button').find(b => b.text() === '检测')!.trigger('click')
     await flushPromises()
     wrapper.unmount()
     wrapper = mount(LocalServiceForm, { props: { workspaceId: 'ws-123' } })
     await flushPromises()
-    expect(wrapper.find<HTMLInputElement>('#host-token').element.value).toBe('only-in-pinia')
+    expect(Object.values(useLocalServiceConnectionsStore().checked)[0]).toMatchObject({ host_token: 'auto-host-token' })
     expect(wrapper.findAll('.stepper-item')[1].attributes('disabled')).toBeUndefined()
-    expect(JSON.stringify(localStorage)).not.toContain('only-in-pinia')
+    expect(JSON.stringify(localStorage)).not.toContain('auto-host-token')
     await wrapper.setProps({ workspaceId: 'another-workspace' })
     await flushPromises()
     expect(wrapper.findAll('.stepper-item')[1].attributes('disabled')).toBeDefined()
@@ -474,6 +515,7 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
     let resolveCheck!: (value: any) => void
     vi.mocked(api.post).mockImplementationOnce(() => new Promise(resolve => { resolveCheck = resolve }))
     await wrapper.findAll('button').find(b => b.text() === '检测')!.trigger('click')
+    await flushPromises()
     expect(wrapper.get('.title-row .status-badge').text()).toBe('连接检测中')
     await wrapper.find('#service-url').setValue('http://10.0.0.99:4096')
     resolveCheck({ data: { ready: true } })
@@ -486,7 +528,6 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
   it('shows save failure without reporting successful save or failed connection', async () => {
     const wrapper = mount(LocalServiceForm, { props: { workspaceId: 'ws-123' } })
     await flushPromises()
-    await wrapper.find('#host-token').setValue('replacement-token')
     await wrapper.findAll('button').find(b => b.text() === '检测')!.trigger('click')
     await flushPromises()
     await wrapper.findAll('.stepper-item')[2].trigger('click')
@@ -513,7 +554,6 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
     await flushPromises()
 
     await wrapper.find('#service-url').setValue('http://192.168.1.80:4096')
-    await wrapper.find('#resource-url').setValue('http://192.168.1.80:4098')
 
     if (wrapper.findAll('.stepper-item')[2].attributes('disabled') !== undefined) {
       await wrapper.findAll('button').find(b => b.text() === '检测')!.trigger('click')
@@ -550,7 +590,6 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
     await flushPromises()
 
     await wrapper.find('#service-url').setValue('http://192.168.1.80:4096')
-    await wrapper.find('#resource-url').setValue('http://192.168.1.80:4098')
 
     if (wrapper.findAll('.stepper-item')[2].attributes('disabled') !== undefined) {
       await wrapper.findAll('button').find(b => b.text() === '检测')!.trigger('click')

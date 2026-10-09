@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -113,41 +113,63 @@ test('compiled desktop host preserves config, Git, binary downloads, process eve
   }
 })
 
-test('compiled resource mode loads its bundled worker and enforces host authentication', { timeout: 30000 }, async () => {
+test('compiled desktop host embeds the resource listener and shuts it down with the client', { timeout: 30000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'traceforge-desktop-resource-'))
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
-  const listener = createServer()
-  await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve))
-  const port = listener.address().port
-  await new Promise(resolve => listener.close(resolve))
-  const token = 'x'.repeat(32)
-  const config = join(root, 'host.json')
-  writeFileSync(config, JSON.stringify({ state_root: join(root, 'state'), allowed_roots: [workspace], token, listen_host: '127.0.0.1', port }))
-  const child = spawn(executable, ['--local-resource-service', config], { windowsHide: true, stdio: 'pipe' })
+  const child = spawn(executable, [join(root, 'config'), root], { windowsHide: true, stdio: 'pipe' })
+  const pending = new Map()
+  let sequence = 0
   let stderr = ''
+  let resourceUrl
   child.stderr.on('data', data => { stderr += data })
-  child.stdout.resume()
+  const input = createInterface({ input: child.stdout })
+  input.on('line', line => {
+    const message = JSON.parse(line)
+    const reply = pending.get(message.id)
+    pending.delete(message.id)
+    if (message.error) reply?.reject(new Error(message.error))
+    else reply?.resolve(message.result)
+  })
+  const exited = new Promise(resolve => child.once('exit', code => {
+    for (const reply of pending.values()) reply.reject(new Error(`Desktop host exited ${code}: ${stderr}`))
+    pending.clear()
+    resolve(code)
+  }))
+  const invoke = (command, payload) => new Promise((resolve, reject) => {
+    const id = String(++sequence)
+    pending.set(id, { resolve, reject })
+    child.stdin.write(JSON.stringify({ id, channel: `sdd:resources:${command}`, payload }) + '\n')
+  })
   try {
-    const url = `http://127.0.0.1:${port}`
-    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-    const deadline = Date.now() + 15000
-    let ready = false
-    while (Date.now() < deadline && !ready) {
-      if (child.exitCode !== null) throw new Error(`Local resource service exited: ${stderr}`)
-      ready = await fetch(`${url}/v1/identity`, { headers }).then(response => response.ok).catch(() => false)
-      if (!ready) await new Promise(resolve => setTimeout(resolve, 50))
+    const paired = await invoke('ensure', { backend: 'opencode' })
+    assert.deepEqual(await invoke('ensure', { backend: 'opencode' }), paired)
+    const port = Number(new URL(paired.resource_service_url).port)
+    resourceUrl = `http://127.0.0.1:${port}`
+    if (process.platform === 'win32') {
+      const owner = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        `Get-NetTCPConnection -State Listen -LocalPort ${port} | Select-Object -ExpandProperty OwningProcess -Unique`],
+      { encoding: 'utf8', windowsHide: true }).trim()
+      assert.equal(Number(owner), child.pid)
+      console.log(`Resource listener PID ${owner} equals desktop host PID ${child.pid}`)
     }
-    assert.ok(ready, stderr)
-    assert.equal((await fetch(`${url}/v1/identity`)).status, 401)
-    const identity = await fetch(`${url}/v1/identity`, { headers }).then(response => response.json())
+    const headers = { Authorization: `Bearer ${paired.host_token}`, 'Content-Type': 'application/json' }
+    assert.equal((await fetch(`${resourceUrl}/v1/identity`)).status, 401)
+    const identity = await fetch(`${resourceUrl}/v1/identity`, { headers }).then(response => response.json())
     assert.ok(identity.capabilities.includes('checkpoint'))
-    const inspection = await fetch(`${url}/v1/repositories/inspect`, { method: 'POST', headers, body: JSON.stringify({ workspace_root: workspace, repositories: [] }) })
+    assert.deepEqual(await invoke('configure-roots', {
+      backend: 'opencode', resourceServiceUrl: paired.resource_service_url, workspaceRoot: workspace, repoRoots: [],
+    }), { managed: true })
+    const inspection = await fetch(`${resourceUrl}/v1/repositories/inspect`, { method: 'POST', headers, body: JSON.stringify({ workspace_root: workspace, repositories: [] }) })
     assert.equal(inspection.status, 200, await inspection.text())
-    const escape = await fetch(`${url}/v1/repositories/inspect`, { method: 'POST', headers, body: JSON.stringify({ workspace_root: root, repositories: [] }) })
+    const escape = await fetch(`${resourceUrl}/v1/repositories/inspect`, { method: 'POST', headers, body: JSON.stringify({ workspace_root: root, repositories: [] }) })
     assert.equal(escape.status, 409)
+    assert.equal(stderr, '')
   } finally {
-    if (child.exitCode === null) { child.kill(); await new Promise(resolve => child.once('exit', resolve)) }
+    child.stdin.end()
+    assert.equal(await exited, 0, stderr)
+    input.close()
+    if (resourceUrl) await assert.rejects(fetch(`${resourceUrl}/v1/identity`, { signal: AbortSignal.timeout(1000) }))
     assert.ok(root.startsWith(join(tmpdir(), 'traceforge-desktop-resource-')))
     rmSync(root, { recursive: true, force: true })
   }

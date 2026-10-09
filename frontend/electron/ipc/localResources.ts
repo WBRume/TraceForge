@@ -1,22 +1,34 @@
-import { app, ipcMain, utilityProcess } from '../../desktop/native'
+import { app, ipcMain, startLocalResourceService } from '../../desktop/native'
 import spawn from 'cross-spawn'
 import { createHash, randomBytes } from 'node:crypto'
-import { closeSync, createWriteStream, existsSync, openSync } from 'node:fs'
+import { closeSync, existsSync, openSync } from 'node:fs'
 import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
 import { networkInterfaces } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:net'
 import type { AddressInfo } from 'node:net'
 
-const starts = new Map<string, Promise<unknown>>()
-const resourceChildren = new Set<ReturnType<typeof utilityProcess.fork>>()
+const starts = new Map<string, { includeAgent: boolean; promise: ReturnType<typeof startServices> }>()
+type ResourceService = Awaited<ReturnType<typeof startLocalResourceService>>
+const resourceServices = new Map<string, ResourceService>()
 const children = new Set<ReturnType<typeof spawn>>()
+let shutdownRequested = false
+let shutdownPromise: Promise<void> | undefined
 
-export function shutdownLocalServices() {
-  for (const child of children) child.kill()
-  for (const child of resourceChildren) child.kill()
-  children.clear()
-  resourceChildren.clear()
+export function shutdownLocalServices(): Promise<void> {
+  if (shutdownPromise) return shutdownPromise
+  shutdownRequested = true
+  shutdownPromise = (async () => {
+    await Promise.allSettled([...starts.values()].map(start => start.promise))
+    for (const child of children) child.kill()
+    children.clear()
+    await Promise.all([...resourceServices.values()].map(service => service.close()))
+    resourceServices.clear()
+  })()
+  return shutdownPromise
+}
+function requireActive() {
+  if (shutdownRequested) throw new Error('客户端正在退出，无法启动本地服务')
 }
 const freePort = async () => {
   const server = createServer()
@@ -52,23 +64,33 @@ export const registerLocalResourcesIpc = () => {
     if (!payload.workspaceRoot || !Array.isArray(payload.repoRoots)) throw new Error('保存执行资源前，请填写本地工作区根目录')
     await mkdir(payload.workspaceRoot, { recursive: true })
     const roots = await Promise.all([payload.workspaceRoot, ...payload.repoRoots].map(root => realpath(root)))
-    // Retain grants used by running tasks; publish atomically for the Host worker.
+    // Retain grants used by running tasks; publish atomically for the resource worker thread.
     config.allowed_roots = [...new Set([...(config.allowed_roots || []), ...roots])]
     const temporary = `${configFile}.${randomBytes(8).toString('hex')}.tmp`
     await writeFile(temporary, JSON.stringify(config), { mode: 0o600 })
     await rename(temporary, configFile)
     return { managed: true }
   })
-  ipcMain.handle('sdd:resources:start', (_event, payload: { backend: string }) => {
-    const pending = starts.get(payload.backend)
-    if (pending) return pending
-    const started = startServices(payload).finally(() => starts.delete(payload.backend))
-    starts.set(payload.backend, started)
-    return started
+  ipcMain.handle('sdd:resources:ensure', async (_event, payload: { backend: string }) => {
+    const { resource_service_url, host_token } = await requestServices(payload, false)
+    return { resource_service_url, host_token }
   })
+  ipcMain.handle('sdd:resources:start', (_event, payload: { backend: string }) => requestServices(payload, true))
 }
 
-async function startServices(payload: { backend: string }) {
+function requestServices(payload: { backend: string }, includeAgent: boolean) {
+  if (shutdownRequested) return Promise.reject(new Error('客户端正在退出，无法启动本地服务'))
+  const pending = starts.get(payload.backend)
+  if (pending && (pending.includeAgent || !includeAgent)) return pending.promise
+  const start = () => startServices(payload, includeAgent)
+  const promise = (pending ? pending.promise.catch(() => undefined).then(start) : start()).finally(() => {
+    if (starts.get(payload.backend)?.promise === promise) starts.delete(payload.backend)
+  })
+  starts.set(payload.backend, { includeAgent, promise })
+  return promise
+}
+
+async function startServices(payload: { backend: string }, includeAgent: boolean) {
   if (!['opencode', 'dsh'].includes(payload.backend)) throw new Error('Only OpenCode serve and DSH web are supported')
   const host = Object.values(networkInterfaces()).flat().find(address => address?.family === 'IPv4' && !address.internal)?.address || '127.0.0.1'
   const stateRoot = serviceStateRoot(payload.backend)
@@ -83,6 +105,7 @@ async function startServices(payload: { backend: string }) {
   const config = { state_root: stateRoot, allowed_roots: existing?.allowed_roots || [], token, listen_host: '0.0.0.0', port: hostPort, agent_port: agentPort, agent_token: agentToken, advertised_host: existing?.advertised_host || host }
   const result = () => ({ service_url: `http://${config.advertised_host}:${agentPort}`, resource_service_url: `http://${config.advertised_host}:${hostPort}`, host_token: token, agent_token: agentToken })
   const agentReady = async () => {
+    if (!includeAgent) return true
     try {
       const response = await fetch(`http://127.0.0.1:${agentPort}${payload.backend === 'opencode' ? '/api/info' : `/?token=${encodeURIComponent(agentToken)}`}`, {
         headers: payload.backend === 'opencode' ? { Authorization: `Basic ${Buffer.from(`opencode:${agentToken}`).toString('base64')}` } : {},
@@ -95,12 +118,14 @@ async function startServices(payload: { backend: string }) {
       return [200, 302, 303, 307].includes(response.status)
     } catch { return false }
   }
-  let hostReady = false
-  try {
-    const identity = await fetch(`http://127.0.0.1:${hostPort}/v1/identity`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1000) })
-    hostReady = identity.ok && !!existing
-    if (hostReady && await agentReady()) return result()
-  } catch { /* A persisted profile can be restarted using the same endpoints. */ }
+  requireActive()
+  const currentResource = resourceServices.get(payload.backend)
+  const hostReady = currentResource?.isRunning() === true
+  if (currentResource && !hostReady) {
+    await currentResource.close()
+    resourceServices.delete(payload.backend)
+  }
+  if (hostReady && await agentReady()) return result()
   const agentIsReady = await agentReady()
   for (const [port, ready, label] of [[hostPort, hostReady, '同机资源服务'], [agentPort, agentIsReady, payload.backend]] as const) {
     if (ready) continue
@@ -112,28 +137,29 @@ async function startServices(payload: { backend: string }) {
   }
   await writeFile(configFile, JSON.stringify(config), { mode: 0o600 })
   let failure: Error | undefined
-  let resourceExit: number | null = null
-  const resource = hostReady ? null : utilityProcess.fork(
-    join(app.getAppPath(), 'dist-electron/localResourceService.js'), [configFile],
-    { cwd: stateRoot, stdio: 'pipe', serviceName: 'TraceForge Local Resources' },
-  )
-  if (resource) {
-    resourceChildren.add(resource)
-    const log = createWriteStream(join(stateRoot, 'resource.log'), { flags: 'a', mode: 0o600 })
-    resource.stdout?.pipe(log, { end: false })
-    resource.stderr?.pipe(log, { end: false })
-    resource.once('exit', code => { resourceExit = code; resourceChildren.delete(resource); log.end() })
-  }
-  const priorAgentLog = existsSync(join(stateRoot, 'agent.log')) ? (await readFile(join(stateRoot, 'agent.log'), 'utf8')).length : 0
-  const agent = agentIsReady ? null : payload.backend === 'opencode'
-    ? launch('opencode', ['serve', '--hostname', '0.0.0.0', '--port', String(agentPort)], stateRoot, join(stateRoot, 'agent.log'), { ...process.env, OPENCODE_SERVER_PASSWORD: agentToken, OPENCODE_SERVER_USERNAME: 'opencode' })
-    : launch('dsh', ['web', '--host', '0.0.0.0', '--port', String(agentPort), '--no-open'], stateRoot, join(stateRoot, 'agent.log'))
-  agent?.once('error', error => { failure = error })
+  let resource: ResourceService | undefined
+  let agent: ReturnType<typeof launch> | undefined
   try {
+    requireActive()
+    if (!hostReady) {
+      resource = await startLocalResourceService({ ...config, roots_config_path: configFile })
+      resourceServices.set(payload.backend, resource)
+    }
+    requireActive()
+    if (!includeAgent) return result()
+    const priorAgentLog = existsSync(join(stateRoot, 'agent.log')) ? (await readFile(join(stateRoot, 'agent.log'), 'utf8')).length : 0
+    requireActive()
+    if (!agentIsReady) {
+      agent = payload.backend === 'opencode'
+        ? launch('opencode', ['serve', '--hostname', '0.0.0.0', '--port', String(agentPort)], stateRoot, join(stateRoot, 'agent.log'), { ...process.env, OPENCODE_SERVER_PASSWORD: agentToken, OPENCODE_SERVER_USERNAME: 'opencode' })
+        : launch('dsh', ['web', '--host', '0.0.0.0', '--port', String(agentPort), '--no-open'], stateRoot, join(stateRoot, 'agent.log'))
+      agent.once('error', error => { failure = error })
+    }
     if (payload.backend === 'dsh' && agent) {
       const deadline = Date.now() + 90_000
       agentToken = ''
       while (!agentToken && Date.now() < deadline) {
+        requireActive()
         if (failure || agent.exitCode !== null) throw failure || new Error('DSH 启动失败')
         const output = await readFile(join(stateRoot, 'agent.log'), 'utf8')
         const match = /dsh web: (http:\/\/[^\s]+)/u.exec(output.slice(priorAgentLog))
@@ -146,8 +172,9 @@ async function startServices(payload: { backend: string }) {
     }
     const deadline = Date.now() + 30_000
     while (Date.now() < deadline) {
+      requireActive()
       if (failure) throw failure
-      if (resourceExit !== null) throw new Error(`同机资源服务启动失败（退出码 ${resourceExit}），日志：${join(stateRoot, 'resource.log')}`)
+      if (!resourceServices.get(payload.backend)?.isRunning()) throw new Error('内置资源服务已停止')
       if (agent && agent.exitCode !== null) throw new Error(`${payload.backend} 启动失败（退出码 ${agent.exitCode}），请检查端口 ${agentPort} 是否被占用及日志：${join(stateRoot, 'agent.log')}`)
       try {
         const response = await fetch(`http://127.0.0.1:${hostPort}/v1/identity`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1000) })
@@ -156,5 +183,12 @@ async function startServices(payload: { backend: string }) {
       await new Promise(ok => setTimeout(ok, 250))
     }
     throw new Error('同机资源服务启动超时')
-  } catch (error) { resource?.kill(); agent?.kill(); throw error }
+  } catch (error) {
+    agent?.kill()
+    if (resource) {
+      resourceServices.delete(payload.backend)
+      await resource.close()
+    }
+    throw error
+  }
 }

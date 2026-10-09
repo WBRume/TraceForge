@@ -53,7 +53,6 @@ const serviceStarted = ref(false)
 const selected = ref('')
 const engine = ref('')
 const currentStep = ref(0)
-const showHostToken = ref(false)
 const showAgentToken = ref(false)
 const connectionStatus = ref<'idle' | 'checking' | 'failed'>('idle')
 const saveFeedback = ref('')
@@ -261,8 +260,9 @@ async function startLocal() {
 }
 
 async function check() {
-  if (busy.value) return
-  const draft = connectionDraft.value
+  const resources = desktop.value?.resources
+  if (!resources || busy.value) return
+  let draft = connectionDraft.value
   const workspaceId = props.workspaceId
   const key = connectionKey.value
   busy.value = true
@@ -270,6 +270,12 @@ async function check() {
   connections.invalidate(key)
   connectionStatus.value = 'checking'
   try {
+    const managed = await resources.ensure({ backend: draft.backend })
+    if (draft !== connectionDraft.value || key !== connectionKey.value) return
+    form.resource_service_url = managed.resource_service_url
+    form.host_token = managed.host_token
+    draft = connectionDraft.value
+    connectionStatus.value = 'checking'
     const { data } = await api.post(`/workspaces/${workspaceId}/local-resources/check-connection`, draft)
     if (data?.ready !== true) throw new Error('服务连接检测未通过')
     if (draft === connectionDraft.value && key === connectionKey.value) {
@@ -340,7 +346,7 @@ const steps = [
             </span>
           </div>
           <p class="subtitle">
-            在 TraceForge 客户端配置本地 Agent 与内置资源服务，本地资源任务仅可在客户端创建。
+            配置本机 Agent 服务与工作目录，内置资源服务由客户端自动管理。
           </p>
         </div>
       </div>
@@ -416,11 +422,11 @@ const steps = [
         <div class="info-callout">
           <Info class="w-4 h-4 text-sky-500 flex-shrink-0" />
           <span>
-            平台将通过局域网直接向下方两个服务地址发起通信。请确保内网 IP 可达且无防火墙阻拦，默认端口为 <strong>4096 (Agent)</strong> 与 <strong>4098 (同机资源服务)</strong>。当前不支持公网部署。
+            填写本机 Agent 的局域网地址与访问凭据，确保平台可通过内网访问。检测时客户端会自动准备内置资源服务，无需手动配置其地址与配对凭据。
           </span>
         </div>
 
-        <div class="form-grid">
+        <div class="form-grid connection-grid">
 
           <div class="form-group">
             <label class="form-label" for="service-url">
@@ -439,52 +445,6 @@ const steps = [
               />
             </div>
             <p class="form-hint">Agent 智能体核心调度服务，负责接收平台任务并执行模型推理。</p>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label" for="resource-url">
-              <span>同机资源服务地址</span>
-              <span class="required-mark">*</span>
-            </label>
-            <div class="input-with-affix">
-              <span class="input-affix">URL</span>
-              <input
-                id="resource-url"
-                v-model="form.resource_service_url"
-                type="url"
-                required
-                placeholder="http://192.168.1.10:4098"
-                class="form-input with-affix font-mono"
-              />
-            </div>
-            <p class="form-hint">同机资源服务，负责本地工作区文件读写、Git worktree 检出与工具执行。</p>
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="host-token">
-              <span>资源服务配对凭据 (Host Token)</span>
-              <span v-if="!selected" class="required-mark">*</span>
-            </label>
-            <div class="input-with-action">
-              <input
-                id="host-token"
-                v-model="form.host_token"
-                :type="showHostToken ? 'text' : 'password'"
-                autocomplete="new-password"
-                :required="!selected"
-                :placeholder="selected ? '留空表示保留原凭据' : '请输入配对 Token'"
-                class="form-input font-mono"
-              />
-              <button
-                type="button"
-                class="btn-affix-toggle"
-                :title="showHostToken ? '隐藏凭据' : '显示凭据'"
-                @click="showHostToken = !showHostToken"
-              >
-                <EyeOff v-if="showHostToken" class="w-4 h-4" />
-                <Eye v-else class="w-4 h-4" />
-              </button>
-            </div>
-            <p class="form-hint">修改已有配置时，凭据留空表示保留原密钥。</p>
           </div>
 
           <div class="form-group">
@@ -1089,6 +1049,16 @@ const steps = [
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1.25rem;
+}
+
+.connection-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 640px) {
+  .connection-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .col-span-2 {
