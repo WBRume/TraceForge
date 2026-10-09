@@ -11,25 +11,20 @@ import {
   CheckCircle,
   GitBranch,
   FilePlus,
-  MessageCircle,
   Database,
   ListChecks,
   PlugZap,
   Monitor,
   Archive,
-  GitPullRequest,
   Target,
-  Eye,
-  ListOrdered,
   Rocket,
   AlertCircle,
   Bug,
-  Video,
-  Wrench,
   Lightbulb,
   Brain,
   ClipboardList,
-  GitMerge
+  GitMerge,
+  Terminal
 } from '@/components/icons'
 
 const canvas = ref<HTMLElement | null>(null)
@@ -91,142 +86,125 @@ onMounted(() => {
     <!-- 拖拽画布区域 -->
     <main class="canvas no-scrollbar" ref="canvas">
       <div class="flow-wrapper">
-        <!-- ================= 全局巨型循环 6 -> 1 (右侧) ================= -->
-        <div class="loop-path right-loop path-ai" style="top: 60px; bottom: 260px; right: -120px; width: 180px;">
+        <!-- ================= 全局巨型循环 7 -> 1 (右侧经验反哺闭环) ================= -->
+        <div class="loop-path right-loop path-ai" style="top: 60px; bottom: 120px; right: -120px; width: 180px;">
           <div class="loop-arrow-up-left"></div>
           <div class="loop-label ai glow-ai" style="top: 50%; right: -24px; transform: translate(100%, -50%);">
-            <Lightbulb class="w-5 h-5 text-yellow-500" /> AI 提炼经验，反哺更新全局规则库
+            <Lightbulb class="w-5 h-5 text-yellow-500" /> 排障剧本反哺更新全局规则库与新研发需求
           </div>
         </div>
 
-        <!-- ================= 嵌套循环 5 -> 2 (左侧) ================= -->
-        <div class="loop-path left-loop path-decision" style="top: 480px; bottom: 480px; left: -80px; width: 120px;">
+        <!-- ================= 嵌套循环 5 -> 2 (左侧需求重塑闭环) ================= -->
+        <div class="loop-path left-loop path-decision" style="top: 480px; bottom: 780px; left: -80px; width: 120px;">
           <div class="loop-arrow-up-right"></div>
           <div class="loop-label decision" style="top: 50%; left: -16px; transform: translate(-100%, -50%);">
             <GitMerge class="w-4 h-4 text-orange-500" /> 作为新需求，重塑闭环
           </div>
         </div>
 
-        <!-- ================= 阶段 1 ================= -->
+        <!-- ================= 阶段 1：需求建模与资产拆分 ================= -->
         <div class="phase-group">
-          <div class="phase-badge">Phase 1: Skill 管理</div>
+          <div class="phase-badge">Phase 1: 需求建模与资产拆分 (正向研发)</div>
           
-          <div class="loop-path local-left path-decision" style="top: 30px; bottom: 30px; left: -40px; width: 60px;">
-            <div class="loop-arrow-up-right"></div>
-            <div class="loop-label decision" style="top: 50%; left: -12px; transform: translate(-100%, -50%);">打回重写</div>
-          </div>
-
-          <div class="node-card node-human">
-            <div class="node-header txt-human"><Pencil class="w-5 h-5" /> 用户：编写 Markdown</div>
-            <div class="node-desc">定制规则规范</div>
-          </div>
-          <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
-          
-          <div class="node-card node-decision">
-            <div class="node-header txt-decision"><Search class="w-5 h-5" /> 专家：评审 Skill 质量</div>
-            <div class="node-subtext">控制 AI 行为的输入源头审查</div>
-          </div>
-          <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
-
-          <div class="node-card node-sys">
-            <div class="node-header txt-sys" style="margin-bottom:0;"><CheckCircle class="w-5 h-5" /> 系统：状态变更为已发布</div>
-          </div>
-        </div>
-
-        <div class="flow-line separator"></div>
-        <div class="flow-arrow separator-arrow"></div>
-
-        <!-- ================= 阶段 2 ================= -->
-        <div class="phase-group">
-          <div class="phase-badge">Phase 2: SDD 需求规格与规划</div>
-
           <div class="node-card node-ext external-floating" style="top: 8px; left: -300px; width: 192px;">
-            <div class="node-header txt-ext" style="font-size: 0.75rem;"><GitBranch class="w-4 h-4" /> Gitlab / 知识库</div>
-            <div class="node-desc" style="font-size: 10px;">通过 RAG 投喂历史项目上下文</div>
+            <div class="node-header txt-ext" style="font-size: 0.75rem;"><GitBranch class="w-4 h-4" /> 需求源与规范包</div>
+            <div class="node-desc" style="font-size: 10px;">Markdown 规范包与工作区隔离沙箱</div>
           </div>
           <div class="loop-path path-ext" style="top: 32px; left: -100px; width: 100px; z-index: 10;">
             <div class="loop-arrow-up-right ext-connector"></div>
           </div>
 
-          <div class="loop-path local-left path-decision" style="top: 160px; bottom: 30px; left: -40px; width: 60px;">
+          <div class="loop-path local-left path-decision" style="top: 30px; bottom: 30px; left: -40px; width: 60px;">
             <div class="loop-arrow-up-right"></div>
-            <div class="loop-label decision" style="top: 50%; left: -12px; transform: translate(-100%, -50%);">需求不符</div>
+            <div class="loop-label decision" style="top: 50%; left: -12px; transform: translate(-100%, -50%);">打回重构</div>
           </div>
 
           <div class="node-card node-human">
-            <div class="node-header txt-human"><FilePlus class="w-5 h-5" /> 用户：新建 Task 关联 Skill</div>
+            <div class="node-header txt-human"><FilePlus class="w-5 h-5" /> 用户：导入 Markdown 需求</div>
+            <div class="node-desc">划定租户空间与安全沙箱基准</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
-
+          
           <div class="node-card node-ai bg-ai-half glow-ai">
-            <div class="node-header txt-ai"><MessageCircle class="w-5 h-5" /> AI & 用户：需求评审、讨论与提案落地</div>
-            <div class="node-desc">解析原始 Markdown 需求，通过人机对话消除歧义并冻结业务目标</div>
+            <div class="node-header txt-ai"><Brain class="w-5 h-5" /> AI & 用户：树状拆分与块级评审 (Split Review)</div>
+            <div class="node-desc">粗粒度需求分解为原子需求项，绑定验收准则并关联 Task</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
-          <div class="node-card node-ai relative">
-            <div class="node-header txt-ai"><Brain class="w-5 h-5" /> AI：Brainstorming (基于提案进行架构比选)</div>
-            <div class="node-desc">基于上一步确定的提案，探索多种实现路径与组件拆分方案</div>
-            <div class="absolute -right-4 top-1/2 -translate-y-1/2 flex flex-col gap-1">
-              <span class="inline-badge bg-green-100 text-green-700 text-[10px] shadow-sm">方案 A (推荐)</span>
-              <span class="inline-badge bg-slate-100 text-slate-500 text-[10px] scale-90 opacity-70">方案 B</span>
-              <span class="inline-badge bg-slate-100 text-slate-500 text-[10px] scale-90 opacity-70">方案 C</span>
-            </div>
+          <div class="node-card node-sys">
+            <div class="node-header txt-sys"><CheckCircle class="w-5 h-5" /> 系统：建立全链路覆盖度基准矩阵</div>
+            <div class="node-subtext">Requirement → Task 严格挂载，杜绝无需求编码</div>
+          </div>
+        </div>
+
+        <div class="flow-line separator"></div>
+        <div class="flow-arrow separator-arrow"></div>
+
+        <!-- ================= 阶段 2：契约先行与 API Mock 隔离 ================= -->
+        <div class="phase-group">
+          <div class="phase-badge">Phase 2: 契约先行与 API Mock 隔离 (正向研发)</div>
+
+          <div class="node-card node-sys">
+            <div class="node-header txt-sys"><ClipboardList class="w-5 h-5" /> 系统：解析 OpenAPI / Swagger 契约</div>
+            <div class="node-desc">自动提取 Endpoint 端点定义与 Entity 数据实体结构</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-ai bg-ai-half">
-            <div class="node-header txt-ai"><ClipboardList class="w-5 h-5" /> AI：Writing Plans (含 OpenAPI 契约自动推导)</div>
-            <div class="node-desc">书写原子化工程计划，自动推导并嵌出缺失的 Swagger / 实体块</div>
+            <div class="node-header txt-ai"><Bot class="w-5 h-5" /> AI：自动推导多场景 Mock Case</div>
+            <div class="node-desc">生成正常响应、参数校验 400、权限 403、熔断 500 与空边界用例</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
-          <div class="node-card node-decision">
-            <div class="node-header txt-decision"><ListChecks class="w-5 h-5" /> 用户：人工确认文档与工程计划</div>
-            <div class="node-subtext">通过后锁定文档进入执行阶段</div>
+          <!-- Gateway -->
+          <div class="node-card node-sys gateway">
+            <div class="gateway-content">
+              <div class="gateway-icon">
+                <Plug class="w-6 h-6 text-blue-300" />
+              </div>
+              <div>
+                <div class="gateway-title">系统：动态切流虚拟网关 (Dynamic Gateway)</div>
+                <div class="gateway-sub">单接口 MOCK 仿真 / PROXY 真实后端透传<br>混沌工程异常注入 · 彻底解耦前后端联调</div>
+              </div>
+            </div>
           </div>
         </div>
 
         <div class="flow-line separator"></div>
         <div class="flow-arrow separator-arrow"></div>
 
-        <!-- ================= 阶段 3 ================= -->
+        <!-- ================= 阶段 3：终端协同与人在回路 (HITL) ================= -->
         <div class="phase-group">
-          <div class="phase-badge">Phase 3: Subagent-Driven Development</div>
+          <div class="phase-badge">Phase 3: 终端协同与人在回路 (正向研发)</div>
 
-          <div class="node-card node-sys">
-            <div class="node-header txt-sys"><Settings class="w-5 h-5" /> 系统：初始化隔离沙箱与 Skill 矩阵</div>
+          <div class="node-card node-human">
+            <div class="node-header txt-human"><User class="w-5 h-5" /> 用户：多模态录入 (键盘 / 离线 Whisper 语音)</div>
+            <div class="node-desc">高精度输入提示词与业务约束，解放双手</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-ai bg-ai-half glow-ai">
-            <div class="node-header txt-ai"><Bot class="w-5 h-5" /> AI (Subagent)：领用 Plan 任务</div>
-            <div class="node-desc">依据工程计划拆分，自动启用子代理并行执行任务</div>
+            <div class="node-header txt-ai"><Terminal class="w-5 h-5" /> AI (Claude CLI / PTY)：协作编码与计划比对</div>
+            <div class="node-desc">流式展示推理过程、工具调用与计划文档高亮快照</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
-          <div class="node-card node-ai">
-            <div class="node-header txt-ai"><ListOrdered class="w-5 h-5" /> AI：原子代码实现与 API Mock 补全</div>
-            <div class="node-desc">生成的界面、逻辑与 Mock 数据均严格遵循文档契约</div>
-          </div>
-          <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
-
-          <div class="node-card node-sys">
-            <div class="node-header txt-sys"><Archive class="w-5 h-5" /> 系统：生成基准代码快照 (Git Commit)</div>
-            <div class="node-subtext">为 TDD 循环准备稳定的初始状态</div>
+          <div class="node-card node-decision">
+            <div class="node-header txt-decision"><PlugZap class="w-5 h-5" /> HITL 拦截：高危变更授权与双向澄清</div>
+            <div class="node-subtext">高危文件操作强制挂起等待人工授权；主动发起问答消除歧义</div>
           </div>
         </div>
 
         <div class="flow-line separator"></div>
         <div class="flow-arrow separator-arrow"></div>
 
-        <!-- ================= 阶段 4 ================= -->
+        <!-- ================= 阶段 4：TDD 并行开发与单测绿灯 ================= -->
         <div class="phase-group">
-          <div class="phase-badge blue">Phase 4: TDD 并行开发</div>
+          <div class="phase-badge blue">Phase 4: TDD 并行开发与单测绿灯 (正向研发)</div>
 
           <div class="node-card node-sys bg-sys-third">
             <div class="node-header txt-sys"><PlugZap class="w-5 h-5" /> 系统：注入唯一 Mock Base URL</div>
-            <div class="node-subtext">统一稳定的全局上下文基座</div>
+            <div class="node-subtext">统一稳定的全局契约上下文基座</div>
           </div>
 
           <!-- 分叉结构 -->
@@ -242,8 +220,8 @@ onMounted(() => {
             <!-- 左侧：前端 UI -->
             <div class="node-card node-ai bg-white relative">
               <div class="node-header txt-blue branch-header"><Monitor class="w-5 h-5 text-blue-600" /> UI 前端工程流</div>
-              <div class="node-desc" style="color: #334155;">🤖 独立对接 Mock，不被阻塞</div>
-              <div class="node-subtext">自动编写页面组件、状态管理与交互代码</div>
+              <div class="node-desc" style="color: #334155;">🤖 独立对接 Mock 网关，不被阻塞</div>
+              <div class="node-subtext">自动编写页面组件、Pinia 状态与交互逻辑</div>
             </div>
 
             <!-- 右侧：后端 TDD -->
@@ -269,106 +247,109 @@ onMounted(() => {
             <div class="branch-v-bottom"><div class="flow-arrow"></div></div>
           </div>
 
-          <!-- Gateway -->
-          <div class="node-card node-sys gateway">
-            <div class="gateway-content">
-              <div class="gateway-icon">
-                <Plug class="w-6 h-6 text-blue-300" />
-              </div>
-              <div>
-                <div class="gateway-title">系统：动态代理网关联调</div>
-                <div class="gateway-sub">MOCK/PROXY 按需混合路由<br>混沌工程前端异常注入测试</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
-
-          <!-- HITL -->
-          <div class="node-card node-decision">
-            <div class="node-header txt-decision"><PlugZap class="w-5 h-5" /> 用户：最终人机协同验收 (HITL)</div>
-            <div class="node-subtext">审阅变更 Diff，确认代码合并至 master</div>
+          <div class="node-card node-sys">
+            <div class="node-header txt-sys"><CheckCircle class="w-5 h-5" /> 系统：生成基准代码快照 (Git Worktree)</div>
+            <div class="node-subtext">为变更归因与验收准备稳定的初始版本</div>
           </div>
         </div>
 
         <div class="flow-line separator"></div>
         <div class="flow-arrow separator-arrow"></div>
 
-        <!-- ================= 阶段 5 ================= -->
+        <!-- ================= 阶段 5：差异归因与三步收尾交付 ================= -->
         <div class="phase-group">
-          <div class="phase-badge">Phase 5: 资产管理</div>
-
-          <div class="node-card node-sys">
-            <div class="node-header txt-sys"><Archive class="w-5 h-5" /> 系统：代码与契约结转为数字资产归档</div>
-          </div>
-          <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
-
-          <div class="loop-path local-left path-decision" style="top: 110px; bottom: 110px; left: -40px; width: 60px;">
-            <div class="loop-arrow-up-right"></div>
-            <div class="loop-label decision" style="top: 50%; left: -12px; transform: translate(-100%, -50%);">影响过大</div>
-          </div>
-
-          <div class="node-card node-human">
-            <div class="node-header txt-human"><GitPullRequest class="w-5 h-5" /> 产品/架构师：发起规范或需求变更</div>
-          </div>
-          <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
+          <div class="phase-badge">Phase 5: 差异归因与三步收尾交付 (正向研发)</div>
 
           <div class="node-card node-ai bg-red-third">
-            <div class="node-header text-red-600"><Target class="w-5 h-5" /> AI：跨库执行「爆炸半径」影响面计算</div>
+            <div class="node-header text-red-600"><Target class="w-5 h-5" /> AI & 系统：Delta 工作台四维差异归因</div>
+            <div class="node-desc">逐行分类：逻辑纠偏 / 边界补充 / 规范对齐 / 视觉美化</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-decision">
-            <div class="node-header txt-decision"><Eye class="w-5 h-5" /> 用户：可视化审阅受影响的页面与单测</div>
+            <div class="node-header txt-decision"><ListChecks class="w-5 h-5" /> 用户与系统：三步收尾工作流 (Closeout)</div>
+            <div class="node-subtext">基准对比 (Baseline) → 专家审查 (Review) → 最终摘要 (Summary)</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-sys">
-            <div class="node-header txt-sys"><ListOrdered class="w-5 h-5" /> 系统：生成并确认变更拆分计划</div>
+            <div class="node-header txt-sys"><CheckCircle class="w-5 h-5" /> 系统：固化交付证据链与 100% 全链路追溯覆盖</div>
+            <div class="node-subtext">生成不可篡改复盘审计报告，需求与代码双向闭环</div>
           </div>
         </div>
 
         <div class="flow-line separator"></div>
         <div class="flow-arrow separator-arrow"></div>
 
-        <!-- ================= 阶段 6 ================= -->
-        <div class="phase-group" style="margin-bottom: 0;">
-          <div class="phase-badge">Phase 6: CI/CD 反哺</div>
+        <!-- ================= 阶段 6：异常阻断与问题定位路径 ================= -->
+        <div class="phase-group">
+          <div class="phase-badge red">Phase 6: 异常阻断与问题定位路径 (故障定位闭环)</div>
 
+          <!-- 左侧监控与自动化外部告警源 -->
           <div class="external-stack">
             <div class="node-card node-ext p-3 w-full">
               <div class="node-header txt-ext text-[0.75rem] mb-1"><Rocket class="w-4 h-4" /> 自动化流水线</div>
-              <div class="node-desc text-[0.625rem]">以 Mock 契约跑回归测试</div>
+              <div class="node-desc text-[0.625rem]">以 Mock 契约跑回归单测</div>
             </div>
             <div class="node-card node-ext p-3 w-full">
               <div class="node-header txt-ext text-[0.75rem] mb-1"><AlertCircle class="w-4 h-4" /> 线上监控告警</div>
-              <div class="node-desc text-[0.625rem]">捕获 Bug 并推送错误堆栈</div>
+              <div class="node-desc text-[0.625rem]">APM 捕获异常堆栈与 Payload</div>
             </div>
           </div>
           <div class="loop-path path-error" style="top: 60px; left: -100px; width: 100px; z-index: 10;">
             <div class="loop-arrow-up-right ext-connector"></div>
           </div>
 
-          <div class="loop-path local-left path-decision" style="top: 30px; bottom: 30px; left: -40px; width: 60px;">
+          <!-- 局部排障重试循环 -->
+          <div class="loop-path local-left path-decision" style="top: 190px; bottom: 30px; left: -40px; width: 60px;">
             <div class="loop-arrow-up-right"></div>
-            <div class="loop-label decision" style="top: 50%; left: -12px; transform: translate(-100%, -50%);">修复后重测</div>
+            <div class="loop-label decision" style="top: 50%; left: -12px; transform: translate(-100%, -50%);">重测未过</div>
           </div>
 
           <div class="node-card node-decision border-red-400 bg-red-white">
-            <div class="node-header text-red-700"><Bug class="w-5 h-5 text-red-500 animate-pulse" /> 异常阻断：CI 爆红 / 线上抛出报错</div>
+            <div class="node-header text-red-700"><Bug class="w-5 h-5 text-red-500 animate-pulse" /> 异常阻断：CI 爆红 / 线上抛出告警</div>
+            <div class="node-desc">现场立卷：提取错误堆栈、失败用例及环境快照进案例中心</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
-          <div class="node-card node-ai">
-            <div class="node-header txt-ai"><Video class="w-5 h-5" /> AI：流水线可视化诊断与录像回放</div>
-            <div class="node-subtext">溯源缺陷属需求设计、契约漏批还是编码幻觉</div>
+          <div class="node-card node-ai bg-ai-half glow-ai">
+            <div class="node-header txt-ai"><Search class="w-5 h-5" /> AI：基于 RAG 检索知识库与排障剧本</div>
+            <div class="node-desc">以异常特征在向量库中秒级检索历史相似故障 Case</div>
+          </div>
+          <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
+
+          <div class="node-card node-decision">
+            <div class="node-header txt-decision"><ClipboardList class="w-5 h-5" /> 专家 / AI：命中并激活标准排障剧本 (Playbook SOP)</div>
+            <div class="node-subtext">自动装配排查清单、诊断命令与根因检验模板</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-human">
-            <div class="node-header txt-human"><Wrench class="w-5 h-5" /> 用户/AI：溯源修复缺陷与完善单测</div>
+            <div class="node-header txt-human"><Pencil class="w-5 h-5" /> 开发者 & AI：多维溯源诊断与沙箱热修复</div>
+            <div class="node-desc">溯源根因：① 需求规格漏项 ② API 契约破损 ③ 编码 Delta 盲区</div>
+            <div class="node-subtext">Git 隔离沙箱内依剧本 SOP 热修复并验证单测绿灯通过</div>
           </div>
         </div>
+
+        <div class="flow-line separator"></div>
+        <div class="flow-arrow separator-arrow"></div>
+
+        <!-- ================= 阶段 7：案例沉淀与剧本反哺闭环 ================= -->
+        <div class="phase-group" style="margin-bottom: 0;">
+          <div class="phase-badge purple">Phase 7: 案例沉淀与剧本反哺闭环 (经验资产化)</div>
+
+          <div class="node-card node-sys">
+            <div class="node-header txt-sys"><Archive class="w-5 h-5" /> 系统：生成故障诊断报告 (Case Report)</div>
+            <div class="node-desc">记录完整根因链、修复 Patch、单测验证证据与排障耗时</div>
+          </div>
+          <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
+
+          <div class="node-card node-decision">
+            <div class="node-header txt-decision"><GitMerge class="w-5 h-5 text-orange-500" /> 专家评审：案例经验晋升为标准化排障剧本</div>
+            <div class="node-subtext">沉淀入四维知识库，反哺后续研发，彻底杜绝同类故障复发</div>
+          </div>
+        </div>
+
       </div>
     </main>
   </div>
@@ -462,6 +443,8 @@ onMounted(() => {
     border-radius: 9999px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
 }
 .phase-badge.blue { background-color: #3b82f6; }
+.phase-badge.red { background-color: #dc2626; }
+.phase-badge.purple { background-color: #7c3aed; }
 
 .node-card {
     width: 340px; background: white; border-radius: 16px; padding: 16px 20px;
