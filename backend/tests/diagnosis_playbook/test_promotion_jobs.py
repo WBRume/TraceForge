@@ -28,6 +28,63 @@ def result(ids):
     )
 
 
+def test_independent_submissions_do_not_share_an_execution_queue(db, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.domains.ai.services.jobs import store
+
+    user, workspace, _, case = seed_case(db)
+    first = promotion.create(db, workspace.id, [case.id], user.id, "one")
+    second = promotion.create(db, workspace.id, [case.id], user.id, "two")
+    db.commit()
+    assert first.id != second.id and first.queue_key != second.queue_key
+    assert promotion.create(db, workspace.id, [case.id], user.id, "two").id == second.id
+    first.status = AiJobStatus.ORPHANED
+    db.commit()
+    monkeypatch.setattr(
+        store,
+        "SessionLocal",
+        lambda: SimpleNamespace(
+            query=db.query,
+            get=db.get,
+            commit=db.commit,
+            rollback=db.rollback,
+            expire_all=db.expire_all,
+            close=lambda: None,
+        ),
+    )
+    assert store.take_next_pending_job_id_sync(second.queue_key) == second.id
+
+
+@pytest.mark.asyncio
+async def test_promotion_notification_distinguishes_publication_from_progress(monkeypatch):
+    from app.domains.ai.services.jobs.publishing import broadcast_job_payload
+    from app.domains.notification.ws.notification_manager import notification_ws_manager
+
+    send = AsyncMock()
+    monkeypatch.setattr(notification_ws_manager, "send_message_to_user", send)
+    await broadcast_job_payload(
+        {
+            "id": "job",
+            "creator_id": "user",
+            "workspace_id": "ws",
+            "status": "SUCCESS",
+            "context_json": {"job_kind": "PLAYBOOK_PROMOTION"},
+            "result_json": {"review_state": "CONFIRMED"},
+        }
+    )
+    assert send.call_args.args == (
+        "user",
+        {
+            "type": "playbook_promotion_updated",
+            "job_id": "job",
+            "workspace_id": "ws",
+            "status": "SUCCESS",
+            "review_state": "CONFIRMED",
+        },
+    )
+
+
 def test_list_batch_endpoint_is_durable_idempotent_and_enqueues_cli(db, monkeypatch):
     user, workspace, _, first = seed_case(db)
     second = SddCase(workspace_id=workspace.id, creator_id=user.id, title="第二案例", status="APPROVED")
@@ -57,7 +114,7 @@ def test_list_batch_endpoint_is_durable_idempotent_and_enqueues_cli(db, monkeypa
     from app.domains.ai.services.jobs import store
 
     monkeypatch.setattr(store, "SessionLocal", lambda: SimpleNamespace(query=db.query, close=lambda: None))
-    assert f"PLAYBOOK_PROMOTION:{workspace.id}" in store.list_pending_queue_keys_sync()
+    assert f"PLAYBOOK_PROMOTION:{identity}" in store.list_pending_queue_keys_sync()
 
 
 def test_ai_output_waits_for_confirmation_and_publishes_only_abstract_methodology(db, monkeypatch):

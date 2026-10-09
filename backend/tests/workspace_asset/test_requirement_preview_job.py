@@ -602,6 +602,7 @@ def test_remote_split_preview_evidence_enables_convergence(monkeypatch):
             patch("app.agents.selection.create_legacy_bridge", return_value=stub),
             patch.object(preview_runner, "run_db_txn", _async_txn),
             patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+            patch.object(ai_provider_turn, "_persist_turn_locator_sync"),
         ):
             assert asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job")) is True
         evidence = captured["evidence"]
@@ -653,6 +654,7 @@ def test_remote_import_preview_evidence_enables_convergence(monkeypatch):
             patch("app.agents.selection.create_legacy_bridge", return_value=stub),
             patch.object(preview_runner, "run_db_txn", _async_txn),
             patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+            patch.object(ai_provider_turn, "_persist_turn_locator_sync"),
         ):
             assert asyncio.run(preview_runner.run_requirement_import_preview_job("audit-job")) is True
         evidence = captured["evidence"]
@@ -694,6 +696,7 @@ def test_remote_split_parse_failure_keeps_provider_outcome_evidence(monkeypatch)
             patch("app.agents.selection.create_legacy_bridge", return_value=stub),
             patch.object(preview_runner, "run_db_txn", _async_txn),
             patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+            patch.object(ai_provider_turn, "_persist_turn_locator_sync"),
         ):
             assert asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job")) is True
         evidence = captured["evidence"]
@@ -735,6 +738,7 @@ def test_real_single_turn_error_outcome_survives_preview_failure(monkeypatch):
             patch("app.agents.selection.create_legacy_bridge", return_value=stub),
             patch.object(preview_runner, "run_db_txn", _async_txn),
             patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+            patch.object(ai_provider_turn, "_persist_turn_locator_sync"),
         ):
             # 返回协议保持既有语义（异常路径返回 outcome 局部布尔）；
             # 收敛正确性由 finalizer evidence 决定。
@@ -776,6 +780,7 @@ def test_remote_preview_without_provider_outcome_stays_unresolved(monkeypatch):
             patch("app.agents.selection.create_legacy_bridge", return_value=stub),
             patch.object(preview_runner, "run_db_txn", _async_txn),
             patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+            patch.object(ai_provider_turn, "_persist_turn_locator_sync"),
         ):
             assert asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job")) is False
         evidence = captured["evidence"]

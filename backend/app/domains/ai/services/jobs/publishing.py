@@ -30,7 +30,13 @@ async def broadcast_job_payload(payload: dict[str, Any]) -> None:
 
         await notification_ws_manager.send_message_to_user(
             str(payload["creator_id"]),
-            {"type": "playbook_promotion_updated", "job_id": payload["id"], "workspace_id": payload["workspace_id"]},
+            {
+                "type": "playbook_promotion_updated",
+                "job_id": payload["id"],
+                "workspace_id": payload["workspace_id"],
+                "status": status,
+                "review_state": (payload.get("result_json") or {}).get("review_state"),
+            },
         )
         return
     if channel == AiJobChannel.ASSET_THREAD.value:

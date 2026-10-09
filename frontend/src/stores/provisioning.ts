@@ -70,6 +70,7 @@ type ProvisionJobApiPayload = {
 
 type RequirementPreviewJobApiPayload = {
   result?: { review_state?: string }
+  cases?: { id: string; title: string }[]
   job_id?: string | null
   workspace_id?: string | null
   status?: string | null
@@ -116,6 +117,11 @@ export const useProvisioningStore = defineStore('provisioning', () => {
   // 终态变化时自增，ChatView 等页面 watch 它来刷新任务列表
   const taskListRefreshToken = ref(0)
   const restored = ref(false)
+  const dismissedPromotions = new Set<string>()
+  try {
+    const saved = JSON.parse(localStorage.getItem('dismissedPromotions') || '[]')
+    if (Array.isArray(saved)) saved.filter(id => typeof id === 'string').forEach(id => dismissedPromotions.add(id))
+  } catch { /* Ignore an invalid browser preference. */ }
 
   let timer: number | null = null
   const inFlight = new Set<string>()
@@ -533,7 +539,7 @@ export const useProvisioningStore = defineStore('provisioning', () => {
         dismiss(normalizedJobId)
         return true
       }
-      markCancelling()
+      if (job.kind !== 'playbook_promotion') markCancelling()
       return false
     }
     markCancelling()
@@ -553,16 +559,18 @@ export const useProvisioningStore = defineStore('provisioning', () => {
   const ingestPromotionJob = (payload: RequirementPreviewJobApiPayload, inDialog = false) => {
     const normalizedJobId = asJobId(payload?.job_id)
     if (!normalizedJobId) return null
+    if (dismissedPromotions.has(normalizedJobId)) return null
     const reviewState = payload.result?.review_state
-    if (reviewState === 'CONFIRMED' || reviewState === 'DISCARDED') {
+    if (reviewState === 'CONFIRMED' || reviewState === 'DISCARDED' || payload.status === 'CANCELLED' || payload.status === 'REVERTED') {
       dismiss(normalizedJobId)
       return null
     }
     const existing = jobs.value[normalizedJobId]
     if (existing?.terminal && !PREVIEW_FINAL_STATUSES.has(String(payload.status))) return existing
-    const view = upsertPreviewJobFromPayload({ ...payload, job_kind: 'playbook_promotion', requirement_title: '案例晋升诊断规程' })
+    const title = payload.cases?.length ? `案例晋升：${payload.cases[0].title}${payload.cases.length > 1 ? ` 等 ${payload.cases.length} 个案例` : ''}` : '案例晋升诊断规程'
+    const view = upsertPreviewJobFromPayload({ ...payload, job_kind: 'playbook_promotion', requirement_title: title })
     if (view) {
-      const next = { ...view, promotionPayload: payload, reviewRequired: reviewState === 'PENDING', ...(inDialog ? { handedOver: false, viewed: false } : {}) }
+      const next = { ...view, terminal: ['SUCCESS', 'FAILED', 'CANCELLED', 'REVERTED'].includes(view.status), promotionPayload: payload, reviewRequired: reviewState === 'PENDING', ...(inDialog ? { handedOver: false, viewed: false } : {}) }
       jobs.value = { ...jobs.value, [view.jobId]: next }
       return next
     }
@@ -570,6 +578,13 @@ export const useProvisioningStore = defineStore('provisioning', () => {
   }
   const promotionReads = new Map<string, number>()
   const refreshPromotionJobs = async (workspaceId?: string) => {
+    if (!workspaceId) {
+      // Reconnect also discovers jobs submitted by another client while offline.
+      try {
+        const { data } = await api.get('/cases/playbook-promotions/active')
+        for (const payload of data.items || []) ingestPromotionJob(payload)
+      } catch { /* Keep known jobs and retry on the next reconnect. */ }
+    }
     const workspaces = workspaceId ? [workspaceId] : [...new Set(jobList.value.filter(j => j.kind === 'playbook_promotion').map(j => j.workspaceId))]
     await Promise.all(workspaces.map(async (wsId) => {
       const version = (promotionReads.get(wsId) || 0) + 1
@@ -577,9 +592,14 @@ export const useProvisioningStore = defineStore('provisioning', () => {
       try {
         const { data } = await api.get(`/workspaces/${wsId}/cases/playbook-promotions`)
         if (promotionReads.get(wsId) !== version) return
-        for (const payload of data.items || []) {
-          if (jobs.value[payload.job_id]) ingestPromotionJob(payload)
-        }
+        const items = data.items || []
+        for (const payload of items) ingestPromotionJob(payload)
+        const missing = jobList.value.filter(j => j.kind === 'playbook_promotion' && j.workspaceId === wsId
+          && !items.some((p: RequirementPreviewJobApiPayload) => p.job_id === j.jobId))
+        await Promise.all(missing.map(async job => {
+          const response = await api.get(`/workspaces/${wsId}/cases/playbook-promotions`, { params: { job_id: job.jobId } })
+          if (promotionReads.get(wsId) === version) for (const payload of response.data.items || []) ingestPromotionJob(payload)
+        }))
       } catch { /* Reconnect or opening the dialog retries the snapshot. */ }
     }))
   }
@@ -744,6 +764,10 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     const normalizedJobId = asJobId(jobId)
     if (!normalizedJobId) return
     const dismissed = jobs.value[normalizedJobId]
+    if (dismissed?.kind === 'playbook_promotion') {
+      dismissedPromotions.add(normalizedJobId)
+      localStorage.setItem('dismissedPromotions', JSON.stringify([...dismissedPromotions].slice(-200)))
+    }
     const next = { ...jobs.value }
     delete next[normalizedJobId]
     jobs.value = next

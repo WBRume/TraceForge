@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
@@ -7,10 +7,14 @@ import { AlertTriangle, CheckCircle2, Loader2, Minimize2, X } from '@/components
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import { useProvisioningStore, type ProvisionJobView } from '@/stores/provisioning'
 import { formatApiError } from '@/utils/error'
+import { useFloatingPosition } from '@/composables/useFloatingPosition'
 
 const store = useProvisioningStore()
 const router = useRouter()
 const { t } = useI18n()
+const widget = ref<HTMLElement | null>(null)
+const position = useFloatingPosition(widget)
+watch(() => [store.expanded, store.jobList.length], () => { void nextTick(position.clamp) })
 
 const KNOWN_ERROR_KEYS = new Set(['task_status_not_ready', 'load_failed', 'failed_fallback', 'job_not_found'])
 
@@ -19,14 +23,16 @@ const KNOWN_ERROR_KEYS = new Set(['task_status_not_ready', 'load_failed', 'faile
 const jobs = computed(() => store.jobList.filter((job) => job.kind === 'provision' || ((job.handedOver || job.cancelRequested) && !job.viewed)))
 const activeJobs = computed(() => jobs.value.filter((job) => !job.terminal))
 const terminalJobs = computed(() => jobs.value.filter((job) => job.terminal))
+const reviewJobs = computed(() => terminalJobs.value.filter((job) => job.status === 'SUCCESS' && job.reviewRequired))
 const pillVisible = computed(() => jobs.value.length > 0)
 
 // ── Requirement AI 预览作业（拆分/导入）分支 ──
 const isPreviewJob = (job: ProvisionJobView) => job.kind !== 'provision'
-const isPreviewSuccess = (job: ProvisionJobView) => isPreviewJob(job) && job.terminal && job.status === 'SUCCESS' && !job.reviewRequired
+const isPreviewSuccess = (job: ProvisionJobView) => isPreviewJob(job) && job.kind !== 'playbook_promotion' && job.terminal && job.status === 'SUCCESS'
 
 const previewStageText = (job: ProvisionJobView) => {
   if (job.reviewRequired) return '待确认'
+  if (job.kind === 'playbook_promotion' && job.status === 'ORPHANED') return '停止待确认'
   const status = String(job.status || '').toUpperCase()
   // 终态优先于取消中：FAILED/ORPHANED 不得被 cancelRequested 覆盖成"正在取消"
   if (status === 'SUCCESS') return t('provisioning.preview_stage_completed')
@@ -53,7 +59,7 @@ const handleOpenPreview = (job: ProvisionJobView) => {
   const workspaceId = String(job.workspaceId || '').trim()
   if (!workspaceId) return
   if (job.kind === 'playbook_promotion') {
-    window.dispatchEvent(new CustomEvent('playbook-promotion-open', { detail: { jobId: job.jobId } }))
+    if (!job.reviewRequired) return
     router.push({ name: 'workspaceCasePromotionReview', params: { wsId: workspaceId, jobId: job.jobId } })
   } else if (job.kind === 'requirement_split_preview' && job.requirementId) {
     router.push({
@@ -133,7 +139,7 @@ const aggregateProgress = computed(() => {
 })
 
 const hasTerminalAttention = computed(() =>
-  terminalJobs.value.some((job) => !job.ready && !isPreviewSuccess(job)),
+  terminalJobs.value.some((job) => !job.ready && job.status !== 'SUCCESS'),
 )
 
 const pillIcon = computed(() => {
@@ -144,7 +150,7 @@ const pillIcon = computed(() => {
 
 const pillProgressText = computed(() => {
   if (activeJobs.value.length > 0) return `${aggregateProgress.value}%`
-  if (hasTerminalAttention.value) return ''
+  if (hasTerminalAttention.value || reviewJobs.value.length > 0) return ''
   return '100%'
 })
 
@@ -183,26 +189,29 @@ const handleEnterSession = (job: ProvisionJobView) => {
 </script>
 
 <template>
-  <div v-if="pillVisible" class="provision-widget">
+  <div v-if="pillVisible" ref="widget" class="provision-widget" :style="position.style.value" :class="{ 'is-dragging': position.dragging.value }" @click.capture="position.consumeDragClick">
     <!-- 最小化 pill：不遮挡全局，点击展开 -->
     <button
       v-if="!store.expanded"
       type="button"
       class="widget-pill"
       :class="{ 'widget-pill-alert': hasTerminalAttention }"
+      title="后台任务（可拖动）"
+      @pointerdown="position.startDrag"
       @click="store.expand()"
     >
       <CheckCircle2 v-if="pillIcon === 'success'" class="w-4 h-4 widget-ok" />
       <AlertTriangle v-else-if="pillIcon === 'attention'" class="w-4 h-4 widget-alert-icon" />
       <Loader2 v-else class="w-4 h-4 widget-spin" />
       <span v-if="pillProgressText" class="widget-pill-progress">{{ pillProgressText }}</span>
+      <span v-if="reviewJobs.length" class="widget-pill-review" role="status" aria-live="polite">{{ t('provisioning.review_pending_count', { count: reviewJobs.length }) }}</span>
       <span v-if="activeJobs.length > 1" class="widget-pill-count">{{ activeJobs.length }}</span>
       <span v-else-if="activeJobs.length === 1" class="widget-pill-task">{{ jobTitle(activeJobs[0]) }}</span>
     </button>
 
     <!-- 展开面板：右下角浮卡，不遮罩全局 -->
     <div v-else class="widget-panel glass-panel">
-      <header class="widget-header">
+      <header class="widget-header" @pointerdown="position.startDrag">
         <h3>{{ t('provisioning.widget_title') }}</h3>
         <button
           class="widget-icon-btn"
@@ -214,7 +223,10 @@ const handleEnterSession = (job: ProvisionJobView) => {
         </button>
       </header>
 
-      <p v-if="activeJobs.length === 0 && terminalJobs.length > 0" class="widget-hint">
+      <p v-if="reviewJobs.length" class="widget-hint" role="status">
+        {{ t('provisioning.review_pending_hint', { count: reviewJobs.length }) }}
+      </p>
+      <p v-else-if="activeJobs.length === 0 && terminalJobs.length > 0" class="widget-hint">
         {{ t('provisioning.all_finished_hint') }}
       </p>
 
@@ -242,7 +254,10 @@ const handleEnterSession = (job: ProvisionJobView) => {
             </div>
           </div>
 
-          <div v-else-if="job.reviewRequired" class="widget-job-meta">规程草案待人工确认</div>
+          <div v-else-if="job.reviewRequired" class="widget-job-success">
+            <CheckCircle2 class="w-4 h-4 widget-ok" />
+            <span>{{ t('provisioning.promotion_review_ready') }}</span>
+          </div>
           <div v-else-if="job.ready || isPreviewSuccess(job)" class="widget-job-success">
             <CheckCircle2 class="w-4 h-4 widget-ok" />
             <span>{{ isPreviewJob(job)
@@ -257,12 +272,12 @@ const handleEnterSession = (job: ProvisionJobView) => {
 
           <div class="widget-job-actions">
             <button
-              v-if="isPreviewSuccess(job) || job.kind === 'playbook_promotion'"
+              v-if="isPreviewSuccess(job) || job.reviewRequired"
               type="button"
               class="widget-btn-primary"
               @click="handleOpenPreview(job)"
             >
-              {{ job.kind === 'playbook_promotion' ? (job.reviewRequired ? '确认草案' : job.terminal ? '查看结果' : '查看进度') : t('provisioning.preview_open_action') }}
+              {{ job.kind === 'playbook_promotion' ? '确认草案' : t('provisioning.preview_open_action') }}
             </button>
             <button
               v-else-if="job.ready"
@@ -283,11 +298,16 @@ const handleEnterSession = (job: ProvisionJobView) => {
               {{ job.cancelRequested ? t('provisioning.cancelling') : t('common.cancel') }}
             </button>
             <button
+              v-if="job.kind === 'playbook_promotion' && !job.terminal"
+              type="button" class="widget-btn-secondary" :disabled="cancellingPreviewId === job.jobId || job.cancelRequested"
+              @click="handleDismiss(job)"
+            >{{ job.cancelRequested ? t('provisioning.cancelling') : t('common.cancel') }}</button>
+            <button
               v-if="job.terminal || (isPreviewJob(job) && !job.reviewRequired)"
               type="button"
               class="widget-icon-btn"
-              :title="t('common.close')"
-              @click="handleDismiss(job)"
+              :title="job.kind === 'playbook_promotion' && !job.terminal ? '隐藏此任务' : t('common.close')"
+              @click="job.kind === 'playbook_promotion' ? store.dismiss(job.jobId) : handleDismiss(job)"
             >
               <Loader2 v-if="cancellingPreviewId === job.jobId" class="w-4 h-4 widget-spin" />
               <X v-else class="w-4 h-4" />
@@ -316,13 +336,17 @@ const handleEnterSession = (job: ProvisionJobView) => {
 .provision-widget {
   position: fixed;
   right: 20px;
-  bottom: 20px;
+  bottom: 120px;
   z-index: 110;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 8px;
 }
+
+.widget-pill, .widget-header { touch-action: none; cursor: grab; }
+.is-dragging { user-select: none; }
+.is-dragging .widget-pill, .is-dragging .widget-header { cursor: grabbing; }
 
 .widget-pill {
   display: inline-flex;

@@ -77,6 +77,7 @@ describe('CasePromotionReviewView.vue', () => {
   }
 
   beforeEach(() => {
+    localStorage.clear()
     setActivePinia(createPinia())
     vi.clearAllMocks()
     vi.mocked(api.get).mockResolvedValue({
@@ -230,16 +231,13 @@ describe('CasePromotionReviewView.vue', () => {
       }),
     )
 
-    expect(replaceMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        params: { wsId: 'ws-test', jobId: 'job-merged-456' },
-      }),
-    )
+    expect(pushMock).toHaveBeenCalledWith({ name: 'workspaceCases', params: { wsId: 'ws-test' } })
+    expect(replaceMock).not.toHaveBeenCalled()
 
     wrapper.unmount()
   })
 
-  it('renders active progress card when job is running', async () => {
+  it('returns running jobs to the background queue', async () => {
     vi.mocked(api.get).mockResolvedValue({
       data: {
         items: [
@@ -257,8 +255,8 @@ describe('CasePromotionReviewView.vue', () => {
     const wrapper = mount(CasePromotionReviewView)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('AI 正在提炼与聚类诊断规程')
-    expect(wrapper.text()).toContain('45%')
+    expect(wrapper.text()).not.toContain('AI 正在提炼与聚类诊断规程')
+    expect(pushMock).toHaveBeenCalledWith({ name: 'workspaceCases', params: { wsId: 'ws-test' } })
 
     wrapper.unmount()
   })
