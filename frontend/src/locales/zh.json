@@ -83,35 +83,49 @@
     "switch_to_register": "通过邮箱注册",
     "switch_to_login": "立即登录",
     "highlights": {
-      "asset_title": "开发态资产管理",
-      "asset_desc": "将需求、规范文档、任务决策、人机差异、运行证据等开发过程产物结构化管理。支持需求层级拆分、全链路追溯矩阵、知识自动沉淀，让每次开发都留下可复用的资产。",
-      "traceable_title": "AI 开发过程可追溯协作",
-      "traceable_desc": "与 AI 实时协作开发，全程可观测思考过程、Token 归因与成本。人工介入(HITL)把控关键决策，人机差异分析归因每次修改，任务收尾时自动生成证据链与过程审计。AI 不是替代开发者，而是与开发者共同推进。"
+      "asset_title": "资产驱动 · 告别代码黑盒",
+      "asset_desc": "将需求拆分、任务规格、关键决策、运行证据与人机差异沉淀为结构化资产。覆盖度矩阵贯穿全链路，每次变更皆可追溯，每次交付皆有据可查。",
+      "traceable_title": "智能协同 · 人在回路可控",
+      "traceable_desc": "终端级 CLI 实时协同，支持自然语音转录输入。关键决策与高风险操作触发 HITL 暂停确认，双向澄清需求歧义，计划文档快照高亮变更。",
+      "knowledge_title": "差异归因 · 故障剧本反哺",
+      "knowledge_desc": "人机差异工作台量化 AI 提议与人工最终修改，收尾工作流自动生成审计与摘要。沉淀四维知识资产与排障剧本 (Playbook)，实现经验跨项目复用。"
     },
     "features": {
-      "automation": "AI 辅助开发全流程",
-      "automation_desc": "从需求澄清到代码落地，AI 与开发者全程协同推进。",
-      "spec_driven": "规范驱动开发",
-      "spec_driven_desc": "文档工作台、块级审查、版本切换，规范先行。",
-      "api_mock": "API Mock 工作台",
-      "api_mock_desc": "Swagger 导入、Mock 案例管理、AI 自动生成、实时协作。",
-      "safety": "人机协同安全",
-      "safety_desc": "关键决策点人工介入，HITL 确保高风险操作安全。",
-      "asset_mgmt": "开发态资产管理",
-      "asset_mgmt_desc": "需求资产库、任务资产表、证据注册表、知识沉淀。",
-      "traceability": "全链路可追溯",
-      "traceability_desc": "覆盖度矩阵、人机差异看板、风险聚合、过程审计。"
+      "asset_traceability": {
+        "title": "开发态资产管理与全链路追溯",
+        "desc": "将需求拆分、架构决策、人机差异与执行证据转化为结构化数字资产。覆盖度矩阵贯穿全链路，消除开发黑盒，让每次交付都有据可查。",
+        "tag": "资产与追溯",
+        "points": ["需求树状拆分与块级评审", "架构决策 (ADR) 与证据注册", "全链路追溯覆盖度矩阵"]
+      },
+      "terminal_hitl": {
+        "title": "终端协同会话与人在回路 (HITL)",
+        "desc": "深度桥接 Claude CLI 交互式终端，支持在线与离线语音输入。关键高风险决策人工授权拦截，双向澄清歧义，计划快照高亮变更。",
+        "tag": "协同与安全",
+        "points": ["PTY 终端会话与 Token 归因", "Web 直连与离线 Whisper 语音", "HITL 关键授权与双向澄清问答"]
+      },
+      "contract_mock": {
+        "title": "契约隔离与动态代理网关",
+        "desc": "基于 OpenAPI 规范自动推导数据实体与多场景 Mock 用例。动态切流网关支持单接口按需路由，彻底解耦前后端联调依赖。",
+        "tag": "契约先行",
+        "points": ["OpenAPI 规范导入与实体推导", "多分支 Mock Case 场景推导", "Mock / Proxy 灵活切流与混沌测试"]
+      },
+      "delta_playbook": {
+        "title": "人机差异归因与故障排障剧本",
+        "desc": "精确比对 AI 提议与人工最终代码并四维归因。三步收尾工作流固化证据，将真实生产排障攻坚沉淀为可复用 SOP 剧本 (Playbook)。",
+        "tag": "经验沉淀",
+        "points": ["ChangeProposal AST 差异归因", "三步收尾工作流 (基准/审查/摘要)", "案例中心与排障剧本 (Playbook)"]
+      }
     },
-    "version_badge": "0.1 版本现已发布",
-    "show_demo": "查看演示",
-    "core_drivers_title": "核心能力",
-    "core_drivers_desc": "覆盖开发全生命周期的六大核心能力",
+    "version_badge": "开发态资产管理 · 企业级协作平台",
+    "show_demo": "查看架构",
+    "core_drivers_title": "核心能力矩阵",
+    "core_drivers_desc": "抽象聚合四大核心工程支柱，覆盖研发资产化与线上排障全生命周期",
     "stats": {
-      "productivity": "工程效能提升",
-      "traceable": "开发过程可追溯",
-      "quality": "AI+HITL 人机协同质量保障"
+      "productivity": "全链路资产追溯覆盖",
+      "traceable": "契约驱动并行联调",
+      "quality": "AI+HITL 确定性交付保障"
     },
-    "footer_tagline": "xfc 出品",
+    "footer_tagline": "TraceForge · 研发过程数字化与资产化平台",
     "email_placeholder": "name{'@'}example.com",
     "password_placeholder": "******",
     "switch_lang_title": "切换至英文"

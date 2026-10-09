@@ -67,13 +67,13 @@
     "title": "TraceForge",
     "subtitle": "Development Asset Management + AI Traceable Collaboration Platform",
     "hero_title": "TraceForge",
-    "hero_desc": "Structuring requirements, specs, decisions, and evidence from the development process into traceable assets. AI collaborates with developers throughout — observable processes, auditable decisions, reusable experience.",
+    "hero_desc": "Structuring requirements, specs, decisions, and evidence into traceable assets. AI collaborates with developers throughout — observable processes, auditable decisions, reusable experience.",
     "enter_workspace": "Enter Workspace",
     "start_building": "Start Building Now",
     "documentation": "Documentation",
     "architecture": "Architecture",
     "login_welcome": "Welcome Back",
-    "register_start": "Start Your Asset Management Journey",
+    "register_start": "Start Asset Journey",
     "auth_subtitle": "Development Asset Management · AI Traceable Collaboration",
     "display_name": "Display Name",
     "email": "Email Address",
@@ -83,35 +83,49 @@
     "switch_to_register": "Register via Email",
     "switch_to_login": "Login Now",
     "highlights": {
-      "asset_title": "Development Asset Management",
-      "asset_desc": "Structuring development artifacts — requirements, spec documents, task decisions, human-AI deltas, and runtime evidence — into managed assets. Supports hierarchical requirement splitting, full-chain traceability matrix, and automatic knowledge distillation.",
-      "traceable_title": "AI Traceable Collaboration",
-      "traceable_desc": "Real-time AI collaboration with full observability into thinking process, token attribution, and cost. Human-in-the-loop (HITL) controls critical decisions, human-AI delta analysis attributes every change, and task closeout automatically generates evidence chains and process audits. AI doesn't replace developers — it advances together with them."
+      "asset_title": "Asset-Driven · No Black-Box Code",
+      "asset_desc": "Structure requirements, specs, decisions, runtime evidence, and deltas into reusable assets. The coverage matrix connects the full chain so every change is traceable and auditable.",
+      "traceable_title": "Intelligent Collaboration · HITL Controlled",
+      "traceable_desc": "Terminal-grade CLI with real-time speech input. High-risk actions trigger HITL pauses for human confirmation, bidirectional clarifications, and snapshot change tracking.",
+      "knowledge_title": "Delta Attribution · Playbook Distillation",
+      "knowledge_desc": "Delta workbench quantifies human modifications against AI proposals. Closeout workflows auto-generate audits and distill 4D knowledge assets and playbooks for cross-project reuse."
     },
     "features": {
-      "automation": "AI-Assisted Full Lifecycle",
-      "automation_desc": "From requirement clarification to code delivery, AI and developers collaborate throughout.",
-      "spec_driven": "Spec-Driven Development",
-      "spec_driven_desc": "Document workbench, block-level review, version switching — specs come first.",
-      "api_mock": "API Mock Workbench",
-      "api_mock_desc": "Swagger import, mock case management, AI auto-generation, real-time collaboration.",
-      "safety": "Human-AI Safety",
-      "safety_desc": "Human intervention at critical decision points, HITL ensures safe high-risk operations.",
-      "asset_mgmt": "Development Asset Management",
-      "asset_mgmt_desc": "Requirement repository, task asset table, evidence registry, knowledge distillation.",
-      "traceability": "Full-Chain Traceability",
-      "traceability_desc": "Coverage matrix, human-AI delta dashboard, risk aggregation, process audit."
+      "asset_traceability": {
+        "title": "Asset Management & Traceability",
+        "desc": "Transform requirements, architecture decisions, human deltas, and execution evidence into structured digital assets with 100% full-chain traceability.",
+        "tag": "Assets & Matrix",
+        "points": ["Hierarchical Splitting & Spec Review", "Architecture ADRs & Evidence Registry", "Full-Chain Coverage Matrix"]
+      },
+      "terminal_hitl": {
+        "title": "Terminal Collab & Human-In-The-Loop",
+        "desc": "Deep Claude CLI interactive integration with speech-to-text. High-risk decisions trigger authorization pauses, clearing ambiguity with bidirectional clarifications.",
+        "tag": "Collab & Safety",
+        "points": ["PTY Terminal Session & Token Attribution", "Web Direct & Offline Whisper Speech", "HITL Authorization & Clarification Thread"]
+      },
+      "contract_mock": {
+        "title": "Contract Isolation & Dynamic Gateway",
+        "desc": "Automatically infer data entities and multi-scenario mock cases from OpenAPI specs. Dynamic gateway supports per-endpoint routing, decoupling frontend and backend.",
+        "tag": "Contract-First",
+        "points": ["OpenAPI Parsing & Entity Inference", "Multi-Scenario Mock Cases", "Mock / Proxy Traffic Switching & Chaos"]
+      },
+      "delta_playbook": {
+        "title": "Delta Attribution & Case Playbooks",
+        "desc": "Diff AI proposals against final human code with 4D root-cause attribution. Three-step closeout solidifies audits, distilling production incident SOP playbooks.",
+        "tag": "Experience Distillation",
+        "points": ["ChangeProposal AST Attribution", "3-Step Closeout (Baseline/Review/Summary)", "Case Center & Reusable Playbooks"]
+      }
     },
-    "version_badge": "Version 0.1 Now Available",
-    "show_demo": "Show Demo",
-    "core_drivers_title": "Core Capabilities",
-    "core_drivers_desc": "Six core capabilities covering the full development lifecycle",
+    "version_badge": "Development Asset Management · Enterprise Platform",
+    "show_demo": "View Architecture",
+    "core_drivers_title": "Core Capability Matrix",
+    "core_drivers_desc": "Four core engineering pillars covering development assetization and production incident diagnosis",
     "stats": {
-      "productivity": "Engineering Efficiency Increase",
-      "traceable": "Development Process Traceable",
-      "quality": "AI+HITL Quality Assurance"
+      "productivity": "End-to-End Asset Traceability",
+      "traceable": "Contract-Driven Parallel Dev",
+      "quality": "AI+HITL Deterministic Quality"
     },
-    "footer_tagline": "Crafted by xfc",
+    "footer_tagline": "TraceForge · Engineering Process Digitization & Asset Platform",
     "email_placeholder": "name{'@'}example.com",
     "password_placeholder": "******",
     "switch_lang_title": "Switch to Chinese"

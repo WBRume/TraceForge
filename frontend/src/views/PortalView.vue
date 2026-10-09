@@ -2,7 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ArrowRight, Code, Zap, Shield, GitBranch, ExternalLink, Loader2, Languages, Database, Eye } from '@/components/icons'
+import { 
+  ArrowRight, Shield, GitBranch, Loader2, Languages, Database,
+  Terminal, ServerCog, LibraryBig
+} from '@/components/icons'
 import { useAuthStore } from '@/stores/auth'
 import api, { getApiServerUrl } from '@/utils/api'
 import { formatApiError } from '@/utils/error'
@@ -140,34 +143,48 @@ const finishAuthModalOverlayClose = () => {
 
 const features = computed(() => [
   {
-    icon: Code,
-    title: t('portal.features.automation'),
-    description: t('portal.features.automation_desc')
+    icon: Database,
+    title: t('portal.features.asset_traceability.title'),
+    description: t('portal.features.asset_traceability.desc'),
+    tag: t('portal.features.asset_traceability.tag'),
+    points: [
+      t('portal.features.asset_traceability.points.0'),
+      t('portal.features.asset_traceability.points.1'),
+      t('portal.features.asset_traceability.points.2')
+    ]
+  },
+  {
+    icon: Terminal,
+    title: t('portal.features.terminal_hitl.title'),
+    description: t('portal.features.terminal_hitl.desc'),
+    tag: t('portal.features.terminal_hitl.tag'),
+    points: [
+      t('portal.features.terminal_hitl.points.0'),
+      t('portal.features.terminal_hitl.points.1'),
+      t('portal.features.terminal_hitl.points.2')
+    ]
+  },
+  {
+    icon: ServerCog,
+    title: t('portal.features.contract_mock.title'),
+    description: t('portal.features.contract_mock.desc'),
+    tag: t('portal.features.contract_mock.tag'),
+    points: [
+      t('portal.features.contract_mock.points.0'),
+      t('portal.features.contract_mock.points.1'),
+      t('portal.features.contract_mock.points.2')
+    ]
   },
   {
     icon: GitBranch,
-    title: t('portal.features.spec_driven'),
-    description: t('portal.features.spec_driven_desc')
-  },
-  {
-    icon: Zap,
-    title: t('portal.features.api_mock'),
-    description: t('portal.features.api_mock_desc')
-  },
-  {
-    icon: Shield,
-    title: t('portal.features.safety'),
-    description: t('portal.features.safety_desc')
-  },
-  {
-    icon: Database,
-    title: t('portal.features.asset_mgmt'),
-    description: t('portal.features.asset_mgmt_desc')
-  },
-  {
-    icon: Eye,
-    title: t('portal.features.traceability'),
-    description: t('portal.features.traceability_desc')
+    title: t('portal.features.delta_playbook.title'),
+    description: t('portal.features.delta_playbook.desc'),
+    tag: t('portal.features.delta_playbook.tag'),
+    points: [
+      t('portal.features.delta_playbook.points.0'),
+      t('portal.features.delta_playbook.points.1'),
+      t('portal.features.delta_playbook.points.2')
+    ]
   }
 ])
 
@@ -178,9 +195,14 @@ const highlightFeatures = computed(() => [
     desc: t('portal.highlights.asset_desc')
   },
   {
-    icon: Eye,
+    icon: Shield,
     title: t('portal.highlights.traceable_title'),
     desc: t('portal.highlights.traceable_desc')
+  },
+  {
+    icon: LibraryBig,
+    title: t('portal.highlights.knowledge_title'),
+    desc: t('portal.highlights.knowledge_desc')
   }
 ])
 
@@ -259,8 +281,8 @@ onBeforeUnmount(() => {
             <button class="btn-primary hero-btn" @click="handleStartBuilding">
               {{ $t('portal.start_building') }} <ArrowRight class="ml-2 w-5 h-5" />
             </button>
-            <button class="btn-outline">
-              {{ $t('portal.show_demo') }} <ExternalLink class="ml-2 w-4 h-4" />
+            <button class="btn-outline" @click="router.push('/architecture')">
+              {{ $t('portal.show_demo') }} <ArrowRight class="ml-2 w-4 h-4" />
             </button>
           </div>
         </div>
@@ -287,11 +309,20 @@ onBeforeUnmount(() => {
         </div>
         <div class="bento-grid">
           <div v-for="(feat, index) in features" :key="index" class="feature-card">
-            <div class="icon-glow-wrapper">
-              <component :is="feat.icon" class="w-6 h-6" />
+            <div class="feature-card-top">
+              <div class="icon-glow-wrapper">
+                <component :is="feat.icon" class="w-6 h-6" />
+              </div>
+              <span v-if="feat.tag" class="feature-tag">{{ feat.tag }}</span>
             </div>
-            <h3>{{ feat.title }}</h3>
-            <p>{{ feat.description }}</p>
+            <h3 class="feature-card-title">{{ feat.title }}</h3>
+            <p class="feature-card-desc">{{ feat.description }}</p>
+            <div class="feature-points">
+              <span v-for="(pt, pIdx) in feat.points" :key="pIdx" class="point-pill">
+                <span class="point-bullet"></span>
+                <span>{{ pt }}</span>
+              </span>
+            </div>
           </div>
         </div>
       </section>
@@ -299,12 +330,12 @@ onBeforeUnmount(() => {
       <section class="social-proof fade-in">
         <div class="stat-banner">
           <div class="stat-item">
-            <span class="stat-num">10x</span>
+            <span class="stat-num">100%</span>
             <span class="stat-label">{{ $t('portal.stats.productivity') }}</span>
           </div>
           <div class="stat-divider"></div>
           <div class="stat-item">
-            <span class="stat-num">100%</span>
+            <span class="stat-num">0 阻断</span>
             <span class="stat-label">{{ $t('portal.stats.traceable') }}</span>
           </div>
           <div class="stat-divider"></div>
@@ -640,10 +671,10 @@ onBeforeUnmount(() => {
 }
 
 .h-container {
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 1.5rem;
 }
 
@@ -715,36 +746,55 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 2rem;
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 0 auto;
 }
 
 .feature-card {
-  padding: 2.5rem;
+  padding: 2.25rem;
   background: white;
   border: 1px solid #f1f5f9;
   border-radius: 1.5rem;
   transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.feature-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+}
+
+.feature-tag {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: #0369a1;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  letter-spacing: 0.02em;
 }
 
 .feature-card:hover {
-  transform: translateY(-8px);
+  transform: translateY(-6px);
   border-color: #0ea5e966;
   box-shadow: 0 20px 25px -5px rgba(14, 165, 233, 0.1), 0 10px 10px -5px rgba(14, 165, 233, 0.04);
 }
 
 .icon-glow-wrapper {
-  width: 56px;
-  height: 56px;
+  width: 52px;
+  height: 52px;
   background: #f0f9ff;
   color: #0ea5e9;
   border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 1.5rem;
   transition: all 0.3s;
 }
 
@@ -754,16 +804,48 @@ onBeforeUnmount(() => {
   box-shadow: 0 8px 20px rgba(14, 165, 233, 0.4);
 }
 
-.feature-card h3 {
+.feature-card-title {
   font-family: 'Poppins', sans-serif;
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin-bottom: 1rem;
+  font-size: 1.375rem;
+  font-weight: 700;
+  margin-bottom: 0.75rem;
+  color: #0f172a;
 }
 
-.feature-card p {
+.feature-card-desc {
+  color: #64748b;
+  line-height: 1.7;
+  font-size: 0.9375rem;
+  margin-bottom: 1.75rem;
+  flex: 1;
+}
+
+.feature-points {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.625rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid #f1f5f9;
+}
+
+.point-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8125rem;
   color: #475569;
-  line-height: 1.6;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  padding: 0.3rem 0.65rem;
+  border-radius: 8px;
+  font-weight: 500;
+}
+
+.point-bullet {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #0ea5e9;
 }
 
 /* Social Proof */
@@ -855,11 +937,16 @@ onBeforeUnmount(() => {
   transform: translateY(0);
 }
 
-@media (max-width: 1024px) {
-  .hero-title { font-size: 3rem; }
-  .navbar { padding: 1.5rem 2rem; }
+@media (max-width: 1200px) {
+  .bento-grid { grid-template-columns: repeat(2, 1fr); }
+  .h-container { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 768px) {
+  .hero-title { font-size: 2.25rem; }
+  .navbar { padding: 1rem 1.5rem; }
   .h-container { grid-template-columns: 1fr; }
-  .bento-grid { grid-template-columns: 1fr; padding: 0 2rem; }
+  .bento-grid { grid-template-columns: 1fr; padding: 0 1rem; }
   .stat-banner { flex-direction: column; gap: 2rem; }
   .stat-divider { display: none; }
 }
