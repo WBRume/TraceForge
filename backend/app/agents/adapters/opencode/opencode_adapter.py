@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from app.agents.activity_watchdog import AgentActivityWatchdog
+from app.agents.adapters.opencode.workspace_permissions import same_directory, workspace_permissions
 from app.agents.contract import (
     AgentBackend,
     AgentCapabilities,
@@ -137,6 +138,7 @@ class OpenCodeAdapter(AgentBackend):
         body: dict[str, Any] = {}
         if request.project_path:
             body["location"] = {"directory": request.project_path}
+            body["permissions"] = workspace_permissions(request.project_path)
         if request.model:
             body["model"] = self._model_ref(request.model)
         response = await client.post(f"{self.server_url}/api/session", json=body)
@@ -147,6 +149,29 @@ class OpenCodeAdapter(AgentBackend):
         if not session_id:
             raise AgentError("OpenCode create session returned no session id")
         return session_id
+
+    async def _ensure_workspace_permissions(self, session_id: str, project_path: str) -> None:
+        if not project_path:
+            return
+        rules = workspace_permissions(project_path)
+        client = await self._ensure_client()
+        response = await client.get(self._session_url(session_id))
+        self._check_response(response, "session directory")
+        session = response.json().get("data")
+        if not isinstance(session, dict):
+            raise AgentError("OpenCode session returned no directory binding")
+        location = session.get("location") or {}
+        directory = location.get("directory") if isinstance(location, dict) else None
+        if not directory or not same_directory(directory, project_path):
+            raise AgentError("OpenCode session directory does not match the task directory")
+        # Append the boundary after existing rules so earlier broad approvals
+        # cannot reopen other tasks. Retain unrelated per-session restrictions.
+        permissions = session.get("permissions") or []
+        permissions = [rule for rule in permissions if rule not in rules] + rules
+        if permissions == session.get("permissions"):
+            return
+        response = await client.patch(self._session_url(session_id), json={"permissions": permissions})
+        self._check_response(response, "task directory permissions")
 
     async def _available_models(self, params: dict[str, str]) -> list[dict[str, Any]]:
         client = await self._ensure_client()
@@ -640,6 +665,7 @@ class OpenCodeAdapter(AgentBackend):
         try:
             if request.session_id:
                 session_id = request.session_id
+                await self._ensure_workspace_permissions(session_id, request.project_path)
             else:
                 session_id = await self._create_session(request)
             self._session_id = session_id
@@ -942,8 +968,9 @@ class OpenCodeAdapter(AgentBackend):
             # 无需再 move；仅当源/目标目录不同才迁移。
             if (source_dir or "").replace("\\", "/").rstrip("/") != (target_dir or "").replace("\\", "/").rstrip("/"):
                 await self._fork_move(client, new_id, target_dir)
-        except SessionForkError:
-            # move 失败时清理 fork 产物，避免遗留孤儿会话
+            await self._ensure_workspace_permissions(new_id, target_dir)
+        except (AgentError, httpx.HTTPError) as exc:
+            # 目录迁移或权限配置失败时清理 fork 产物，避免遗留孤儿会话。
             await self.delete_session(new_id)
-            raise
+            raise SessionForkError(str(exc)) from exc
         return new_id

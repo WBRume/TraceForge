@@ -56,6 +56,10 @@ async def test_model_update_does_not_repeat_session_started():
 
     def handler(request):
         nonlocal prompt_id
+        if request.url.path == "/api/session/session":
+            if request.method == "GET":
+                return httpx.Response(200, json={"data": {"location": {"directory": "/work"}}})
+            return httpx.Response(204)
         if request.url.path == "/api/event":
             return httpx.Response(
                 200,
