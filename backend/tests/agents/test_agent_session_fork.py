@@ -362,6 +362,10 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
                 return Response(200, json={"data": {"id": "fork-9"}})
             if path == "/api/session/fork-9/move":
                 return Response(200, json={})
+            if path == "/api/session/fork-9":
+                if request.method == "GET":
+                    return Response(200, json={"data": {"location": {"directory": "C:/t"}}})
+                return Response(204)
             return Response(404, json={})
 
         adapter._client = AsyncClient(transport=MockTransport(handler))
@@ -387,13 +391,20 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
             calls.append(f"{request.method} {request.url.path}")
             if request.url.path == "/api/session/base-1/fork":
                 return Response(200, json={"data": {"id": "fork-same"}})
+            if request.url.path == "/api/session/fork-same":
+                if request.method == "GET":
+                    return Response(200, json={"data": {"location": {"directory": same_dir}}})
+                return Response(204)
             return Response(404, json={})
 
         adapter._client = AsyncClient(transport=MockTransport(handler))
         same_dir = os.path.abspath("C:/task")
         new_id = await adapter.fork_session("base-1", source_dir=same_dir, target_dir=same_dir)
         self.assertEqual(new_id, "fork-same")
-        self.assertEqual(calls, ["POST /api/session/base-1/fork"])
+        self.assertEqual(
+            calls,
+            ["POST /api/session/base-1/fork", "GET /api/session/fork-same", "PATCH /api/session/fork-same"],
+        )
         await adapter._client.aclose()
 
     async def test_fork_uses_only_v2_routes(self):
@@ -409,6 +420,10 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
                 return Response(200, json={"data": {"id": "fork-v2"}})
             if path == "/api/session/fork-v2/move":
                 return Response(200, json={"data": {}})
+            if path == "/api/session/fork-v2":
+                if request.method == "GET":
+                    return Response(200, json={"data": {"location": {"directory": "C:/t"}}})
+                return Response(204)
             return Response(404, json={})
 
         adapter._client = AsyncClient(transport=MockTransport(handler))
