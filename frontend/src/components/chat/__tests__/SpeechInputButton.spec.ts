@@ -22,7 +22,7 @@ vi.mock('@/utils/speech/qwen', () => ({ QwenSpeechStream: class {
 } }))
 const i18n = createI18n({ legacy: false, locale: 'zh', messages: { zh } })
 const mountButton = () => mount(SpeechInputButton, { props: { disabled: false, contextKey: 'task-a' }, global: { plugins: [i18n] } })
-const start = async (wrapper: ReturnType<typeof mountButton>) => { await wrapper.get('button').trigger('click'); await flushPromises() }
+const start = async (wrapper: ReturnType<typeof mountButton>) => { await flushPromises(); await wrapper.get('button').trigger('click'); await flushPromises() }
 
 beforeEach(() => {
   mocks.get.mockRejectedValue(new Error('Legacy server without capabilities'))
@@ -372,10 +372,77 @@ describe('voice input modes and lifecycle', () => {
   it('automatically stops at sixty seconds', async () => {
     vi.useFakeTimers()
     const wrapper = mountButton()
-    await wrapper.get('button').trigger('click'); await flushPromises()
+    await start(wrapper)
     await vi.advanceTimersByTimeAsync(60000); await flushPromises()
     expect(mocks.captureStop).toHaveBeenCalledOnce()
     expect(wrapper.emitted('transcript')).toEqual([['识别结果']])
+    wrapper.unmount()
+  })
+})
+
+
+describe('HTTP provider recording', () => {
+  function selectHttp() {
+    mocks.get.mockResolvedValue({ data: { mode: 'api', provider: 'openai_compatible', transport: 'http',
+      generation: 'http-config', configured: true } })
+    mocks.captureStop.mockResolvedValue(btoa('test-wave-bytes'))
+    mocks.post.mockResolvedValue({ data: { text: 'HTTP 识别结果' } })
+  }
+
+  it('uploads only after stop, without creating a streaming session', async () => {
+    selectHttp()
+    const wrapper = mountButton(); await flushPromises()
+    expect(mocks.post).not.toHaveBeenCalled()
+    await start(wrapper)
+    expect(mocks.captureStart.mock.calls[0]![0]).toBeUndefined()
+    expect(mocks.streamStart).not.toHaveBeenCalled()
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    expect(mocks.post).toHaveBeenCalledWith('/speech/transcriptions', expect.any(Blob), expect.objectContaining({
+      signal: expect.any(AbortSignal), headers: expect.objectContaining({ 'X-Speech-Generation': 'http-config' }),
+    }))
+    expect(wrapper.emitted('transcript')).toEqual([['HTTP 识别结果']])
+    wrapper.unmount()
+  })
+
+  it('aborts upload and discards late text on context change', async () => {
+    selectHttp()
+    let complete!: (value: unknown) => void
+    mocks.post.mockImplementation(() => new Promise(resolve => { complete = resolve }))
+    const wrapper = mountButton(); await start(wrapper)
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    const signal = mocks.post.mock.calls[0]![2].signal
+    await wrapper.setProps({ contextKey: 'another-task' })
+    expect(signal.aborted).toBe(true)
+    complete({ data: { text: '过期内容' } }); await flushPromises()
+    expect(wrapper.emitted('transcript')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('cancels active upload when the provider configuration changes', async () => {
+    selectHttp()
+    mocks.post.mockImplementation(() => new Promise(() => {}))
+    const wrapper = mountButton(); await start(wrapper)
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    const signal = mocks.post.mock.calls[0]![2].signal
+    mocks.get.mockResolvedValue({ data: { mode: 'api', provider: 'openai_compatible', transport: 'http',
+      generation: 'replaced-config', configured: true } })
+    window.dispatchEvent(new Event('traceforge-features-changed')); await flushPromises()
+    expect(signal.aborted).toBe(true)
+    expect(wrapper.get('button').attributes('aria-pressed')).toBe('false')
+    expect(wrapper.emitted('transcript')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('does not contact any provider before capabilities resolve', async () => {
+    let complete!: (value: unknown) => void
+    mocks.get.mockImplementation(() => new Promise(resolve => { complete = resolve }))
+    const wrapper = mountButton(); await flushPromises()
+    expect(wrapper.get('button').attributes('disabled')).toBeDefined()
+    expect(mocks.post).not.toHaveBeenCalled()
+    complete({ data: { mode: 'api', provider: 'openai_compatible', transport: 'http',
+      generation: 'http-config', configured: true } }); await flushPromises()
+    expect(wrapper.get('button').attributes('disabled')).toBeUndefined()
+    expect(mocks.post).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

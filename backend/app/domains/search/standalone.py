@@ -25,6 +25,7 @@ async def load():
         published.update(
             SEARCH_EMBEDDING_ENDPOINT=values["embedding_endpoint"],
             SEARCH_EMBEDDING_MODEL=values["embedding_model"],
+            SEARCH_EMBEDDING_PROTOCOL=values["embedding_protocol"],
             SEARCH_EMBEDDING_API_KEY=values["embedding_api_key"],
         )
         feature_settings.replace(published)

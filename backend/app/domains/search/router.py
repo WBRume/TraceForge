@@ -13,9 +13,9 @@ from app.core.offload import run_db_txn
 from app.dependencies import get_current_user, require_admin
 from app.domains.search import sessions
 from app.domains.search.embedding import EmbeddingError, embed, encrypt_key, validate_endpoint
+from app.domains.search.embedding_protocols import get_protocol, profile_fingerprint
 from app.domains.search.es import create_client
 from app.domains.search.models import SearchEmbeddingProfile, SearchIndexTarget
-from app.domains.search.projection import digest
 from app.domains.search.service import SearchService, configuration
 from app.domains.search.worker import dto
 
@@ -237,12 +237,13 @@ class ProfileInput(BaseModel):
     model_id: str = Field(min_length=1, max_length=200)
     api_key: str | None = Field(None, max_length=4096)
     clear_api_key: bool = False
+    protocol: str | None = Field(None, max_length=40)
 
 
 def public_profile(profile):
     return {
         k: getattr(profile, k)
-        for k in ("id", "revision", "status", "endpoint", "model_id", "dimension", "last_error_code")
+        for k in ("id", "revision", "status", "endpoint", "model_id", "protocol", "dimension", "last_error_code")
     } | {"has_api_key": bool(profile.encrypted_api_key)}
 
 
@@ -280,11 +281,18 @@ def save_profile(db, body):
     )
     if body.id and (not profile or profile.revision != body.revision):
         raise HTTPException(409, "SEARCH_CONFIG_REVISION_CONFLICT")
+    protocol = body.protocol if body.protocol is not None else profile.protocol if profile else "openai_compatible"
+    try:
+        get_protocol(protocol)
+    except EmbeddingError as exc:
+        raise HTTPException(422, exc.code) from None
     bound = (
         profile
         and db.query(SearchIndexTarget.target_id).filter(SearchIndexTarget.embedding_profile_id == profile.id).first()
     )
-    changed_space = profile and (profile.endpoint != endpoint or profile.model_id != body.model_id)
+    changed_space = profile and (
+        profile.endpoint != endpoint or profile.model_id != body.model_id or profile.protocol != protocol
+    )
     if bound and changed_space:
         old_key = profile.encrypted_api_key
         profile = SearchEmbeddingProfile(endpoint=endpoint, model_id=body.model_id, encrypted_api_key=old_key)
@@ -296,7 +304,7 @@ def save_profile(db, body):
         profile.revision += 1
         if changed_space:
             profile.status, profile.dimension, profile.fingerprint = "draft", None, None
-    profile.endpoint, profile.model_id = endpoint, body.model_id
+    profile.endpoint, profile.model_id, profile.protocol = endpoint, body.model_id, protocol
     if body.clear_api_key:
         profile.encrypted_api_key = None
     elif encrypted is not None:
@@ -346,8 +354,6 @@ async def test_profile(profile_id: str, request: Request, user=Depends(require_a
     except EmbeddingError as exc:
         raise HTTPException(422, exc.code) from None
     dimension = len(vectors[0])
-    if profile["model_id"] == "BAAI/bge-m3" and dimension != 1024:
-        raise HTTPException(422, "EMBEDDING_INVALID_RESPONSE")
 
     def publish(db):
         current = (
@@ -356,17 +362,7 @@ async def test_profile(profile_id: str, request: Request, user=Depends(require_a
         if current.revision != profile["revision"]:
             raise HTTPException(409, "SEARCH_CONFIG_REVISION_CONFLICT")
         current.dimension, current.status, current.last_error_code = dimension, "tested", None
-        current.fingerprint = digest(
-            [
-                current.endpoint,
-                current.model_id,
-                dimension,
-                current.chunk_chars,
-                current.chunk_overlap,
-                current.query_prefix,
-                current.document_prefix,
-            ]
-        )
+        current.fingerprint = profile_fingerprint(dto(current))
         current.revision += 1
         return public_profile(current)
 

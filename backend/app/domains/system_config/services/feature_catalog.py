@@ -1,60 +1,8 @@
 """Allowlisted feature fields shared by validation, environment fallback and UI."""
 
-from dataclasses import dataclass
-from urllib.parse import urlsplit
-
-from pydantic import SecretStr
-
-from app.config import settings
-
-
-@dataclass(frozen=True)
-class ConfigField:
-    key: str
-    label: str
-    env: str
-    kind: str = "text"
-    options: tuple[str, ...] = ()
-    minimum: int = 0
-    maximum: int = 4096
-    hint: str = ""
-
-    def default(self):
-        if self.env == "SPEECH_MODE":
-            return settings.SPEECH_MODE or ("api" if settings.SPEECH_API_ENABLED else "off")
-        if self.env == "OAUTH_GITHUB_ENABLED":
-            return bool(settings.OAUTH_GITHUB_CLIENT_ID and settings.OAUTH_GITHUB_CLIENT_SECRET)
-        value = getattr(settings, self.env)
-        return value.get_secret_value() if isinstance(value, SecretStr) else value
-
-    def validate(self, value):
-        if self.kind == "boolean":
-            return type(value) is bool
-        if self.kind == "number":
-            return type(value) is int and self.minimum <= value <= self.maximum
-        if not isinstance(value, str) or len(value) > self.maximum:
-            return False
-        if self.options:
-            return value in self.options
-        if self.kind == "secret":
-            if self.key in {"api_key", "embedding_api_key"} and "********" in value:
-                return False
-            return not value or not set(value) <= {"*", "•"}
-        if self.kind in {"url", "https"} and value:
-            try:
-                parts = urlsplit(value)
-                valid_port = parts.port is None or 1 <= parts.port <= 65535
-            except ValueError:
-                return False
-            schemes = {"https"} if self.kind == "https" else {"https", "http"}
-            return bool(
-                parts.scheme in schemes
-                and parts.hostname
-                and valid_port
-                and not (parts.username or parts.password or parts.query or parts.fragment)
-            )
-        return True
-
+from app.domains.ai.speech.registry import PROVIDERS, provider_fields
+from app.domains.search.embedding_protocols import PROTOCOLS
+from app.domains.system_config.services.config_fields import ConfigField
 
 CATALOG = {
     "speech": (
@@ -66,48 +14,53 @@ CATALOG = {
                 "SPEECH_MODE",
                 "select",
                 ("api", "offline", "off"),
+                option_labels=(("api", "在线 API"),),
                 hint=(
-                    "作用：选择语音输入的识别通道。在线 API 走百炼云服务做流式识别，"
+                    "作用：选择语音输入的识别通道。在线 API 由所选供应商插件完成识别，"
                     "离线模式在客户端本机完成识别，停用后隐藏语音输入入口。\n"
-                    "前提：在线模式需配置百炼 API Key 且能访问所选地域；"
+                    "前提：在线模式需配置供应商插件及其凭据；"
                     "离线模式需客户端已内置离线识别模型。"
                 ),
             ),
-            ConfigField("api_key", "百炼 API Key", "SPEECH_API_KEY", "secret"),
             ConfigField(
-                "region",
-                "服务地域",
-                "SPEECH_API_REGION",
+                "provider",
+                "语音供应商插件",
+                "SPEECH_PROVIDER",
                 "select",
-                ("beijing", "singapore"),
-                hint=(
-                    "作用：指定在线识别调用的百炼服务地域，决定请求发往北京或新加坡节点。\n"
-                    "前提：仅在识别模式为「在线 API」时生效；"
-                    "API Key 所属地域必须与所选地域一致，否则调用会被拒绝。"
-                ),
+                tuple(PROVIDERS),
+                option_labels=tuple((key, plugin.label) for key, plugin in PROVIDERS.items()),
+                visible_when=(("mode", ("api",)),),
             ),
             ConfigField(
-                "token_ttl",
-                "临时凭据有效期（秒）",
-                "SPEECH_TOKEN_TTL_SECONDS",
-                "number",
-                minimum=60,
-                maximum=300,
-                hint=(
-                    "作用：控制下发给客户端的临时语音凭据的有效时长，过期后客户端自动重新签发。\n"
-                    "前提：仅在线 API 模式需要；取值需在 60–300 秒之间，"
-                    "并保证服务端与客户端时钟同步。"
-                ),
+                "transport",
+                "识别方式",
+                "SPEECH_TRANSPORT",
+                "select",
+                ("auto", "http", "websocket"),
+                option_labels=(("auto", "使用插件默认方式"),),
+                hint="自动使用插件默认方式；HTTP 在停止录音后上传识别，WebSocket 实时返回文字。",
+                visible_when=(("mode", ("api",)),),
             ),
+            ConfigField("api_key", "语音服务 API Key", "SPEECH_API_KEY", "secret", visible_when=(("mode", ("api",)),)),
+            ConfigField(
+                "model",
+                "语音模型",
+                "SPEECH_API_MODEL",
+                maximum=200,
+                hint="留空使用插件默认模型；填写时需与供应商提供的模型标识一致。",
+                visible_when=(("mode", ("api",)),),
+            ),
+            *provider_fields(),
             ConfigField(
                 "requests_per_minute",
-                "每用户每分钟凭据上限",
+                "每用户每分钟请求上限",
                 "SPEECH_TOKEN_REQUESTS_PER_MINUTE",
                 "number",
                 minimum=1,
                 maximum=60,
+                visible_when=(("mode", ("api",)),),
                 hint=(
-                    "作用：限制单个用户每分钟申请临时凭据的次数，用于防止凭据被滥用。\n"
+                    "作用：限制单个用户每分钟申请流式凭据或上传录音的次数，用于防止凭据被滥用。\n"
                     "前提：仅在线 API 模式生效；取值需在 1–60 之间，"
                     "且不应高于平台整体限流阈值。"
                 ),
@@ -155,6 +108,15 @@ CATALOG = {
             ),
             ConfigField("es_username", "Elasticsearch 用户名", "SEARCH_ES_USERNAME", maximum=200),
             ConfigField("es_password", "Elasticsearch 密码", "SEARCH_ES_PASSWORD", "secret"),
+            ConfigField(
+                "embedding_protocol",
+                "向量接口类型",
+                "SEARCH_EMBEDDING_PROTOCOL",
+                "select",
+                tuple(PROTOCOLS),
+                option_labels=tuple((key, protocol.label) for key, protocol in PROTOCOLS.items()),
+                hint="按接口协议选择适配器；OpenAI 兼容接口可使用不同供应商的地址和模型。",
+            ),
             ConfigField(
                 "embedding_endpoint",
                 "向量服务端点",

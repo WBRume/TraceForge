@@ -14,6 +14,9 @@ export interface FeatureField {
   minimum: number
   maximum: number
   hint: string
+  visible_when?: Record<string, string[]>
+  option_labels?: Record<string, string>
+  group?: string
 }
 export interface FeatureConfig {
   feature: FeatureId
@@ -22,6 +25,7 @@ export interface FeatureConfig {
   configured: boolean
   fields: FeatureField[]
   error?: string
+  providers?: { id: string; label: string; transports: string[]; default_transport: string }[]
 }
 export interface Capability {
   feature: FeatureId

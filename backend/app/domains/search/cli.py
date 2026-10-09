@@ -13,6 +13,7 @@ from sqlalchemy import and_, func, or_
 from app.core.feature_settings import feature_settings as settings
 from app.core.offload import run_db_txn
 from app.domains.search.embedding import embed, encrypt_key
+from app.domains.search.embedding_protocols import profile_fingerprint
 from app.domains.search.es import create_client, index_mapping
 from app.domains.search.models import (
     SearchBackfillRun,
@@ -36,30 +37,18 @@ def get_target(db, name):
 async def configure(http):
     """Bootstrap the specified supplier from local environment, encrypted at rest."""
     data = {
-        "endpoint": "https://api.siliconflow.cn/v1/embeddings",
-        "model_id": "BAAI/bge-m3",
+        "endpoint": settings.SEARCH_EMBEDDING_ENDPOINT,
+        "protocol": settings.SEARCH_EMBEDDING_PROTOCOL,
+        "model_id": settings.SEARCH_EMBEDDING_MODEL,
         "encrypted_api_key": encrypt_key(settings.SEARCH_EMBEDDING_API_KEY),
-        "dimension": 1024,
         "chunk_chars": 1600,
         "chunk_overlap": 160,
         "query_prefix": "",
         "document_prefix": "",
     }
-    await embed(http, data, ["数据库连接池耗尽", "连接没有释放"])
-    data["fingerprint"] = digest(
-        [
-            data[k]
-            for k in (
-                "endpoint",
-                "model_id",
-                "dimension",
-                "chunk_chars",
-                "chunk_overlap",
-                "query_prefix",
-                "document_prefix",
-            )
-        ]
-    )
+    vectors = await embed(http, data, ["数据库连接池耗尽", "连接没有释放"])
+    data["dimension"] = len(vectors[0])
+    data["fingerprint"] = profile_fingerprint(data)
 
     def save(db):
         existing = (

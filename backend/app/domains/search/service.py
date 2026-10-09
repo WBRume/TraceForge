@@ -75,6 +75,7 @@ def configuration(db):
         and (
             profile.endpoint != settings.SEARCH_EMBEDDING_ENDPOINT
             or profile.model_id != settings.SEARCH_EMBEDDING_MODEL
+            or profile.protocol != settings.SEARCH_EMBEDDING_PROTOCOL
         )
     ):
         return None, None

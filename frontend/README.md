@@ -54,13 +54,13 @@ Tauri 的当前 CI 发布目标是 Windows x64，其他平台的安装器尚未�
 
 ## 语音输入：构建时选择 API / 离线 / 关闭
 
-聊天输入框提供录音、停止和取消操作，页面不提供功能开关或模式选择。API 模式的识别结果实时写入输入框光标处，同一句的中间结果在原位置修订，停止时不会重复追加；离线模式在停止录音、完成本地推理后写入。输入框原有内容保留，不自动发送；取消或断线保留已经写入的文字。录音期间暂停发送，切换会话、离开页面或取消会释放麦克风并丢弃迟到结果。手动修改正在识别的文字时会结束本次语音输入，保留手动修改。每段最多 60 秒。
+聊天输入框提供录音、停止和取消操作，页面不提供功能开关或模式选择。WebSocket 模式的识别结果实时写入输入框光标处，同一句的中间结果在原位置修订，停止时不会重复追加；HTTP 模式在停止录音、上传转写完成后写入，离线模式在本地推理完成后写入。输入框原有内容保留，不自动发送；取消或断线保留已经写入的文字。录音期间暂停发送，切换会话、离开页面或取消会释放麦克风并丢弃迟到结果。手动修改正在识别的文字时会结束本次语音输入，保留手动修改。每段最多 60 秒。
 
 `TRACEFORGE_SPEECH_MODE` 在**前端构建进程的环境变量**中配置，修改后需要重新构建前端及桌面主进程：
 
 | 值 | 浏览器 | Electron / Tauri | 附加资源 |
 | --- | --- | --- | --- |
-| `api`（默认） | 百炼流式识别 | 百炼流式识别 | 无本地模型或 Sherpa 依赖 |
+| `api`（默认） | 所选语音插件 | 所选语音插件 | 无本地模型或 Sherpa 依赖 |
 | `offline` | 不显示录音入口 | Sherpa-ONNX + SenseVoice-Small INT8 | 本地准备资源，可选随包携带 |
 | `off` | 不显示录音入口 | 不显示录音入口 | 无 |
 
@@ -74,17 +74,46 @@ npm run build:tauri -- --bundles nsis
 
 开发命令同样读取上述环境变量。Docker Web 镜像支持同名 build argument；Compose 使用 `${TRACEFORGE_SPEECH_MODE:-api}`。桌面 CI 读取同名仓库变量，默认 API 模式、不附带语音资源。不要将长期 API Key 写进任何 `VITE_*` 或前端构建变量。
 
-### API 模式：半直连
+### API 模式：供应商插件
 
-固定使用 `qwen-audio-3.1-asr-flash-streaming`。后端 `.env` / 部署环境配置：
+默认使用百炼 WebSocket 插件，默认模型为 `qwen-audio-3.1-asr-flash-streaming`。系统配置页可选择插件、识别方式和模型，未覆盖的字段使用后端环境配置：
 
 ```dotenv
 SPEECH_API_ENABLED=true
+SPEECH_PROVIDER=bailian
+SPEECH_TRANSPORT=auto
+SPEECH_API_MODEL=
 SPEECH_API_KEY=<百炼长期 API Key，仅后端持有>
 SPEECH_API_REGION=beijing
 SPEECH_TOKEN_TTL_SECONDS=120
 SPEECH_TOKEN_REQUESTS_PER_MINUTE=6
 ```
+
+另一个内置插件是 `openai_compatible`，支持录音结束后通过 HTTP 上传。配置完整转写端点和服务端密钥即可使用遵循该接口的供应商：
+
+```dotenv
+SPEECH_MODE=api
+SPEECH_PROVIDER=openai_compatible
+SPEECH_TRANSPORT=http
+SPEECH_API_ENDPOINT=https://api.openai.com/v1/audio/transcriptions
+SPEECH_API_MODEL=whisper-1
+SPEECH_API_KEY=<仅后端持有的供应商密钥>
+```
+
+HTTP 模式不预连接 WebSocket；停止录音后，将最长 60 秒的单声道 16 kHz PCM16 WAV 上传至登录保护的 `/api/speech/transcriptions`。后端检查音频、限流并以 multipart 文件调用供应商，统一读取 JSON `text`；前端取消、切换会话或配置变化时中止上传并丢弃过期结果。配置版本不匹配的录音不会发送给新供应商。供应商请求与响应均有超时/大小限制，错误响应不会回传上游内容或密钥。
+
+HTTP 插件的“测试连接”会发送 0.1 秒静音音频，可能产生少量费用。自动能力轮询只读取最近五分钟的实际验证结果，不上传音频；没有验证记录时如实显示尚未确认连通性。接口契约见 [OpenAI 转写接口](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create)。
+
+升级前在 `backend` 运行 `python -m alembic upgrade head`，为现有向量配置补充协议字段。Embedding 通过 `SEARCH_EMBEDDING_PROTOCOL=openai_compatible` 或系统配置中的“向量接口类型”选择协议；端点和模型继续可配置。CLI 初始化从环境配置读取地址与模型，向量维度从响应确认。旧向量配置默认使用 OpenAI 兼容协议，协议与模型一起参与索引身份判断。
+
+#### 扩展协议与语音插件
+
+- Embedding：在 `backend/app/domains/search/embedding_protocols.py` 实现 `EmbeddingProtocol` 并加入 `PROTOCOLS`。适配器负责构造请求与解析响应；结果仍应通过公共数量、顺序、维度和有限数值校验。配置页自动展示注册类型。新增协议需要重新构建对应索引，不能修改已绑定索引的向量空间。
+- 语音后端：在 `backend/app/domains/ai/speech/` 实现 `SpeechProvider`，在 `registry.py` 的 `PROVIDERS` 中注册。声明 `transports`、`default_transport`、`config_fields`，实现配置检查、连通性探测以及所支持的 `create_session` / `transcribe`。插件专属字段使用唯一 key，关联的环境默认值在 `app/config.py` 声明；密钥字段使用 `secret`，沿用加密存储与脱敏机制。
+- 语音前端：HTTP 插件直接复用后端统一转写入口。WebSocket 插件在 `frontend/src/utils/speech/provider.ts` 的 `speechStreamProviders` 注册，实现 `SpeechStream`；将供应商中间结果转换为完整当前文本，`finish()` 返回最终文本，`cancel()` 释放全部连接、队列和计时器。按供应商能力声明是否可预连接、是否能复用短期凭据。
+- 插件属于受信任的部署代码，注册后随应用构建/启动加载。业务配置不能指定任意模块路径或执行脚本。长期密钥仅供后端使用；直连插件只能向前端签发短期凭证。新增只接受服务端密钥的实时协议时，应由其插件提供后端中继，不能把长期密钥塞入浏览器连接参数。
+
+#### 百炼直连与录音生命周期
 
 登录用户通过 `POST /api/speech/sessions` 领取短期 `st-` 凭证，响应禁止缓存；Redis 按用户限制签发次数，Redis 不可用时返回 503。前端仅将临时凭证保存在本次录音的内存中，通过 `wss://dashscope.aliyuncs.com/api-ws/v1/inference?api_key=<临时凭证>` 直连百炼；音频不经过 TraceForge 后端。新加坡 Key 使用 `SPEECH_API_REGION=singapore`，两个地域的 Key 不能混用。
 

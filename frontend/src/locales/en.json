@@ -14,7 +14,7 @@
     "too_short": "Recording is too short. Please retry.",
     "failed": "Transcription failed. Check your connection, microphone or speech assets, then retry.",
     "no_speech": "No speech recognized. Please retry.",
-    "start_api": "Voice input (Bailian online)",
+    "start_api": "Voice input (online)",
     "start_offline": "Voice input (offline)"
   },
   "task_rail": {
@@ -3980,6 +3980,10 @@
     "load_failed": "Unable to load service capabilities",
     "failed": "Operation failed",
     "options": {
+      "http": "Upload after recording (HTTP)",
+      "websocket": "Real-time recognition (WebSocket)",
+      "openai_compatible": "OpenAI compatible",
+      "bailian": "Alibaba Cloud Bailian",
       "api": "Streaming API",
       "offline": "Desktop offline recognition",
       "off": "Disabled",

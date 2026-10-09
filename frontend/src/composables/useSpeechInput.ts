@@ -1,12 +1,12 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { SpeechRecorder } from '@/utils/speech/recorder'
 import { speechMode } from '@/utils/speech/mode'
-import { QwenSpeechStream, type SpeechSession } from '@/utils/speech/qwen'
+import { speechStreamProviders, streamProvider, transcribeAudio, type SpeechSession, type SpeechStream } from '@/utils/speech/provider'
 import api from '@/utils/api'
 
 type ApiConnection = {
   controller: AbortController
-  stream: QwenSpeechStream
+  stream: SpeechStream
   promise: Promise<void>
   sampleRate: number
   ready: boolean
@@ -15,7 +15,10 @@ type ApiConnection = {
 
 export function useSpeechInput(options: { disabled: () => boolean; contextKey: () => string; onTranscript: (text: string) => void }) {
   const mode = ref(speechMode())
-  const ready = ref(mode.value === 'api')
+  const ready = ref(false)
+  const provider = ref('bailian')
+  const transport = ref('websocket')
+  const streaming = computed(() => mode.value === 'api' && transport.value === 'websocket')
   const state = ref<'idle' | 'starting' | 'recording' | 'transcribing'>('idle')
   const error = ref('')
   const connecting = ref(false)
@@ -38,6 +41,7 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
   let capabilityTimer: number | undefined
   let capabilityGeneration = ''
   let capabilityRequest = 0
+  let uploadController: AbortController | undefined
 
   function clearTimer() { window.clearInterval(timer); timer = undefined }
 
@@ -64,23 +68,26 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
         schedulePreparation(retryDelay)
       }
     }
-    const remote = new QwenSpeechStream(text => {
+    const plugin = streamProvider(provider.value)
+    const remote = plugin.create(text => {
       if (connection === entry && !options.disabled()) options.onTranscript(text)
     }, failed)
-    const credentials = cachedSession && cachedSession.expires_at * 1000 > Date.now() + 15000
+    const credentials = plugin.cacheCredentials && cachedSession && cachedSession.expires_at * 1000 > Date.now() + 15000
       ? Promise.resolve(cachedSession)
-      : api.post<SpeechSession>('/speech/sessions', null, { signal: controller.signal, timeout: 8000 }).then(({ data }) => data)
+      : api.post<SpeechSession>('/speech/sessions', null, { signal: controller.signal, timeout: 8000,
+        headers: { 'X-Speech-Generation': capabilityGeneration } }).then(({ data }) => data)
     const entry: ApiConnection = {
       controller, stream: remote, sampleRate, ready: false,
       promise: credentials.then(async data => {
         if (controller.signal.aborted) return
-        cachedSession = data
+        if (data.provider && data.provider !== provider.value) throw new Error('Speech provider changed')
+        cachedSession = plugin.cacheCredentials ? data : undefined
         await remote.start(data, sampleRate)
         if (controller.signal.aborted) return
         entry.ready = true
         retryDelay = 1000
         if (connection === entry) connecting.value = false
-        else if (prepared === entry) {
+        else if (prepared === entry && plugin.standby) {
           // A visible chat stays ready without accessing the microphone. Sparse synthetic
           // silence keeps the task alive without streaming a full second of audio per second.
           remote.keepAlive()
@@ -93,7 +100,7 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
   }
 
   function prepare() {
-    if (!mounted || mode.value !== 'api' || busy.value || options.disabled() || disposed || document.hidden || !foreground || prepared) return
+    if (!mounted || !ready.value || !streaming.value || !speechStreamProviders[provider.value]?.standby || busy.value || options.disabled() || disposed || document.hidden || !foreground || prepared) return
     prepared = createConnection()
   }
 
@@ -107,6 +114,7 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
     generation++
     clearTimer()
     window.clearTimeout(preparationTimer)
+    uploadController?.abort(); uploadController = undefined
     recorder?.dispose(); recorder = undefined
     release(connection); connection = undefined
     release(prepared); prepared = undefined
@@ -122,16 +130,28 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
       if (disposed || request !== capabilityRequest) return
       if (data && ['api', 'offline', 'off'].includes(data.mode)) {
         const next = data.mode === 'offline' && !window.sddDesktop?.speech ? 'off' : data.mode
-        if (mode.value !== next || capabilityGeneration !== data.generation) {
+        const nextProvider = data.provider ?? 'bailian'
+        const nextTransport = data.transport ?? 'websocket'
+        const changed = mode.value !== next || capabilityGeneration !== data.generation
+          || provider.value !== nextProvider || transport.value !== nextTransport
+        if (changed) {
           cachedSession = undefined
           cancel(false)
           mode.value = next
+          provider.value = nextProvider
+          transport.value = nextTransport
           capabilityGeneration = data.generation
         }
         ready.value = next === 'api' && data.configured !== false
-        schedulePreparation()
+          && (nextTransport === 'http' || nextTransport === 'websocket' && !!speechStreamProviders[nextProvider])
+        if (changed) prepare()
       }
-    } catch { /* Older servers retain the build-time fallback. */ }
+    } catch {
+      if (!disposed && request === capabilityRequest && !capabilityGeneration && !ready.value) {
+        ready.value = mode.value === 'api'
+        prepare() // Older servers retain the build-time Bailian fallback.
+      }
+    }
     if (mode.value !== 'offline') return
     try {
       const next = await window.sddDesktop!.speech!.status()
@@ -157,14 +177,14 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
     error.value = ''; seconds.value = 0; state.value = 'starting'
     const failed = (reason: Error) => { if (current === generation) { cancel(); failure(reason) } }
     try {
-      if (mode.value === 'api') {
+      if (streaming.value) {
         connection = prepared ?? createConnection()
         prepared = undefined; clearStandby(connection)
         connecting.value = !connection.ready
       }
-      await capture.start(mode.value === 'api' ? pcm => {
+      await capture.start(streaming.value ? pcm => {
         if (current === generation) connection?.stream.sendPcm(pcm)
-      } : undefined, () => failed(new Error('Microphone disconnected')), mode.value === 'api' ? sampleRate => {
+      } : undefined, () => failed(new Error('Microphone disconnected')), streaming.value ? sampleRate => {
         if (current !== generation || !connection) return
         // Some devices ignore the requested 16 kHz. Match their actual format before any PCM arrives.
         if (connection.sampleRate !== sampleRate) {
@@ -197,6 +217,10 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
         if (current !== generation) return
         text = await active.stream.finish()
       }
+      else if (mode.value === 'api') {
+        uploadController = new AbortController()
+        text = await transcribeAudio(wavBase64, uploadController.signal, capabilityGeneration)
+      }
       else {
         requestId = crypto.randomUUID()
         text = (await window.sddDesktop!.speech!.transcribe({ id: requestId, wavBase64 })).text
@@ -208,6 +232,7 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
     finally {
       if (current === generation) {
         capture.dispose(); release(active)
+        uploadController = undefined
         requestId = ''; recorder = undefined; connection = undefined
         state.value = 'idle'; connecting.value = false
         schedulePreparation()
@@ -233,7 +258,6 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
     mounted = true
     void refresh()
     capabilityTimer = window.setInterval(() => { if (!document.hidden) void refresh() }, 15000)
-    prepare()
     window.addEventListener('pagehide', pageHidden)
     window.addEventListener('pageshow', focused)
     window.addEventListener('blur', blurred)

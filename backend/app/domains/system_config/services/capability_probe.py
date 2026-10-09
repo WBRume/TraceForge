@@ -40,8 +40,13 @@ async def probe_speech(values, app, draft):
             client_assets_required=True,
         )
     if not values["api_key"]:
-        return result("speech", "NOT_CONFIGURED", mode, "语音服务未生效：识别凭据缺失", "填写对应地域的百炼 API Key")
+        return result("speech", "NOT_CONFIGURED", mode, "语音服务未生效：识别凭据缺失", "填写所选供应商的 API Key")
     from app.domains.ai.routers.speech import _RATE_SCRIPT
+    from app.domains.ai.speech.registry import get_provider
+
+    provider, transport = get_provider(values)
+    if not provider.configured(values):
+        return result("speech", "NOT_CONFIGURED", mode, "语音插件配置不完整", "填写插件要求的凭据和服务地址")
 
     try:
         redis = await get_redis_client()
@@ -55,23 +60,18 @@ async def probe_speech(values, app, draft):
             "检查基础 Redis 连接与 Lua 执行权限",
             rate_limiter=False,
         )
-    host = "dashscope.aliyuncs.com" if values["region"] == "beijing" else "dashscope-intl.aliyuncs.com"
     async with httpx.AsyncClient(timeout=4, follow_redirects=False) as client:
-        response = await client.post(
-            f"https://{host}/api/v1/tokens",
-            params={"expire_in_seconds": 60},
-            headers={"Authorization": "Bearer " + values["api_key"]},
-        )
-        if response.status_code in (401, 403):
-            return result(
-                "speech", "DEGRADED", mode, "识别凭据校验失败", "检查 API Key 与地域是否匹配", rate_limiter=True
-            )
-        response.raise_for_status()
-        payload = response.json()
-        if not str(payload.get("token", "")).startswith("st-") or int(payload.get("expires_at", 0)) <= time.time():
-            raise ValueError("invalid token response")
+        checked = await provider.probe(client, values, draft=draft)
     return result(
-        "speech", "READY", mode, "流式识别凭据与共享限流组件可用", rate_limiter=True, credentials_verified=True
+        "speech",
+        "READY" if checked.verified else "DEGRADED",
+        mode,
+        checked.explanation,
+        checked.guidance,
+        rate_limiter=True,
+        credentials_verified=checked.verified,
+        transport=transport,
+        provider=values.get("provider", "bailian"),
     )
 
 
@@ -160,6 +160,7 @@ async def probe_search(values, app, draft):
                 {
                     "endpoint": values["embedding_endpoint"],
                     "model_id": values["embedding_model"],
+                    "protocol": values.get("embedding_protocol", "openai_compatible"),
                     "encrypted_api_key": encrypt_key(values["embedding_api_key"]),
                 },
                 ["连接测试"],
@@ -193,7 +194,10 @@ async def probe_search(values, app, draft):
     )
     if semantic and values["embedding_api_key"]:
         semantic = (
-            profile["endpoint"] == values["embedding_endpoint"] and profile["model_id"] == values["embedding_model"]
+            profile["endpoint"] == values["embedding_endpoint"]
+            and profile["model_id"] == values["embedding_model"]
+            and (profile.get("protocol") or "openai_compatible")
+            == values.get("embedding_protocol", "openai_compatible")
         )
     online = await search_worker_health(values, app)
     if not online:
