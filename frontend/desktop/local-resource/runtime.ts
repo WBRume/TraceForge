@@ -3,11 +3,12 @@ import * as path from 'node:path'
 import { platform, type JournalDatabase } from './platform'
 import { child, fail, git, hash, inside, inspectRepo, provision, readJson, writeFiles, type Receipt } from './filesystem'
 import { applyPatches, generatePatches } from './patches'
-import { documents, skills } from './content'
+import { skills } from './content'
+import { documents } from './plan-documents'
 import { snapshot } from './snapshots'
 import { cleanupSession, forkSession, sessionRoot } from './provider'
 
-export interface Config { roots_config_path?: string; state_root: string; allowed_roots: string[]; token: string; listen_host?: string; port?: number; dsh_session_root?: string; document_roots?: string[] }
+export interface Config { roots_config_path?: string; state_root: string; allowed_roots: string[]; token: string; listen_host?: string; port?: number; dsh_session_root?: string }
 export interface Operation { operation_id: string; resource_id: string; task_id: string; kind: string; payload_hash: string; payload: any }
 // Compatible with Python json.dumps(sort_keys=True, ensure_ascii=False).
 export function canonical(value: any): string {
@@ -72,7 +73,7 @@ export class Runtime {
     const dshRoot = sessionRoot(this.config.dsh_session_root)
     switch (command.kind) {
       case 'materialize': writeFiles(root, payload.files); return { written: payload.files.length, paths: payload.files.map((entry: any) => child(root, entry.path)) }
-      case 'documents': return documents(root, command.task_id, payload, this.config.document_roots)
+      case 'documents': return documents(root, command.task_id, payload, path.join(this.state, 'snapshots', command.resource_id + '_resource', command.task_id + '_task'))
       case 'skills': return skills(root, payload)
       case 'generate_patch': return generatePatches(receipt, this.state)
       case 'snapshot': return snapshot(this.state, command.resource_id, receipt, payload, dshRoot)

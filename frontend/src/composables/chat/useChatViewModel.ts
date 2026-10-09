@@ -999,7 +999,7 @@ export function useChatViewModel() {
     canManageTaskStatus: canManageTaskStatus,
     canDeleteTask: workspaceContext.canDeleteTask,
     canExportTask: workspaceContext.canExportTask,
-    canEditSuperpowersDocs: workspaceContext.canEditSuperpowersDocs,
+    canEditPlanDocs: workspaceContext.canEditPlanDocs,
     canShareTaskSession,
 
     // 当前会话

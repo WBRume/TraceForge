@@ -37,7 +37,7 @@ export type TaskSpecBootstrap = {
 
 export type SpecDrawerLevel = 0 | 1 | 2 | 3
 export type OpenSpecDrawerLevel = 1 | 2 | 3
-export type SpecDrawerTab = 'spec_doc' | 'superpowers_docs' | 'diag_docs' | 'diag_code'
+export type SpecDrawerTab = 'spec_doc' | 'plan_docs' | 'diag_docs' | 'diag_code'
 
 export type TaskSessionFilter = 'ALL' | 'DONE' | 'FAILED'
 export type TaskRelationFilter = 'created_by_me' | 'mentioned_me' | 'messaged_by_me' | 'followed_by_me'

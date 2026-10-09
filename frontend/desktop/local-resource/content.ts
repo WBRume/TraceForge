@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { atomic, child, copyTree, fail, readJson, walk, writeFiles, writeJson } from './filesystem'
+import { atomic, child, copyTree, fail, readJson, writeFiles, writeJson } from './filesystem'
 
 const manifestName = '.sdd-runtime-skills.json'
 const manifest = (root: string): any[] => {
@@ -61,27 +61,4 @@ export function skills(root: string, payload: any): any {
     atomic(file, data)
   } else if (payload.action !== 'read') fail('Unsupported skill operation')
   return { path: payload.path, ...textFile(file) }
-}
-
-export function documents(root: string, taskId: string, payload: any, docRoots = ['docs/superpowers', 'superpowers/docs/superpowers', '.']): any {
-  const roots = docRoots.map(relative => relative === '.' ? root : child(root, relative))
-  const sections = ['plans', 'specs']
-  const entry = (section: string, sectionRoot: string, file: string) => ({ section, name: path.basename(file), section_path: path.relative(sectionRoot, file).replaceAll('\\', '/'), relative_path: path.relative(root, file).replaceAll('\\', '/'), size: fs.statSync(file).size, updated_at: fs.statSync(file).mtime.toISOString() })
-  if (payload.action === 'list') {
-    const listing: Record<string, any> = { task_id: taskId, root_relative_path: docRoots.join(', ') }
-    for (const section of sections) {
-      const seen = new Set<string>()
-      listing[section] = roots.flatMap(base => {
-        const directory = child(base, section)
-        return walk(directory).filter(relative => /\.(md|markdown)$/i.test(relative)).map(relative => entry(section, directory, child(directory, relative)))
-      }).filter(item => { if (seen.has(item.relative_path.toLowerCase())) return false; seen.add(item.relative_path.toLowerCase()); return true }).sort((a, b) => a.section_path.localeCompare(b.section_path))
-    }
-    return listing
-  }
-  if (!sections.includes(payload.section) || !/\.(md|markdown)$/i.test(payload.path)) fail('INVALID_DOCUMENT_PATH')
-  const candidates = roots.map(base => child(child(base, payload.section), payload.path))
-  const file = candidates.find(candidate => fs.existsSync(candidate)) || candidates.find(candidate => fs.existsSync(path.dirname(candidate))) || candidates[0]
-  if (payload.action === 'save') atomic(file, String(payload.content || ''))
-  else if (payload.action !== 'read') fail('Unsupported document operation')
-  return { task_id: taskId, ...entry(payload.section, child(roots[candidates.indexOf(file)], payload.section), file), content: fs.readFileSync(file, 'utf8') }
 }

@@ -248,8 +248,6 @@ class Settings(BaseSettings):
     WORKSPACE_ROOT_DIR: str = ""
 
     # ── Task document scanning ──
-    # 计划/规格 Markdown 扫描根目录（相对 task.project_path，逗号分隔；"." 表示项目根）
-    TASK_PLAN_DOC_ROOTS: str = "docs/superpowers,superpowers/docs/superpowers,."
     # 任务执行时注入上下文的项目规则/文档路径，逗号分隔；目录会递归扫描 .md/.markdown
     TASK_RULE_DOC_SCAN_PATHS: str = "CLAUDE.md,.claude/CLAUDE.md,docs/superpowers,superpowers/docs/superpowers"
 

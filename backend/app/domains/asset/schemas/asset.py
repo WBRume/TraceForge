@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
+from app.domains.task.services.plan_doc_paths import normalize_plan_doc_roots
+
 
 class AssetResponse(BaseModel):
     id: str
@@ -383,6 +385,15 @@ class WorkspaceAgentBackendResponse(BaseModel):
     effective_agent_backend: str
     default_agent_backend: str
     options: list[WorkspaceAgentBackendOption] = Field(default_factory=list)
+
+
+class WorkspacePlanDocUpdate(BaseModel):
+    roots: list[str] = Field(max_length=32)
+
+    @field_validator("roots")
+    @classmethod
+    def validate_roots(cls, value: list[str]) -> list[str]:
+        return normalize_plan_doc_roots(value)
 
 
 class WorkspaceAgentBackendUpdate(BaseModel):

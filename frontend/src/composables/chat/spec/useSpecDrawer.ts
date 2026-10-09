@@ -34,10 +34,10 @@ export function useSpecDrawer(options: {
   const isPdfSpec = computed(() =>
     String(options.currentTask.value?.spec_doc_path || '').toLowerCase().endsWith('.pdf'),
   )
-  const isSuperpowersDocsAvailable = computed(() => Boolean(options.currentTask.value) && !options.isTaskPreStart.value)
-  const showSpecEntryButton = computed(() => (currentTaskHasSpec.value || isSuperpowersDocsAvailable.value) && !options.isDiagnosisTask.value)
+  const isPlanDocsAvailable = computed(() => Boolean(options.currentTask.value) && !options.isTaskPreStart.value)
+  const showSpecEntryButton = computed(() => (currentTaskHasSpec.value || isPlanDocsAvailable.value) && !options.isDiagnosisTask.value)
   const isSpecDrawerAvailable = computed(() => (
-    (currentTaskHasSpec.value || isSuperpowersDocsAvailable.value) && !options.isTaskPreStart.value && !options.isDiagnosisTask.value
+    (currentTaskHasSpec.value || isPlanDocsAvailable.value) && !options.isTaskPreStart.value && !options.isDiagnosisTask.value
   ))
   const isSpecPanelOpen = computed(() => specDrawerLevel.value > 0)
   const activeInitialSpecAssetId = computed(() => (
@@ -89,7 +89,7 @@ export function useSpecDrawer(options: {
       return
     }
     if (!currentTaskHasSpec.value) {
-      specDrawerTab.value = 'superpowers_docs'
+      specDrawerTab.value = 'plan_docs'
     }
     if (isSpecPanelOpen.value) {
       closeSpecDrawer()
@@ -118,7 +118,7 @@ export function useSpecDrawer(options: {
     specDrawerLevel.value = 0
     specDrawerTab.value = task.task_type === 'DIAGNOSIS'
       ? 'diag_docs'
-      : (hasTaskSpecification(task) ? 'spec_doc' : 'superpowers_docs')
+      : (hasTaskSpecification(task) ? 'spec_doc' : 'plan_docs')
   }
 
   return {
@@ -131,7 +131,7 @@ export function useSpecDrawer(options: {
     hasTaskSpecification,
     currentTaskHasSpec,
     isPdfSpec,
-    isSuperpowersDocsAvailable,
+    isPlanDocsAvailable,
     showSpecEntryButton,
     isSpecDrawerAvailable,
     isSpecPanelOpen,

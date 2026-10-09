@@ -1,10 +1,4 @@
-"""Configurable task document scanning paths.
-
-The platform historically scanned Superpowers-style directories
-(``docs/superpowers``).  Task execution no longer hard-depends on that
-layout, so the scan roots/entries are read from settings and can be
-pointed at any project-relative markdown directories or files.
-"""
+"""Scan configured project rules for task context."""
 
 from __future__ import annotations
 
@@ -18,29 +12,6 @@ TASK_DOC_EXTENSIONS = {".md", ".markdown"}
 
 def _split_csv(raw: str | None) -> list[str]:
     return [part.strip() for part in str(raw or "").split(",") if part.strip()]
-
-
-def plan_doc_root_parts() -> list[tuple[str, ...]]:
-    """Return plan/spec markdown root directories as relative path tuples.
-
-    ``.`` is normalized to an empty tuple (project root itself).
-    """
-    roots: list[tuple[str, ...]] = []
-    for rel in _split_csv(settings.TASK_PLAN_DOC_ROOTS):
-        normalized = rel.replace("\\", "/").strip("/")
-        if normalized in ("", "."):
-            roots.append(())
-        else:
-            roots.append(tuple(part for part in normalized.split("/") if part))
-    return roots
-
-
-def plan_doc_root_label() -> str:
-    """Human/UI friendly representation of configured plan/spec roots."""
-    labels = []
-    for parts in plan_doc_root_parts():
-        labels.append("/".join(parts) if parts else ".")
-    return ", ".join(labels) if labels else "docs/superpowers"
 
 
 def rule_doc_scan_paths() -> list[str]:

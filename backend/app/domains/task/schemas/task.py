@@ -272,7 +272,7 @@ class TaskCliBootstrapResponse(BaseModel):
     updated_at: datetime | None = None
 
 
-class SuperpowersDocEntry(BaseModel):
+class PlanDocEntry(BaseModel):
     section: Literal["plans", "specs"]
     name: str
     section_path: str
@@ -281,14 +281,16 @@ class SuperpowersDocEntry(BaseModel):
     updated_at: datetime | None = None
 
 
-class SuperpowersDocsListResponse(BaseModel):
+class PlanDocsListResponse(BaseModel):
     task_id: str
     root_relative_path: str
-    plans: list[SuperpowersDocEntry] = Field(default_factory=list)
-    specs: list[SuperpowersDocEntry] = Field(default_factory=list)
+    configured: bool
+    baseline_available: bool
+    plans: list[PlanDocEntry] = Field(default_factory=list)
+    specs: list[PlanDocEntry] = Field(default_factory=list)
 
 
-class SuperpowersDocContentResponse(BaseModel):
+class PlanDocContentResponse(BaseModel):
     task_id: str
     section: Literal["plans", "specs"]
     name: str
@@ -298,7 +300,7 @@ class SuperpowersDocContentResponse(BaseModel):
     updated_at: datetime | None = None
 
 
-class SuperpowersDocSaveRequest(BaseModel):
+class PlanDocSaveRequest(BaseModel):
     section: Literal["plans", "specs"]
     name: str | None = Field(default=None, min_length=1, max_length=255)
     path: str | None = Field(default=None, min_length=1, max_length=1024)

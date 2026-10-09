@@ -1,7 +1,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Bot, Languages, Link, MonitorCog, Palette, Users } from '@/components/icons'
+import { Bot, Folder, Languages, Link, MonitorCog, Palette, Users } from '@/components/icons'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { isDesktop } from '@/utils/runtime'
@@ -199,10 +199,15 @@ export function useSettingsViewModel() {
       label: 'settings.agent.title',
       description: 'settings.agent.subtitle',
     },
+    { id: 'plan_docs', icon: Folder, label: 'settings.plan_docs.title', description: 'settings.plan_docs.desc' },
     { id: 'local_service', icon: MonitorCog, label: '本地服务地址', description: '个人本地 Agent 与同机资源服务' },
     { id: 'webhook_personal', icon: Link, label: 'settings.webhook.personal_title', description: 'settings.webhook.personal_desc' },
     { id: 'webhook_workspace', icon: Link, label: 'settings.webhook.workspace_title', description: 'settings.webhook.workspace_desc', disabled: myPermissionPayload.value?.role !== 'OWNER' },
   ].filter(section => section.id !== 'local_service' || isDesktop()))
+
+  watch(() => route.query.section, (section) => {
+    activeSection.value = settingsSections.value.some(item => item.id === section) ? String(section) : 'general'
+  }, { immediate: true })
   
   const canManageMembers = computed(() => Boolean(myPermissionPayload.value?.permissions?.manage_members))
   const totalMemberCount = computed(() => memberTotal.value + (ownerMember.value ? 1 : 0))

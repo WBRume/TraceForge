@@ -6,10 +6,10 @@ import { ChevronRight, FileText, Folder, Loader2, RefreshCw, Save, Brain } from 
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 
-type SuperpowersDocSection = 'plans' | 'specs'
+type PlanDocSection = 'plans' | 'specs'
 
-type SuperpowersDocEntry = {
-  section: SuperpowersDocSection
+type PlanDocEntry = {
+  section: PlanDocSection
   name: string
   section_path: string
   relative_path: string
@@ -17,16 +17,18 @@ type SuperpowersDocEntry = {
   updated_at?: string | null
 }
 
-type SuperpowersDocsIndexResponse = {
+type PlanDocsIndexResponse = {
   task_id: string
   root_relative_path: string
-  plans: SuperpowersDocEntry[]
-  specs: SuperpowersDocEntry[]
+  configured: boolean
+  baseline_available: boolean
+  plans: PlanDocEntry[]
+  specs: PlanDocEntry[]
 }
 
-type SuperpowersDocContentResponse = {
+type PlanDocContentResponse = {
   task_id: string
-  section: SuperpowersDocSection
+  section: PlanDocSection
   name: string
   section_path: string
   relative_path: string
@@ -37,7 +39,7 @@ type SuperpowersDocContentResponse = {
 type DocRow =
   | {
       kind: 'dir'
-      section: SuperpowersDocSection
+      section: PlanDocSection
       key: string
       path: string
       name: string
@@ -46,12 +48,12 @@ type DocRow =
     }
   | {
       kind: 'file'
-      section: SuperpowersDocSection
+      section: PlanDocSection
       key: string
       path: string
       name: string
       depth: number
-      entry: SuperpowersDocEntry
+      entry: PlanDocEntry
     }
 
 const props = withDefaults(defineProps<{
@@ -64,15 +66,17 @@ const props = withDefaults(defineProps<{
 })
 
 const { t } = useI18n()
+const configured = ref<boolean | null>(null)
+const baselineAvailable = ref(true)
 
 const loadingIndex = ref(false)
 const loadingDoc = ref(false)
 const saving = ref(false)
 const loadError = ref('')
 const rootRelativePath = ref('')
-const plans = ref<SuperpowersDocEntry[]>([])
-const specs = ref<SuperpowersDocEntry[]>([])
-const selectedSection = ref<SuperpowersDocSection | ''>('')
+const plans = ref<PlanDocEntry[]>([])
+const specs = ref<PlanDocEntry[]>([])
+const selectedSection = ref<PlanDocSection | ''>('')
 const selectedPath = ref('')
 const content = ref('')
 const originalContent = ref('')
@@ -96,14 +100,14 @@ const selectedDocKey = computed(() => {
   return `${selectedSection.value}/${selectedPath.value}`
 })
 
-const dirExpansionKey = (section: SuperpowersDocSection, path: string) => `${section}:${path}`
+const dirExpansionKey = (section: PlanDocSection, path: string) => `${section}:${path}`
 
-const isDirExpanded = (section: SuperpowersDocSection, path: string) => {
+const isDirExpanded = (section: PlanDocSection, path: string) => {
   const key = dirExpansionKey(section, path)
   return expandedDirs.value[key] !== false
 }
 
-const toggleDir = (section: SuperpowersDocSection, path: string) => {
+const toggleDir = (section: PlanDocSection, path: string) => {
   const key = dirExpansionKey(section, path)
   expandedDirs.value = {
     ...expandedDirs.value,
@@ -112,8 +116,8 @@ const toggleDir = (section: SuperpowersDocSection, path: string) => {
 }
 
 const syncDirectoryExpansionDefaults = (
-  section: SuperpowersDocSection,
-  entries: SuperpowersDocEntry[],
+  section: PlanDocSection,
+  entries: PlanDocEntry[],
 ) => {
   const next = { ...expandedDirs.value }
   entries.forEach((entry) => {
@@ -132,14 +136,14 @@ const syncDirectoryExpansionDefaults = (
 }
 
 const buildRowsForSection = (
-  section: SuperpowersDocSection,
-  entries: SuperpowersDocEntry[],
+  section: PlanDocSection,
+  entries: PlanDocEntry[],
 ): DocRow[] => {
   type MutableDir = {
     name: string
     path: string
     dirs: Map<string, MutableDir>
-    files: SuperpowersDocEntry[]
+    files: PlanDocEntry[]
   }
 
   const createDir = (name: string, path: string): MutableDir => ({
@@ -217,8 +221,8 @@ const rowIndentStyle = (depth: number) => ({ paddingLeft: `${8 + depth * 16}px` 
 
 const normalizeEntries = (
   entries: unknown,
-  section: SuperpowersDocSection,
-): SuperpowersDocEntry[] => {
+  section: PlanDocSection,
+): PlanDocEntry[] => {
   if (!Array.isArray(entries)) return []
   return entries
     .filter((item) => item && typeof item === 'object')
@@ -279,11 +283,11 @@ const loadDocContent = async () => {
   loadError.value = ''
 
   try {
-    const res = await api.get(`/workspaces/${wsId}/tasks/${taskId}/superpowers-docs/content`, {
+    const res = await api.get(`/workspaces/${wsId}/tasks/${taskId}/plan-docs/content`, {
       params: { section, path },
     })
     if (requestId !== contentRequestId.value || wsId !== props.wsId || taskId !== props.taskId) return
-    const payload = res.data as SuperpowersDocContentResponse
+    const payload = res.data as PlanDocContentResponse
     const markdown = String(payload.content || '')
     content.value = markdown
     originalContent.value = markdown
@@ -292,7 +296,7 @@ const loadDocContent = async () => {
     if (requestId !== contentRequestId.value) return
     loadError.value = formatApiError(
       error,
-      t('chat.superpowers_docs_load_failed'),
+      t('chat.plan_docs_load_failed'),
       t,
     )
     clearEditor()
@@ -315,10 +319,12 @@ const loadIndex = async () => {
   const previousKey = selectedDocKey.value
 
   try {
-    const res = await api.get(`/workspaces/${wsId}/tasks/${taskId}/superpowers-docs`)
+    const res = await api.get(`/workspaces/${wsId}/tasks/${taskId}/plan-docs`)
     if (requestId !== indexRequestId || wsId !== props.wsId || taskId !== props.taskId) return
-    const payload = res.data as SuperpowersDocsIndexResponse
-    rootRelativePath.value = payload.root_relative_path || 'docs/superpowers'
+    const payload = res.data as PlanDocsIndexResponse
+    rootRelativePath.value = payload.root_relative_path || ''
+    configured.value = payload.configured
+    baselineAvailable.value = payload.baseline_available
     plans.value = normalizeEntries(payload.plans, 'plans')
     specs.value = normalizeEntries(payload.specs, 'specs')
     syncDirectoryExpansionDefaults('plans', plans.value)
@@ -339,7 +345,7 @@ const loadIndex = async () => {
     specs.value = []
     loadError.value = formatApiError(
       error,
-      t('chat.superpowers_docs_fetch_failed'),
+      t('chat.plan_docs_fetch_failed'),
       t,
     )
     clearEditor()
@@ -350,12 +356,12 @@ const loadIndex = async () => {
   }
 }
 
-const selectDoc = async (entry: SuperpowersDocEntry) => {
+const selectDoc = async (entry: PlanDocEntry) => {
   const nextKey = `${entry.section}/${entry.section_path}`
   if (selectedDocKey.value === nextKey) return
 
   if (isDirty.value) {
-    const shouldDiscard = window.confirm(t('chat.superpowers_docs_discard_confirm'))
+    const shouldDiscard = window.confirm(t('chat.plan_docs_discard_confirm'))
     if (!shouldDiscard) return
   }
 
@@ -373,20 +379,20 @@ const saveDoc = async () => {
 
   saving.value = true
   try {
-    const res = await api.put(`/workspaces/${wsId}/tasks/${taskId}/superpowers-docs/content`, {
+    const res = await api.put(`/workspaces/${wsId}/tasks/${taskId}/plan-docs/content`, {
       section,
       path,
       content: content.value,
     })
     if (wsId !== props.wsId || taskId !== props.taskId) return
-    const payload = res.data as SuperpowersDocContentResponse
+    const payload = res.data as PlanDocContentResponse
     originalContent.value = String(payload.content || '')
     content.value = originalContent.value
     loadedDocKey.value = `${section}/${path}`
-    ElMessage.success(t('chat.superpowers_docs_saved'))
+    ElMessage.success(t('chat.plan_docs_saved'))
     await loadIndex()
   } catch (error) {
-    ElMessage.error(formatApiError(error, t('chat.superpowers_docs_save_failed'), t))
+    ElMessage.error(formatApiError(error, t('chat.plan_docs_save_failed'), t))
   } finally {
     saving.value = false
   }
@@ -417,6 +423,8 @@ watch(
       selectedSection.value = ''
       selectedPath.value = ''
       rootRelativePath.value = ''
+      configured.value = null
+      baselineAvailable.value = true
       plans.value = []
       specs.value = []
       clearEditor()
@@ -432,34 +440,39 @@ watch(
 </script>
 
 <template>
-  <div class="superpowers-docs-panel">
+  <div class="plan-docs-panel">
     <header class="panel-header glass-panel">
       <div class="panel-title-group">
         <div class="panel-title-line">
           <div class="panel-title-icon">
             <Brain :size="18" :stroke-width="2.5" />
           </div>
-          <span>{{ $t('chat.superpowers_docs_title') }}</span>
+          <span>{{ $t('chat.plan_docs_title') }}</span>
         </div>
-        <p class="panel-subtitle">{{ $t('chat.superpowers_docs_source_path', { path: rootRelativePath || 'docs/superpowers' }) }}</p>
+        <p v-if="rootRelativePath" class="panel-subtitle">{{ $t('chat.plan_docs_source_path', { path: rootRelativePath }) }}</p>
       </div>
       <div class="panel-actions">
         <button class="btn-base btn-ghost" :disabled="loadingIndex || loadingDoc" @click="loadIndex">
           <RefreshCw class="w-4 h-4" :class="{ spin: loadingIndex }" />
-          <span>{{ $t('chat.superpowers_docs_refresh') }}</span>
+          <span>{{ $t('chat.plan_docs_refresh') }}</span>
         </button>
-        <button class="btn-base btn-primary" :disabled="!canSave" @click="saveDoc">
+        <button v-if="!readonly && configured" class="btn-base btn-primary" :disabled="!canSave" @click="saveDoc">
           <Loader2 v-if="saving" class="w-4 h-4 spin" />
           <Save v-else class="w-4 h-4" />
-          <span>{{ $t('chat.superpowers_docs_save') }}</span>
+          <span>{{ $t('chat.plan_docs_save') }}</span>
         </button>
       </div>
     </header>
 
-    <div class="panel-body">
+    <div v-if="configured === false && !loadError" class="config-hint" role="status">
+      <span>{{ $t('chat.plan_docs_not_configured') }}</span>
+      <RouterLink :to="{ path: `/workspaces/${wsId}/settings`, query: { section: 'plan_docs' } }">{{ $t('chat.plan_docs_configure') }}</RouterLink>
+    </div>
+    <p v-else-if="configured && !baselineAvailable && !loadError" class="config-hint" role="status">{{ $t('chat.plan_docs_baseline_unavailable') }}</p>
+    <div v-else class="panel-body">
       <aside class="doc-list">
         <section class="doc-section">
-          <h4>{{ $t('chat.superpowers_docs_section_plans') }}</h4>
+          <h4>{{ $t('chat.plan_docs_section_plans') }}</h4>
           <template v-for="row in plansRows" :key="row.key">
             <button
               v-if="row.kind === 'dir'"
@@ -489,11 +502,11 @@ watch(
               <div class="doc-entry-meta">{{ formatFileSize(row.entry.size) }} · {{ formatDateTime(row.entry.updated_at) }}</div>
             </button>
           </template>
-          <p v-if="plans.length === 0" class="doc-empty">{{ $t('chat.superpowers_docs_empty_section_plans') }}</p>
+          <p v-if="plans.length === 0" class="doc-empty">{{ $t('chat.plan_docs_empty_section_plans') }}</p>
         </section>
 
         <section class="doc-section">
-          <h4>{{ $t('chat.superpowers_docs_section_specs') }}</h4>
+          <h4>{{ $t('chat.plan_docs_section_specs') }}</h4>
           <template v-for="row in specsRows" :key="row.key">
             <button
               v-if="row.kind === 'dir'"
@@ -523,31 +536,31 @@ watch(
               <div class="doc-entry-meta">{{ formatFileSize(row.entry.size) }} · {{ formatDateTime(row.entry.updated_at) }}</div>
             </button>
           </template>
-          <p v-if="specs.length === 0" class="doc-empty">{{ $t('chat.superpowers_docs_empty_section_specs') }}</p>
+          <p v-if="specs.length === 0" class="doc-empty">{{ $t('chat.plan_docs_empty_section_specs') }}</p>
         </section>
       </aside>
 
       <section class="doc-editor">
-        <div v-if="loadingDoc" class="editor-state">
+        <div v-if="loadingDoc || loadingIndex" class="editor-state">
           <Loader2 class="w-6 h-6 spin text-primary" />
-          <span>{{ $t('chat.superpowers_docs_loading') }}</span>
+          <span>{{ $t('chat.plan_docs_loading') }}</span>
         </div>
         <div v-else-if="!hasDocs || !selectedDoc" class="editor-state">
           <FileText class="w-10 h-10 opacity-10 mb-2" />
-          <span>{{ $t('chat.superpowers_docs_empty') }}</span>
+          <span>{{ $t('chat.plan_docs_empty') }}</span>
         </div>
         <template v-else>
           <div class="editor-meta">
             <span class="path-badge">{{ selectedDoc.relative_path }}</span>
-            <span v-if="isDirty" class="status-badge dirty-pill">{{ $t('chat.superpowers_docs_unsaved') }}</span>
-            <span v-if="readonly" class="status-badge readonly-pill">{{ $t('chat.superpowers_docs_readonly') }}</span>
+            <span v-if="isDirty" class="status-badge dirty-pill">{{ $t('chat.plan_docs_unsaved') }}</span>
+            <span v-if="readonly" class="status-badge readonly-pill">{{ $t('chat.plan_docs_readonly') }}</span>
           </div>
           <textarea
             v-model="content"
             class="editor-textarea"
             :readonly="readonly"
             spellcheck="false"
-            :placeholder="t('chat.superpowers_docs_placeholder')"
+            :placeholder="t('chat.plan_docs_placeholder')"
           />
         </template>
       </section>
@@ -560,7 +573,10 @@ watch(
 <style scoped>
 @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&design=swap');
 
-.superpowers-docs-panel {
+.config-hint { margin: 20px; color: var(--text-secondary, #64748b); font-size: 13px; line-height: 1.7; display: flex; flex-wrap: wrap; gap: 8px; }
+.config-hint a { color: var(--color-primary, #2563eb); }
+
+.plan-docs-panel {
   height: 100%;
   min-height: 0;
   display: flex;

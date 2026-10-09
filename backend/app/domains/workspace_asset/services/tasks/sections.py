@@ -246,21 +246,21 @@ def get_task_files(
 
     existing_paths = {item.source_path for item in items if item.source_path}
     try:
-        superpowers = task_task_workspace_documents.list_superpowers_docs(task)
+        plan_docs = task_task_workspace_documents.list_plan_docs(task)
         for section_key in ("specs", "plans"):
             file_type = section_key.upper().rstrip("S")
-            for entry in superpowers.get(section_key, []):
+            for entry in plan_docs.get(section_key, []):
                 rel_path = entry.get("relative_path", "")
                 if not rel_path or rel_path in existing_paths:
                     continue
                 existing_paths.add(rel_path)
                 items.append(
                     TaskFileItemLightResponse(
-                        id=f"sp:{rel_path}",
+                        id=f"plan:{rel_path}",
                         file_type=file_type,
                         title=entry.get("name", rel_path),
                         status="AVAILABLE",
-                        source_kind="superpowers_doc",
+                        source_kind="plan_doc",
                         source_path=rel_path,
                         summary=None,
                         created_at=entry.get("updated_at"),

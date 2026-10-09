@@ -231,7 +231,7 @@ export function captureGitSnapshot(receipt: Receipt, destination: string, store:
   return payload
 }
 
-function entries(saved: GitSnapshot): Record<string, Entry> {
+export function entries(saved: GitSnapshot): Record<string, Entry> {
   const result: Record<string, Entry> = {}
   // Cache only within this read phase; restore writes still recheck parents.
   const checked = new Set<string>()

@@ -34,6 +34,7 @@ from app.domains.asset.schemas.asset import (
     WorkspaceMemberResponse,
     WorkspaceMemberUpdate,
     WorkspaceMyPermissionsResponse,
+    WorkspacePlanDocUpdate,
     WorkspacePreflight,
     WorkspaceResponse,
 )
@@ -244,6 +245,47 @@ def get_workspace_agent_backends(
         default_agent_backend=default_backend_name(),
         options=list_backends(),
     )
+
+
+@router.get("/{ws_id}/plan-docs-settings")
+def get_workspace_plan_doc_settings(
+    ws_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _ensure_workspace_member(db, ws_id, current_user.id)
+    workspace = workspace_service.get_workspace(db, ws_id, current_user)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return {
+        "workspace_id": workspace.id,
+        "roots": workspace.plan_doc_roots or [],
+        "can_edit": workspace_service.user_has_permission(db, ws_id, current_user.id, "MANAGE_MEMBERS"),
+    }
+
+
+@router.put("/{ws_id}/plan-docs-settings")
+def update_workspace_plan_doc_settings(
+    ws_id: str,
+    data: WorkspacePlanDocUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _ensure_member_manager(db, ws_id, current_user.id)
+    workspace = workspace_service.get_workspace(db, ws_id, current_user)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace.plan_doc_roots = data.roots
+    db.commit()
+    audit_log(
+        action="update_workspace_plan_doc_roots",
+        outcome="success",
+        resource_type="workspace",
+        resource_id=ws_id,
+        user_id=current_user.id,
+        roots=data.roots,
+    )
+    return {"workspace_id": workspace.id, "roots": workspace.plan_doc_roots or [], "can_edit": True}
 
 
 @router.post("/{ws_id}/agent-backends/test", response_model=WorkspaceAgentBackendTestResponse)

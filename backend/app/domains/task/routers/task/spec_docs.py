@@ -1,4 +1,4 @@
-"""任务规格文档路由：spec 资产 / 上传 / spec 基线（bootstrap）/ superpowers 文档。"""
+"""任务规格文档路由：spec 资产 / 上传 / spec 基线（bootstrap）/ 计划文档。"""
 
 from __future__ import annotations
 
@@ -26,9 +26,9 @@ from app.domains.task.routers.task.deps import (
     verify_workspace_permission,
 )
 from app.domains.task.schemas.task import (
-    SuperpowersDocContentResponse,
-    SuperpowersDocSaveRequest,
-    SuperpowersDocsListResponse,
+    PlanDocContentResponse,
+    PlanDocSaveRequest,
+    PlanDocsListResponse,
     TaskCliBootstrapResponse,
 )
 from app.domains.task.services import task_cli_state_service
@@ -208,8 +208,8 @@ async def run_task_spec_bootstrap(
         return TaskCliBootstrapResponse(**snapshot)
 
 
-@router.get("/{task_id}/superpowers-docs", response_model=SuperpowersDocsListResponse)
-def list_task_superpowers_docs(
+@router.get("/{task_id}/plan-docs", response_model=PlanDocsListResponse)
+def list_task_plan_docs(
     ws_id: str,
     task_id: str,
     current_user: User = Depends(get_current_user),
@@ -219,15 +219,15 @@ def list_task_superpowers_docs(
     task = get_task_or_404(db, task_id, ws_id)
 
     try:
-        payload = task_task_workspace_documents.list_superpowers_docs(task)
+        payload = task_task_workspace_documents.list_plan_docs(task)
     except ValueError as exc:
         raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
 
-    return SuperpowersDocsListResponse(**payload)
+    return PlanDocsListResponse(**payload)
 
 
-@router.get("/{task_id}/superpowers-docs/content", response_model=SuperpowersDocContentResponse)
-def get_task_superpowers_doc_content(
+@router.get("/{task_id}/plan-docs/content", response_model=PlanDocContentResponse)
+def get_task_plan_doc_content(
     ws_id: str,
     task_id: str,
     section: str = Query(...),
@@ -240,20 +240,20 @@ def get_task_superpowers_doc_content(
     task = get_task_or_404(db, task_id, ws_id)
 
     try:
-        payload = task_task_workspace_documents.read_superpowers_doc(task, section=section, name=name, path=path)
+        payload = task_task_workspace_documents.read_plan_doc(task, section=section, name=name, path=path)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
 
-    return SuperpowersDocContentResponse(**payload)
+    return PlanDocContentResponse(**payload)
 
 
-@router.put("/{task_id}/superpowers-docs/content", response_model=SuperpowersDocContentResponse)
-def save_task_superpowers_doc_content(
+@router.put("/{task_id}/plan-docs/content", response_model=PlanDocContentResponse)
+def save_task_plan_doc_content(
     ws_id: str,
     task_id: str,
-    body: SuperpowersDocSaveRequest,
+    body: PlanDocSaveRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -270,7 +270,7 @@ def save_task_superpowers_doc_content(
     ensure_task_not_baselined(task)
 
     try:
-        payload = task_task_workspace_documents.save_superpowers_doc(
+        payload = task_task_workspace_documents.save_plan_doc(
             task,
             section=body.section,
             content=body.content,
@@ -282,4 +282,4 @@ def save_task_superpowers_doc_content(
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save document: {exc}") from exc
 
-    return SuperpowersDocContentResponse(**payload)
+    return PlanDocContentResponse(**payload)

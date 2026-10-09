@@ -131,9 +131,11 @@ test('checkpoint restores Git index and files while preserving dependencies, sup
 
 test('documents and skills preserve runtime folders and reject traversal', async () => {
   await ok('provision', { workspace_root: workspace, repositories: [] }, 'provision')
-  const saved = await ok('documents', { action: 'save', section: 'plans', path: 'nested/design.md', content: '# Design' }, 'save')
-  expect(saved.relative_path).toBe('docs/superpowers/plans/nested/design.md')
-  expect((await ok('documents', { action: 'list' }, 'list')).plans).toHaveLength(1)
+  const checkpoint = await ok('snapshot', { action: 'create' }, 'initial')
+  const config = { roots: ['archive'], initial_checkpoint: checkpoint.root }
+  const saved = await ok('documents', { ...config, action: 'save', section: 'plans', path: 'archive/nested/design.md', content: '# Design' }, 'save')
+  expect(saved.relative_path).toBe('archive/nested/design.md')
+  expect((await ok('documents', { ...config, action: 'list' }, 'list')).plans).toHaveLength(1)
   const file = { path: '.agents/skills/runtime/SKILL.md', content: Buffer.from('skill').toString('base64'), sha256: hash('skill') }
   await ok('skills', { action: 'replace', files: [file], preserve: false }, 'skill')
   await ok('skills', { action: 'replace', files: [], preserve: true }, 'preserve')
