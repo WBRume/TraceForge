@@ -14,7 +14,7 @@
     "too_short": "录音太短，请重试。",
     "failed": "语音识别失败，请检查网络、麦克风或语音资源后重试。",
     "no_speech": "未识别到语音，请重试。",
-    "start_api": "语音输入（百炼在线识别）",
+    "start_api": "语音输入（在线识别）",
     "start_offline": "语音输入（本地离线识别）"
   },
   "task_rail": {
@@ -3954,7 +3954,7 @@
     },
     "groups": {
       "recognition": "识别服务",
-      "credentials": "临时凭据与限流",
+      "credentials": "凭据与请求限流",
       "retrieval": "检索服务",
       "remote_search": "远程搜索引擎",
       "vectors": "向量模型",
@@ -3985,6 +3985,10 @@
     "load_failed": "服务能力加载失败",
     "failed": "操作失败",
     "options": {
+      "http": "录音后上传（HTTP）",
+      "websocket": "实时识别（WebSocket）",
+      "openai_compatible": "OpenAI 兼容",
+      "bailian": "阿里云百炼",
       "api": "API 流式识别",
       "offline": "客户端离线识别",
       "off": "停用",

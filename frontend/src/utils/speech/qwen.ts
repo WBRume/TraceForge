@@ -1,8 +1,9 @@
-export type SpeechSession = { token: string; expires_at: number; websocket_url: string; model: string }
+import type { SpeechSession, SpeechStream } from './types'
+export type { SpeechSession } from './types'
 type Sentence = { text: string; final: boolean }
 
 /** One duplex ASR task. Only temporary credentials are accepted. */
-export class QwenSpeechStream {
+export class QwenSpeechStream implements SpeechStream {
   private socket?: WebSocket
   private readonly taskId = crypto.randomUUID()
   private readonly sentences = new Map<number, Sentence>()
@@ -36,7 +37,8 @@ export class QwenSpeechStream {
     if (endpoint.protocol !== 'wss:' || !['dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com'].includes(endpoint.hostname)
       || endpoint.pathname !== '/api-ws/v1/inference' || endpoint.port || endpoint.username || endpoint.password
       || !session.token.startsWith('st-') || session.expires_at * 1000 <= Date.now()
-      || session.model !== 'qwen-audio-3.1-asr-flash-streaming') throw new Error('Invalid speech session')
+      || (session.provider !== undefined && session.provider !== 'bailian')
+      || typeof session.model !== 'string' || !session.model.trim() || session.model.length > 200) throw new Error('Invalid speech session')
     endpoint.search = ''
     endpoint.searchParams.set('api_key', session.token)
     const socket = new WebSocket(endpoint.href)

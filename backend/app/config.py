@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     FEATURE_CONFIG_MASTER_KEY: SecretStr = SecretStr("")
     SPEECH_MODE: Literal["api", "offline", "off"] | None = None
     SPEECH_API_ENABLED: bool = False
+    SPEECH_PROVIDER: str = "bailian"
+    SPEECH_TRANSPORT: Literal["auto", "http", "websocket"] = "auto"
+    SPEECH_API_ENDPOINT: str = ""
+    SPEECH_API_MODEL: str = ""
     SPEECH_API_KEY: SecretStr = SecretStr("")
     SPEECH_API_REGION: Literal["beijing", "singapore"] = "beijing"
     SPEECH_TOKEN_TTL_SECONDS: int = Field(default=120, ge=60, le=300)
@@ -64,6 +68,7 @@ class Settings(BaseSettings):
     SEARCH_CURSOR_SECRET: str = ""
     SEARCH_CONFIG_ENCRYPTION_KEY: str = ""
     SEARCH_EMBEDDING_API_KEY: str = ""
+    SEARCH_EMBEDDING_PROTOCOL: str = "openai_compatible"
     SEARCH_EMBEDDING_ENDPOINT: str = "https://api.siliconflow.cn/v1/embeddings"
     SEARCH_EMBEDDING_MODEL: str = "BAAI/bge-m3"
     SEARCH_SESSION_NAMESPACE: str = "traceforge:search"

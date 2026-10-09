@@ -1,16 +1,20 @@
-"""Authenticated credential issuance; audio flows directly to Bailian."""
+"""Authenticated, bounded speech operations dispatched through provider plugins."""
 
+import asyncio
 import hmac
+import io
 import time
+import wave
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel, Field
 
 from app.core.feature_settings import feature_settings as settings
 from app.core.redis_client import get_redis_client
 from app.dependencies import get_current_user
+from app.domains.ai.speech.base import SpeechProviderError, SpeechSession
+from app.domains.ai.speech.registry import get_provider, runtime_values
 from app.domains.auth.models.user import User
 
 
@@ -30,19 +34,11 @@ async def speech_lifespan(app: FastAPI):
 
 
 router = APIRouter(prefix="/speech", tags=["Speech"], lifespan=speech_lifespan)
-MODEL = "qwen-audio-3.1-asr-flash-streaming"
 _RATE_SCRIPT = """
 local count = redis.call('INCR', KEYS[1])
 if count == 1 then redis.call('EXPIRE', KEYS[1], 60) end
 return count
 """
-
-
-class SpeechSession(BaseModel):
-    token: str = Field(repr=False)
-    expires_at: int
-    websocket_url: str
-    model: str = MODEL
 
 
 async def _check_budget(user_id: str) -> None:
@@ -55,63 +51,133 @@ async def _check_budget(user_id: str) -> None:
         raise HTTPException(429, "Too many speech sessions. Try again shortly.", headers={"Retry-After": "60"})
 
 
-async def _issue_token(client: httpx.AsyncClient, host: str, api_key: str) -> tuple[str, int]:
+def _configured(transport):
+    values = runtime_values()
     try:
-        result = await client.post(
-            f"https://{host}/api/v1/tokens",
-            params={"expire_in_seconds": settings.SPEECH_TOKEN_TTL_SECONDS},
-            headers={"Authorization": f"Bearer {api_key}"},
-        )
-        result.raise_for_status()
-        data = result.json()
-        token, expires_at = data["token"], int(data["expires_at"])
-        if not isinstance(token, str) or not token.startswith("st-") or expires_at <= int(time.time()):
-            raise ValueError("Invalid temporary credential")
-    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-        # Do not expose upstream bodies, credentials, or request URLs in responses.
-        raise HTTPException(502, "Unable to obtain speech credentials from Bailian") from exc
-    return token, expires_at
+        provider, selected = get_provider(values)
+    except SpeechProviderError as exc:
+        raise HTTPException(exc.status, str(exc)) from None
+    if values["mode"] != "api" or not provider.configured(values):
+        raise HTTPException(503, "API voice input is not configured")
+    if selected != transport:
+        raise HTTPException(409, "Configured recognition method does not match this request")
+    return values, provider
+
+
+def _generation(values):
+    from app.config import settings as environment
+    from app.domains.system_config.services.feature_config_service import fingerprint
+
+    return hmac.new(environment.JWT_SECRET_KEY.encode(), fingerprint(values).encode(), "sha256").hexdigest()
+
+
+def _client(request):
+    client = getattr(request.app.state, "speech_http_client", None)
+    if client is None:
+        raise HTTPException(503, "Speech service is not ready")
+    return client
+
+
+def _check_generation(request, values):
+    generation = request.headers.get("X-Speech-Generation")
+    if generation and not hmac.compare_digest(generation, _generation(values)):
+        raise HTTPException(409, "Speech configuration changed; start a new recording")
+
+
+def _no_cache(response):
+    response.headers["Cache-Control"] = "no-store, private"
+    response.headers["Pragma"] = "no-cache"
 
 
 @router.post("/sessions", response_model=SpeechSession, status_code=201)
 async def create_speech_session(
     request: Request, response: Response, user: User = Depends(get_current_user)
 ) -> SpeechSession:
-    api_key = settings.SPEECH_API_KEY.get_secret_value().strip()
-    if settings.SPEECH_MODE != "api" or not api_key:
-        raise HTTPException(503, "API voice input is not configured")
-    client = getattr(request.app.state, "speech_http_client", None)
-    if client is None:
-        raise HTTPException(503, "Speech credential service is not ready")
-    host = "dashscope.aliyuncs.com" if settings.SPEECH_API_REGION == "beijing" else "dashscope-intl.aliyuncs.com"
+    values, provider = _configured("websocket")
+    _check_generation(request, values)
+    client = _client(request)
     await _check_budget(user.id)
     started = time.perf_counter()
-    token, expires_at = await _issue_token(client, host, api_key)
-    response.headers["Cache-Control"] = "no-store, private"
-    response.headers["Pragma"] = "no-cache"
+    try:
+        session = await provider.create_session(client, values)
+    except SpeechProviderError as exc:
+        raise HTTPException(exc.status, str(exc)) from None
+    _no_cache(response)
     response.headers["Server-Timing"] = f"speech-token;dur={(time.perf_counter() - started) * 1000:.1f}"
-    return SpeechSession(token=token, expires_at=expires_at, websocket_url=f"wss://{host}/api-ws/v1/inference")
+    return session
+
+
+MAX_AUDIO_BYTES = 16000 * 2 * 60 + 4096
+
+
+async def _read_audio(request):
+    raw = bytearray()
+    try:
+        async with asyncio.timeout(15):
+            async for chunk in request.stream():
+                if len(raw) + len(chunk) > MAX_AUDIO_BYTES:
+                    raise HTTPException(413, "Recording exceeds the 60-second limit")
+                raw.extend(chunk)
+    except TimeoutError:
+        raise HTTPException(408, "Audio upload timed out") from None
+    try:
+        with wave.open(io.BytesIO(raw), "rb") as audio:
+            if (audio.getnchannels(), audio.getsampwidth(), audio.getframerate()) != (1, 2, 16000):
+                raise ValueError
+            frames = audio.getnframes()
+            if not 1600 <= frames <= 16000 * 60 or len(audio.readframes(frames)) != frames * 2:
+                raise ValueError
+    except (wave.Error, EOFError, ValueError):
+        raise HTTPException(422, "Expected 0.1–60 seconds of mono 16 kHz PCM16 WAV audio") from None
+    return bytes(raw)
+
+
+async def _until_disconnect(request, operation):
+    async def disconnected():
+        while (await request.receive())["type"] != "http.disconnect":
+            pass
+
+    work = asyncio.create_task(operation)
+    watcher = asyncio.create_task(disconnected())
+    try:
+        done, _ = await asyncio.wait({work, watcher}, return_when=asyncio.FIRST_COMPLETED)
+        if work in done:
+            return work.result()
+        raise HTTPException(499, "Speech request canceled")
+    finally:
+        work.cancel()
+        watcher.cancel()
+        await asyncio.gather(work, watcher, return_exceptions=True)
+
+
+@router.post("/transcriptions")
+async def transcribe_speech(request: Request, response: Response, user: User = Depends(get_current_user)):
+    values, provider = _configured("http")
+    _check_generation(request, values)
+    client = _client(request)
+    await _check_budget(user.id)
+    audio = await _read_audio(request)
+    try:
+        text = await _until_disconnect(request, provider.transcribe(client, values, audio))
+    except SpeechProviderError as exc:
+        raise HTTPException(exc.status, str(exc)) from None
+    _no_cache(response)
+    return {"text": text}
 
 
 @router.get("/capabilities")
 async def speech_capabilities(response: Response, user: User = Depends(get_current_user)):
-    from app.config import settings as environment
-    from app.domains.system_config.services.feature_config_service import fingerprint
-
-    response.headers["Cache-Control"] = "no-store, private"
-    # Opaque generation changes release browser standby streams and credentials.
-    generation = fingerprint(
-        {
-            "mode": settings.SPEECH_MODE,
-            "region": settings.SPEECH_API_REGION,
-            "key": settings.SPEECH_API_KEY.get_secret_value(),
-            "token_ttl": settings.SPEECH_TOKEN_TTL_SECONDS,
-            "requests_per_minute": settings.SPEECH_TOKEN_REQUESTS_PER_MINUTE,
-        }
-    )
-    generation = hmac.new(environment.JWT_SECRET_KEY.encode(), generation.encode(), "sha256").hexdigest()
+    values = runtime_values()
+    try:
+        provider, transport = get_provider(values)
+        configured = provider.configured(values)
+    except SpeechProviderError:
+        transport, configured = "unavailable", False
+    _no_cache(response)
     return {
-        "mode": settings.SPEECH_MODE,
-        "generation": generation,
-        "configured": settings.SPEECH_MODE != "api" or bool(settings.SPEECH_API_KEY.get_secret_value()),
+        "mode": values["mode"],
+        "provider": values["provider"],
+        "transport": transport,
+        "generation": _generation(values),
+        "configured": values["mode"] != "api" or configured,
     }

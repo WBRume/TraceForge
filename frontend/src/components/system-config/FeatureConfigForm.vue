@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseSelect from '@/components/BaseSelect.vue'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
 import { CircleHelp } from '@/components/icons'
 import { useFeatureConfig } from '@/composables/useFeatureConfig'
-import type { FeatureConfig, FeatureId } from '@/services/featureConfigApi'
+import type { FeatureConfig, FeatureId, FeatureField } from '@/services/featureConfigApi'
 import { formatApiError } from '@/utils/error'
 
 const props = defineProps<{ config: FeatureConfig }>()
@@ -16,13 +16,13 @@ const { values, secretActions, busy, testResult, testStale, invalidSecret, error
 
 const sections: Record<FeatureId, { name: string; keys: string[] }[]> = {
   speech: [
-    { name: 'recognition', keys: ['mode', 'region', 'api_key'] },
+    { name: 'recognition', keys: ['mode', 'provider', 'transport', 'model', 'api_key', 'region'] },
     { name: 'credentials', keys: ['token_ttl', 'requests_per_minute'] },
   ],
   search: [
     { name: 'retrieval', keys: ['enabled', 'backend', 'workers_enabled'] },
     { name: 'remote_search', keys: ['es_url', 'es_username', 'es_password'] },
-    { name: 'vectors', keys: ['embedding_endpoint', 'embedding_model', 'embedding_api_key'] },
+    { name: 'vectors', keys: ['embedding_protocol', 'embedding_endpoint', 'embedding_model', 'embedding_api_key'] },
   ],
   diagnosis: [{ name: 'execution', keys: ['worker_enabled', 'enforcement'] }],
   oauth: [
@@ -35,10 +35,21 @@ const sections: Record<FeatureId, { name: string; keys: string[] }[]> = {
     { name: 'dsh', keys: ['dsh_url', 'dsh_browser_token', 'dsh_browser_cookie'] },
   ],
 }
+const isVisible = (field: FeatureField) => Object.entries(field.visible_when ?? {})
+  .every(([key, allowed]) => allowed.includes(String(values[key])))
 const groups = computed(() => sections[props.config.feature].map(section => ({
   name: section.name,
-  fields: section.keys.flatMap(key => props.config.fields.filter(field => field.key === key)),
+  fields: props.config.fields.filter(field => (section.keys.includes(field.key) || field.group === section.name) && isVisible(field)),
 })).filter(section => section.fields.length))
+const selectedProvider = computed(() => props.config.providers?.find(plugin => plugin.id === values.provider))
+const fieldOptions = (field: FeatureField) => field.options
+  .filter(value => field.key !== 'transport' || value === 'auto' || !selectedProvider.value
+    || selectedProvider.value.transports.includes(value))
+  .map(value => ({ value, label: field.option_labels?.[value] ?? optionLabel(value) }))
+watch(() => values.provider, () => {
+  if (selectedProvider.value && values.transport !== 'auto'
+    && !selectedProvider.value.transports.includes(String(values.transport))) values.transport = 'auto'
+})
 const canReset = computed(() => props.config.revision > 0 || props.config.fields.some(field => field.source === 'database'))
 const inputId = (key: string) => `feature-${props.config.feature}-${key}`
 const secretInput = (key: string, event: Event) => updateSecret(key, (event.target as HTMLInputElement).value)
@@ -108,7 +119,7 @@ const runSave = async (reset = false) => {
               </div>
             </template>
             <BaseSelect v-else-if="field.kind === 'select'" :id="inputId(field.key)" v-model="values[field.key]"
-              :options="field.options.map(value => ({ value, label: optionLabel(value) }))" :disabled="!!busy" />
+              :options="fieldOptions(field)" :disabled="!!busy" />
             <div v-else-if="field.kind === 'boolean'" class="switch-field">
               <ToggleSwitch
                 :id="inputId(field.key)"

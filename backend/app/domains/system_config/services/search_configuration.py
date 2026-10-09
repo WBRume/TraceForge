@@ -4,6 +4,7 @@ from datetime import datetime
 
 from app.core.offload import run_db_txn
 from app.domains.search.embedding import embed, encrypt_key
+from app.domains.search.embedding_protocols import profile_fingerprint
 from app.domains.search.models import SearchBackfillRun, SearchEmbeddingJob, SearchEmbeddingProfile, SearchIndexTarget
 from app.domains.search.projection import digest
 from app.domains.search.worker import dto
@@ -26,13 +27,12 @@ async def prepare_search(app, values):
         profile = {
             "endpoint": values["embedding_endpoint"],
             "model_id": values["embedding_model"],
+            "protocol": values.get("embedding_protocol", "openai_compatible"),
             "encrypted_api_key": encrypt_key(key),
         }
         vectors = await embed(app.state.search_http, profile, ["TraceForge 服务连接测试"], runtime_credentials=False)
         profile["dimension"] = len(vectors[0])
-        profile["fingerprint"] = digest(
-            [profile["endpoint"], profile["model_id"], profile["dimension"], 1600, 160, "", ""]
-        )
+        profile["fingerprint"] = profile_fingerprint(profile)
 
         def publish(db):
             current = (
@@ -42,6 +42,7 @@ async def prepare_search(app, values):
                     SearchIndexTarget.status == "active",
                     SearchEmbeddingProfile.endpoint == profile["endpoint"],
                     SearchEmbeddingProfile.model_id == profile["model_id"],
+                    SearchEmbeddingProfile.protocol == profile["protocol"],
                     SearchEmbeddingProfile.dimension == profile["dimension"],
                 )
                 .first()

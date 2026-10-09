@@ -11,6 +11,8 @@ from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
+from app.domains.ai.speech.base import SpeechProviderError
+from app.domains.ai.speech.registry import get_provider, provider_catalog
 from app.domains.system_config.models.feature_config import FeatureConfig
 from app.domains.system_config.services.feature_catalog import CATALOG
 from app.domains.system_config.services.system_config_service import SystemConfigError
@@ -93,7 +95,12 @@ def legacy_search_values(db, *, include_key=True):
         except (EmbeddingError, ValueError):
             # A replacement in the feature center can repair legacy key failures.
             key = ""
-    return {"embedding_endpoint": profile.endpoint, "embedding_model": profile.model_id, "embedding_api_key": key}
+    return {
+        "embedding_endpoint": profile.endpoint,
+        "embedding_model": profile.model_id,
+        "embedding_api_key": key,
+        "embedding_protocol": profile.protocol,
+    }
 
 
 def resolve(db, feature, overrides):
@@ -166,6 +173,7 @@ def public(db, feature):
         "title": CATALOG[feature][0],
         "revision": revision,
         "configured": bool(overrides),
+        **({"providers": provider_catalog()} if feature == "speech" else {}),
         "fields": [
             {
                 "key": field.key,
@@ -185,6 +193,9 @@ def public(db, feature):
                 "minimum": field.minimum,
                 "maximum": field.maximum,
                 "hint": field.hint,
+                "visible_when": dict(field.visible_when),
+                "option_labels": dict(field.option_labels),
+                "group": field.group,
             }
             for field in fields_for(feature)
         ],
@@ -203,7 +214,13 @@ def draft(db, feature, values, revision, reset=False):
             overrides[key] = None
         else:
             overrides[key] = value.strip() if isinstance(value, str) else value
-    return (effective(feature, {}) if reset else resolve(db, feature, overrides)), overrides
+    resolved = effective(feature, {}) if reset else resolve(db, feature, overrides)
+    if feature == "speech" and resolved["mode"] == "api":
+        try:
+            get_provider(resolved)
+        except SpeechProviderError as exc:
+            raise SystemConfigError("所选语音插件不支持该识别方式", 422) from exc
+    return resolved, overrides
 
 
 def save(db, feature, values, revision, actor, reset=False):

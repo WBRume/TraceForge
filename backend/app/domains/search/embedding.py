@@ -1,19 +1,14 @@
-"""Bounded OpenAI-compatible embeddings; credentials never leave the server."""
+"""Bounded protocol-based embeddings; credentials never leave the server."""
 
 import asyncio
 import json
-import math
 from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.core.feature_settings import feature_settings as settings
-
-
-class EmbeddingError(RuntimeError):
-    def __init__(self, code, retryable=False):
-        super().__init__(code)
-        self.code, self.retryable = code, retryable
+from app.domains.search.embedding_protocols import EmbeddingError, get_protocol
+from app.domains.search.embedding_protocols import validate_vectors as validate_vectors
 
 
 def cipher():
@@ -59,30 +54,6 @@ def validate_endpoint(endpoint):
     return endpoint.rstrip("/")
 
 
-def validate_vectors(payload, count, dimension=None):
-    rows = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(rows, list) or len(rows) != count:
-        raise EmbeddingError("EMBEDDING_INVALID_RESPONSE")
-    vectors = [None] * count
-    for row in rows:
-        if not isinstance(row, dict):
-            raise EmbeddingError("EMBEDDING_INVALID_RESPONSE")
-        index, vector = row.get("index"), row.get("embedding")
-        if type(index) is not int or not 0 <= index < count or vectors[index] is not None:
-            raise EmbeddingError("EMBEDDING_INVALID_RESPONSE")
-        if not isinstance(vector, list) or not 1 <= len(vector) <= 4096:
-            raise EmbeddingError("EMBEDDING_INVALID_RESPONSE")
-        dimension = dimension or len(vector)
-        if (
-            len(vector) != dimension
-            or not all(type(v) in (int, float) and math.isfinite(v) for v in vector)
-            or not any(vector)
-        ):
-            raise EmbeddingError("EMBEDDING_INVALID_RESPONSE")
-        vectors[index] = vector
-    return vectors
-
-
 def profile_key(profile, runtime_credentials):
     if runtime_credentials and settings.has_override("SEARCH_EMBEDDING_API_KEY"):
         if not settings.SEARCH_EMBEDDING_API_KEY:
@@ -90,6 +61,7 @@ def profile_key(profile, runtime_credentials):
         if (
             profile["endpoint"] == settings.SEARCH_EMBEDDING_ENDPOINT
             and profile["model_id"] == settings.SEARCH_EMBEDDING_MODEL
+            and (profile.get("protocol") or "openai_compatible") == settings.SEARCH_EMBEDDING_PROTOCOL
         ):
             return settings.SEARCH_EMBEDDING_API_KEY
     return decrypt_key(profile["encrypted_api_key"])
@@ -102,6 +74,7 @@ async def embed(client, profile, texts, *, query=False, runtime_credentials=True
     prefix = profile.get("query_prefix" if query else "document_prefix", "")
     import httpx
 
+    protocol = get_protocol(profile.get("protocol") or "openai_compatible")
     key = profile_key(profile, runtime_credentials)
     try:
         async with asyncio.timeout(timeout):
@@ -109,7 +82,7 @@ async def embed(client, profile, texts, *, query=False, runtime_credentials=True
                 "POST",
                 validate_endpoint(profile["endpoint"]),
                 headers={"Authorization": "Bearer " + key},
-                json={"model": profile["model_id"], "input": [prefix + t for t in texts], "encoding_format": "float"},
+                json=protocol.request(profile["model_id"], [prefix + t for t in texts], query=query),
             ) as response:
                 if response.status_code != 200:
                     status = response.status_code
@@ -126,7 +99,7 @@ async def embed(client, profile, texts, *, query=False, runtime_credentials=True
                     raw.extend(chunk)
                     if len(raw) > 4 * 1024 * 1024:
                         raise EmbeddingError("EMBEDDING_RESPONSE_TOO_LARGE")
-        return validate_vectors(json.loads(raw), len(texts), profile.get("dimension"))
+        return protocol.parse(json.loads(raw), len(texts), profile.get("dimension"))
     except (TimeoutError, httpx.TransportError):
         raise EmbeddingError("EMBEDDING_UNAVAILABLE", True) from None
     except (ValueError, TypeError):

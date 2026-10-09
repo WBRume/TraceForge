@@ -80,6 +80,7 @@ class FeatureRuntime:
             # new feature override document has been created yet.
             published["SEARCH_EMBEDDING_ENDPOINT"] = effective["search"]["embedding_endpoint"]
             published["SEARCH_EMBEDDING_MODEL"] = effective["search"]["embedding_model"]
+            published["SEARCH_EMBEDDING_PROTOCOL"] = effective["search"]["embedding_protocol"]
             published["SEARCH_EMBEDDING_API_KEY"] = effective["search"]["embedding_api_key"]
             feature_settings.replace(published)
             self.errors = errors | {key: value for key, value in self.errors.items() if key == "search_runtime"}

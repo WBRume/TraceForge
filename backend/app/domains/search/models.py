@@ -66,6 +66,7 @@ class SearchEmbeddingProfile(Base):
     status = Column(String(16), nullable=False, default="draft")
     endpoint = Column(String(500), nullable=False)
     model_id = Column(String(200), nullable=False)
+    protocol = Column(String(40), nullable=False, default="openai_compatible", server_default="openai_compatible")
     encrypted_api_key = Column(Text)
     dimension = Column(Integer)
     chunk_chars = Column(Integer, nullable=False, default=1600)
