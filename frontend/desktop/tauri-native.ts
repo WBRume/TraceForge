@@ -1,7 +1,7 @@
-import { spawn } from 'node:child_process'
-import { EventEmitter } from 'node:events'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { startServer } from './local-resource/server'
+import type { Config } from './local-resource/runtime'
 
 type Handler = (event: { sender: typeof sender }, payload: any) => unknown
 export const handlers = new Map<string, Handler>()
@@ -52,27 +52,11 @@ export const dialog = {
   showOpenDialog: (options: unknown) => nativeRequest('select-directory', options),
   showSaveDialog: (...args: unknown[]) => nativeRequest('save-file', args.at(-1)),
 }
-const ownedChildren = new Set<ReturnType<typeof spawn>>()
-export const utilityProcess = {
-  fork(_module: string, args: string[], options: { cwd: string }) {
-    const child = spawn(process.execPath, ['--local-resource-service', ...args], {
-      cwd: options.cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    ownedChildren.add(child)
-    const handle = new EventEmitter() as EventEmitter & {
-      stdout: typeof child.stdout; stderr: typeof child.stderr; kill: () => boolean
-    }
-    handle.stdout = child.stdout
-    handle.stderr = child.stderr
-    handle.kill = () => child.kill()
-    child.once('exit', code => { ownedChildren.delete(child); handle.emit('exit', code ?? 1) })
-    child.once('error', error => { console.error(error.message); ownedChildren.delete(child); handle.emit('exit', 1) })
-    return handle
-  },
+export function startLocalResourceService(config: Config) {
+  return startServer(config, { workerUrl: new URL('./worker.js', import.meta.url).href })
 }
 
 export function shutdownNative() {
-  for (const child of ownedChildren) child.kill()
   for (const pending of pendingNative.values()) pending.reject(new Error('Desktop service closed'))
   pendingNative.clear()
 }

@@ -106,7 +106,11 @@ export type SddDesktopApi = {
   attention?: { set: (payload: { flash: boolean; hitlCount: number }) => Promise<{ ok: boolean }> }
   webhooks?: { send: (payload: import('./taskAwareness').WebhookRequest) => Promise<{ ok: boolean; error?: string }> }
   runtime?: 'electron' | 'tauri'
-  resources?: { configureRoots?: (payload: { backend: string; resourceServiceUrl: string; workspaceRoot: string; repoRoots: string[] }) => Promise<{ managed: boolean }>; start: (payload: { backend: string }) => Promise<{ service_url: string; resource_service_url: string; host_token: string; agent_token: string }> }
+  resources?: {
+    configureRoots?: (payload: { backend: string; resourceServiceUrl: string; workspaceRoot: string; repoRoots: string[] }) => Promise<{ managed: boolean }>
+    ensure: (payload: { backend: string }) => Promise<{ resource_service_url: string; host_token: string }>
+    start: (payload: { backend: string }) => Promise<{ service_url: string; resource_service_url: string; host_token: string; agent_token: string }>
+  }
   platform: string
   download: {
     save: (payload: DesktopSaveRequest) => Promise<DesktopSaveResult>

@@ -1,4 +1,4 @@
-// Private resource protocol used by the Tauri desktop sidecar.
+// Resource protocol embedded in the Tauri desktop runtime.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
@@ -17,6 +17,15 @@ export async function startServer(config: Config, options: { workerUrl?: string 
   const identity = readJson(identityFile)
   const worker = new Worker(options.workerUrl ?? new URL('./worker.ts', import.meta.url).href)
   const pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>()
+  let stopped = false
+  let failure: Error | undefined
+  let closing: Promise<void> | undefined
+  let db: Database | undefined
+  let server: ReturnType<typeof Bun.serve> | undefined
+  const rejectPending = (error: Error) => {
+    for (const item of pending.values()) item.reject(error)
+    pending.clear()
+  }
   worker.onmessage = event => {
     const item = pending.get(event.data.id)
     pending.delete(event.data.id)
@@ -24,80 +33,112 @@ export async function startServer(config: Config, options: { workerUrl?: string 
     else item?.resolve(event.data.result)
   }
   worker.onerror = error => {
-    for (const item of pending.values()) item.reject(new Error(error.message))
-    pending.clear()
+    error.preventDefault()
+    failure = new Error(error.message)
+    rejectPending(failure)
+    void close()
   }
+  worker.addEventListener('close', () => {
+    if (stopped) return
+    failure = new Error('Local resource worker exited')
+    rejectPending(failure)
+    void close()
+  })
   function dispatch(kind: string, payload: unknown) {
+    if (failure) return Promise.reject(failure)
+    if (stopped && kind !== 'shutdown') return Promise.reject(new Error('Local resource service closed'))
     return new Promise<any>((resolve, reject) => {
       const id = randomUUID()
       pending.set(id, { resolve, reject })
-      worker.postMessage({ id, kind, payload })
+      try { worker.postMessage({ id, kind, payload }) }
+      catch (error) { pending.delete(id); reject(error) }
     })
   }
-  await dispatch('configure', config)
-  const db = new Database(path.join(config.state_root, 'journal.sqlite3'), { readonly: true })
-  const server = Bun.serve({
-    hostname: config.listen_host || '127.0.0.1', port: config.port ?? 4098,
-    idleTimeout: 255, maxRequestBodySize: 64 * 1024 * 1024,
-    async fetch(request: Request): Promise<Response> {
-      const expected = Buffer.from(hash('Bearer ' + config.token))
-      const supplied = Buffer.from(hash(request.headers.get('authorization') || ''))
-      if (!timingSafeEqual(expected, supplied)) {
-        return Response.json({ detail: 'Resource credential required' }, { status: 401 })
-      }
-      const url = new URL(request.url)
+  function close(): Promise<void> {
+    if (closing) return closing
+    stopped = true
+    server?.stop(true)
+    closing = (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined
       try {
-        if (request.method === 'GET' && url.pathname === '/v1/identity') {
-          return Response.json({ ...identity, platform: process.platform === 'win32' ? 'nt' : 'posix',
-            implementation: 'typescript', capabilities: ['provision', 'checkpoint', 'materialize',
-              'generate_patch', 'apply_patch', 'restore', 'release', 'skills', 'documents', 'roots_grant'] })
-        }
-        if (request.method === 'POST' && url.pathname === '/v1/roots/grant') {
-          const body = await request.json() as { roots?: string[]; workspace_root?: string; repo_roots?: string[] }
-          const candidates = [...(Array.isArray(body.roots) ? body.roots : []), body.workspace_root,
-            ...(Array.isArray(body.repo_roots) ? body.repo_roots : [])]
-            .filter((root): root is string => typeof root === 'string' && !!root.trim())
-          const roots: string[] = []
-          for (const candidate of candidates) {
-            const absolute = path.resolve(candidate.trim())
-            if (absolute === path.parse(absolute).root) {
-              return Response.json({ detail: `不允许直接授权文件系统根目录: ${absolute}` }, { status: 400 })
-            }
-            fs.mkdirSync(absolute, { recursive: true })
-            roots.push(fs.realpathSync(absolute))
-          }
-          const persisted = config.roots_config_path ? readJson(config.roots_config_path) : null
-          const current = persisted?.allowed_roots ?? config.allowed_roots
-          config.allowed_roots = Array.from(new Set([...current.map((root: string) => path.resolve(root)), ...roots]))
-          if (persisted) writeJson(config.roots_config_path!, { ...persisted, allowed_roots: config.allowed_roots })
-          return Response.json({ ok: true, allowed_roots: config.allowed_roots })
-        }
-        if (request.method === 'POST' && url.pathname === '/v1/repositories/inspect') {
-          return Response.json(await dispatch('inspect', await request.json()))
-        }
-        if (request.method === 'POST' && url.pathname === '/v1/operations') {
-          return Response.json(await dispatch('operation', await request.json()))
-        }
-        if (request.method === 'GET' && url.pathname.startsWith('/v1/operations/')) {
-          const row = db.query('SELECT state,result FROM operations WHERE id=?')
-            .get(url.pathname.slice('/v1/operations/'.length)) as { state: string; result: string | null } | null
-          return row ? Response.json({ state: row.state, result: row.result ? JSON.parse(row.result) : null })
-            : Response.json({ detail: 'Operation not found' }, { status: 404 })
-        }
-        return Response.json({ detail: 'Not found' }, { status: 404 })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        return Response.json({ detail: {
-          code: message.startsWith('EXECUTION_UNKNOWN') ? 'EXECUTION_UNKNOWN' : 'RESOURCE_OPERATION_FAILED', message,
-        } }, { status: 409 })
+        await Promise.race([
+          dispatch('shutdown', null),
+          new Promise(resolve => { timer = setTimeout(resolve, 1000) }),
+        ])
+      } catch { /* A failed worker is still terminated below. */ }
+      finally {
+        clearTimeout(timer)
+        rejectPending(new Error('Local resource service closed'))
+        db?.close()
+        worker.terminate()
       }
-    },
-  })
-  const close = async () => {
-    server.stop(true)
-    await dispatch('shutdown', null)
-    db.close()
-    worker.terminate()
+    })()
+    return closing
   }
-  return { server, close }
+  try {
+    await dispatch('configure', config)
+    db = new Database(path.join(config.state_root, 'journal.sqlite3'), { readonly: true })
+    server = Bun.serve({
+      hostname: config.listen_host || '127.0.0.1', port: config.port ?? 4098,
+      idleTimeout: 255, maxRequestBodySize: 64 * 1024 * 1024,
+      async fetch(request: Request): Promise<Response> {
+        const expected = Buffer.from(hash('Bearer ' + config.token))
+        const supplied = Buffer.from(hash(request.headers.get('authorization') || ''))
+        if (!timingSafeEqual(expected, supplied)) {
+          return Response.json({ detail: 'Resource credential required' }, { status: 401 })
+        }
+        const url = new URL(request.url)
+        try {
+          if (request.method === 'GET' && url.pathname === '/v1/identity') {
+            return Response.json({ ...identity, platform: process.platform === 'win32' ? 'nt' : 'posix',
+              implementation: 'typescript', capabilities: ['provision', 'checkpoint', 'materialize',
+                'generate_patch', 'apply_patch', 'restore', 'release', 'skills', 'documents', 'roots_grant'] })
+          }
+          if (request.method === 'POST' && url.pathname === '/v1/roots/grant') {
+            const body = await request.json() as { roots?: string[]; workspace_root?: string; repo_roots?: string[] }
+            const candidates = [...(Array.isArray(body.roots) ? body.roots : []), body.workspace_root,
+              ...(Array.isArray(body.repo_roots) ? body.repo_roots : [])]
+              .filter((root): root is string => typeof root === 'string' && !!root.trim())
+            const roots: string[] = []
+            for (const candidate of candidates) {
+              const absolute = path.resolve(candidate.trim())
+              if (absolute === path.parse(absolute).root) {
+                return Response.json({ detail: `不允许直接授权文件系统根目录: ${absolute}` }, { status: 400 })
+              }
+              fs.mkdirSync(absolute, { recursive: true })
+              roots.push(fs.realpathSync(absolute))
+            }
+            const persisted = config.roots_config_path ? readJson(config.roots_config_path) : null
+            const current = persisted?.allowed_roots ?? config.allowed_roots
+            config.allowed_roots = Array.from(new Set([...current.map((root: string) => path.resolve(root)), ...roots]))
+            if (persisted) writeJson(config.roots_config_path!, { ...persisted, allowed_roots: config.allowed_roots })
+            return Response.json({ ok: true, allowed_roots: config.allowed_roots })
+          }
+          if (request.method === 'POST' && url.pathname === '/v1/repositories/inspect') {
+            return Response.json(await dispatch('inspect', await request.json()))
+          }
+          if (request.method === 'POST' && url.pathname === '/v1/operations') {
+            return Response.json(await dispatch('operation', await request.json()))
+          }
+          if (request.method === 'GET' && url.pathname.startsWith('/v1/operations/')) {
+            const row = db!.query('SELECT state,result FROM operations WHERE id=?')
+              .get(url.pathname.slice('/v1/operations/'.length)) as { state: string; result: string | null } | null
+            return row ? Response.json({ state: row.state, result: row.result ? JSON.parse(row.result) : null })
+              : Response.json({ detail: 'Operation not found' }, { status: 404 })
+          }
+          return Response.json({ detail: 'Not found' }, { status: 404 })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          return Response.json({ detail: {
+            code: message.startsWith('EXECUTION_UNKNOWN') ? 'EXECUTION_UNKNOWN' : 'RESOURCE_OPERATION_FAILED', message,
+          } }, { status: 409 })
+        }
+      },
+    })
+    if (failure) throw failure
+    return { server, close, isRunning: () => !stopped }
+  } catch (error) {
+    await close()
+    throw error
+  }
 }
