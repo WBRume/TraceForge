@@ -71,7 +71,20 @@ export interface Repository {
   repository_id: string; local_path: string; configured_git_url: string; branch_name: string;
   rel_path: string; repo_url: string; repo_name: string;
 }
-export interface BoundRepository extends Repository { base_commit_sha: string; task_branch: string; repo_root: string }
+export interface GitCommitInfo {
+  sha: string; author_name: string; author_email: string; authored_at: string;
+  committer_name: string; committer_email: string; committed_at: string; message: string;
+}
+export function readCommitInfo(cwd: string, sha: string): GitCommitInfo | undefined {
+  if (!/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/.test(sha)) return undefined
+  try {
+    const fields = git(cwd, 'show', '--no-patch', '--no-show-signature', '--format=%H%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%B', sha, '--').split('\0')
+    if (fields.length < 8 || fields[0] !== sha) return undefined
+    const [commitSha, author_name, author_email, authored_at, committer_name, committer_email, committed_at, ...message] = fields
+    return { sha: commitSha!, author_name: author_name!, author_email: author_email!, authored_at: authored_at!, committer_name: committer_name!, committer_email: committer_email!, committed_at: committed_at!, message: message.join('\0') }
+  } catch { return undefined }
+}
+export interface BoundRepository extends Repository { base_commit_sha: string; base_commit?: GitCommitInfo; task_branch: string; repo_root: string }
 export interface Receipt { task_id: string; task_root: string; repositories_input: Repository[]; repositories: BoundRepository[] }
 export function remoteKey(value: string) {
   const scp = /^[^@/]+@([^:/]+):(.+)$/.exec(value.trim().replace(/\/$/, ''))
@@ -115,7 +128,7 @@ export function provision(root: string, taskId: string, repos: Repository[], roo
       if (git(target, 'branch', '--show-current') !== branch || resolved(path.resolve(target, git(target, 'rev-parse', '--git-common-dir'))) !== info.common_git_dir) fail('WORKTREE_OWNERSHIP_CONFLICT')
       sha = git(target, 'rev-parse', 'HEAD')
     } else git(info.repo_root, 'worktree', 'add', '-b', branch, target, sha)
-    receipt.repositories.push({ ...repo, base_commit_sha: sha, task_branch: branch, repo_root: info.repo_root })
+    receipt.repositories.push({ ...repo, base_commit_sha: sha, base_commit: readCommitInfo(target, sha), task_branch: branch, repo_root: info.repo_root })
     writeJson(manifestFile, receipt)
   }
   return receipt

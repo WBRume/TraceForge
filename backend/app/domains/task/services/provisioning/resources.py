@@ -105,12 +105,17 @@ def prepare_task_resources_for_provision(
                 if task_repos:
                     task_task_workspace_repositories.prepare_task_repositories(db, ws, task, task_repos)
                 elif git_worktree_service.should_use_git_worktree(ws.project_path, ws.git_repo_url):
+                    from app.domains.task.services.task_repository_details import LEGACY_CHECKOUT_KEY
+
+                    checkout_details = {}
                     git_worktree_service.create_task_worktree(
                         repo_path=ws.project_path or "",
                         task_id=task.id,
                         task_project_path=task.project_path,
                         expected_git_repo_url=ws.git_repo_url,
+                        checkout_details=checkout_details,
                     )
+                    task.task_meta_json = {**(task.task_meta_json or {}), LEGACY_CHECKOUT_KEY: checkout_details}
                 else:
                     os.makedirs(task.project_path, exist_ok=False)
 

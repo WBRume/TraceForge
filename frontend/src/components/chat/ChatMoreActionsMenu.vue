@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import {
   BarChart3,
   Download,
+  FileText,
   MoreHorizontal,
   Search,
   Share2,
@@ -25,6 +26,7 @@ const emit = defineEmits<{
   (e: 'export'): void
   (e: 'open-attribution'): void
   (e: 'share'): void
+  (e: 'task-details'): void
 }>()
 
 const { t } = useI18n()
@@ -33,6 +35,7 @@ const searchStore = useGlobalSearchStore()
 const menuOpen = ref(false)
 const rootRef = ref<HTMLElement | null>(null)
 const triggerRef = ref<HTMLElement | null>(null)
+const panelRef = ref<HTMLElement | null>(null)
 
 const panelStyle = computed(() => {
   const el = triggerRef.value
@@ -55,6 +58,14 @@ const menuItems = computed(() => {
     disabled: boolean
     handler: () => void
   }> = [
+    {
+      key: 'task-details',
+      label: t('task_inspection.view_details'),
+      icon: FileText,
+      visible: true,
+      disabled: false,
+      handler: () => emit('task-details'),
+    },
     {
       key: 'export',
       label: t('chat.more_export'),
@@ -106,7 +117,7 @@ const handleItemClick = (item: (typeof menuItems.value)[number]) => {
 }
 
 const handleDocClick = (event: MouseEvent) => {
-  if (rootRef.value && !rootRef.value.contains(event.target as Node)) {
+  if (rootRef.value && !rootRef.value.contains(event.target as Node) && !panelRef.value?.contains(event.target as Node)) {
     closeMenu()
   }
 }
@@ -135,6 +146,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocClick
       <transition name="more-menu-fade">
         <div
           v-if="menuOpen"
+          ref="panelRef"
           class="more-actions-panel"
           :style="panelStyle"
           role="menu"

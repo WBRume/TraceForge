@@ -11,6 +11,7 @@ import ApplyPatchDrawer from '@/components/local-agent/ApplyPatchDrawer.vue'
 import TaskCloseoutPanel from '@/components/chat/task-closeout/TaskCloseoutPanel.vue'
 import TaskRequirementLinkDrawer from '@/components/chat/task-rail/TaskRequirementLinkDrawer.vue'
 import TaskSessionShareDialog from '@/components/chat/TaskSessionShareDialog.vue'
+import TaskDetailDialog from '@/components/task-detail/TaskDetailDialog.vue'
 import ShareSuggestionPanel from '@/components/chat/ShareSuggestionPanel.vue'
 import TaskSkillsDrawer from '@/components/chat/TaskSkillsDrawer.vue'
 import ContextWindowDrawer from '@/components/chat/context-window/ContextWindowDrawer.vue'
@@ -78,6 +79,8 @@ const investigate = (text: string) => {
 
 // ── 视图装配态 ──
 const showApplyPatchDrawer = ref(false)
+const showTaskDetails = ref(false)
+watch(() => vm.currentTask?.id, () => { showTaskDetails.value = false })
 const showRequirementLinkDrawer = ref(false)
 watch(() => vm.currentTask?.id, () => { showRequirementLinkDrawer.value = false })
 const preInputMode = ref(false)
@@ -185,8 +188,15 @@ watch(
         :tasklist-visible="showSopTasks"
         @toggle-tasklist="toggleSopTasks"
         @share="openShareDialog"
+        @task-details="showTaskDetails = true"
         @open-apply-patch="showApplyPatchDrawer = true"
         @link-requirement="showRequirementLinkDrawer = true"
+      />
+
+      <TaskDetailDialog
+        v-model="showTaskDetails"
+        :workspace-id="String(vm.route.params.wsId || '')"
+        :task-id="vm.currentTask.id"
       />
 
       <div

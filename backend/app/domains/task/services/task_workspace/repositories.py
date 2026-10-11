@@ -110,6 +110,7 @@ def prepare_task_repositories(
 ) -> None:
     """Create worktrees for every repository binding and mark them READY."""
     from app.domains.task.models.task_repository import TaskRepositoryState
+    from app.domains.task.services.task_repository_details import read_commit_info, save_commit_snapshot
 
     bindings = build_task_worktree_bindings(db, workspace, task)
     git_worktree_service.create_task_worktrees(
@@ -122,6 +123,7 @@ def prepare_task_repositories(
         repo.state = TaskRepositoryState.READY
         repo.base_commit_sha = git_worktree_service.read_repo_head_sha(worktree_dir)
         repo.error_message = None
+        save_commit_snapshot(task, repo.id, read_commit_info(worktree_dir, repo.base_commit_sha))
 
 
 def cleanup_task_repositories(

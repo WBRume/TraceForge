@@ -55,6 +55,19 @@ const cleanupBody = () => {
 }
 
 describe('ChatMoreActionsMenu', () => {
+  it('opens task details after pointerdown inside the teleported menu, also in CLI mode', async () => {
+    const wrapper = mountMenu({ showAttribution: false })
+    const panel = await openMenu(wrapper)
+    const item = findItem(panel, '查看任务详情')
+    item.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    await wrapper.vm.$nextTick()
+    expect(document.body.querySelector('.more-actions-panel')).not.toBeNull()
+    item.click()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted('task-details')).toHaveLength(1)
+    expect(document.body.querySelector('.more-actions-panel')).toBeNull()
+    wrapper.unmount()
+  })
   it('renders trigger and opens the dropdown with all entries', async () => {
     const wrapper = mountMenu()
     expect(document.body.querySelector('.more-actions-panel')).toBeNull()

@@ -194,6 +194,7 @@ def create_task_worktree(
     task_id: str,
     task_project_path: str,
     expected_git_repo_url: str | None = None,
+    checkout_details: dict | None = None,
 ) -> str:
     abs_repo_path = _to_abs_path(repo_path, label="repo_path")
     abs_task_path = _to_abs_path(task_project_path, label="task_project_path")
@@ -230,6 +231,16 @@ def create_task_worktree(
         cwd=abs_repo_path,
         status_code=409,
     )
+    if checkout_details is not None:
+        from app.domains.task.services.task_repository_details import read_commit_info
+
+        sha = read_repo_head_sha(abs_task_path)
+        checkout_details.update(
+            branch_name=base_branch,
+            task_branch=task_branch,
+            base_commit_sha=sha,
+            base_commit=read_commit_info(abs_task_path, sha),
+        )
     return task_branch
 
 

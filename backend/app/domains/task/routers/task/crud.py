@@ -29,6 +29,7 @@ from app.domains.task.schemas.task import (
     TaskListResponse,
     TaskResponse,
 )
+from app.domains.task.schemas.task_inspection import TaskInspectionResponse
 from app.domains.task.services import task_cli_state_service
 from app.domains.task.services.chat_submission_service import SubmissionError
 from app.domains.task.services.conversation import history as task_conversation_history
@@ -242,6 +243,20 @@ def get_task(
         db, ws_id, current_user.id, [task.id]
     )
     return payload
+
+
+@router.get("/{task_id}/details", response_model=TaskInspectionResponse)
+def get_task_details(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.domains.task.services.task_repository_details import inspect_task_repositories
+
+    verify_workspace_access(ws_id, current_user.id, db)
+    task = get_task_or_404(db, task_id, ws_id)
+    return inspect_task_repositories(db, task)
 
 
 @router.get("/{task_id}/follow", response_model=TaskFollowResponse)

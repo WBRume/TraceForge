@@ -124,6 +124,7 @@ const metaItems = computed(() => [
             v-for="link in requirementLinks"
             :key="link.id"
             class="requirement-pill"
+            :title="link.requirement?.title || link.requirement_id"
             :to="{ name: 'workspaceAssetsRequirementDetail', params: { wsId: workspaceId, requirementId: link.requirement_id }, query: { from: 'task' } }"
           >
             <span class="req-title">{{ link.requirement?.title || link.requirement_id }}</span>
@@ -141,7 +142,7 @@ const metaItems = computed(() => [
 <style scoped>
 .task-detail-header {
   display: grid;
-  grid-template-columns: 1fr 280px;
+  grid-template-columns: minmax(0, 1fr) 280px;
   gap: 16px;
   align-items: stretch;
 }
@@ -149,6 +150,8 @@ const metaItems = computed(() => [
 .header-main {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
   gap: 16px;
   padding: 16px;
   background: rgba(255, 255, 255, 0.5);
@@ -167,6 +170,8 @@ const metaItems = computed(() => [
 
 .id-badges {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: 6px;
 }
 
@@ -254,12 +259,14 @@ const metaItems = computed(() => [
 /* Aside / Requirements */
 .header-aside {
   display: flex;
+  min-width: 0;
 }
 
 .requirements-panel {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   padding: 14px;
   background: rgba(255, 255, 255, 0.5);
   backdrop-filter: blur(8px);
@@ -342,7 +349,7 @@ const metaItems = computed(() => [
 
 @media (max-width: 1200px) {
   .task-detail-header {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 </style>

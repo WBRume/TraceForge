@@ -32,6 +32,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'share'): void
+  (event: 'task-details'): void
   (event: 'open-apply-patch'): void
   (event: 'toggle-tasklist'): void
   (event: 'link-requirement'): void
@@ -160,6 +161,7 @@ const workspaceStore = useWorkspaceStore()
         @export="props.vm.handleExport"
         @open-attribution="props.vm.openContextWindowDrawer"
         @share="emit('share')"
+        @task-details="emit('task-details')"
       />
     </div>
   </header>
