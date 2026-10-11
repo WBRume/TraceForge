@@ -79,6 +79,19 @@ describe('HTTP protocol and ownership', () => {
     expect((await inspection.json() as any).repositories[0].matched_remote).toBe('mine')
     const receipt = await ok('provision', { workspace_root: workspace, repositories: [repo] }, 'provision')
     expect(fs.readFileSync(path.join(receipt.task_root, 'repo/code.txt'), 'utf8')).toBe('base\n')
+    expect(receipt.repositories[0].base_commit).toMatchObject({
+      sha: receipt.repositories[0].base_commit_sha, author_name: 'Test', message: 'base',
+    })
+    const taskRepo = path.join(receipt.task_root, 'repo')
+    git(taskRepo, 'commit', '--allow-empty', '-m', 'later task commit')
+    const details = await ok('repository_details', {}, 'details')
+    expect(details.repositories[0].base_commit).toEqual(receipt.repositories[0].base_commit)
+    const manifestPath = path.join(root, 'state/tasks/task.json')
+    const oldReceipt = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    delete oldReceipt.repositories[0].base_commit
+    fs.writeFileSync(manifestPath, JSON.stringify(oldReceipt))
+    const oldDetails = await ok('repository_details', {}, 'old-details')
+    expect(oldDetails.repositories[0].base_commit).toEqual(receipt.repositories[0].base_commit)
     expect(fs.readFileSync(path.join(source, 'code.txt'), 'utf8')).toBe('personal uncommitted\n')
     expect(remoteKey('git@example.com:person/repo.git')).toBe(remoteKey('https://example.com/person/repo.git'))
   }, 30_000)

@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { platform, type JournalDatabase } from './platform'
-import { child, fail, git, hash, inside, inspectRepo, provision, readJson, writeFiles, type Receipt } from './filesystem'
+import { child, fail, git, hash, inside, inspectRepo, provision, readCommitInfo, readJson, writeFiles, type Receipt } from './filesystem'
 import { applyPatches, generatePatches } from './patches'
 import { skills } from './content'
 import { documents } from './plan-documents'
@@ -72,6 +72,10 @@ export class Runtime {
     const receipt = readJson<Receipt>(path.join(this.state, 'tasks', command.task_id + '.json'))
     const dshRoot = sessionRoot(this.config.dsh_session_root)
     switch (command.kind) {
+      case 'repository_details': return { repositories: receipt.repositories.map(repo => ({
+        repository_id: repo.repository_id,
+        base_commit: repo.base_commit || readCommitInfo(child(root, repo.rel_path), repo.base_commit_sha),
+      })) }
       case 'materialize': writeFiles(root, payload.files); return { written: payload.files.length, paths: payload.files.map((entry: any) => child(root, entry.path)) }
       case 'documents': return documents(root, command.task_id, payload, path.join(this.state, 'snapshots', command.resource_id + '_resource', command.task_id + '_task'))
       case 'skills': return skills(root, payload)

@@ -92,7 +92,7 @@ export async function startServer(config: Config, options: { workerUrl?: string 
           if (request.method === 'GET' && url.pathname === '/v1/identity') {
             return Response.json({ ...identity, platform: process.platform === 'win32' ? 'nt' : 'posix',
               implementation: 'typescript', capabilities: ['provision', 'checkpoint', 'materialize',
-                'generate_patch', 'apply_patch', 'restore', 'release', 'skills', 'documents', 'roots_grant'] })
+                'generate_patch', 'apply_patch', 'restore', 'release', 'skills', 'documents', 'roots_grant', 'repository_details'] })
           }
           if (request.method === 'POST' && url.pathname === '/v1/roots/grant') {
             const body = await request.json() as { roots?: string[]; workspace_root?: string; repo_roots?: string[] }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, shallowRef, watch } from 'vue'
+import { computed, defineAsyncComponent, shallowRef, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import type { Component } from 'vue'
@@ -12,6 +12,7 @@ import {
   TerminalSquare,
 } from '@/components/icons'
 import TaskDetailHeader from '@/components/workspace-assets/task-detail/TaskDetailHeader.vue'
+import TaskDetailPanel from '@/components/task-detail/TaskDetailPanel.vue'
 import TaskFilePanel from '@/components/workspace-assets/task-detail/TaskFilePanel.vue'
 import { useTaskDetailSections } from '@/composables/useTaskDetailSections'
 import type { TaskWorkbenchSectionKey } from '@/types/workspaceAssets'
@@ -21,8 +22,10 @@ const HumanDeltaPanel = defineAsyncComponent(() => import('@/components/workspac
 const EvidencePanel = defineAsyncComponent(() => import('@/components/workspace-assets/task-detail/EvidencePanel.vue'))
 const DecisionPanel = defineAsyncComponent(() => import('@/components/workspace-assets/task-detail/DecisionPanel.vue'))
 
+type DetailSectionKey = 'taskInfo' | TaskWorkbenchSectionKey
+
 type WorkbenchSection = {
-  key: TaskWorkbenchSectionKey
+  key: DetailSectionKey
   title: string
   body: string
   icon: Component
@@ -46,7 +49,8 @@ const wsId = computed(() => String(route.params.wsId || ''))
 const taskId = computed(() => String(route.params.taskId || ''))
 const backToTasks = computed(() => `/workspaces/${wsId.value}/assets/tasks`)
 
-const sectionKeys: TaskWorkbenchSectionKey[] = [
+const sectionKeys: DetailSectionKey[] = [
+  'taskInfo',
   'taskFile',
   'humanDelta',
   'evidence',
@@ -54,14 +58,21 @@ const sectionKeys: TaskWorkbenchSectionKey[] = [
   'finalWorkflow',
 ]
 
-const normalizeSection = (value: unknown): TaskWorkbenchSectionKey | null => {
+const normalizeSection = (value: unknown): DetailSectionKey | null => {
   const normalized = String(value || '').replace(/[-_](\w)/g, (_, char: string) => char.toUpperCase())
-  return sectionKeys.includes(normalized as TaskWorkbenchSectionKey) ? normalized as TaskWorkbenchSectionKey : null
+  return sectionKeys.includes(normalized as DetailSectionKey) ? normalized as DetailSectionKey : null
 }
 
-const activeSection = shallowRef<TaskWorkbenchSectionKey>(normalizeSection(route.query.section) || 'taskFile')
+const activeSection = shallowRef<DetailSectionKey>(normalizeSection(route.query.section) || 'taskInfo')
+const activeSectionState = computed(() => activeSection.value === 'taskInfo' ? null : sectionStates[activeSection.value])
 
 const sections = computed<WorkbenchSection[]>(() => [
+  {
+    key: 'taskInfo',
+    title: t('task_inspection.info_tab'),
+    body: t('task_inspection.info_tab_body'),
+    icon: Database,
+  },
   {
     key: 'taskFile',
     title: t('workspace_assets.task_detail.workbench.nav.task_file'),
@@ -100,8 +111,9 @@ const crossSectionDeps: Partial<Record<TaskWorkbenchSectionKey, TaskWorkbenchSec
   decisions: ['humanDelta', 'evidence'],
 }
 
-async function handleSectionChange(key: TaskWorkbenchSectionKey) {
+async function handleSectionChange(key: DetailSectionKey) {
   activeSection.value = key
+  if (key === 'taskInfo') return
   await loadSection(wsId.value, taskId.value, key, { force: true })
   const deps = crossSectionDeps[key]
   if (deps) {
@@ -134,18 +146,13 @@ watch(
   [wsId, taskId],
   async ([currentWsId, currentTaskId]) => {
     if (!currentWsId || !currentTaskId) return
+    activeSection.value = normalizeSection(route.query.section) || 'taskInfo'
     await loadSummary(currentWsId, currentTaskId)
-    await loadSection(currentWsId, currentTaskId, 'taskFile')
+    if (activeSection.value !== 'taskInfo') await handleSectionChange(activeSection.value)
   },
   { immediate: true },
 )
 
-onMounted(() => {
-  const initialSection = normalizeSection(route.query.section)
-  if (initialSection && initialSection !== 'taskFile') {
-    handleSectionChange(initialSection)
-  }
-})
 </script>
 
 <template>
@@ -192,15 +199,21 @@ onMounted(() => {
       <main class="workbench-content">
         <Transition name="fade-panel" mode="out-in">
           <div :key="activeSection" class="panel-container">
-            <div v-if="sectionStates[activeSection]?.loading" class="section-loading">
+            <div v-if="activeSectionState?.loading" class="section-loading">
               <span>Loading...</span>
             </div>
-            <div v-else-if="sectionStates[activeSection]?.error" class="section-error">
-              <el-alert type="error" :closable="false" :title="sectionStates[activeSection].error" />
+            <div v-else-if="activeSectionState?.error" class="section-error">
+              <el-alert type="error" :closable="false" :title="activeSectionState.error" />
             </div>
             <template v-else>
+              <TaskDetailPanel
+                v-if="activeSection === 'taskInfo'"
+                :workspace-id="wsId"
+                :task-id="taskId"
+                :show-description="false"
+              />
               <TaskFilePanel
-                v-if="activeSection === 'taskFile'"
+                v-else-if="activeSection === 'taskFile'"
                 :files="sectionStates.taskFile.data ?? []"
                 :workspace-id="wsId"
                 :task-id="taskId"
@@ -324,6 +337,7 @@ onMounted(() => {
 .workbench-nav {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   gap: 16px;
   padding: 24px;
   background: rgba(255, 255, 255, 0.7);
