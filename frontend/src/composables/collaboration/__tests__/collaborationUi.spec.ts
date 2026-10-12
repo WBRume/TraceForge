@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
-import { computed, proxyRefs, ref } from 'vue'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { computed, defineComponent, nextTick, proxyRefs, ref } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import zh from '@/locales/zh.json'
@@ -24,7 +24,7 @@ function fixture() {
     conflicts: computed(() => local.value.conflicts || []), error: ref(''), busy: ref(false), blocked: ref(false), loading: ref(false), preparationRequired: ref(false), mappingChecks: ref([]), mappings: ref({}),
     activity: ref({ direction: '', done: 0, total: 0, bytes: 0, totalBytes: 0 }), progressive: ref(false), operationStage: ref(''), operationSeconds: ref(0),
     view: ref({ page: 'files', tab: 'all', pair: 'auto', selected: '', selectedConflicts: [] as string[], conflictSetId: '' }),
-    restore: vi.fn(), recover: vi.fn(), claimDriver: vi.fn(), listBackups: vi.fn().mockResolvedValue({ backups: [] }), checkMappings: vi.fn(), selectMapping: vi.fn(), readText: vi.fn().mockResolvedValue('text'),
+    restore: vi.fn(), recover: vi.fn(), cancelPreparation: vi.fn(), claimDriver: vi.fn(), listBackups: vi.fn().mockResolvedValue({ backups: [] }), checkMappings: vi.fn(), selectMapping: vi.fn(), readText: vi.fn().mockResolvedValue('text'),
   }
   const controller = model as unknown as LocalCollaboration
   return { controller, model, state, local, input, cloud }
@@ -76,6 +76,7 @@ describe('local collaboration presentation and review', () => {
     await entry.trigger('click')
     expect(controller.view.value.tab).toBe('local')
     expect(entry.emitted('open')).toHaveLength(1)
+    expect(input.find('[role="status"]').exists()).toBe(false)
     entry.unmount(); input.unmount()
   })
   it('selects and confirms only one repository, retains selection on cancel, and never restores a running preview', async () => {
@@ -83,6 +84,12 @@ describe('local collaboration presentation and review', () => {
     const conflicts = input.repositories.map((repo, index) => ({ task_repository_id: repo.task_repository_id, path: 'shared.txt', local: { ...repo.files[0]!, sha256: 'human' }, base: repo.files[0], cloud: cloud.repositories[index]!.files[0] }))
     local.value = { ...local.value, conflicts, conflict_set_id: 'set1', manifest: { ...cloud, repositories: cloud.repositories.map(repo => ({ ...repo, files: [{ ...repo.files[0]!, sha256: 'human' }] })) } }
     state.value.sync_phase = 'CONFLICT_PENDING'; model.blocked.value = true
+    const notice = mount(CollaborationInputStatus, { props: { controller }, global: global() })
+    expect(notice.get('[role="status"]').text()).toContain('2 个文件待处理')
+    await notice.get('button').trigger('click')
+    expect(controller.view.value.tab).toBe('conflicts')
+    expect(notice.emitted('open')).toHaveLength(1)
+    notice.unmount()
     openCollaborationView(controller)
     const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws' }, global: global(), attachTo: document.body })
     expect(panel.text()).toContain('当前本地 / Agent 版本')
@@ -104,5 +111,98 @@ describe('local collaboration presentation and review', () => {
     expect(panel.findAll('input[type=checkbox]')).toHaveLength(0)
     expect(panel.text()).toContain('待 Agent 结束后处理')
     panel.unmount()
+  })
+})
+
+describe('composer feedback only when attention is needed', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  function preparing() {
+    vi.useFakeTimers()
+    const context = fixture()
+    context.state.value.sync_phase = 'PREPARING'
+    context.model.blocked.value = true
+    const wrapper = mount(CollaborationInputStatus, { props: { controller: context.controller }, global: global() })
+    return { ...context, wrapper }
+  }
+
+  it('does not show preparation or cancellation during a normal send, including after completion', async () => {
+    const { wrapper, state, model } = preparing()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(wrapper.find('[role="status"]').exists()).toBe(false)
+    expect(wrapper.find('button').exists()).toBe(false)
+    state.value.sync_phase = 'RUNNING'; model.blocked.value = false
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(wrapper.find('[role="status"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('offers cancellation only after a long wait and removes it as soon as preparation completes', async () => {
+    const { wrapper, model, state } = preparing()
+    await vi.advanceTimersByTimeAsync(7999)
+    expect(wrapper.find('[role="status"]').exists()).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(wrapper.get('[role="status"]').text()).toContain('发送准备耗时较长')
+    await wrapper.get('[aria-label="取消本轮准备"]').trigger('click')
+    expect(model.cancelPreparation).toHaveBeenCalledOnce()
+    state.value.sync_phase = 'RUNNING'; model.blocked.value = false
+    await nextTick()
+    expect(wrapper.find('button').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('counts consecutive sync stages together and opens details when cancellation is unavailable', async () => {
+    const { wrapper, state } = preparing()
+    await vi.advanceTimersByTimeAsync(4000)
+    state.value.sync_phase = 'SETTLING'
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(wrapper.get('[role="status"]').text()).toContain('代码同步耗时较长')
+    expect(wrapper.find('[aria-label="取消本轮准备"]').exists()).toBe(false)
+    await wrapper.get('button').trigger('click')
+    expect(wrapper.emitted('open')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('shows errors immediately and cancels pending feedback timers', async () => {
+    const { wrapper, model } = preparing()
+    await vi.advanceTimersByTimeAsync(100)
+    model.error.value = 'Sync failed'
+    await nextTick()
+    expect(wrapper.get('[role="status"]').text()).toContain('代码尚未接收完成')
+    expect(wrapper.find('[aria-label="取消本轮准备"]').exists()).toBe(false)
+    await wrapper.get('button').trigger('click')
+    expect(wrapper.emitted('open')).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(wrapper.text()).not.toContain('耗时较长')
+    wrapper.unmount()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('disposes delayed feedback when leaving the composer', () => {
+    const { wrapper } = preparing()
+    wrapper.unmount()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('starts a fresh wait when switching tasks', async () => {
+    vi.useFakeTimers()
+    const { controller, state, model } = fixture()
+    state.value.sync_phase = 'PREPARING'; model.blocked.value = true
+    const taskId = ref('task-a')
+    const wrapper = mount(defineComponent({
+      components: { CollaborationInputStatus },
+      setup: () => ({ taskId, controller }),
+      template: '<CollaborationInputStatus :key="taskId" :controller="controller" />',
+    }), { global: global() })
+    await vi.advanceTimersByTimeAsync(7000)
+    taskId.value = 'task-b'
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(wrapper.find('[role="status"]').exists()).toBe(false)
+    await vi.advanceTimersByTimeAsync(7000)
+    expect(wrapper.get('[role="status"]').text()).toContain('发送准备耗时较长')
+    wrapper.unmount()
   })
 })

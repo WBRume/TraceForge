@@ -4223,6 +4223,8 @@
       "RECOVERY_REQUIRED": "本地协同需要恢复"
     },
     "ui": {
+      "slowPreparation": "发送准备耗时较长",
+      "slowSync": "代码同步耗时较长",
       "handleFiles": "处理文件",
       "view": "查看",
       "settings": "仓库与同步设置",

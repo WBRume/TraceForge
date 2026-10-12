@@ -4218,6 +4218,8 @@
       "RECOVERY_REQUIRED": "Collaboration needs recovery"
     },
     "ui": {
+      "slowPreparation": "Preparing your message is taking longer than usual.",
+      "slowSync": "Code sync is taking longer than usual.",
       "handleFiles": "Resolve files",
       "view": "View",
       "settings": "Repositories & sync",

@@ -301,7 +301,6 @@ watch(
 
       <!-- Input Area：统一输入卡（普通发送 / 协作预输入模式丝滑切换）
            收集窗口进行中只保留协作编辑框，普通输入框不再显示 -->
-      <CollaborationInputStatus v-if="vm.collaboration?.supported.value" :controller="vm.collaboration" @open="showApplyPatchDrawer = true" />
       <ChatExecutionInput
         v-if="vm.suggestionOnly || !vm.preInputIsCollecting"
         ref="chatInputRef"
@@ -325,7 +324,11 @@ watch(
         @submit="vm.sendChat"
         @interrupt="vm.interruptCurrentRun"
         @start-pre-input="handleStartPreInput"
-      />
+      >
+        <template #status>
+          <CollaborationInputStatus v-if="vm.collaboration?.supported.value" :key="vm.currentTask?.id" :controller="vm.collaboration" @open="showApplyPatchDrawer = true" />
+        </template>
+      </ChatExecutionInput>
       </DiagnosisSopLayout>
       </template>
       <template v-else>

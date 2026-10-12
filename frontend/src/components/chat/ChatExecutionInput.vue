@@ -427,6 +427,7 @@ defineExpose({ resetPreInputForm, focusInput })
           </button>
         </Transition>
       </div>
+      <slot name="status" />
     </div>
   </div>
 </template>
