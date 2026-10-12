@@ -520,6 +520,7 @@ def get_task_human_deltas(
         result.append(
             HumanDeltaLightResponse(
                 id=delta.id,
+                collaboration_handoff_id=delta.collaboration_handoff_id,
                 workspace_id=delta.workspace_id,
                 task_id=delta.task_id,
                 proposal_id=delta.proposal_id,
@@ -693,6 +694,7 @@ def get_task_delta_workbench(
 
     return WorkbenchDeltaResponse(
         id=delta.id,
+        collaboration_handoff_id=delta.collaboration_handoff_id,
         workspace_id=delta.workspace_id,
         task_id=delta.task_id,
         status=enum_value(delta.status),

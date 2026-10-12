@@ -11,6 +11,7 @@ import HumanPatchCompare from '@/components/diff/HumanPatchCompare.vue'
 import DeltaRegionPanel from '@/components/diff/DeltaRegionPanel.vue'
 import DecisionCreateDialog from '@/components/workspace-assets/task-detail/DecisionCreateDialog.vue'
 import DecisionPopover from '@/components/diff/DecisionPopover.vue'
+import CollaborationHistory from '@/components/collaboration/CollaborationHistory.vue'
 import type { WorkbenchDelta, DeltaRegion, DeltaLineRef, DecisionMutationPayload } from '@/types/workspaceAssets'
 
 const route = useRoute()
@@ -166,6 +167,8 @@ onMounted(loadData)
       </div>
 
       <!-- Summary bar -->
+      <CollaborationHistory v-if="delta.collaboration_handoff_id" :workspace-id="wsId" :task-id="taskId" :handoff-id="delta.collaboration_handoff_id" />
+      <template v-else>
       <WorkbenchSummaryBar :delta="delta" />
 
       <!-- Main workbench area -->
@@ -226,6 +229,7 @@ onMounted(loadData)
         @submit="onSubmitDecision"
         @close="decisionDialogOpen = false"
       />
+      </template>
     </template>
   </div>
 </template>

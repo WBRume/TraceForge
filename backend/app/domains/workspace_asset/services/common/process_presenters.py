@@ -152,6 +152,7 @@ def human_delta_response(
 
     return HumanDeltaResponse(
         id=delta.id,
+        collaboration_handoff_id=delta.collaboration_handoff_id,
         workspace_id=delta.workspace_id,
         task_id=delta.task_id,
         proposal_id=delta.proposal_id,

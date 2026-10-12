@@ -15,6 +15,7 @@ import type { AgentTask } from '@/types/agent'
 import { formatApiError } from '@/utils/error'
 import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
 import CollaborationMenu from '@/components/collaboration/CollaborationMenu.vue'
+import CollaborationHistory from '@/components/collaboration/CollaborationHistory.vue'
 import type { LocalCollaboration } from '@/composables/collaboration/useLocalCollaboration'
 
 const props = defineProps<{
@@ -123,7 +124,7 @@ const generateProposal = async () => {
 
 const hydrate = async () => {
   if (!props.show) return
-  if (isCollaboration.value && !historyVisible.value) return
+  if (isCollaboration.value) return
   applyEvents.value = []
   generationAttempted.value = false
   generationError.value = ''
@@ -309,7 +310,7 @@ watch(
 )
 
 watch(() => props.task?.id, () => { historyVisible.value = false })
-const openHistory = async () => { historyVisible.value = true; await hydrate() }
+const openHistory = () => { historyVisible.value = true }
 </script>
 
 <template>
@@ -336,9 +337,9 @@ const openHistory = async () => { historyVisible.value = true; await hydrate() }
     </template>
 
     <LocalCollaborationPanel v-if="isCollaboration && collaboration && !historyVisible" :controller="collaboration" :workspace-id="workspaceId" />
+    <CollaborationHistory v-else-if="isCollaboration && task" :workspace-id="workspaceId" :task-id="String(task.id)" />
     <section v-else class="apply-patch-drawer">
       <OwnResourceApply v-if="proposal && !isCollaboration" :workspace-id="workspaceId" :proposal-id="proposal.id" />
-      <p v-if="isCollaboration" class="warning-box">{{ $t('collaboration.historyReadonly') }}</p>
       <!-- Top Bar: Task & Status Context -->
       <div class="drawer-top-bar glass-panel">
         <div class="task-context-brief">

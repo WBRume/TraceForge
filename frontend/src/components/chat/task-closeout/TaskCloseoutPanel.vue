@@ -96,8 +96,6 @@ async function submitFailure(payload: Omit<FailCloseoutPayload, 'evidence_attach
           <div v-if="collaborationEnabled" class="collaboration-closeout">
             <p v-if="collaboration?.phase.value !== 'READY'">{{ t('collaboration.blocked') }}</p>
             <label><input type="checkbox" :disabled="collaboration?.phase.value !== 'READY' || collaboration.busy.value" :checked="Boolean(confirmedSnapshot)" @change="confirmedSnapshot = ($event.target as HTMLInputElement).checked ? snapshotId : ''" />{{ t('collaboration.confirmSnapshot', { snapshot: snapshotId }) }}</label>
-            <p>{{ t('collaboration.excludeLocal') }}</p>
-            <button v-if="collaboration?.driver.value" type="button" class="btn-secondary" :disabled="collaboration.blocked.value" @click="collaboration.handoffLocalChanges">{{ t('collaboration.handoff') }}</button>
           </div>
           <CompleteCloseoutForm
             v-if="mode === 'complete'"

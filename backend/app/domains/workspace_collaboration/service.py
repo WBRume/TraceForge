@@ -335,7 +335,14 @@ def _record_handoff(
             if old.get(path) != new.get(path)
         ]
         if files:
-            deltas.append({"task_repository_id": repo["task_repository_id"], "files": files})
+            deltas.append(
+                {
+                    "task_repository_id": repo["task_repository_id"],
+                    "repo_slug": repo["repo_slug"],
+                    "branch_name": repo["branch_name"],
+                    "files": files,
+                }
+            )
     if not deltas:
         return
     origin = origin or {
@@ -344,21 +351,23 @@ def _record_handoff(
         "binding_id": state.binding_id,
         "lease_epoch": state.lease_epoch,
     }
-    db.add(
-        CollaborationHandoff(
-            id=str(uuid4()),
-            task_id=task.id,
-            operation_id=operation_id,
-            submission_id=submission_id,
-            actor_user_id=origin["actor_user_id"],
-            client_id=origin["client_id"],
-            binding_id=origin["binding_id"],
-            lease_epoch=origin["lease_epoch"],
-            base_snapshot_id=baseline["snapshot_id"],
-            input_snapshot_id=target["snapshot_id"],
-            repository_deltas_json=deltas,
-        )
+    handoff = CollaborationHandoff(
+        id=str(uuid4()),
+        task_id=task.id,
+        operation_id=operation_id,
+        submission_id=submission_id,
+        actor_user_id=origin["actor_user_id"],
+        client_id=origin["client_id"],
+        binding_id=origin["binding_id"],
+        lease_epoch=origin["lease_epoch"],
+        base_snapshot_id=baseline["snapshot_id"],
+        input_snapshot_id=target["snapshot_id"],
+        repository_deltas_json=deltas,
     )
+    db.add(handoff)
+    from .history import record_delta
+
+    record_delta(db, task, handoff)
 
 
 def handoff_history(db: Session, task_id: str) -> list[dict]:

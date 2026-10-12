@@ -11,6 +11,7 @@ const props = defineProps<{
   original?: string
   modified?: string
   renderSideBySide?: boolean
+  wordWrap?: 'on' | 'off'
   language?: string
   theme?: 'vs' | 'vs-dark'
   height?: string
@@ -50,7 +51,7 @@ const diffEditorOptions = computed<Monaco.editor.IDiffEditorConstructionOptions>
   lineNumbers: 'on',
   lineNumbersMinChars: 3,
   scrollBeyondLastLine: false,
-  wordWrap: 'off',
+  wordWrap: props.wordWrap || 'off',
   fontSize: 13,
   fontFamily: "'Consolas', 'Monaco', 'Courier New', monospace",
   renderLineHighlight: 'none',

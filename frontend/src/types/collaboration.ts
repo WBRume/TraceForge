@@ -1,4 +1,13 @@
 export type CollaborationFile = { path: string; sha256: string; size: number; mode: '100644' | '100755' | '120000' }
+export type CollaborationHumanChange = {
+  id: string; delta_id: string | null; actor_name: string | null; submission_id: string | null
+  created_at: string; changed_files_count: number; repository_count: number
+}
+export type CollaborationHumanChangePage = { items: CollaborationHumanChange[]; total: number; page: number; page_size: number }
+export type CollaborationHumanChangeDetail = {
+  id: string; base_snapshot_id: string; input_snapshot_id: string; created_at: string
+  files: Array<{ task_repository_id: string; repo_slug: string; branch_name: string; path: string; before: CollaborationFile | null; after: CollaborationFile | null }>
+}
 export type CollaborationRepository = {
   task_repository_id: string; repository_id: string; repo_url: string; repo_slug: string
   rel_path: string; branch_name: string; base_commit_sha: string; files: CollaborationFile[]; deleted?: string[]

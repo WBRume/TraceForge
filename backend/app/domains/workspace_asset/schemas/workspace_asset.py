@@ -463,6 +463,7 @@ class HumanDeltaFileDiff(BaseModel):
 
 class HumanDeltaResponse(BaseModel):
     id: str
+    collaboration_handoff_id: str | None = None
     workspace_id: str
     task_id: str
     proposal_id: str | None = None
@@ -518,6 +519,7 @@ class PatchSnapshot(BaseModel):
 
 class WorkbenchDeltaResponse(BaseModel):
     id: str
+    collaboration_handoff_id: str | None = None
     workspace_id: str
     task_id: str
     status: str
@@ -1098,6 +1100,7 @@ class HumanDeltaLightResponse(BaseModel):
     """HumanDeltaResponse without diff_text."""
 
     id: str
+    collaboration_handoff_id: str | None = None
     workspace_id: str
     task_id: str
     proposal_id: str | None = None
