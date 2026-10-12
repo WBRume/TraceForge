@@ -69,9 +69,8 @@ def release_driver(db, task, user_id, request):
 
 def latest_snapshot(db, task, _user_id, _request):
     """Downloading never enables collaboration, takes a lease or acknowledges delivery."""
+    service._check_task(task)
     state = service._state(db, task.id)
-    if task.execution_location != "SERVER":
-        service._fail("SERVER_TASK_REQUIRED", "Only server tasks have downloadable cloud code")
     if state and state.enabled:
         service._check_session(state, task)
         service._check_repositories(db, state, task)

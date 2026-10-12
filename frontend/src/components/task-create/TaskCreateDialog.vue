@@ -103,7 +103,7 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
     if (!jobId || !taskId) {
       throw new Error(t('provisioning.invalid_job_id'))
     }
-    if (draft.enableLocalCollaboration && draft.execution?.location !== 'LOCAL') rememberCollaborationIntent(props.wsId, taskId)
+    if (draft.taskType !== 'DIAGNOSIS' && draft.enableLocalCollaboration && draft.execution?.location !== 'LOCAL') rememberCollaborationIntent(props.wsId, taskId)
 
     // 附件暂存到 provision 浮窗：作业成功后统一上传
     if (draft.specFile) {

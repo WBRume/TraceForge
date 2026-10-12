@@ -82,6 +82,7 @@ const investigate = (text: string) => {
 
 // ── 视图装配态 ──
 const showApplyPatchDrawer = ref(false)
+watch(() => vm.currentTask?.id, () => { showApplyPatchDrawer.value = false })
 watch(() => [vm.currentTask?.id, vm.isTaskProvisioning, vm.collaboration?.state.value?.repositories], () => {
   const repositories = vm.collaboration?.state.value?.repositories
   if (vm.currentTask?.execution_location !== 'SERVER' || vm.isTaskProvisioning || !repositories?.length || repositories.some(repo => !repo.base_commit_sha)) return
@@ -360,6 +361,7 @@ watch(
     />
 
     <ApplyPatchDrawer
+      v-if="!vm.hidePatchWorkflows"
       :show="showApplyPatchDrawer"
       :resource-blocked="vm.localResourceBlocked"
       :task="vm.currentTask"

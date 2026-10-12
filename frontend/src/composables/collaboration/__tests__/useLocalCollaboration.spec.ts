@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { defineComponent, nextTick, reactive, watch } from 'vue'
+import { defineComponent, nextTick, reactive, shallowRef, watch } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { createMemoryHistory, createRouter } from 'vue-router'
@@ -19,8 +19,8 @@ import { manifestDelta } from '../../../../shared/collaboration-delta'
 let state: CollaborationState, manifest: CollaborationManifest, local: LocalCollaborationStatus
 let controller: LocalCollaboration
 const wrappers: ReturnType<typeof mount>[] = []
-function setup() {
-  const wrapper = mount(defineComponent({ setup() { controller = useLocalCollaboration({ workspaceId: () => 'ws', task: () => ({ id: manifest.task_id, execution_location: 'SERVER' }) }); return () => null } }), { global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })] } })
+function setup(task: () => Record<string, any> = () => ({ id: manifest.task_id, execution_location: 'SERVER' })) {
+  const wrapper = mount(defineComponent({ setup() { controller = useLocalCollaboration({ workspaceId: () => 'ws', task }); return () => null } }), { global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })] } })
   wrappers.push(wrapper)
   return wrapper
 }
@@ -65,6 +65,35 @@ afterEach(async () => {
 })
 
 describe('local collaboration coordinator', () => {
+  it.each(['SERVER', 'LOCAL'])('does not initialize, poll or block diagnosis tasks on %s', async execution_location => {
+    setup(() => ({ id: manifest.task_id, task_type: 'DIAGNOSIS', execution_location }))
+    await flushPromises()
+    await controller.enable(); await controller.receiveOnce(); await controller.refresh()
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(controller.supported.value).toBe(false)
+    expect(controller.blocked.value).toBe(false)
+    expect(controller.participating.value).toBe(false)
+    expect(controller.submissionMetadata()).toEqual({})
+    expect(await controller.leave()).toBe(true)
+    expect(mocks.api.state).not.toHaveBeenCalled()
+    expect(mocks.api.post).not.toHaveBeenCalled()
+    expect(mocks.native).not.toHaveBeenCalled()
+  })
+  it('releases the development binding and stops polling when navigating to a diagnosis task', async () => {
+    const task = shallowRef({ id: manifest.task_id, task_type: 'DEVELOPMENT', execution_location: 'SERVER' })
+    setup(() => task.value); await flushPromises(); await controller.enable()
+    expect(controller.participating.value).toBe(true)
+    task.value = { ...task.value, id: 'diagnosis-task', task_type: 'DIAGNOSIS' }
+    await flushPromises()
+    expect(controller.supported.value).toBe(false)
+    expect(controller.blocked.value).toBe(false)
+    expect(mocks.api.post.mock.calls.some(([action]) => action === 'release-driver')).toBe(true)
+    mocks.api.state.mockClear(); mocks.native.mockClear()
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(mocks.api.state).not.toHaveBeenCalled()
+    expect(mocks.native).not.toHaveBeenCalled()
+    expect(controller.submissionMetadata()).toEqual({})
+  })
   it('allows cloud messages after disconnect without attaching local input metadata', async () => {
     setup(); await flushPromises(); await controller.enable(); await controller.leave()
     expect(controller.participating.value).toBe(false)

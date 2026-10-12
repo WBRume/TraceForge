@@ -54,6 +54,15 @@ const createMockVm = (overrides: Record<string, any> = {}): any => ({
 })
 
 describe('SessionHeader local resource badge', () => {
+  it('has no local collaboration or patch entry for diagnosis tasks', () => {
+    const wrapper = mount(SessionHeader, {
+      props: { vm: createMockVm({ currentTask: { id: 'diagnosis', name: '定位任务', task_type: 'DIAGNOSIS', status: 'CODING' }, isDiagnosisTask: true, hidePatchWorkflows: true, collaboration: { supported: { value: false } } }) },
+      global: { plugins: [i18n, createPinia()] },
+    })
+    expect(wrapper.find('.collaboration-entry').exists()).toBe(false)
+    expect(wrapper.findAll('button').some(button => ['代码', '生成变更与应用补丁', '本地协同'].includes(button.text()))).toBe(false)
+    wrapper.unmount()
+  })
   it('offers manual pinning without a task cancellation action for static or interrupted tasks', async () => {
     const wrapper = mount(SessionHeader, {
       props: { vm: createMockVm({ currentTask: { id: 't1', name: '静态任务', status: 'FAILED', business_state: 'TASK_IN_PROGRESS' } }) },
