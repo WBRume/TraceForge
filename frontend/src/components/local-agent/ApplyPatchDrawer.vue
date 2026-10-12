@@ -13,12 +13,15 @@ import { useAuthStore } from '@/stores/auth'
 import { useLocalAgentStore } from '@/stores/localAgent'
 import type { AgentTask } from '@/types/agent'
 import { formatApiError } from '@/utils/error'
+import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
+import type { LocalCollaboration } from '@/composables/collaboration/useLocalCollaboration'
 
 const props = defineProps<{
   show: boolean
   task: Record<string, any> | null
   workspace: Record<string, any> | null
   resourceBlocked?: boolean
+  collaboration?: LocalCollaboration
 }>()
 
 const emit = defineEmits<{
@@ -29,7 +32,9 @@ const router = useRouter()
 const { t } = useI18n()
 const localAgent = useLocalAgentStore()
 const authStore = useAuthStore()
-const canGenerate = computed(() => props.task?.execution_location !== 'LOCAL' || (!props.resourceBlocked && props.task?.creator_id === authStore.user?.id))
+const isCollaboration = computed(() => props.task?.execution_location === 'SERVER' && Boolean(props.collaboration))
+const historyVisible = ref(false)
+const canGenerate = computed(() => !isCollaboration.value && (props.task?.execution_location !== 'LOCAL' || (!props.resourceBlocked && props.task?.creator_id === authStore.user?.id)))
 const {
   desktopAvailable,
   proposal,
@@ -77,7 +82,7 @@ const repoConfigured = computed(() => {
   return Boolean(repoMapping.value?.localPath)
 })
 const canApply = computed(() => (
-  desktopAvailable.value
+  !isCollaboration.value && desktopAvailable.value
   && Boolean(agentTask.value)
   && Boolean(proposal.value)
   && Boolean(patchText.value.trim())
@@ -117,6 +122,7 @@ const generateProposal = async () => {
 
 const hydrate = async () => {
   if (!props.show) return
+  if (isCollaboration.value && !historyVisible.value) return
   applyEvents.value = []
   generationAttempted.value = false
   generationError.value = ''
@@ -140,6 +146,7 @@ const goToLocalSettings = () => {
 }
 
 const handleApply = async () => {
+  if (isCollaboration.value) return
   if (!localAgent.desktop || !agentTask.value || !proposal.value) return
   if (!repoMapping.value?.localPath) {
     ElMessage.warning(t('chat.change_apply_repo_missing_message'))
@@ -299,12 +306,15 @@ watch(
     }
   }
 )
+
+watch(() => props.task?.id, () => { historyVisible.value = false })
+const openHistory = async () => { historyVisible.value = true; await hydrate() }
 </script>
 
 <template>
   <AppSideDrawer
     :show="show"
-    :title="$t('chat.change_apply_drawer_title')"
+    :title="isCollaboration ? $t('collaboration.title') : $t('chat.change_apply_drawer_title')"
     v-model:level="drawerLevel"
     resizable
     hide-close
@@ -314,15 +324,18 @@ watch(
       <GitPullRequest class="w-4 h-4" />
     </template>
     <template #actions>
-      <button class="btn-secondary drawer-action-button" type="button" :disabled="!canGenerate || proposalGenerating || proposalLoading" :title="canGenerate ? '' : '请等待任务创建者生成并上传变更'" @click="refreshProposal">
+      <button v-if="isCollaboration && historyVisible" class="btn-secondary" @click="historyVisible = false">{{ $t('collaboration.back') }}</button>
+      <button v-if="!isCollaboration" class="btn-secondary drawer-action-button" type="button" :disabled="!canGenerate || proposalGenerating || proposalLoading" :title="canGenerate ? '' : '请等待任务创建者生成并上传变更'" @click="refreshProposal">
         <Loader2 v-if="proposalGenerating" class="w-4 h-4 spin" />
         <RefreshCw v-else class="w-4 h-4" />
         {{ proposalGenerating ? $t('chat.change_apply_syncing') : (proposal ? $t('chat.change_apply_resync') : $t('chat.change_apply_sync_now')) }}
       </button>
     </template>
 
-    <section class="apply-patch-drawer">
-      <OwnResourceApply v-if="proposal" :workspace-id="workspaceId" :proposal-id="proposal.id" />
+    <LocalCollaborationPanel v-if="isCollaboration && collaboration && !historyVisible" :controller="collaboration" :workspace-id="workspaceId" @history="openHistory" />
+    <section v-else class="apply-patch-drawer">
+      <OwnResourceApply v-if="proposal && !isCollaboration" :workspace-id="workspaceId" :proposal-id="proposal.id" />
+      <p v-if="isCollaboration" class="warning-box">{{ $t('collaboration.historyReadonly') }}</p>
       <!-- Top Bar: Task & Status Context -->
       <div class="drawer-top-bar glass-panel">
         <div class="task-context-brief">
@@ -517,7 +530,7 @@ watch(
         </div>
       </div>
 
-      <footer class="drawer-actions">
+      <footer v-if="!isCollaboration" class="drawer-actions">
         <button class="btn-primary drawer-action-button" type="button" :disabled="!canApply" @click="handleApply">
           <Loader2 v-if="applyRunning" class="w-4 h-4 spin" />
           <GitPullRequest v-else class="w-4 h-4" />

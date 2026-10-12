@@ -80,7 +80,9 @@ def write_json(path: str, payload: dict) -> None:
     fd, temporary = tempfile.mkstemp(prefix=".manifest-", dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(payload, handle, ensure_ascii=True, sort_keys=True)
+            # dumps uses the C encoder; dump streams hundreds of thousands of
+            # Python chunks for a large manifest. Keep the same bytes/fsync.
+            handle.write(json.dumps(payload, ensure_ascii=True, sort_keys=True))
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)

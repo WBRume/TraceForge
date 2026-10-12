@@ -51,6 +51,7 @@ export function createTaskWsEventRouter(deps: {
   applyTaskSessionPayload: (payload: any) => void
   specBootstrapApplyUpdate: (payload: any) => void
   shareSuggestionNudge: (payload: any) => void
+  collaborationUpdate?: (payload: Record<string, unknown>) => void
   playbookEvent?: (type: string, payload: any) => void
   preinputHandleEvent: (type: string, payload: any) => void
   skillsMergeTraceEvent: (event: any) => void
@@ -306,6 +307,10 @@ export function createTaskWsEventRouter(deps: {
         break
       }
 
+      case 'workspace_collaboration_update': {
+        deps.collaborationUpdate?.(payload)
+        break
+      }
       case 'share_suggestion_update': {
         deps.shareSuggestionNudge(payload)
         break

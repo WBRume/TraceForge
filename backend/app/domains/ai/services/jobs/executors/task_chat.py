@@ -353,7 +353,10 @@ async def execute_task_chat_job(job_id: str, dispatch: dict[str, Any]) -> bool |
                 context_patch={"source": "task_chat_user_input"},
             )
 
-            return await _run_task_chat_turn(job_id, prompt)
+            from app.domains.workspace_collaboration.hooks import execution, minimal_context
+
+            async with execution(job_id) as accepted_input:
+                return await _run_task_chat_turn(job_id, prompt + minimal_context(accepted_input))
     finally:
         # 取消事件在执行结束（含取消/异常/超时）后统一回收，避免泄漏；
         # 置位后不能立刻清除（见 mark_task_chat_jobs_cancelled）。

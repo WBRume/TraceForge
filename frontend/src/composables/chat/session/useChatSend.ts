@@ -17,6 +17,8 @@ import type { AgentModelSelection } from '@/composables/useAgentModels'
  * 3. 其余 → WebSocket 直发。
  */
 export function useChatSend(options: {
+  collaborationBlocked?: () => boolean
+  getSubmissionMetadata?: () => Record<string, unknown>
   getModelSelection?: () => AgentModelSelection | undefined
   onModelSubmitted?: (value?: AgentModelSelection) => void
   resourceBlocked?: () => boolean
@@ -85,6 +87,10 @@ export function useChatSend(options: {
     sendOptions: { displayContent?: string; metadata?: Record<string, any> } = {},
   ): Promise<boolean> => {
     if (options.isInitializing?.()) return false
+    if (!sendOptions.metadata?.interaction_id && options.collaborationBlocked?.()) {
+      ElMessage.warning(t('collaboration.blocked'))
+      return false
+    }
     if (!options.suggestionOnly?.() && options.resourceBlocked?.()) {
       ElMessage.warning('本地资源未连接，恢复在线后才能操作')
       return false
@@ -112,6 +118,7 @@ export function useChatSend(options: {
     const displayContent = String(sendOptions.displayContent || normalized).trim()
     const clientMessageId = generateClientMessageId()
     const modelSelection = options.getModelSelection?.()
+    if (!sendOptions.metadata?.interaction_id) sendOptions = { ...sendOptions, metadata: { ...sendOptions.metadata, ...options.getSubmissionMetadata?.() } }
     if (modelSelection && !sendOptions.metadata?.interaction_id) {
       sendOptions = { ...sendOptions, metadata: { ...sendOptions.metadata, agent_model: modelSelection } }
     }
@@ -156,7 +163,7 @@ export function useChatSend(options: {
         options.applyTaskSessionPayload(payload)
         noteTaskRunInitiated(taskId, clientMessageId, payload?.job?.id || payload?.task?.job?.id)
         options.onModelSubmitted?.(modelSelection)
-        options.engine.engineRunning.value = true
+        options.engine.engineRunning.value = !payload?.submission
         if (!options.isHistoryAnchored()) options.scrollTo('chat')
         return true
       } catch (e) {

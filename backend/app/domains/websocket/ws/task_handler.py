@@ -416,6 +416,9 @@ class TaskWebSocketHandler:
             chat_message_id=chat_message_id or "",
             ai_job_id=job_id,
         )
+        if result.get("submission"):
+            self._send_to_self({"type": "chat_submission_update", "payload": result["submission"]})
+            return
         await self._send_chat_ack(
             request,
             status="accepted",

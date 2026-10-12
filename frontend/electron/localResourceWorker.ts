@@ -13,18 +13,23 @@ configurePlatform({
   decompress: data => zstdDecompressSync(data),
 })
 let runtime: Runtime
+let pending = Promise.resolve()
 parentPort!.on('message', ({ id, kind, payload }) => {
+  pending = pending.then(async () => {
   try {
     if (kind === 'shutdown') {
+      runtime?.collaboration.close()
       runtime?.db.close()
       parentPort!.postMessage({ id, result: true })
       return
     }
     if (kind === 'configure') runtime = new Runtime(payload)
     const result = kind === 'inspect' ? runtime.inspect(payload)
+      : kind === 'collaboration' ? await runtime.collaboration.executeAsync(payload.kind, payload.payload)
       : kind === 'operation' ? runtime.operation(payload) : true
     parentPort!.postMessage({ id, result })
   } catch (error) {
     parentPort!.postMessage({ id, error: error instanceof Error ? error.message : String(error) })
   }
+  })
 })

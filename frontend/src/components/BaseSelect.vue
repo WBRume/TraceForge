@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, useId, watch } from 'vue'
 import { ChevronDown, Search } from '@/components/icons'
 
 interface Option {
@@ -17,6 +17,7 @@ const props = defineProps<{
   dropUp?: boolean
   searchable?: boolean
   searchPlaceholder?: string
+  ariaLabel?: string
 }>()
 
 const emit = defineEmits<{
@@ -26,14 +27,25 @@ const emit = defineEmits<{
 
 const isOpen = ref(false)
 const selectRef = ref<HTMLElement | null>(null)
+const triggerRef = ref<HTMLElement | null>(null)
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const searchQuery = ref('')
+const activeIndex = ref(-1)
+const listId = `select-${useId()}`
+
+const closeDropdown = (restoreFocus = false) => {
+  isOpen.value = false
+  searchQuery.value = ''
+  if (restoreFocus) triggerRef.value?.focus()
+}
 
 const toggleDropdown = () => {
   if (props.disabled) return
   isOpen.value = !isOpen.value
   if (isOpen.value) {
     searchQuery.value = ''
+    const selectedIndex = filteredOptions.value.findIndex(option => option.value === props.modelValue && !option.disabled)
+    activeIndex.value = selectedIndex >= 0 ? selectedIndex : filteredOptions.value.findIndex(option => !option.disabled)
     emit('open')
     if (props.searchable) {
       void nextTick(() => {
@@ -46,14 +58,12 @@ const toggleDropdown = () => {
 const selectOption = (option: Option) => {
   if (option.disabled) return
   emit('update:modelValue', option.value)
-  isOpen.value = false
-  searchQuery.value = ''
+  closeDropdown(true)
 }
 
 const handleClickOutside = (event: MouseEvent) => {
   if (selectRef.value && !selectRef.value.contains(event.target as Node)) {
-    isOpen.value = false
-    searchQuery.value = ''
+    closeDropdown()
   }
 }
 
@@ -68,6 +78,44 @@ const selectedLabel = computed(() => {
   return selected ? selected.label : (props.placeholder || '')
 })
 
+watch(filteredOptions, options => {
+  if (!options[activeIndex.value] || options[activeIndex.value]?.disabled) activeIndex.value = options.findIndex(option => !option.disabled)
+})
+watch(() => props.disabled, disabled => { if (disabled) closeDropdown() })
+
+function moveActive(direction: number) {
+  const options = filteredOptions.value
+  if (!options.some(option => !option.disabled)) return
+  let index = activeIndex.value
+  do { index = (index + direction + options.length) % options.length } while (options[index]?.disabled)
+  activeIndex.value = index
+  void nextTick(() => document.getElementById(`${listId}-${index}`)?.scrollIntoView?.({ block: 'nearest' }))
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (props.disabled) return
+  const isSearch = event.target === searchInputRef.value
+  if (event.key === 'Escape' && isOpen.value) {
+    event.preventDefault(); event.stopPropagation(); closeDropdown(true)
+  } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault(); event.stopPropagation()
+    if (!isOpen.value) toggleDropdown()
+    else moveActive(event.key === 'ArrowDown' ? 1 : -1)
+  } else if (event.key === 'Enter' || (event.key === ' ' && !isSearch)) {
+    event.preventDefault(); event.stopPropagation()
+    if (!isOpen.value) toggleDropdown()
+    else if (filteredOptions.value[activeIndex.value]) selectOption(filteredOptions.value[activeIndex.value]!)
+  } else if (isOpen.value && !isSearch && (event.key === 'Home' || event.key === 'End')) {
+    event.preventDefault(); event.stopPropagation()
+    const indexes = filteredOptions.value.flatMap((option, index) => option.disabled ? [] : [index])
+    activeIndex.value = (event.key === 'Home' ? indexes[0] : indexes.at(-1)) ?? -1
+  } else if (event.key === 'Tab' && !isSearch) closeDropdown()
+}
+
+function handleFocusOut(event: FocusEvent) {
+  if (!selectRef.value?.contains(event.relatedTarget as Node | null)) closeDropdown()
+}
+
 onMounted(() => {
   window.addEventListener('click', handleClickOutside)
 })
@@ -81,6 +129,7 @@ onUnmounted(() => {
   <div
     ref="selectRef"
     class="base-select"
+    @focusout="handleFocusOut"
     :class="{ 
       'is-open': isOpen, 
       'is-disabled': disabled,
@@ -88,7 +137,7 @@ onUnmounted(() => {
       [`size-${size || 'md'}`]: true
     }"
   >
-    <div class="select-trigger" @click="toggleDropdown">
+    <div ref="triggerRef" class="select-trigger" role="combobox" :tabindex="disabled ? -1 : 0" :aria-disabled="disabled || undefined" :aria-label="ariaLabel || placeholder || selectedLabel" :aria-expanded="isOpen" :aria-controls="listId" :aria-activedescendant="isOpen && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined" aria-haspopup="listbox" @click="toggleDropdown" @keydown="handleKeydown">
       <span class="selected-text" :class="{ 'is-placeholder': !modelValue && placeholder }">
         {{ selectedLabel }}
       </span>
@@ -104,17 +153,25 @@ onUnmounted(() => {
             v-model="searchQuery"
             type="text"
             class="search-box-input"
+            role="combobox"
+            :aria-label="searchPlaceholder || ariaLabel || placeholder || selectedLabel"
+            aria-expanded="true"
+            :aria-controls="listId"
+            :aria-activedescendant="activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined"
             :placeholder="searchPlaceholder || '搜索...'"
-            @keydown.stop
+            @keydown="handleKeydown"
           />
         </div>
 
-        <ul class="options-list custom-scrollbar">
+        <ul :id="listId" class="options-list custom-scrollbar" role="listbox" :aria-label="ariaLabel || placeholder || selectedLabel">
           <li
-            v-for="option in filteredOptions"
+            v-for="(option, index) in filteredOptions"
             :key="option.value"
+            :id="`${listId}-${index}`"
             class="option-item"
-            :class="{ 'is-selected': option.value === modelValue, 'is-disabled': option.disabled }"
+            role="option"
+            :aria-selected="option.value === modelValue"
+            :class="{ 'is-selected': option.value === modelValue, 'is-active': index === activeIndex, 'is-disabled': option.disabled }"
             :aria-disabled="option.disabled || undefined"
             :title="option.label"
             @click="selectOption(option)"
@@ -159,6 +216,9 @@ onUnmounted(() => {
   border-color: #0ea5e9;
   box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
 }
+
+.select-trigger:focus-visible { outline: 2px solid #0ea5e9; outline-offset: 2px; }
+.option-item.is-active { outline: 2px solid #0ea5e9; outline-offset: -2px; }
 
 .base-select.is-disabled .select-trigger {
   background: rgba(248, 250, 252, 0.4);

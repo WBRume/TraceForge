@@ -70,6 +70,10 @@ async def broadcast_job_payload(payload: dict[str, Any]) -> None:
         task_id = str(payload.get("task_id") or "")
         if not task_id:
             return
+        if status in {"SUCCESS", "FAILED", "CANCELLED", "INTERRUPTED", "ORPHANED"}:
+            from app.domains.workspace_collaboration.hooks import settle_job
+
+            await settle_job(str(payload["id"]))
         await task_ws_manager.send_message_to_room(
             task_id,
             WSMessage(

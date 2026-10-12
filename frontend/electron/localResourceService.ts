@@ -61,20 +61,20 @@ export async function startLocalResourceService(config: Config, options: { worke
     try {
       const url = new URL(request.url || '/', 'http://localhost')
       if (request.method === 'GET' && url.pathname === '/v1/identity') {
-        send(200, { ...identity, platform: process.platform === 'win32' ? 'nt' : 'posix', implementation: 'typescript', capabilities: ['provision', 'checkpoint', 'materialize', 'generate_patch', 'apply_patch', 'restore', 'release', 'skills', 'documents'] }); return
+        send(200, { ...identity, platform: process.platform === 'win32' ? 'nt' : 'posix', implementation: 'typescript', capabilities: ['provision', 'checkpoint', 'materialize', 'generate_patch', 'apply_patch', 'restore', 'release', 'skills', 'documents', 'collaboration'] }); return
       }
       if (request.method === 'GET' && url.pathname.startsWith('/v1/operations/')) {
         const row = db!.prepare('SELECT state,result FROM operations WHERE id=?').get(url.pathname.slice('/v1/operations/'.length))
         send(row ? 200 : 404, row ? { state: row.state, result: row.result ? JSON.parse(String(row.result)) : null } : { detail: 'Operation not found' }); return
       }
-      if (request.method === 'POST' && ['/v1/repositories/inspect', '/v1/operations'].includes(url.pathname)) {
+      if (request.method === 'POST' && ['/v1/repositories/inspect', '/v1/operations', '/v1/collaboration'].includes(url.pathname)) {
         const chunks: Buffer[] = []; let size = 0
         for await (const chunk of request) {
           size += chunk.length
           if (size > 64 * 1024 * 1024) { send(413, { detail: 'Request too large' }); return }
           chunks.push(chunk)
         }
-        send(200, await dispatch(url.pathname.endsWith('/inspect') ? 'inspect' : 'operation', JSON.parse(Buffer.concat(chunks).toString('utf8')))); return
+        send(200, await dispatch(url.pathname.endsWith('/inspect') ? 'inspect' : url.pathname.endsWith('/collaboration') ? 'collaboration' : 'operation', JSON.parse(Buffer.concat(chunks).toString('utf8')))); return
       }
       send(404, { detail: 'Not found' })
     } catch (error) {
@@ -120,7 +120,7 @@ export async function startLocalResourceService(config: Config, options: { worke
       })
     })
     if (failure) throw failure
-    return { server, close, isRunning: () => !stopped && server.listening }
+    return { server, close, dispatch, isRunning: () => !stopped && server.listening }
   } catch (error) {
     await close()
     throw error

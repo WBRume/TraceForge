@@ -40,6 +40,9 @@ router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 def _load_change_proposal_context_sync(db: Session, *, ws_id: str, task_id: str) -> dict:
     task = get_task_or_404(db, task_id, ws_id)
     ensure_task_not_baselined(task)
+    from app.domains.workspace_collaboration.service import assert_mutation_allowed
+
+    assert_mutation_allowed(db, task.id)
     return {"task_id": task.id}
 
 

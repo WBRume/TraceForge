@@ -74,6 +74,7 @@ from app.domains.websocket.ws.task_handler import TaskWebSocketHandler, TaskWebS
 from app.domains.workflow.routers import provision
 from app.domains.workspace.routers import invite_join, workspace
 from app.domains.workspace_asset.routers import workspace_asset
+from app.domains.workspace_collaboration.router import router as workspace_collaboration_router
 from app.engine.session import shutdown_active_engines
 from app.middleware.logging_middleware import LoggingMiddleware
 
@@ -201,6 +202,7 @@ app.include_router(oauth.router, prefix="/api")
 app.include_router(workspace.router, prefix="/api")
 app.include_router(invite_join.router, prefix="/api")
 app.include_router(task.router, prefix="/api")
+app.include_router(workspace_collaboration_router, prefix="/api")
 app.include_router(public_session_shares.router, prefix="/api")
 # 公开分享 WS 通道：与 /ws/task 同级（vite / nginx 的 /ws 代理直接转发）
 app.include_router(public_session_shares.ws_router)

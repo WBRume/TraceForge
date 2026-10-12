@@ -142,4 +142,14 @@ describe('ChatExecutionInput', () => {
 
     expect(wrapper.emitted('submit')).toBeUndefined()
   })
+
+  it('keeps the draft editable while collaboration blocks execution', async () => {
+    const wrapper = mountInput({ sendBlocked: true })
+    expect(wrapper.find('textarea').attributes('disabled')).toBeUndefined()
+    await wrapper.find('textarea').setValue('Keep editing during conflict recovery')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual(['Keep editing during conflict recovery'])
+    await pressEnter(wrapper)
+    expect(wrapper.find('.send-btn').attributes('disabled')).toBeDefined()
+    expect(wrapper.emitted('submit')).toBeUndefined()
+  })
 })

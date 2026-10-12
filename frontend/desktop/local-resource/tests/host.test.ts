@@ -50,6 +50,21 @@ async function repository() {
 }
 
 describe('HTTP protocol and ownership', () => {
+  test('collaboration dispatch prepares and captures through the embedded worker', async () => {
+    const { source, repo } = await repository()
+    const prepared = await host.dispatch('collaboration', { kind: 'prepare', payload: {
+      task_id: 'sync', binding_id: 'desktop', workspace_root: workspace, session_generation: 1, session_revision: 1,
+      repository_set_digest: 'set', repositories: [{ ...repo, task_repository_id: 'repo', repo_slug: 'repo', base_commit_sha: git(source, 'rev-parse', 'HEAD') }],
+    } })
+    const file = path.join(prepared.repositories[0].local_worktree_path, 'code.txt')
+    fs.writeFileSync(file, 'desktop edit')
+    const response = await fetch(new URL('/v1/collaboration', host.server.url), { method: 'POST', headers,
+      body: JSON.stringify({ kind: 'capture', payload: { task_id: 'sync', operation_id: 'input' } }) })
+    expect(response.status).toBe(200)
+    const captured = await response.json() as any
+    expect(captured.manifest.repositories[0].files[0].sha256).toBe(hash('desktop edit'))
+    expect(fs.readFileSync(path.join(source, 'code.txt'), 'utf8')).toBe('base\n')
+  }, 60_000)
   test('auth, canonical Python hash, replay, ID conflict, path and .git guards', async () => {
     expect((await fetch(new URL('/v1/identity', host.server.url))).status).toBe(401)
     expect(canonical({ z: '中文', a: [1, true, null] })).toBe('{"a": [1, true, null], "z": "中文"}')

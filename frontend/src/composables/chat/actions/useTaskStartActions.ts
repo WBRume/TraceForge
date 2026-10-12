@@ -10,6 +10,8 @@ import type { RuntimeSkillItem } from '../types'
  * 已删除 runtime 技能的二次确认，以及初始化执行（遮罩 → 复位旧会话 → POST → 重载快照）。
  */
 export function useTaskStartActions(options: {
+  getSubmissionMetadata?: () => Record<string, unknown>
+  collaborationBlocked?: () => boolean
   getCurrentTask: () => any
   isTaskPreStart: { value: boolean }
   isTaskProvisioning: { value: boolean }
@@ -59,7 +61,7 @@ export function useTaskStartActions(options: {
 
   const isStartActionVisible = computed(() => Boolean(options.getCurrentTask()) && (options.isTaskPreStart.value || options.isTaskProvisioning.value))
   const canClickStartAction = computed(() => (
-    options.isTaskPreStart.value && options.canStartTask.value && !startingTask.value
+    options.isTaskPreStart.value && options.canStartTask.value && !startingTask.value && !options.collaborationBlocked?.()
   ))
   const canInitializeAction = computed(() => (
     Boolean(options.getCurrentTask()) && !options.isTaskPreStart.value && options.canManageTaskStatus.value && !initializingTask.value
@@ -91,6 +93,7 @@ export function useTaskStartActions(options: {
   }
 
   const startTask = async (): Promise<boolean> => {
+    if (options.collaborationBlocked?.()) { ElMessage.warning(t('collaboration.blocked')); return false }
     const task = options.getCurrentTask()
     if (!task) return false
     if (!isStartActionVisible.value) return false
@@ -110,12 +113,12 @@ export function useTaskStartActions(options: {
     try {
       const started = await api.post(
         `/workspaces/${options.getWorkspaceId()}/tasks/${task.id}/start`,
-        taskUsesSop(task) ? { prompt, sop_auto_run: startSopAutoRun.value } : { prompt }
+        { prompt, ...(taskUsesSop(task) ? { sop_auto_run: startSopAutoRun.value } : {}), metadata: options.getSubmissionMetadata?.() }
       )
       noteTaskRunInitiated(task.id, undefined, started.data?.job?.id)
 
       task.status = 'CODING'
-      options.engineRunning.value = true
+      options.engineRunning.value = !started.data?.submission
       showStartConfirm.value = false
       options.specDrawerClose()
 

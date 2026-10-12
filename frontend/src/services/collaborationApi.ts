@@ -1,0 +1,23 @@
+import api from '@/utils/api'
+import type { CollaborationManifest, CollaborationState } from '@/types/collaboration'
+
+export function collaborationApi(workspaceId: string, taskId: string) {
+  const path = `/workspaces/${encodeURIComponent(workspaceId)}/tasks/${encodeURIComponent(taskId)}/collaboration`
+  return {
+    state: async (): Promise<CollaborationState> => (await api.get(path)).data,
+    post: async <T = CollaborationState>(action: string, payload: Record<string, unknown>): Promise<T> => (await api.post(`${path}/${action}`, payload)).data,
+    snapshot: async (id: string, base?: string): Promise<CollaborationManifest> => (await api.get(`${path}/snapshots/${encodeURIComponent(id)}`, { params: base ? { base_snapshot_id: base } : {} })).data,
+    object: async (hash: string): Promise<ArrayBuffer> => (await api.get(`${path}/objects/${hash}`, { responseType: 'arraybuffer' })).data,
+    upload: async (hash: string, data: Uint8Array, identity: { client_id: string; instance_id: string; lease_epoch: number }): Promise<void> => { await api.put(`${path}/objects/${hash}`, data, { params: identity, headers: { 'Content-Type': 'application/octet-stream' } }) },
+  }
+}
+
+export function base64Bytes(content: string): Uint8Array {
+  return Uint8Array.from(atob(content), (char) => char.charCodeAt(0))
+}
+export function bytesBase64(data: ArrayBuffer): string {
+  const bytes = new Uint8Array(data)
+  let text = ''
+  for (let offset = 0; offset < bytes.length; offset += 8192) text += String.fromCharCode(...bytes.subarray(offset, offset + 8192))
+  return btoa(text)
+}

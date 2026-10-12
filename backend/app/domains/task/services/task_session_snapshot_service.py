@@ -43,6 +43,7 @@ def _task_root(value: str) -> str:
 
 def _run_git(cwd: str, args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
     from app.core.subprocess_runner import (
+        GIT_REPOSITORY_ENV_VARS,
         ProcessTimeoutError,
         check_completed,
         run_git,
@@ -53,6 +54,7 @@ def _run_git(cwd: str, args: list[str], *, check: bool = True) -> subprocess.Com
             ["-c", "protocol.file.allow=always", *args],
             cwd=cwd,
             timeout_seconds=float(getattr(settings, "GIT_COMMAND_TIMEOUT_SECONDS", 180) or 180),
+            unset_env=GIT_REPOSITORY_ENV_VARS,
         )
     except ProcessTimeoutError as exc:
         if check:
@@ -127,14 +129,34 @@ def _candidate_repo_paths(task_root: str, repo_rel_paths: Iterable[str]) -> list
 
 
 def _git_state(task_root: str, repo_path: str, metadata_dir: str) -> dict[str, Any]:
-    head_result = _run_git(repo_path, ["rev-parse", "--verify", "HEAD"], check=False)
-    head = head_result.stdout.strip() if head_result.returncode == 0 else None
-    branch_result = _run_git(repo_path, ["symbolic-ref", "--quiet", "--short", "HEAD"], check=False)
-    branch = branch_result.stdout.strip() if branch_result.returncode == 0 else None
-    git_dir = _run_git(repo_path, ["rev-parse", "--git-dir"]).stdout.strip()
+    identity = _run_git(
+        repo_path,
+        [
+            "rev-parse",
+            "--path-format=absolute",
+            "--absolute-git-dir",
+            "--git-path",
+            "index",
+            "HEAD",
+            "--abbrev-ref",
+            "HEAD",
+        ],
+        check=False,
+    )
+    values = identity.stdout.splitlines()
+    if identity.returncode == 0 and len(values) == 4:
+        git_dir, index_path, head, branch = values
+        branch = None if branch == "HEAD" else branch
+    else:
+        # Unborn repositories have no HEAD object; retain the established path.
+        head_result = _run_git(repo_path, ["rev-parse", "--verify", "HEAD"], check=False)
+        head = head_result.stdout.strip() if head_result.returncode == 0 else None
+        branch_result = _run_git(repo_path, ["symbolic-ref", "--quiet", "--short", "HEAD"], check=False)
+        branch = branch_result.stdout.strip() if branch_result.returncode == 0 else None
+        git_dir = _run_git(repo_path, ["rev-parse", "--git-dir"]).stdout.strip()
+        index_path = _run_git(repo_path, ["rev-parse", "--git-path", "index"]).stdout.strip()
     if not os.path.isabs(git_dir):
         git_dir = os.path.abspath(os.path.join(repo_path, git_dir))
-    index_path = _run_git(repo_path, ["rev-parse", "--git-path", "index"]).stdout.strip()
     if not os.path.isabs(index_path):
         index_path = os.path.abspath(os.path.join(repo_path, index_path))
     index_copy = None
@@ -488,6 +510,7 @@ def _create_checkpoint_sync(
     task_id: str,
     task_name: str,
     initial_checkpoint: str | None = None,
+    pinned_worktree: dict | None = None,
 ) -> dict[str, Any]:
     task_root = _task_root(task_root)
     configured_root = str(settings.TASK_SESSION_SNAPSHOT_ROOT or "").strip()
@@ -528,9 +551,14 @@ def _create_checkpoint_sync(
         from app.domains.task.services import task_git_snapshot_store
 
         with store.store_lock(root):
-            worktree = task_git_snapshot_store.capture(
-                task_root, repo_rel_paths, operation_root, root, _snapshot_policy()
-            )
+            if pinned_worktree is None:
+                worktree = task_git_snapshot_store.capture(
+                    task_root, repo_rel_paths, operation_root, root, _snapshot_policy()
+                )
+            else:
+                worktree = task_git_snapshot_store.retain_checkpoint(
+                    pinned_worktree, task_root, root, operation_root, _snapshot_policy()
+                )
         provider_state = _provider_checkpoint_sync(provider, task_root, session_id, operation_root)
         return {
             "root": operation_root,
@@ -556,6 +584,7 @@ async def create_checkpoint(
     task_id: str,
     task_name: str,
     initial_checkpoint: str | None = None,
+    pinned_worktree: dict | None = None,
 ) -> dict[str, Any]:
     from app.core.offload import run_db
     from app.domains.local_resource import snapshots as remote
@@ -579,6 +608,7 @@ async def create_checkpoint(
             task_id,
             task_name,
             initial_checkpoint,
+            pinned_worktree,
         )
     )
     try:

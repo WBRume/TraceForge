@@ -1,12 +1,13 @@
 import { app, ipcMain, startLocalResourceService } from '../../desktop/native'
 import spawn from 'cross-spawn'
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { closeSync, existsSync, openSync } from 'node:fs'
 import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
 import { networkInterfaces } from 'node:os'
-import { join } from 'node:path'
+import { join, parse, resolve } from 'node:path'
 import { createServer } from 'node:net'
 import type { AddressInfo } from 'node:net'
+import { syncPath } from '../../desktop/local-resource/collaboration-store'
 
 const starts = new Map<string, { includeAgent: boolean; promise: ReturnType<typeof startServices> }>()
 type ResourceService = Awaited<ReturnType<typeof startLocalResourceService>>
@@ -14,6 +15,25 @@ const resourceServices = new Map<string, ResourceService>()
 const children = new Set<ReturnType<typeof spawn>>()
 let shutdownRequested = false
 let shutdownPromise: Promise<void> | undefined
+let collaborationQueue: Promise<unknown> = Promise.resolve()
+const collaborationInstanceId = randomUUID()
+let collaborationIdentity: Promise<string> | undefined
+function clientIdentity() {
+  collaborationIdentity ??= (async () => {
+    const file = join(app.getPath('userData'), 'collaboration-client.json')
+    if (existsSync(file)) {
+      const saved = JSON.parse(await readFile(file, 'utf8'))
+      if (typeof saved.client_id === 'string') return saved.client_id as string
+    }
+    const clientId = randomUUID()
+    await mkdir(app.getPath('userData'), { recursive: true })
+    const temporary = file + '.' + randomUUID() + '.tmp'
+    await writeFile(temporary, JSON.stringify({ client_id: clientId }), { mode: 0o600 })
+    await rename(temporary, file)
+    return clientId
+  })().catch(error => { collaborationIdentity = undefined; throw error })
+  return collaborationIdentity
+}
 
 export function shutdownLocalServices(): Promise<void> {
   if (shutdownPromise) return shutdownPromise
@@ -50,12 +70,63 @@ const launch = (file: string, args: string[], cwd: string, logFile: string, env 
 }
 
 const serviceStateRoot = (backend: string) => {
-  if (!['opencode', 'dsh'].includes(backend)) throw new Error('Only OpenCode serve and DSH web are supported')
+  if (!['opencode', 'dsh', 'collaboration'].includes(backend)) throw new Error('Unsupported local resource capability')
   const key = createHash('sha256').update(JSON.stringify(['service', backend])).digest('hex').slice(0, 24)
   return join(app.getPath('userData'), 'local-resources', key)
 }
 
 export const registerLocalResourcesIpc = () => {
+  ipcMain.handle('sdd:collaboration:execute', (_event, command: { kind: string; payload: any }) => {
+    if (command.kind === 'describe') {
+      const taskId = command.payload?.task_id
+      if (taskId !== undefined && !/^[a-zA-Z0-9_-]{1,128}$/.test(taskId)) throw new Error('Invalid collaboration task identity')
+      const mapped = command.payload?.directory_mode === 'MAPPED'
+      const workspaceRoot = mapped ? null : join(app.getPath('userData'), 'collaboration-workspaces')
+      const taskRoot = taskId && workspaceRoot ? join(workspaceRoot, taskId) : null
+      return clientIdentity().then(client_id => ({ client_id, instance_id: collaborationInstanceId,
+        mapped_repositories: 1,
+        workspace_root: workspaceRoot, task_root: taskRoot, repositories: (command.payload?.repositories ?? []).map((repo: any) => ({
+          task_repository_id: repo.task_repository_id, local_worktree_path: mapped ? repo.local_path || null : taskRoot ? join(taskRoot, syncPath(repo.rel_path)) : null,
+        })) }))
+    }
+    const execute = async () => {
+      await requestServices({ backend: 'collaboration' }, false)
+      let managedRoots: string[] | undefined
+      if (command.kind === 'prepare' || command.kind === 'inspect_mappings') {
+        const configFile = join(serviceStateRoot('collaboration'), 'host.json')
+        const config = JSON.parse(await readFile(configFile, 'utf8'))
+        const mapped = command.kind === 'inspect_mappings' || command.payload.directory_mode === 'MAPPED'
+        if (!mapped) command.payload.workspace_root ||= join(app.getPath('userData'), 'collaboration-workspaces')
+        const inputs = [...(mapped ? [] : [command.payload.workspace_root]), ...command.payload.repositories.map((repo: any) => repo.local_path)]
+        const grants: string[] = []
+        for (const input of inputs) {
+          const absolute = resolve(input)
+          if (absolute === parse(absolute).root) throw new Error('不能将整个文件系统根目录授权为协同目录')
+          if (input === command.payload.workspace_root) await mkdir(absolute, { recursive: true })
+          grants.push(await realpath(absolute))
+        }
+        config.allowed_roots = [...new Set([...(config.allowed_roots || []), ...grants])]
+        const temporary = `${configFile}.${randomBytes(8).toString('hex')}.tmp`
+        await writeFile(temporary, JSON.stringify(config), { mode: 0o600 })
+        await rename(temporary, configFile)
+        if (!/^[a-zA-Z0-9_-]{1,128}$/.test(command.payload.task_id)) throw new Error('Invalid collaboration task identity')
+        if (command.kind === 'prepare') managedRoots = mapped ? grants : [resolve(command.payload.workspace_root, command.payload.task_id)]
+      }
+      const result = await resourceServices.get('collaboration')!.dispatch('collaboration', command)
+      if (command.kind === 'release') managedRoots = (result as { managed_roots: string[] }).managed_roots
+      if (managedRoots) {
+        const registry = join(app.getPath('userData'), 'local-resources', 'collaboration-managed-roots.json')
+        const registered: string[] = command.kind !== 'release' && existsSync(registry) ? JSON.parse(await readFile(registry, 'utf8')) : []
+        const temporary = registry + '.' + randomUUID() + '.tmp'
+        await writeFile(temporary, JSON.stringify([...new Set([...registered, ...managedRoots])]), { mode: 0o600 })
+        await rename(temporary, registry)
+      }
+      return result
+    }
+    const pending = collaborationQueue.catch(() => undefined).then(execute)
+    collaborationQueue = pending
+    return pending
+  })
   ipcMain.handle('sdd:resources:configure-roots', async (_event, payload: { backend: string; resourceServiceUrl: string; workspaceRoot: string; repoRoots: string[] }) => {
     const configFile = join(serviceStateRoot(payload.backend), 'host.json')
     if (!existsSync(configFile)) return { managed: false }
@@ -91,7 +162,7 @@ function requestServices(payload: { backend: string }, includeAgent: boolean) {
 }
 
 async function startServices(payload: { backend: string }, includeAgent: boolean) {
-  if (!['opencode', 'dsh'].includes(payload.backend)) throw new Error('Only OpenCode serve and DSH web are supported')
+  if (!['opencode', 'dsh', 'collaboration'].includes(payload.backend) || (includeAgent && payload.backend === 'collaboration')) throw new Error('Unsupported local resource capability')
   const host = Object.values(networkInterfaces()).flat().find(address => address?.family === 'IPv4' && !address.internal)?.address || '127.0.0.1'
   const stateRoot = serviceStateRoot(payload.backend)
   await mkdir(stateRoot, { recursive: true })
@@ -102,7 +173,8 @@ async function startServices(payload: { backend: string }, includeAgent: boolean
   while (agentPort === hostPort) agentPort = await freePort()
   const token = existing?.token || randomBytes(32).toString('hex')
   let agentToken = existing?.agent_token || randomBytes(32).toString('hex')
-  const config = { state_root: stateRoot, allowed_roots: existing?.allowed_roots || [], token, listen_host: '0.0.0.0', port: hostPort, agent_port: agentPort, agent_token: agentToken, advertised_host: existing?.advertised_host || host }
+  const config = { state_root: stateRoot, allowed_roots: existing?.allowed_roots || [], token, listen_host: '0.0.0.0', port: hostPort, agent_port: agentPort, agent_token: agentToken, advertised_host: existing?.advertised_host || host,
+    collaboration_registry_path: join(app.getPath('userData'), 'local-resources', 'collaboration-managed-roots.json') }
   const result = () => ({ service_url: `http://${config.advertised_host}:${agentPort}`, resource_service_url: `http://${config.advertised_host}:${hostPort}`, host_token: token, agent_token: agentToken })
   const agentReady = async () => {
     if (!includeAgent) return true

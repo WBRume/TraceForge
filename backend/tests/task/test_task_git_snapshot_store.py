@@ -33,6 +33,41 @@ def init(root):
     git(root, "config", "core.autocrlf", "false")
 
 
+@pytest.mark.parametrize("state", ["branch", "detached", "unborn", "worktree"])
+def test_git_metadata_batches_queries_without_losing_checkout_identity(tmp_path, monkeypatch, state):
+    root = tmp_path / "repo"
+    init(root)
+    head = None
+    if state != "unborn":
+        write(root, "file", b"committed")
+        git(root, "add", ".")
+        git(root, "commit", "-m", "base")
+        head = git(root, "rev-parse", "HEAD").decode().strip()
+    if state == "detached":
+        git(root, "checkout", "--detach", "HEAD")
+    if state == "worktree":
+        checkout = tmp_path / "checkout"
+        git(root, "worktree", "add", "-b", "isolated", str(checkout))
+        root = checkout
+    branch = None if state == "detached" else git(root, "symbolic-ref", "--short", "HEAD").decode().strip()
+    metadata = tmp_path / "metadata"
+    metadata.mkdir()
+    calls, original = [], service._run_git
+
+    def measured(*args, **kwargs):
+        calls.append(args[1])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_run_git", measured)
+    actual = service._git_state(str(root), str(root), str(metadata))
+    assert actual["head"] == head
+    assert actual["branch"] == branch
+    assert actual["detached"] == (branch is None)
+    if head:
+        assert len(calls) == 1
+        assert Path(actual["index_copy"]).read_bytes() == Path(actual["index_path"]).read_bytes()
+
+
 def capture(tmp, name="turn-a"):
     return snapshots.capture(str(tmp / "task"), [], str(tmp / name), str(tmp), POLICY)
 
@@ -155,6 +190,107 @@ def test_hot_capture_does_not_use_full_content_cas(tmp_path, monkeypatch):
     monkeypatch.setattr(files, "capture_file", lambda *args: pytest.fail("full-file CAS capture invoked"))
     second = capture(tmp_path, "turn-b")
     assert first["partitions"][0]["tree"] == second["partitions"][0]["tree"]
+
+
+def test_forced_git_capture_detects_equal_size_edit_with_restored_mtime(tmp_path):
+    root = tmp_path / "task"
+    init(root)
+    path = write(root, "same.txt", b"first\r\n")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "initial")
+    original_index = (root / ".git/index").read_bytes()
+    original_head = git(root, "rev-parse", "HEAD")
+    first = capture(tmp_path)
+    before = path.stat()
+    path.write_bytes(b"other\r\n")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    second = snapshots.capture(str(root), [], str(tmp_path / "turn-b"), str(tmp_path), POLICY, force_raw=True)
+    old = snapshots.entries(first)["same.txt"]
+    new = snapshots.entries(second)["same.txt"]
+    assert old["oid"] != new["oid"]
+    assert list(snapshots.read_blobs(new["git_dir"], [(new["oid"], new["size"])]))[0][1] == b"other\r\n"
+    assert (root / ".git/index").read_bytes() == original_index
+    assert git(root, "rev-parse", "HEAD") == original_head
+
+
+def test_private_git_capture_ignores_inherited_repository_paths(tmp_path, monkeypatch):
+    from app.domains.workspace_collaboration import content
+
+    root, decoy = tmp_path / "task", tmp_path / "decoy"
+    for directory, name in [(root, "source.txt"), (decoy, "decoy.txt")]:
+        init(directory)
+        write(directory, name, b"committed")
+        git(directory, "add", ".")
+        git(directory, "commit", "-m", "seed")
+    original_index = (root / ".git/index").read_bytes()
+    decoy_index = (decoy / ".git/index").read_bytes()
+    original_head, decoy_head = git(root, "rev-parse", "HEAD"), git(decoy, "rev-parse", "HEAD")
+    write(root, "source.txt", b"source unstaged content")
+    inherited = {
+        "GIT_DIR": str(decoy / ".git"),
+        "GIT_WORK_TREE": str(decoy),
+        "GIT_INDEX_FILE": str(root / ".git/index"),
+        "GIT_COMMON_DIR": str(decoy / ".git"),
+        "GIT_OBJECT_DIRECTORY": str(decoy / ".git/objects"),
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(decoy / ".git/objects"),
+        "GIT_NAMESPACE": "inherited-namespace",
+        "GIT_PREFIX": "wrong-prefix/",
+    }
+    for key, value in inherited.items():
+        monkeypatch.setenv(key, value)
+    payload = snapshots.capture(str(root), [], str(tmp_path / "turn-env"), str(tmp_path), POLICY, force_raw=True)
+    entries = snapshots.entries(payload)
+    assert set(entries) == {"source.txt"}
+    entry = entries["source.txt"]
+    assert (
+        next(snapshots.read_blobs(entry["git_dir"], [(entry["oid"], entry["size"])]))[1] == b"source unstaged content"
+    )
+    assert content._tracked_modes(root) == {"source.txt": "100644"}
+    assert (root / ".git/index").read_bytes() == original_index
+    assert (decoy / ".git/index").read_bytes() == decoy_index
+    assert git(root, "rev-parse", "HEAD") == original_head
+    assert git(decoy, "rev-parse", "HEAD") == decoy_head
+    assert (root / "source.txt").read_bytes() == b"source unstaged content"
+    assert (decoy / "decoy.txt").read_bytes() == b"committed"
+
+
+def test_explicit_git_index_override_still_works_after_clearing_inherited_paths(tmp_path, monkeypatch):
+    from app.core.subprocess_runner import GIT_REPOSITORY_ENV_VARS, run_git
+
+    root = tmp_path / "task"
+    init(root)
+    write(root, "a", b"source")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "seed")
+    original_index = (root / ".git/index").read_bytes()
+    intended, inherited = tmp_path / "explicit.index", tmp_path / "inherited.index"
+    monkeypatch.setenv("GIT_INDEX_FILE", str(inherited))
+    result = run_git(
+        ["read-tree", "HEAD"],
+        cwd=str(root),
+        env_extra={"GIT_INDEX_FILE": str(intended)},
+        unset_env=GIT_REPOSITORY_ENV_VARS,
+    )
+    assert result.returncode == 0, result.stderr
+    assert intended.is_file() and not inherited.exists()
+    assert (root / ".git/index").read_bytes() == original_index
+
+
+def test_pinned_full_checkpoint_retains_private_files_and_survives_original_cleanup(tmp_path):
+    root = tmp_path / "task"
+    init(root)
+    write(root, "public.txt", b"public")
+    write(root, ".gitignore", b".env\n")
+    write(root, ".env", b"private checkpoint value")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "initial")
+    first = capture(tmp_path)
+    retained = snapshots.retain_checkpoint(first, str(root), str(tmp_path), str(tmp_path / "turn-pinned"), POLICY)
+    assert ".env" in snapshots.entries(retained)
+    service._cleanup_checkpoint_sync(str(tmp_path / "turn-a"))
+    write(root, ".env", b"later private value")
+    restore(tmp_path, "turn-pinned")
+    assert (root / ".env").read_bytes() == b"private checkpoint value"
 
 
 def test_file_directory_transitions_and_excluded_files(tmp_path):

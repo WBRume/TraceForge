@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 from app.core.subprocess_runner import (
+    GIT_REPOSITORY_ENV_VARS,
     ProcessTimeoutError,
     _git_safe_env,
     run_git,
@@ -38,6 +39,15 @@ class SubprocessRunnerTest(unittest.TestCase):
         # extra 覆盖生效
         merged = _git_safe_env({"GIT_INDEX_FILE": "idx"})
         self.assertEqual(merged.get("GIT_INDEX_FILE"), "idx")
+
+    def test_private_git_environment_removal_is_opt_in_and_preserves_explicit_overrides(self):
+        inherited = dict.fromkeys(GIT_REPOSITORY_ENV_VARS, "inherited-value")
+        with mock.patch.dict("os.environ", inherited):
+            self.assertEqual(_git_safe_env()["GIT_INDEX_FILE"], "inherited-value")
+            isolated = _git_safe_env(unset=GIT_REPOSITORY_ENV_VARS)
+            self.assertFalse(set(GIT_REPOSITORY_ENV_VARS) & isolated.keys())
+            explicit = _git_safe_env({"GIT_INDEX_FILE": "explicit-index"}, unset=GIT_REPOSITORY_ENV_VARS)
+            self.assertEqual(explicit["GIT_INDEX_FILE"], "explicit-index")
 
     def test_run_git_real_command(self):
         # 真实 git（若可用）：版本查询走完整链路（进程组 + env + 超时）

@@ -45,6 +45,16 @@ def ensure_task_mutable(task: SddTask) -> None:
     ensure_task_not_baselined(task)
 
 
+def ensure_collaboration_ready(db: Session, task_id: str) -> None:
+    from app.domains.task.services.task_session_control_service import TaskSessionControlError
+    from app.domains.workspace_collaboration.control import require_ready
+
+    try:
+        require_ready(db, task_id)
+    except TaskSessionControlError as exc:
+        raise WorkspaceAssetError(str(exc), status_code=exc.status_code) from exc
+
+
 def latest_baseline(db: Session, task_id: str) -> SddTaskBaseline | None:
     return (
         db.query(SddTaskBaseline)
@@ -266,6 +276,7 @@ def baseline_task(db: Session, task: SddTask, actor_id: str | None) -> SddTaskBa
         existing = latest_baseline(db, task.id)
         if existing:
             return existing
+    ensure_collaboration_ready(db, task.id)
     close_resolved_reviews(task)
     db.flush()
     ensure_baseline_allowed(db, task)

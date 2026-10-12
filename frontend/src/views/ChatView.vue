@@ -30,6 +30,7 @@ import { useShareFlows } from '@/composables/chat/share/useShareFlows'
 import { useDiagnosisPlaybook } from '@/composables/chat/diagnosis/useDiagnosisPlaybook'
 import DiagnosisSopLayout from '@/components/chat/diagnosis-playbook/DiagnosisSopLayout.vue'
 import { useGuideSession } from '@/composables/chat/diagnosis/useGuideSession'
+import { consumeCollaborationIntent } from '@/components/task-create/lib/localCollaborationIntent'
 
 /**
  * 任务会话工作台（路由级组合面）：三栏布局装配 + 弹窗宿主。
@@ -79,6 +80,11 @@ const investigate = (text: string) => {
 
 // ── 视图装配态 ──
 const showApplyPatchDrawer = ref(false)
+watch(() => [vm.currentTask?.id, vm.isTaskProvisioning, vm.collaboration?.state.value?.repositories], () => {
+  const repositories = vm.collaboration?.state.value?.repositories
+  if (vm.currentTask?.execution_location !== 'SERVER' || vm.isTaskProvisioning || !repositories?.length || repositories.some(repo => !repo.base_commit_sha)) return
+  if (consumeCollaborationIntent(String(vm.route.params.wsId || ''), vm.currentTask.id)) showApplyPatchDrawer.value = true
+})
 const showTaskDetails = ref(false)
 watch(() => vm.currentTask?.id, () => { showTaskDetails.value = false })
 const showRequirementLinkDrawer = ref(false)
@@ -292,6 +298,11 @@ watch(
 
       <!-- Input Area：统一输入卡（普通发送 / 协作预输入模式丝滑切换）
            收集窗口进行中只保留协作编辑框，普通输入框不再显示 -->
+      <div v-if="vm.collaboration?.supported.value" class="collaboration-input-status" role="status" aria-live="polite">
+        <span>{{ !vm.collaboration.enabled.value ? $t('collaboration.serverOnly') : vm.collaboration.blocked.value ? vm.collaboration.label.value + ' · ' + $t('collaboration.blocked') : $t('collaboration.inputHint') }}</span>
+        <button v-if="vm.collaboration.phase.value === 'PREPARING' && vm.collaboration.driver.value" class="btn-micro" @click="vm.collaboration.cancelPreparation">{{ $t('collaboration.cancelPreparation') }}</button>
+        <button v-if="vm.collaboration.error.value" class="btn-micro" @click="showApplyPatchDrawer = true">{{ $t('collaboration.code') }}</button>
+      </div>
       <ChatExecutionInput
         v-if="vm.suggestionOnly || !vm.preInputIsCollecting"
         ref="chatInputRef"
@@ -303,6 +314,7 @@ watch(
         :models-loading="vm.agentModelsLoading" :models-error="vm.agentModelsError"
         @update:selected-model="vm.selectAgentModel" @reload-models="vm.reloadAgentModels"
         :disabled="vm.initializingTask || vm.sendingChat || (!vm.suggestionOnly && (vm.isChatLocked || Boolean(playbook.run && !['COMPLETED', 'CANCELLED'].includes(playbook.run.state))))"
+        :send-blocked="vm.collaboration?.blocked.value"
         :running="!vm.suggestionOnly && vm.engineRunning"
         :can-interrupt="vm.canTemporarilyInterrupt"
         :interrupting="vm.interruptingTask"
@@ -350,6 +362,7 @@ watch(
       :resource-blocked="vm.localResourceBlocked"
       :task="vm.currentTask"
       :workspace="vm.currentWorkspace"
+      :collaboration="vm.collaboration"
       @close="showApplyPatchDrawer = false"
     />
 
@@ -398,6 +411,7 @@ watch(
       :task-id="vm.currentTask.id"
       :task-name="vm.currentTask.name"
       :task-type="vm.currentTask.task_type"
+      :collaboration="vm.collaboration"
       @close="vm.closeTaskCloseout"
       @success="vm.handleTaskCloseoutSuccess"
     />
@@ -483,6 +497,8 @@ watch(
 </template>
 
 <style scoped>
+.collaboration-input-status { display: flex; align-items: center; gap: 10px; padding: 8px 20px 0; color: var(--text-secondary); font-size: 12px; }
+.collaboration-input-status span { flex: 1; }
 /* ChatView 布局骨架：三栏结构、会话忙状态与撤销操作遮罩。
    区块内部样式随 components/chat/sections/* 组件走；图标/按钮工具类见 assets/main.css。 */
 

@@ -77,6 +77,50 @@ describe('Embedded local resource lifecycle', () => {
     expect(mocks.spawn).not.toHaveBeenCalled()
     expect(mocks.fetch).not.toHaveBeenCalled()
   })
+  it('starts collaboration file capability without an Agent backend or child process', async () => {
+    const result = await mocks.handlers.get('sdd:resources:ensure')!(null, { backend: 'collaboration' })
+    expect(result).toHaveProperty('resource_service_url')
+    expect(mocks.startResource).toHaveBeenCalledOnce()
+    expect(mocks.spawn).not.toHaveBeenCalled()
+    expect(mocks.fetch).not.toHaveBeenCalled()
+    await expect(mocks.handlers.get('sdd:resources:start')!(null, { backend: 'collaboration' })).rejects.toThrow('Unsupported')
+  })
+  it('describes one shared desktop identity and task directories before resource startup', async () => {
+    const invoke = mocks.handlers.get('sdd:collaboration:execute')!
+    const first = await invoke(null, { kind: 'describe', payload: {} })
+    const second = await invoke(null, { kind: 'describe', payload: { task_id: 'task', repositories: [{ task_repository_id: 'api', rel_path: 'services/api' }] } })
+    expect(second.client_id).toBe(first.client_id)
+    expect(second.instance_id).toBe(first.instance_id)
+    expect(second.repositories[0].local_worktree_path).toContain('services')
+    expect(mocks.startResource).not.toHaveBeenCalled()
+    expect(mocks.spawn).not.toHaveBeenCalled()
+  })
+  it('describes mapped directories without inventing a private code workspace', async () => {
+    const result = await mocks.handlers.get('sdd:collaboration:execute')!(null, { kind: 'describe', payload: {
+      directory_mode: 'MAPPED', task_id: 'task', repositories: [{ task_repository_id: 'api', rel_path: 'api', local_path: 'G:/repos/api' }],
+    } })
+    expect(result.mapped_repositories).toBe(1)
+    expect(result.task_root).toBeNull()
+    expect(result.workspace_root).toBeNull()
+    expect(result.repositories[0].local_worktree_path).toBe('G:/repos/api')
+    expect(mocks.startResource).not.toHaveBeenCalled()
+  })
+  it('does not register failed mapped preparation as a managed directory', async () => {
+    const { realpath, writeFile } = await import('node:fs/promises')
+    vi.mocked(realpath).mockImplementation(async file => String(file))
+    mocks.startResource.mockResolvedValue({ ...resource(), dispatch: vi.fn().mockRejectedValue(new Error('COLLABORATION_MAPPING_CHECK_FAILED')) })
+    await expect(mocks.handlers.get('sdd:collaboration:execute')!(null, { kind: 'prepare', payload: {
+      directory_mode: 'MAPPED', task_id: 'task', repositories: [{ local_path: 'G:/repos/api' }],
+    } })).rejects.toThrow('COLLABORATION_MAPPING_CHECK_FAILED')
+    expect(vi.mocked(writeFile).mock.calls.some(([file]) => String(file).includes('collaboration-managed-roots'))).toBe(false)
+  })
+  it('replaces managed roots after disabling a binding while retaining other tasks', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    mocks.startResource.mockResolvedValue({ ...resource(), dispatch: vi.fn().mockResolvedValue({ managed_roots: ['G:/repos/other'] }) })
+    await mocks.handlers.get('sdd:collaboration:execute')!(null, { kind: 'release', payload: { task_id: 'task', binding_id: 'binding' } })
+    const saved = vi.mocked(writeFile).mock.calls.find(([file]) => String(file).includes('collaboration-managed-roots'))
+    expect(JSON.parse(String(saved?.[1]))).toEqual(['G:/repos/other'])
+  })
 
   it('reuses only its owned service instance', async () => {
     await ensure()

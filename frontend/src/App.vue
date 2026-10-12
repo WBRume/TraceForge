@@ -7,11 +7,13 @@ import { useNotificationStore } from '@/stores/notification'
 import GlobalSearchHost from '@/components/global-search/GlobalSearchHost.vue'
 import ProvisionFloatingWidget from '@/components/ProvisionFloatingWidget.vue'
 import { useTaskAwarenessHost } from '@/composables/useTaskAwarenessHost'
+import { useCollaborationBackground } from '@/composables/collaboration/useLocalCollaboration'
 
 const authStore = useAuthStore()
 const provisioningStore = useProvisioningStore()
 const notificationStore = useNotificationStore()
 useTaskAwarenessHost()
+useCollaborationBackground()
 
 // User notifications carry background-job updates across every application route.
 watch(() => [authStore.token, authStore.user?.id] as const, ([token, userId]) => {

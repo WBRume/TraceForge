@@ -20,6 +20,7 @@ import type { PlaybookSpec } from '@/types/diagnosisPlaybook'
 import type { RequirementOption } from '@/types/taskRail'
 import { useWorkspaceRepos } from './composables/useWorkspaceRepos'
 import { buildTaskCreatePayload, validateTaskDraft } from './lib/taskPayload'
+import { rememberCollaborationIntent } from './lib/localCollaborationIntent'
 import type { TaskCreatedEvent, TaskCreateSidebar, TaskCreateSidebarName, TaskDraftSnapshot, TaskTypeValue } from './types'
 
 const props = defineProps<{ wsId: string; initialTaskType?: TaskTypeValue; initialRequirement?: RequirementOption | null }>()
@@ -102,6 +103,7 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
     if (!jobId || !taskId) {
       throw new Error(t('provisioning.invalid_job_id'))
     }
+    if (draft.enableLocalCollaboration && draft.execution?.location !== 'LOCAL') rememberCollaborationIntent(props.wsId, taskId)
 
     // 附件暂存到 provision 浮窗：作业成功后统一上传
     if (draft.specFile) {

@@ -3,7 +3,7 @@ import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { atomic, child, fail, git, gitRaw, hash, inside, readJson, writeJson, type Receipt } from './filesystem'
 import { captureProvider, cleanupSession, forkSession, restoreProvider } from './provider'
-import { captureGitSnapshot, restoreGitSnapshot, collectGitSnapshots } from './git-snapshots'
+import { captureGitSnapshot, restoreGitSnapshot, collectGitSnapshots, withSnapshotLock } from './git-snapshots'
 
 const excludedDirs = new Set(['node_modules', 'dist', 'build', 'coverage', '.next', '.nuxt', '.output', '.vite', '.cache', '.turbo', '.parcel-cache', '.svelte-kit', 'target', '.gradle', '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.nox', 'htmlcov'])
 type Entry = { hash?: string; link?: string; mode: number }
@@ -137,10 +137,5 @@ function snapshotUnlocked(state: string, resourceId: string, receipt: Receipt, p
 
 export function snapshot(state: string, resourceId: string, receipt: Receipt, payload: any, dshRoot: string): any {
   const owner = path.join(state, 'snapshots', resourceId + '_resource', receipt.task_id + '_task')
-  fs.mkdirSync(owner, { recursive: true })
-  const lock = path.join(owner, '.snapshot.lock')
-  // A second host must not race an index, restore, or garbage collection.
-  const fd = fs.openSync(lock, 'wx')
-  try { return snapshotUnlocked(state, resourceId, receipt, payload, dshRoot) }
-  finally { fs.closeSync(fd); fs.unlinkSync(lock) }
+  return withSnapshotLock(owner, () => snapshotUnlocked(state, resourceId, receipt, payload, dshRoot))
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { AlertTriangle, Loader2 } from '@/components/icons'
 
 type Tone = 'danger' | 'primary' | 'success'
@@ -37,6 +37,31 @@ const emit = defineEmits<{
 
 const toneClass = computed(() => `is-${props.tone}`)
 const overlayCloseArmed = ref(false)
+const modalRef = ref<HTMLElement | null>(null), titleId = useId()
+let returnFocus: HTMLElement | null = null
+const focusable = () => [...(modalRef.value?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), a[href], textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])]
+  .filter(element => !element.closest('[hidden], [aria-hidden="true"]') && getComputedStyle(element).display !== 'none')
+const onKeydown = (event: KeyboardEvent) => {
+  if (!props.show || !modalRef.value || !modalRef.value.contains(document.activeElement)) return
+  if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); handleCancel(); return }
+  if (event.key !== 'Tab') return
+  const items = focusable(), first = items[0], last = items[items.length - 1]
+  if (!first) { event.preventDefault(); modalRef.value.focus() }
+  else if (event.shiftKey && (document.activeElement === first || document.activeElement === modalRef.value)) { event.preventDefault(); last?.focus() }
+  else if (!event.shiftKey && (document.activeElement === last || document.activeElement === modalRef.value)) { event.preventDefault(); first.focus() }
+}
+watch(() => props.show, async (show, _, onCleanup) => {
+  let current = true; onCleanup(() => { current = false })
+  if (show) {
+    returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    window.addEventListener('keydown', onKeydown)
+    await nextTick(); if (current) (focusable()[0] || modalRef.value)?.focus()
+  } else {
+    window.removeEventListener('keydown', onKeydown)
+    if (returnFocus?.isConnected) returnFocus.focus()
+    returnFocus = null
+  }
+}, { immediate: true })
 
 const handleCancel = () => {
   if (props.loading) return
@@ -69,6 +94,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('blur', cancelOverlayClose)
+  window.removeEventListener('keydown', onKeydown)
+  if (returnFocus?.isConnected) returnFocus.focus()
 })
 </script>
 
@@ -83,12 +110,12 @@ onBeforeUnmount(() => {
       @pointerleave.self="cancelOverlayClose"
       @pointercancel.self="cancelOverlayClose"
     >
-      <div class="modal" :class="toneClass">
+      <div ref="modalRef" class="modal" :class="toneClass" role="dialog" aria-modal="true" :aria-labelledby="titleId" tabindex="-1">
         <div class="modal-header" :class="toneClass">
           <slot name="icon">
             <AlertTriangle class="w-6 h-6 flex-shrink-0" />
           </slot>
-          <span class="modal-title">{{ title }}</span>
+          <span :id="titleId" class="modal-title">{{ title }}</span>
         </div>
 
         <p class="modal-message">{{ message }}</p>

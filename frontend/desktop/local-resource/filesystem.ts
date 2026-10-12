@@ -32,8 +32,14 @@ export function atomic(file: string, data: string | Uint8Array) {
 }
 export const readJson = <T = any>(file: string): T => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''))
 export const writeJson = (file: string, data: unknown) => atomic(file, JSON.stringify(data))
+export function gitEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = { ...process.env }
+  for (const key of Object.keys(env)) if (['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_PREFIX'].includes(key.toUpperCase())) delete env[key]
+  return { ...env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never', ...overrides }
+}
 export function gitRaw(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, check = true): Buffer {
-  const result = spawnSync('git', args, { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...env }, timeout: 180_000, windowsHide: true, maxBuffer: 128 * 1024 * 1024 })
+  const result = spawnSync('git', args, { cwd, env: gitEnvironment(env), timeout: 180_000, windowsHide: true, maxBuffer: 128 * 1024 * 1024 })
   if (result.error) throw result.error
   if (check && result.status !== 0) fail(result.stderr.toString().trim() || 'GIT_OPERATION_FAILED')
   return result.stdout
@@ -103,7 +109,7 @@ export function inspectRepo(localPath: string, configuredUrl: string, roots: str
   if (!matched) fail('REPOSITORY_MISMATCH: 配置地址未匹配任何 fetch remote，请检查个人 fork / upstream')
   const gitDir = git(actual, 'rev-parse', '--absolute-git-dir')
   if (['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'index.lock'].some(marker => fs.existsSync(path.join(gitDir, marker)))) fail('REPOSITORY_BUSY')
-  return { repo_root: actual, common_git_dir: common, matched_remote: matched!.name, remotes, head_sha: git(actual, 'rev-parse', '--verify', 'HEAD'), dirty: !!git(actual, 'status', '--porcelain') }
+  return { repo_root: actual, common_git_dir: common, matched_remote: matched!.name, remotes, head_sha: git(actual, 'rev-parse', '--verify', 'HEAD'), dirty: !!gitRaw(actual, ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], { GIT_OPTIONAL_LOCKS: '0' }).length }
 }
 export function provision(root: string, taskId: string, repos: Repository[], roots: string[], manifestFile: string): Receipt {
   let receipt: Receipt

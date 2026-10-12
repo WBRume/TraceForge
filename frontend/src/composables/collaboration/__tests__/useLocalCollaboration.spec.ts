@@ -1,0 +1,442 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { defineComponent, nextTick, reactive, watch } from 'vue'
+import { flushPromises, mount } from '@vue/test-utils'
+import { createI18n } from 'vue-i18n'
+import { createMemoryHistory, createRouter } from 'vue-router'
+import zh from '@/locales/zh.json'
+import type { CollaborationManifest, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
+
+const mocks = vi.hoisted(() => ({ desktop: true, api: { state: vi.fn(), post: vi.fn(), snapshot: vi.fn(), object: vi.fn(), upload: vi.fn() }, native: vi.fn(), mapping: vi.fn(), open: vi.fn(), auth: { user: null as { id: string } | null } }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => mocks.auth }))
+vi.mock('@/utils/runtime', () => ({ getSddDesktop: () => mocks.desktop ? ({ collaboration: { execute: mocks.native }, config: { getRepoMapping: mocks.mapping }, system: { openPath: mocks.open } }) : null }))
+vi.mock('@/services/collaborationApi', () => ({ collaborationApi: () => mocks.api, base64Bytes: () => new Uint8Array([1]), bytesBase64: () => 'AQ==' }))
+vi.mock('@/components/collaboration/CodeComparison.vue', () => ({ default: { template: '<div />' } }))
+import { useLocalCollaboration, type LocalCollaboration } from '../useLocalCollaboration'
+import { saveRepoPreferences } from '@/composables/localRepoPreferences'
+import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
+import { manifestDelta } from '../../../../shared/collaboration-delta'
+
+let state: CollaborationState, manifest: CollaborationManifest, local: LocalCollaborationStatus
+let controller: LocalCollaboration
+const wrappers: ReturnType<typeof mount>[] = []
+function setup() {
+  const wrapper = mount(defineComponent({ setup() { controller = useLocalCollaboration({ workspaceId: () => 'ws', task: () => ({ id: manifest.task_id, execution_location: 'SERVER' }) }); return () => null } }), { global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })] } })
+  wrappers.push(wrapper)
+  return wrapper
+}
+beforeEach(() => {
+  vi.useFakeTimers(); vi.clearAllMocks()
+  mocks.desktop = true
+  mocks.auth = reactive({ user: { id: crypto.randomUUID() } })
+  const repo = { task_repository_id: 'repo1', repository_id: 'r1', repo_url: 'https://example.test/api', repo_slug: 'api', rel_path: 'api', branch_name: 'release/2.x', base_commit_sha: 'commit', files: [{ path: 'auth.py', sha256: 'a'.repeat(64), size: 1, mode: '100644' as const }] }
+  manifest = { protocol_version: 1, task_id: crypto.randomUUID(), snapshot_id: 'snapshot1', workspace_revision: 1, session_generation: 1, session_revision: 1, repository_set_digest: 'digest', source: 'INITIAL', repositories: [repo] }
+  state = { ...manifest, enabled: false, sync_phase: 'OFF', state_version: 1, input_snapshot_id: null, progress_snapshot_id: null, lease_epoch: 1, binding_id: 'binding', conflicts: [] }
+  local = { directory_mode: 'MAPPED', task_id: manifest.task_id, task_root: 'G:/private/task', manifest, baseline: manifest, target: manifest, repositories: [{ ...repo, local_worktree_path: 'G:/private/task/api', mapped_repo_root: 'G:/api' }], state: 'READY', conflicts: [], local_changes: [] }
+  mocks.api.state.mockImplementation(async () => ({ ...state }))
+  mocks.api.snapshot.mockImplementation(async () => manifest)
+  mocks.api.post.mockImplementation(async (action, body) => {
+    if (action === 'enable') state = { ...state, ...body, driver_user_id: mocks.auth.user!.id, enabled: true, sync_phase: 'DELIVERY_PENDING', input_snapshot_id: manifest.snapshot_id }
+    if (action === 'receipt') state = { ...state, sync_phase: body.conflicts.length ? 'CONFLICT_PENDING' : 'READY' }
+    if (action === 'objects/missing') return { missing: [] }
+    if (action === 'handoff') state = { ...state, input_submission_id: body.submission_id, input_snapshot_id: 'input2' }
+    return { ...state }
+  })
+  mocks.mapping.mockResolvedValue({ localPath: 'G:/api', gitRemoteUrl: repo.repo_url })
+  mocks.api.upload.mockReset().mockResolvedValue(undefined)
+  mocks.native.mockImplementation(async ({ kind }) => {
+    if (kind === 'inspect_mappings') return { ready: true, checks: [] }
+    if (kind === 'describe') return { mapped_repositories: 1, task_root: local.task_root, repositories: local.repositories }
+    if (kind === 'status' && !state.enabled) throw new Error('ENOENT: local binding does not exist')
+    if (kind === 'missing_objects') return { missing: [] }
+    if (kind === 'capture') return { manifest, status: local, objects: [] }
+    return local
+  })
+})
+afterEach(async () => {
+  wrappers.splice(0).forEach(wrapper => wrapper.unmount())
+  mocks.auth.user = null; await nextTick(); vi.useRealTimers()
+})
+
+describe('local collaboration coordinator', () => {
+  it('downloads missing dual-repository objects when an input manifest was viewed but never received locally', async () => {
+    const first = manifest.repositories[0]!
+    const second = { ...first, task_repository_id: 'repo2', repository_id: 'r2', repo_slug: 'web', rel_path: 'web' }
+    const baseline = { ...manifest, snapshot_id: '', repositories: [first, second] }
+    manifest = { ...manifest, repositories: [first, second].map((repo, i) => ({ ...repo, files: [{ ...repo.files[0]!, sha256: (i ? 'c' : 'b').repeat(64) }] })) }
+    local = { ...local, baseline, manifest: baseline, target: undefined, state: 'PREPARED', repositories: baseline.repositories.map(repo => ({ ...repo, local_worktree_path: `G:/${repo.repo_slug}`, mapped_repo_root: `G:/${repo.repo_slug}` })) }
+    state = { ...state, repositories: manifest.repositories, enabled: true, sync_phase: 'DELIVERY_PENDING', input_snapshot_id: manifest.snapshot_id,
+      client_id: 'existing-client', instance_id: 'existing-instance', driver_user_id: mocks.auth.user!.id, driver_connected: true }
+    mocks.api.snapshot.mockImplementation(async (_id, base) => base === manifest.snapshot_id ? manifestDelta(manifest, manifest) : manifest)
+    const cached = new Set(['a'.repeat(64)]), implementation = mocks.native.getMockImplementation()!
+    mocks.native.mockImplementation(async request => {
+      if (request.kind === 'describe') return { mapped_repositories: 1, client_id: state.client_id, instance_id: state.instance_id }
+      if (request.kind === 'missing_objects') return { missing: request.payload.sha256.filter((hash: string) => !cached.has(hash)) }
+      if (request.kind === 'cache_objects') { request.payload.objects.forEach((object: { sha256: string }) => cached.add(object.sha256)); return {} }
+      if (request.kind === 'reconcile') {
+        if (manifest.repositories.some(repo => repo.files.some(file => !cached.has(file.sha256)))) throw new Error('LOCAL_CONTENT_OBJECT_MISSING')
+        return { ...local, baseline: manifest, manifest, state: 'READY' }
+      }
+      return implementation(request)
+    })
+    setup(); await flushPromises(); await flushPromises()
+    expect(controller.error.value).toBe('')
+    expect(controller.phase.value).toBe('READY')
+    expect(mocks.api.object.mock.calls.map(([hash]) => hash)).toEqual(['b'.repeat(64), 'c'.repeat(64)])
+    expect(mocks.native.mock.calls.filter(([r]) => r.kind === 'missing_objects').flatMap(([r]) => r.payload.sha256)).toEqual(['b'.repeat(64), 'c'.repeat(64)])
+  })
+  it('keeps a delivery error stable across polls and retries only after an explicit recovery', async () => {
+    const implementation = mocks.native.getMockImplementation()!
+    let broken = true, attempts = 0
+    mocks.native.mockImplementation(async request => {
+      if (request.kind === 'reconcile') { attempts++; if (broken) throw new Error('LOCAL_CONTENT_OBJECT_MISSING') }
+      return implementation(request)
+    })
+    setup(); await flushPromises(); await controller.enable()
+    const errors: string[] = []
+    const stop = watch(controller.error, value => errors.push(value), { flush: 'sync' })
+    await vi.advanceTimersByTimeAsync(7500)
+    expect(attempts).toBe(1)
+    expect(errors).not.toContain('')
+    expect(controller.error.value).toContain('LOCAL_CONTENT_OBJECT_MISSING')
+    expect(controller.cloud.value?.snapshot_id).toBe(manifest.snapshot_id)
+    expect(controller.label.value).toContain('等待重试')
+    broken = false; await controller.recover(); stop()
+    expect(attempts).toBe(2)
+    expect(controller.error.value).toBe('')
+    expect(controller.phase.value).toBe('READY')
+  })
+  it('checks only changed target objects after a confirmed baseline', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    const old = manifest
+    manifest = { ...manifest, snapshot_id: 'next-output', repositories: manifest.repositories.map(repo => ({ ...repo, files: [...repo.files, { ...repo.files[0]!, path: 'new.py', sha256: 'b'.repeat(64) }] })) }
+    state = { ...state, snapshot_id: manifest.snapshot_id, sync_phase: 'DELIVERY_PENDING' }
+    mocks.api.snapshot.mockImplementation(async () => manifestDelta(old, manifest))
+    mocks.native.mockClear(); await controller.refresh()
+    expect(mocks.native.mock.calls.filter(([r]) => r.kind === 'missing_objects').flatMap(([r]) => r.payload.sha256)).toEqual(['b'.repeat(64)])
+  })
+  it('can explicitly retry failed progress delivery while the Agent is still running', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    manifest = { ...manifest, snapshot_id: 'progress2', source: 'PROGRESS' }
+    state = { ...state, sync_phase: 'RUNNING', progress_snapshot_id: manifest.snapshot_id }
+    const implementation = mocks.native.getMockImplementation()!
+    let broken = true
+    mocks.native.mockImplementation(async request => {
+      if (request.kind === 'reconcile' && broken) throw new Error('LOCAL_CONTENT_OBJECT_MISSING')
+      return implementation(request)
+    })
+    await controller.refresh(); expect(controller.error.value).toContain('LOCAL_CONTENT_OBJECT_MISSING')
+    mocks.native.mockClear(); mocks.api.upload.mockClear()
+    await controller.refresh(); expect(mocks.native).not.toHaveBeenCalled()
+    broken = false; await controller.recover()
+    expect(mocks.native).toHaveBeenCalledWith(expect.objectContaining({ kind: 'reconcile', payload: expect.objectContaining({ preview: true, progressive: false }) }))
+    expect(controller.error.value).toBe('')
+    expect(controller.phase.value).toBe('RUNNING')
+    expect(mocks.api.upload).not.toHaveBeenCalled()
+  })
+  it('refuses cloud enable when either repository fails HEAD or cleanliness checks', async () => {
+    const nativeImplementation = mocks.native.getMockImplementation()!
+    mocks.native.mockImplementation(async request => request.kind === 'inspect_mappings' ? {
+      ready: false, checks: [{ task_repository_id: 'repo1', local_path: 'G:/api', expected_head: 'commit', local_head: 'different', clean: false, changes: [' M auth.py'], errors: ['HEAD_MISMATCH', 'WORKTREE_DIRTY'] }],
+    } : nativeImplementation(request))
+    setup(); await flushPromises(); await controller.enable()
+    expect(controller.error.value).toBe(zh.collaboration.mappingCheckFailed)
+    expect(controller.mappingChecks.value[0].errors).toEqual(['HEAD_MISMATCH', 'WORKTREE_DIRTY'])
+    expect(mocks.api.post).not.toHaveBeenCalled()
+    expect(mocks.native.mock.calls.some(([request]) => request.kind === 'prepare')).toBe(false)
+    expect(controller.busy.value).toBe(false)
+  })
+  it('requires the updated native capability instead of invoking the old worktree preparation', async () => {
+    const nativeImplementation = mocks.native.getMockImplementation()!
+    mocks.native.mockImplementation(async request => request.kind === 'describe' ? { task_root: local.task_root, repositories: [] } : nativeImplementation(request))
+    setup(); await flushPromises(); await controller.enable()
+    expect(controller.error.value).toBe(zh.collaboration.restartDesktop)
+    expect(mocks.api.post).not.toHaveBeenCalled()
+    expect(mocks.native.mock.calls.some(([request]) => request.kind === 'prepare')).toBe(false)
+  })
+  it('shows the real baseline preparation stage and elapsed time while native capture is pending', async () => {
+    const nativeImplementation = mocks.native.getMockImplementation()!
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = resolve })
+    mocks.native.mockImplementation(async request => {
+      if (request.kind === 'prepare') { expect(request.payload.directory_mode).toBe('MAPPED'); expect(request.payload.workspace_root).toBeUndefined(); await pending }
+      return nativeImplementation(request)
+    })
+    setup(); await flushPromises(); const enabling = controller.enable(); await flushPromises()
+    expect(controller.operationStage.value).toBe('capturingBaseline')
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(controller.operationSeconds.value).toBe(3)
+    finish(); await enabling; await flushPromises()
+    expect(controller.phase.value).toBe('READY')
+    expect(controller.operationStage.value).toBe('')
+  })
+  it('opening a server task only reads state and mappings, without enabling or touching files', async () => {
+    setup(); await flushPromises()
+    expect(controller.enabled.value).toBe(false)
+    expect(controller.blocked.value).toBe(false)
+    expect(mocks.native.mock.calls.every(([request]) => request.kind === 'describe')).toBe(true)
+    expect(mocks.api.post).not.toHaveBeenCalled()
+    expect(controller.mappings.value.repo1?.local_path).toBe('G:/api')
+  })
+  it('enables only explicitly, and waits for native reconciliation and the repository receipt', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    expect(mocks.native.mock.calls.map(([request]) => request.kind)).toContain('prepare')
+    expect(mocks.api.post).toHaveBeenCalledWith('receipt', expect.objectContaining({ repository_results: [{ task_repository_id: 'repo1', status: 'ALIGNED' }] }))
+    expect(controller.phase.value).toBe('READY')
+    expect(mocks.open).toHaveBeenCalledWith('G:/private/task/api')
+  })
+  it('retries failed local preparation using the enabled server binding without another enable request', async () => {
+    const prepared = { ...local, binding_id: 'binding' }
+    const nativeImplementation = mocks.native.getMockImplementation()!
+    let preparations = 0
+    mocks.native.mockImplementation(async request => {
+      if (request.kind === 'prepare') {
+        if (++preparations === 1) { local = { ...local, binding_id: 'binding', baseline: undefined, repositories: [], state: 'PREPARED' }; throw new Error('Git checkout failed: Filename too long') }
+        local = prepared; return local
+      }
+      return nativeImplementation(request)
+    })
+    setup(); await flushPromises(); await controller.enable()
+    expect(controller.enabled.value).toBe(true)
+    expect(controller.preparationRequired.value).toBe(true)
+    expect(controller.phase.value).toBe('DELIVERY_PENDING')
+    expect(controller.blocked.value).toBe(true)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(preparations).toBe(1)
+    expect(controller.error.value).toContain('Filename too long')
+    await controller.recover()
+    expect(preparations).toBe(2)
+    expect(mocks.native).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'reconcile' }))
+    expect(mocks.native.mock.calls.filter(([request]) => request.kind === 'prepare').map(([request]) => request.payload.binding_id)).toEqual(['binding', 'binding'])
+    expect(mocks.api.post.mock.calls.filter(([action]) => action === 'enable')).toHaveLength(1)
+    expect(controller.preparationRequired.value).toBe(false)
+    expect(controller.phase.value).toBe('READY')
+    expect(controller.error.value).toBe('')
+  })
+
+  it('requires an explicit retry when the same driver opens a pending initial delivery without a native binding', async () => {
+    state = { ...state, enabled: true, sync_phase: 'DELIVERY_PENDING', client_id: 'existing-client', instance_id: 'existing-instance', driver_user_id: mocks.auth.user!.id, driver_connected: true }
+    const nativeImplementation = mocks.native.getMockImplementation()!
+    let exists = false
+    mocks.native.mockImplementation(async request => {
+      if (request.kind === 'describe') return { mapped_repositories: 1, task_root: local.task_root, repositories: local.repositories, client_id: state.client_id, instance_id: state.instance_id }
+      if (request.kind === 'status' && !exists) throw new Error('ENOENT: local binding does not exist')
+      if (request.kind === 'prepare') exists = true
+      return nativeImplementation(request)
+    })
+    setup(); await flushPromises(); await vi.advanceTimersByTimeAsync(5000)
+    expect(controller.preparationRequired.value).toBe(true)
+    expect(mocks.native.mock.calls.some(([request]) => request.kind === 'prepare')).toBe(false)
+    await controller.enable() // A reused activation entry must also route to recovery.
+    expect(mocks.api.post.mock.calls.some(([action]) => action === 'enable')).toBe(false)
+    expect(mocks.native.mock.calls.filter(([request]) => request.kind === 'prepare')).toHaveLength(1)
+    expect(controller.phase.value).toBe('READY')
+  })
+
+  it('retries delivery with an already complete local binding without preparing it again', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    const preparationCount = mocks.native.mock.calls.filter(([request]) => request.kind === 'prepare').length
+    state = { ...state, sync_phase: 'RECOVERY_REQUIRED', recovery_kind: 'LOCAL_DELIVERY' }
+    await controller.recover()
+    expect(mocks.native.mock.calls.filter(([request]) => request.kind === 'prepare')).toHaveLength(preparationCount)
+    expect(controller.phase.value).toBe('READY')
+  })
+  it('refreshes both mappings saved after a missing binding, across settings navigation, and enables explicit recovery', async () => {
+    const second = { ...manifest.repositories[0], task_repository_id: 'repo2', repository_id: 'r2', repo_url: 'https://example.test/web', repo_slug: 'web', rel_path: 'web', branch_name: 'main', base_commit_sha: 'other-commit' }
+    manifest = { ...manifest, repositories: [...manifest.repositories, second] }
+    state = { ...state, repositories: manifest.repositories, enabled: true, sync_phase: 'DELIVERY_PENDING', client_id: 'existing-client', instance_id: 'existing-instance', driver_user_id: mocks.auth.user!.id, driver_connected: true }
+    local = { ...local, manifest, baseline: manifest, target: manifest, repositories: [...(local.repositories || []), { ...second, mapped_repo_root: 'G:/web', local_worktree_path: 'G:/private/task/web' }] }
+    mocks.mapping.mockResolvedValue(null)
+    const nativeImplementation = mocks.native.getMockImplementation()!
+    let exists = false
+    mocks.native.mockImplementation(async request => {
+      if (request.kind === 'describe') return { mapped_repositories: 1, task_root: local.task_root, repositories: local.repositories, client_id: state.client_id, instance_id: state.instance_id }
+      if (request.kind === 'status' && !exists) throw new Error("Error invoking remote method 'sdd:collaboration:execute': ENOENT: no such file or directory, open 'C:\\profile\\collaboration\\bindings\\task.json'")
+      if (request.kind === 'prepare') exists = true
+      return nativeImplementation(request)
+    })
+    const page = setup(); await flushPromises()
+    expect(controller.preparationRequired.value).toBe(true)
+    expect(controller.error.value).toBe(zh.collaboration.preparationRequired)
+    page.unmount() // The application coordinator survives the trip to settings.
+    saveRepoPreferences('another-workspace', mocks.auth.user!.id, [{ repository_id: 'r1', local_path: 'G:/wrong', configured_git_url: second.repo_url }])
+    await flushPromises()
+    expect(controller.mappings.value).toEqual({})
+    saveRepoPreferences('ws', mocks.auth.user!.id, [{ repository_id: 'r1', local_path: 'G:/api', configured_git_url: 'https://fork.test/api' }, { repository_id: 'r2', local_path: 'G:/web', configured_git_url: second.repo_url }])
+    await flushPromises()
+    expect(controller.mappings.value).toEqual({ repo1: { local_path: 'G:/api', configured_git_url: 'https://fork.test/api' }, repo2: { local_path: 'G:/web', configured_git_url: second.repo_url } })
+    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws' }, global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } }), createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] })], stubs: { CodeComparison: true, CollaborationBackups: true } } })
+    wrappers.push(panel)
+    expect(panel.text()).toContain('G:/api')
+    expect(panel.text()).toContain('G:/web')
+    expect(panel.text()).not.toContain(zh.collaboration.mappingMissing)
+    expect(panel.text()).not.toContain('ENOENT')
+    const retry = panel.findAll('button').find(button => button.text() === zh.collaboration.recover)!
+    expect(retry.element.disabled).toBe(false)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(mocks.native.mock.calls.filter(([request]) => request.kind === 'describe')).toHaveLength(1)
+    expect(mocks.native.mock.calls.some(([request]) => request.kind === 'prepare')).toBe(false)
+    expect(mocks.api.post.mock.calls.some(([action]) => action === 'objects/missing' || action === 'handoff')).toBe(false)
+    await retry.trigger('click'); await flushPromises()
+    const prepared = mocks.native.mock.calls.find(([request]) => request.kind === 'prepare')![0].payload
+    expect(prepared.repositories.map((repo: any) => [repo.task_repository_id, repo.local_path, repo.branch_name, repo.base_commit_sha])).toEqual([['repo1', 'G:/api', 'release/2.x', 'commit'], ['repo2', 'G:/web', 'main', 'other-commit']])
+    expect(mocks.api.post.mock.calls.some(([action]) => action === 'enable')).toBe(false)
+    expect(controller.phase.value).toBe('READY')
+  })
+  it('reloads desktop-only mapping changes on refresh while preparation is blocked, without reading a missing binding again', async () => {
+    state = { ...state, enabled: true, sync_phase: 'DELIVERY_PENDING', client_id: 'existing-client', instance_id: 'existing-instance', driver_user_id: mocks.auth.user!.id, driver_connected: true }
+    mocks.mapping.mockResolvedValue(null)
+    mocks.native.mockImplementation(async ({ kind }) => {
+      if (kind === 'inspect_mappings') return { ready: true, checks: [] }
+    if (kind === 'describe') return { mapped_repositories: 1, task_root: local.task_root, repositories: local.repositories, client_id: state.client_id, instance_id: state.instance_id }
+      throw new Error('COLLABORATION_BINDING_MISSING')
+    })
+    setup(); await flushPromises()
+    const statuses = mocks.native.mock.calls.filter(([request]) => request.kind === 'status').length
+    mocks.mapping.mockResolvedValue({ localPath: 'G:/api', gitRemoteUrl: manifest.repositories[0].repo_url })
+    await controller.refreshComparison()
+    expect(controller.mappings.value.repo1.local_path).toBe('G:/api')
+    expect(mocks.native.mock.calls.filter(([request]) => request.kind === 'status')).toHaveLength(statuses)
+    expect(controller.preparationRequired.value).toBe(true)
+    expect(controller.error.value).not.toContain('ENOENT')
+  })
+  it('keeps other filesystem failures visible during local preparation', async () => {
+    state = { ...state, enabled: true, sync_phase: 'DELIVERY_PENDING', client_id: 'existing-client', instance_id: 'existing-instance', driver_user_id: mocks.auth.user!.id, driver_connected: true }
+    mocks.native.mockImplementation(async ({ kind }) => {
+      if (kind === 'inspect_mappings') return { ready: true, checks: [] }
+    if (kind === 'describe') return { mapped_repositories: 1, task_root: local.task_root, repositories: local.repositories, client_id: state.client_id, instance_id: state.instance_id }
+      throw new Error('ENOENT: missing Git index')
+    })
+    setup(); await flushPromises()
+    expect(controller.error.value).toContain('missing Git index')
+  })
+  it('keeps the bound coordinator alive after the task view unmounts', async () => {
+    const wrapper = setup(); await flushPromises(); await controller.enable()
+    wrapper.unmount(); const calls = mocks.api.state.mock.calls.length
+    await vi.advanceTimersByTimeAsync(2600)
+    expect(mocks.api.state.mock.calls.length).toBeGreaterThan(calls)
+    expect(mocks.native).toHaveBeenCalledWith(expect.objectContaining({ kind: 'status' }))
+  })
+  it('retries an explicitly busy lease after ten seconds without claiming success or hiding lease failures', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    const postImplementation = mocks.api.post.getMockImplementation()!
+    let attempts = 0, failure: unknown
+    mocks.api.post.mockImplementation(async (action, body) => {
+      if (action === 'lease') {
+        attempts++
+        if (failure) throw failure
+        if (attempts === 1) throw { response: { status: 409, data: { detail: { code: 'TASK_BUSY', message: 'Input handoff holds the task row' } } } }
+      }
+      return postImplementation(action, body)
+    })
+    await controller.refresh()
+    expect(attempts).toBe(1)
+    expect(controller.error.value).toBe('')
+    expect(controller.blocked.value).toBe(false)
+    await vi.advanceTimersByTimeAsync(9999)
+    expect(attempts).toBe(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(attempts).toBe(2) // Advancing lastLease on TASK_BUSY would suppress this retry.
+    expect(controller.error.value).toBe('')
+    vi.setSystemTime(Date.now() + 21000)
+    failure = { response: { status: 409, data: { detail: { code: 'LEASE_EXPIRED', message: 'Lease expired' } } } }
+    await controller.refresh()
+    expect(controller.error.value).toContain('Lease expired')
+    expect(controller.blocked.value).toBe(true)
+    failure = { response: { status: 500, data: { detail: { code: 'TASK_BUSY', message: 'Unexpected server failure' } } } }
+    await controller.refresh()
+    expect(controller.error.value).toContain('Unexpected server failure')
+  })
+  it('captures only after a persisted PREPARING request and checks server objects again', async () => {
+    setup(); await flushPromises(); await controller.enable(); await controller.refresh()
+    expect(mocks.native.mock.calls.some(([request]) => request.kind === 'capture')).toBe(false)
+    mocks.native.mockClear()
+    state = { ...state, sync_phase: 'PREPARING', pending_submission_id: 'submission1' }
+    await controller.refresh()
+    expect(mocks.native).toHaveBeenCalledWith({ kind: 'capture', payload: expect.objectContaining({ task_id: manifest.task_id, operation_id: 'handoff:submission1', include_objects: false, session_generation: 1, session_revision: 1, delta_transport: true }) })
+    expect(mocks.native).toHaveBeenCalledWith({ kind: 'capture', payload: expect.objectContaining({ manifest_delta: false }) })
+    expect(mocks.api.post).toHaveBeenCalledWith('handoff', expect.objectContaining({ submission_id: 'submission1', manifest }))
+    expect(mocks.api.post.mock.calls.filter(([action]) => action === 'objects/missing')).toHaveLength(1)
+    expect(mocks.native.mock.calls.some(([request]) => request.kind === 'status')).toBe(false)
+  })
+  it('only enables delta handoff after the server advertises support', async () => {
+    state.capabilities = { manifest_delta: 1 }
+    setup(); await flushPromises(); await controller.enable(); await controller.refresh()
+    mocks.native.mockClear()
+    state = { ...state, sync_phase: 'PREPARING', pending_submission_id: 'submission-delta' }
+    await controller.refresh()
+    expect(mocks.native).toHaveBeenCalledWith({ kind: 'capture', payload: expect.objectContaining({ manifest_delta: true }) })
+  })
+  it('only previews intermediate versions and never sends a final receipt for a preview', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    state = { ...state, sync_phase: 'RUNNING', progress_snapshot_id: 'progress1' }
+    manifest = { ...manifest, source: 'PROGRESS', snapshot_id: 'progress1' }
+    mocks.api.post.mockClear()
+    await controller.refresh()
+    expect(mocks.native).toHaveBeenCalledWith(expect.objectContaining({ kind: 'reconcile', payload: expect.objectContaining({ preview: true }) }))
+    expect(mocks.api.post.mock.calls.some(([action]) => action === 'receipt')).toBe(false)
+  })
+  it('lets the same user request connected desktop input from a browser without granting local writes', async () => {
+    mocks.desktop = false
+    state = { ...state, enabled: true, sync_phase: 'READY', driver_user_id: mocks.auth.user!.id, driver_connected: true }
+    setup(); await flushPromises()
+    expect(controller.blocked.value).toBe(false)
+    expect(controller.submissionMetadata()).toEqual({ collaboration: { request_driver_input: true, binding_id: 'binding', lease_epoch: 1 } })
+    expect(mocks.native).not.toHaveBeenCalled()
+    state = { ...state, driver_connected: false }; await controller.refresh()
+    expect(controller.blocked.value).toBe(true)
+  })
+  it('re-comparing never applies files, sends receipts, or starts a pending input handoff', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    state = { ...state, sync_phase: 'PREPARING', pending_submission_id: 'submission1' }
+    mocks.native.mockClear(); mocks.api.post.mockClear()
+    await controller.refreshComparison()
+    expect(mocks.native.mock.calls.map(([request]) => request.kind)).toEqual(['status'])
+    expect(mocks.api.post).not.toHaveBeenCalled()
+  })
+
+  it.each(['READY', 'RUNNING', 'WAITING_HITL'] as const)('keeps local changes on the client while %s', async phase => {
+    setup(); await flushPromises(); await controller.enable()
+    state = { ...state, sync_phase: phase }
+    local = { ...local, local_changes: [{ task_repository_id: 'repo1', path: 'local.py', base: null, local: manifest.repositories[0]!.files[0]! }] }
+    mocks.api.post.mockClear(); mocks.api.upload.mockClear()
+    await controller.refresh()
+    await vi.advanceTimersByTimeAsync(2500)
+    expect(mocks.api.upload).not.toHaveBeenCalled()
+    expect(mocks.api.post.mock.calls.some(([action]) => action === 'objects/missing' || action === 'handoff')).toBe(false)
+  })
+
+  it('delivers cloud output without uploading concurrent local files', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    mocks.api.post.mockClear(); mocks.api.upload.mockClear()
+    manifest = { ...manifest, snapshot_id: 'final2', workspace_revision: 2, source: 'FINAL' }
+    state = { ...state, snapshot_id: 'final2', state_version: state.state_version + 1, sync_phase: 'DELIVERY_PENDING' }
+    controller.onEvent({ task_id: manifest.task_id, state_version: state.state_version, sync_phase: 'DELIVERY_PENDING' })
+    await flushPromises()
+    expect(mocks.api.upload).not.toHaveBeenCalled()
+    expect(mocks.api.post.mock.calls.some(([action]) => action === 'objects/missing')).toBe(false)
+    expect(mocks.api.post).toHaveBeenCalledWith('receipt', expect.objectContaining({ snapshot_id: 'final2' }))
+    expect(controller.cloud.value?.snapshot_id).toBe('final2')
+    expect(controller.phase.value).toBe('READY')
+  })
+
+  it('finishes the immutable authoritative upload when another refresh arrives, without recapturing H', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    manifest = { ...manifest, repositories: manifest.repositories.map(repo => ({ ...repo, files: Array.from({ length: 8 }, (_, index) => ({ path: `${index}.py`, sha256: index.toString(16).repeat(64), size: 1, mode: '100644' as const })) })) }
+    let release!: () => void
+    const firstBatch = new Promise<void>(resolve => { release = resolve })
+    mocks.api.upload.mockImplementation(async () => { if (mocks.api.upload.mock.calls.length <= 4) await firstBatch })
+    const nativeImplementation = mocks.native.getMockImplementation()!
+    mocks.native.mockImplementation(async request => request.kind === 'read_object' ? { sha256: request.payload.sha256, content: 'AQ==' } : nativeImplementation(request))
+    const postImplementation = mocks.api.post.getMockImplementation()!
+    mocks.api.post.mockImplementation(async (action, body) => action === 'objects/missing' ? { missing: body.hashes } : postImplementation(action, body))
+    state = { ...state, sync_phase: 'PREPARING', pending_submission_id: 'fixed-input' }
+    const preparing = controller.refresh(); await flushPromises()
+    expect(mocks.api.upload).toHaveBeenCalledTimes(4)
+    controller.onEvent({ task_id: manifest.task_id, state_version: state.state_version, sync_phase: 'PREPARING' })
+    release(); await preparing; await flushPromises()
+    expect(mocks.api.upload).toHaveBeenCalledTimes(8)
+    expect(mocks.native.mock.calls.filter(([request]) => request.kind === 'capture')).toHaveLength(1)
+    expect(mocks.api.post.mock.calls.filter(([action]) => action === 'handoff')).toHaveLength(1)
+    expect(mocks.api.upload.mock.calls.every(([, , lease]) => lease.lease_epoch === 1 && lease.client_id === state.client_id && lease.instance_id === state.instance_id)).toBe(true)
+  })
+})

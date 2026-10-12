@@ -49,6 +49,7 @@ import { useTaskReadingProgress } from './reading/useTaskReadingProgress'
 import { fetchReadingResume } from '@/services/taskReadingApi'
 import { useTaskRailStore } from '@/stores/taskRail'
 import { requirementLabel, type RequirementOption } from '@/types/taskRail'
+import { useLocalCollaboration } from '@/composables/collaboration/useLocalCollaboration'
 
 /**
  * Chat 视图模型组合根：把各领域模块（任务列表、消息、历史、卡片、jobs、
@@ -73,6 +74,7 @@ export function useChatViewModel() {
 
   // ─── 会话实体与协作对象 ───
   const taskState = useCurrentTask()
+  const collaboration = useLocalCollaboration({ workspaceId: getWorkspaceId, task: () => taskState.currentTask.value })
   const agentModels = useAgentModels(() => ({
     workspaceId: taskState.currentTask.value ? getWorkspaceId() : '',
     taskId: taskState.getTaskId(),
@@ -92,7 +94,7 @@ export function useChatViewModel() {
     taskId: () => String(taskState.currentTask.value?.id || ''),
     userId: () => String(authStore.user?.id || ''),
   })
-  const taskSessionControls = useTaskSessionControls({ getWorkspaceId })
+  const taskSessionControls = useTaskSessionControls({ getWorkspaceId, getSubmissionMetadata: collaboration.submissionMetadata })
   const chatDecision = useChatDecision()
 
   // ─── 工作台模式与滚动 ───
@@ -554,6 +556,7 @@ export function useChatViewModel() {
     applyTaskSessionPayload: sessionState.applyTaskSessionPayload,
     specBootstrapApplyUpdate: specBootstrap.applyUpdate,
     shareSuggestionNudge: (payload) => shareSuggestionNudgeHandler?.(payload),
+    collaborationUpdate: collaboration.onEvent,
     preinputHandleEvent: preinput.handleEvent,
     skillsMergeTraceEvent: skills.mergeRuntimeTraceEvent,
     skillsScheduleUsageRefresh: skills.scheduleRuntimeUsageRefresh,
@@ -569,6 +572,8 @@ export function useChatViewModel() {
 
   // ─── 发送 / 消息动作 / 任务动作 ───
   const send = useChatSend({
+    collaborationBlocked: () => collaboration.blocked.value,
+    getSubmissionMetadata: collaboration.submissionMetadata,
     getModelSelection: () => agentModels.selection.value,
     onModelSubmitted: agentModels.submitted,
     resourceBlocked: () => localResource.blocked.value,
@@ -675,6 +680,8 @@ export function useChatViewModel() {
   ))
 
   const startActions = useTaskStartActions({
+    collaborationBlocked: () => collaboration.blocked.value,
+    getSubmissionMetadata: collaboration.submissionMetadata,
     getCurrentTask: () => taskState.currentTask.value,
     isTaskPreStart: taskState.isTaskPreStart,
     isTaskProvisioning: taskState.isTaskProvisioning,
@@ -1055,6 +1062,7 @@ export function useChatViewModel() {
     agentModelsError: agentModels.error,
     selectAgentModel: agentModels.select,
     reloadAgentModels: agentModels.reload,
+    collaboration,
     sendChat: send.sendChat,
     sendChatContent: send.sendChatContent,
     sendVerification: send.sendVerification,
