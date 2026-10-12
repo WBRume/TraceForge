@@ -19,10 +19,21 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import BinaryIO
 
 from app.config import settings
+
+GIT_REPOSITORY_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+)
 
 
 class ProcessRunnerError(RuntimeError):
@@ -74,8 +85,10 @@ def terminate_process_tree(process: subprocess.Popen) -> None:
             pass
 
 
-def _git_safe_env(extra: Mapping[str, str] | None = None) -> dict:
+def _git_safe_env(extra: Mapping[str, str] | None = None, *, unset: Iterable[str] = ()) -> dict:
     env = os.environ.copy()
+    for key in unset:
+        env.pop(key, None)
     env.update(
         {
             "GIT_TERMINAL_PROMPT": "0",
@@ -164,6 +177,7 @@ def run_git(
     cwd: str | None = None,
     timeout_seconds: float | None = None,
     env_extra: Mapping[str, str] | None = None,
+    unset_env: Iterable[str] = (),
     decode_text: bool = True,
     input_data: str | bytes | None = None,
     stdin_file: BinaryIO | None = None,
@@ -174,7 +188,7 @@ def run_git(
         command,
         cwd=cwd,
         timeout_seconds=timeout_seconds,
-        env=_git_safe_env(env_extra),
+        env=_git_safe_env(env_extra, unset=unset_env),
         decode_text=decode_text,
         input_data=input_data,
         stdin_file=stdin_file,

@@ -3,13 +3,18 @@ import { shallowRef, computed, onBeforeUnmount, watch } from 'vue'
 import { VueMonacoDiffEditor } from '@guolao/vue-monaco-editor'
 import type * as Monaco from 'monaco-editor'
 import type { DiffHunk } from '@/types/workspaceAssets'
+import { ensureMonacoViteSetup } from '@/utils/monaco'
 
 const props = defineProps<{
-  aiHunks: DiffHunk[]
-  humanHunks: DiffHunk[]
+  aiHunks?: DiffHunk[]
+  humanHunks?: DiffHunk[]
+  original?: string
+  modified?: string
+  renderSideBySide?: boolean
   language?: string
   height?: string
 }>()
+ensureMonacoViteSetup()
 
 const emit = defineEmits<{
   'range-select': [payload: { lineStart: number; lineEnd: number; side: 'ai' | 'human'; selectedText: string }]
@@ -30,13 +35,14 @@ function extractOutputText(hunks: DiffHunk[]): string {
   return lines.join('\n')
 }
 
-const originalText = computed(() => extractOutputText(props.aiHunks))
-const modifiedText = computed(() => extractOutputText(props.humanHunks))
+const originalText = computed(() => props.original ?? extractOutputText(props.aiHunks || []))
+const modifiedText = computed(() => props.modified ?? extractOutputText(props.humanHunks || []))
 
-const diffEditorOptions: Monaco.editor.IDiffEditorConstructionOptions = {
+const diffEditorOptions = computed<Monaco.editor.IDiffEditorConstructionOptions>(() => ({
   automaticLayout: true,
   readOnly: true,
-  renderSideBySide: true,
+  renderSideBySide: props.renderSideBySide !== false,
+  useInlineViewWhenSpaceIsLimited: false,
   originalEditable: false,
   enableSplitViewResizing: true,
   minimap: { enabled: false },
@@ -52,7 +58,7 @@ const diffEditorOptions: Monaco.editor.IDiffEditorConstructionOptions = {
     verticalScrollbarSize: 8,
     horizontalScrollbarSize: 8,
   },
-}
+}))
 
 function handleDiffMount(editor: Monaco.editor.IStandaloneDiffEditor, monaco: typeof Monaco) {
   diffEditorRef.value = editor

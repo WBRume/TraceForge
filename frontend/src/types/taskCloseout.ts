@@ -26,6 +26,7 @@ export type CloseoutEvidenceAttachment = {
 }
 
 export type CompleteCloseoutPayload = {
+  confirmed_server_snapshot_id?: string
   requirement_id?: string
   completion_summary: string
   landing_method: LandingMethod
@@ -36,6 +37,7 @@ export type CompleteCloseoutPayload = {
 }
 
 export type FailCloseoutPayload = {
+  confirmed_server_snapshot_id?: string
   failure_stage: FailureStage
   failure_reason: FailureReason
   failure_summary: string

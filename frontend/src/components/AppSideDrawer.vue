@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { X, ChevronLeft, ChevronRight } from '@/components/icons'
 
 const props = withDefaults(defineProps<{
@@ -22,6 +22,36 @@ const emit = defineEmits<{
   close: []
   'update:level': [value: number]
 }>()
+const panelRef = ref<HTMLElement | null>(null)
+const titleId = useId()
+let returnFocus: HTMLElement | null = null
+const focusable = () => [...(panelRef.value?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])') || [])]
+  .filter(element => !element.closest('[hidden], [aria-hidden="true"]') && getComputedStyle(element).display !== 'none' && getComputedStyle(element).visibility !== 'hidden')
+const handleKeydown = (event: KeyboardEvent) => {
+  if (!props.show || event.defaultPrevented || !panelRef.value) return
+  if (document.activeElement && !panelRef.value.contains(document.activeElement) && document.activeElement !== document.body) return
+  if (event.key === 'Escape') { event.preventDefault(); emit('close'); return }
+  if (event.key !== 'Tab') return
+  const items = focusable(), first = items[0], last = items[items.length - 1]
+  if (!first) { event.preventDefault(); panelRef.value.focus(); return }
+  if (event.shiftKey && (document.activeElement === first || document.activeElement === panelRef.value)) { event.preventDefault(); last?.focus() }
+  else if (!event.shiftKey && (document.activeElement === last || document.activeElement === panelRef.value)) { event.preventDefault(); first.focus() }
+}
+watch(() => props.show, async (show, _, onCleanup) => {
+  let current = true
+  onCleanup(() => { current = false })
+  if (show) {
+    returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    window.addEventListener('keydown', handleKeydown)
+    await nextTick()
+    if (current) (focusable()[0] || panelRef.value)?.focus()
+  } else {
+    window.removeEventListener('keydown', handleKeydown)
+    if (returnFocus?.isConnected) returnFocus.focus()
+    returnFocus = null
+  }
+}, { immediate: true })
+onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); if (returnFocus?.isConnected) returnFocus.focus() })
 
 const panelStyle = computed(() => {
   if (props.resizable && props.level > 0) {
@@ -60,6 +90,11 @@ function onTransitionEnd() { isTransitioning.value = false }
 <template>
   <div v-if="show" class="side-drawer-overlay" @click.self="handleOverlayClick">
     <aside
+      ref="panelRef"
+      role="dialog"
+      aria-modal="true"
+      :aria-labelledby="titleId"
+      tabindex="-1"
       class="side-drawer-panel glass-panel"
       :class="[
         { 'is-resizable': resizable, 'is-transitioning': isTransitioning },
@@ -98,11 +133,11 @@ function onTransitionEnd() { isTransitioning.value = false }
       <header class="side-drawer-header">
         <div class="side-drawer-title">
           <slot name="icon" />
-          <span>{{ title }}</span>
+          <span :id="titleId">{{ title }}</span>
         </div>
         <div class="side-drawer-actions">
           <slot name="actions" />
-          <button v-if="!hideClose" type="button" class="side-drawer-close" @click="emit('close')">
+          <button v-if="!hideClose" type="button" class="side-drawer-close" :aria-label="$t('common.close')" @click="emit('close')">
             <X class="w-4 h-4" />
           </button>
         </div>

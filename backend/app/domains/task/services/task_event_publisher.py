@@ -112,8 +112,8 @@ async def publish_once() -> int:
             await manager.send_message_to_room(
                 task_id,
                 WSMessage(
-                    type="share_suggestion_update"
-                    if payload.get("event_type") == "share_suggestion_update"
+                    type=payload["event_type"]
+                    if payload.get("event_type") in {"share_suggestion_update", "workspace_collaboration_update"}
                     else "chat_submission_update",
                     payload=payload,
                 ),

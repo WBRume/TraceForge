@@ -89,6 +89,7 @@ class CloseoutEvidenceAttachment(BaseModel):
 
 
 class CompleteTaskCloseoutRequest(BaseModel):
+    confirmed_server_snapshot_id: str | None = Field(default=None, min_length=1, max_length=36)
     requirement_id: str | None = Field(default=None, min_length=1, max_length=36)
     completion_summary: str = Field(min_length=1)
     landing_method: LandingMethodValue
@@ -99,6 +100,7 @@ class CompleteTaskCloseoutRequest(BaseModel):
 
 
 class FailTaskCloseoutRequest(BaseModel):
+    confirmed_server_snapshot_id: str | None = Field(default=None, min_length=1, max_length=36)
     failure_stage: FailureStageValue
     failure_reason: FailureReasonValue
     failure_summary: str = Field(min_length=1)
@@ -106,6 +108,7 @@ class FailTaskCloseoutRequest(BaseModel):
 
 
 class TaskCloseoutResponse(BaseModel):
+    confirmed_server_snapshot_id: str | None = None
     business_state: Literal["TASK_IN_PROGRESS", "TASK_COMPLETED", "TASK_FAILED"] = "TASK_IN_PROGRESS"
     task_id: str
     workspace_id: str

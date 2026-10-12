@@ -109,6 +109,7 @@ def upsert_final_summary(
         ensure_evidence(db, workspace_id, task_id, evidence_id)
     ensure_human_review(db, workspace_id, task_id, workflow_payload.human_confirmation_review_id)
     if status == TaskFinalStatus.VERIFIED:
+        baseline_service.ensure_collaboration_ready(db, task.id)
         ensure_final_summary_verified_allowed(task)
 
     summary = task.final_summary

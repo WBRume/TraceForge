@@ -154,6 +154,12 @@ def create_change_proposal(
     risk_notes: str | None = None,
 ) -> SddTaskChangeProposal:
     from app.domains.local_resource.service import require_operation
+    from app.domains.workspace_collaboration.service import CollaborationError, assert_mutation_allowed
+
+    try:
+        assert_mutation_allowed(db, task.id)
+    except CollaborationError as exc:
+        raise ChangeProposalError(str(exc), status_code=exc.status_code) from exc
 
     require_operation(db, task, creator_id, "generate_patch")
     try:

@@ -10,6 +10,7 @@ import { closeoutOptionLabelKey, getCloseoutOptions } from '@/utils/taskCloseout
 
 const props = defineProps<{
   saving?: boolean
+  submissionBlocked?: boolean
   taskType?: string
   selectedRequirement?: RequirementOption | null
   requirementPickerOpen?: boolean
@@ -55,6 +56,7 @@ function updateFiles(nextFiles: File[]) {
 }
 
 function submitForm() {
+  if (props.saving || props.submissionBlocked) return
   errors.summary = !trimmed(form.completion_summary)
   if (errors.summary) return
   emit('submit', {
@@ -117,7 +119,7 @@ function submitForm() {
       <button type="button" class="btn-cancel" :disabled="saving" @click="emit('cancel')">
         {{ t('common.cancel') }}
       </button>
-      <button type="submit" class="btn-submit btn-success" :disabled="saving">
+      <button type="submit" class="btn-submit btn-success" :disabled="saving || submissionBlocked">
         <span v-if="saving" class="spinner" />
         {{ saving ? t('common.loading') : t('chat.closeout.submit_complete') }}
       </button>

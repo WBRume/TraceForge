@@ -23,6 +23,7 @@ const props = defineProps<{
   modelValue: string
   contextKey?: string
   disabled: boolean
+  sendBlocked?: boolean
   running: boolean
   canInterrupt: boolean
   interrupting: boolean
@@ -107,7 +108,7 @@ const onTextareaInput = (event: Event) => {
   emit('update:modelValue', value)
 }
 
-const canSend = computed(() => Boolean(props.modelValue.trim()) && !props.disabled && !speechBusy.value)
+const canSend = computed(() => Boolean(props.modelValue.trim()) && !props.disabled && !props.sendBlocked && !speechBusy.value)
 
 const handleKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Enter' && !event.shiftKey) {

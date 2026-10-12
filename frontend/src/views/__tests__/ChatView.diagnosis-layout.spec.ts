@@ -133,7 +133,7 @@ describe('ChatView diagnosis summary layout containment', () => {
   })
 
   it('keeps confirmation modal hover from changing the dialog background', () => {
-    expect(confirmActionModalSource).toContain('<div class="modal" :class="toneClass">')
+    expect(confirmActionModalSource).toMatch(/<div\b[^>]*\bclass="modal"[^>]*:class="toneClass"/)
     expect(confirmActionModalSource).not.toContain('class="modal glass-panel"')
   })
 

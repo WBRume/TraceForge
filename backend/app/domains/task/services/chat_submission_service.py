@@ -222,6 +222,9 @@ def _accept_sync(db, task_id, actor_id, client_id, content, metadata):
     )
     db.add(row)
     db.flush()
+    from app.domains.workspace_collaboration.hooks import request_input
+
+    request_input(db, task, row)
     save_task_event_outbox(db, row=row)
     return serialize(row)
 
@@ -232,7 +235,7 @@ async def accept(*, task_id, actor_id, client_message_id, content, metadata=None
         raise SubmissionError("消息内容和消息标识不能为空", "MESSAGE_INVALID", 400)
     clean = dict(metadata or {})
     # These fields are exclusively server-owned.
-    for key in ("submission_id", "knowledge_state", "client_message_id"):
+    for key in ("submission_id", "knowledge_state", "client_message_id", "_collaboration_control"):
         clean.pop(key, None)
     try:
         # Return a durable duplicate even when its runner holds the task lock.
@@ -278,10 +281,17 @@ def _load_preparation(db, submission_id):
     ):
         _transition(db, row, "FAILED", error_message="会话已改变，本次发送未执行")
         return None
+    from app.domains.workspace_collaboration.hooks import input_ready
+
+    if not input_ready(db, row.task_id, row.id):
+        return None
+    control = (row.metadata_json or {}).get("_collaboration_control") or {}
     return {
         "task_id": row.task_id,
         "actor_user_id": row.creator_id,
         "content": row.content,
+        "prompt_text": control.get("prompt"),
+        "fresh_session": bool(control.get("fresh_session")),
         "client_message_id": row.client_message_id,
         "context_json": {**(row.metadata_json or {}), "submission_id": row.id, "knowledge_state": "pending"},
     }
@@ -304,6 +314,9 @@ def _fail_sync(db, submission_id, message):
     row = db.query(TaskChatSubmission).filter_by(id=submission_id).with_for_update().one_or_none()
     # A commit may have completed despite a lost caller. Never mark a durable job unsent.
     if row and row.status == "PREPARING" and not row.ai_job_id:
+        from app.domains.workspace_collaboration import service as collaboration
+
+        collaboration.abandon_input(db, row.task_id, row.id)
         _transition(db, row, "FAILED", error_message=message)
 
 
@@ -448,6 +461,9 @@ def _reconcile_sync(db, task_id=None):
 
 
 async def recover():
+    from app.domains.workspace_collaboration.hooks import recover_deliveries
+
+    await recover_deliveries()
     for submission_id in await run_db_txn(_reconcile_sync):
         schedule(submission_id)
     await wake_event_publisher()

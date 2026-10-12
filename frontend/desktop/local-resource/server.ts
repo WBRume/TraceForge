@@ -92,7 +92,7 @@ export async function startServer(config: Config, options: { workerUrl?: string 
           if (request.method === 'GET' && url.pathname === '/v1/identity') {
             return Response.json({ ...identity, platform: process.platform === 'win32' ? 'nt' : 'posix',
               implementation: 'typescript', capabilities: ['provision', 'checkpoint', 'materialize',
-                'generate_patch', 'apply_patch', 'restore', 'release', 'skills', 'documents', 'roots_grant', 'repository_details'] })
+                'generate_patch', 'apply_patch', 'restore', 'release', 'skills', 'documents', 'roots_grant', 'repository_details', 'collaboration'] })
           }
           if (request.method === 'POST' && url.pathname === '/v1/roots/grant') {
             const body = await request.json() as { roots?: string[]; workspace_root?: string; repo_roots?: string[] }
@@ -120,6 +120,9 @@ export async function startServer(config: Config, options: { workerUrl?: string 
           if (request.method === 'POST' && url.pathname === '/v1/operations') {
             return Response.json(await dispatch('operation', await request.json()))
           }
+          if (request.method === 'POST' && url.pathname === '/v1/collaboration') {
+            return Response.json(await dispatch('collaboration', await request.json()))
+          }
           if (request.method === 'GET' && url.pathname.startsWith('/v1/operations/')) {
             const row = db!.query('SELECT state,result FROM operations WHERE id=?')
               .get(url.pathname.slice('/v1/operations/'.length)) as { state: string; result: string | null } | null
@@ -136,7 +139,7 @@ export async function startServer(config: Config, options: { workerUrl?: string 
       },
     })
     if (failure) throw failure
-    return { server, close, isRunning: () => !stopped }
+    return { server, close, dispatch, isRunning: () => !stopped }
   } catch (error) {
     await close()
     throw error

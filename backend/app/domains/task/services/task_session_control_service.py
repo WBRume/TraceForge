@@ -417,6 +417,11 @@ def _prepare_interrupted_resume(
 ) -> dict[str, Any]:
     _require_local_actor(db, task_id, actor_user_id)
     if idempotency_key:
+        from app.domains.workspace_collaboration.control import existing_resume
+
+        existing_receipt = existing_resume(db, task_id, actor_user_id, idempotency_key, prompt, confirm_continue)
+        if existing_receipt:
+            return {"duplicate_payload": existing_receipt}
         existing_jobs = (
             db.query(SddAiJob)
             .filter(
@@ -557,6 +562,15 @@ async def resume_interrupted_task(
     engine = get_engine(task_id)
     if engine and engine.running:
         raise TaskSessionControlError("Task is already running", status_code=409)
+
+    from app.domains.workspace_collaboration.control import resume_submission, schedule_control
+
+    receipt = await run_db_txn(
+        lambda db: resume_submission(db, task_id, actor_user_id, prepared, idempotency_key or None, metadata_json)
+    )
+    if receipt:
+        await schedule_control(receipt)
+        return {"task_id": task_id, "status": "CODING", "job": None, "submission": receipt}
 
     now = datetime.utcnow()
 
@@ -709,6 +723,7 @@ def start_task_session_sync(
     task.error_message = None
     task.business_state = "TASK_IN_PROGRESS"
     task.session_id = None
+    previous_generation = int(task.session_generation or 0)
     task.session_generation = max(1, int(task.session_generation or 0))
     task.interrupt_reason = None
     task.interrupted_by_id = None
@@ -716,6 +731,18 @@ def start_task_session_sync(
     # 主开关：启动引擎时可更新“自动执行全流程”任务级偏好
     if sop_auto_run is not None:
         task.task_meta_json = {**(task.task_meta_json or {}), "sop_auto_run": bool(sop_auto_run)}
+
+    from app.domains.workspace_collaboration import control as collaboration_control
+
+    if collaboration_control.enabled(db, task.id):
+        if previous_generation != task.session_generation:
+            from app.domains.workspace_collaboration.service import reset_session
+
+            reset_session(db, task)
+        receipt = collaboration_control.accept_control(
+            db, task, creator_id, content=user_display, prompt=prompt, fresh_session=True, source="task_start"
+        )
+        return {"task_id": task.id, "job_id": None, "job": None, "submission": receipt}
 
     initial_message = task_conversation_messages.save_chat_message(
         db,
@@ -787,6 +814,11 @@ async def start_task_session(
             sop_auto_run=sop_auto_run,
         )
     )
+    if result.get("submission"):
+        from app.domains.workspace_collaboration.control import schedule_control
+
+        await schedule_control(result["submission"])
+        return {"msg": "正在准备本轮本地代码", "task_id": result["task_id"], "submission": result["submission"]}
     await ai_job_publishing.enqueue_task_chat_job(result["job_id"])
     return {"msg": "Task started", "task_id": result["task_id"], "job": result["job"]}
 
@@ -812,6 +844,9 @@ def prepare_initialize_sync(db: Session, *, ws_id: str, task_id: str) -> dict[st
     task = task_task_records_queries.get_task(db, task_id, ws_id)
     if not task:
         raise TaskSessionControlError("Task not found", status_code=404)
+    from app.domains.workspace_collaboration.control import require_ready
+
+    require_ready(db, task_id)
     _assert_no_preparing_submission(db, task_id)
     _ensure_task_not_baselined(task)
     if task.status == TaskStatus.PROVISIONING:
@@ -868,6 +903,9 @@ def apply_initialize_sync(
     task.interrupted_by_id = None
     task.interrupted_at = None
     prompts = build_session_prompt(task, requested_prompt)
+    from app.domains.workspace_collaboration import service as collaboration
+
+    collaboration.reset_session(db, task)
     if actor_user_id:
         from app.domains.notification.services.task_awareness import capture_business
 
@@ -943,6 +981,25 @@ async def initialize_task_session(
             message_type="init_reason",
         )
     )
+    from app.domains.workspace_collaboration import control as collaboration_control
+
+    def accept_collaborative_initialize(session):
+        if not collaboration_control.enabled(session, task_id):
+            return None
+        return collaboration_control.accept_control(
+            session,
+            session.get(SddTask, task_id),
+            actor_user_id,
+            content=state["user_display"],
+            prompt=state["prompt"],
+            fresh_session=True,
+            source="task_initialize",
+        )
+
+    receipt = await run_txn(accept_collaborative_initialize)
+    if receipt:
+        await collaboration_control.schedule_control(receipt)
+        return {"msg": "正在准备本轮本地代码", "job": None, "submission": receipt}
     created = await task_session_service.create_task_chat_turn(
         task_id=task_id,
         actor_user_id=actor_user_id,

@@ -12,6 +12,7 @@ import ToggleSwitch from '@/components/ToggleSwitch.vue'
 import type { RequirementOption } from '@/types/taskRail'
 import type { RequirementSummary } from '@/types/workspaceAssets'
 import type { TaskCreateSidebar, TaskCreateSidebarName, TaskDraftSnapshot, TaskTypeValue } from './types'
+import { isDesktop } from '@/utils/runtime'
 
 const props = defineProps<{
   wsId: string
@@ -45,6 +46,7 @@ const PRIORITIES = ['P0', 'P1', 'P2', 'P3'] as const
 
 // ── 草稿字段 ──
 const execution = shallowRef<TaskExecution>({ location: 'SERVER' })
+const localCollaborationIntent = shallowRef(false)
 const models = useAgentModels(() => ({
   workspaceId: props.wsId,
   resourceId: execution.value.location === 'LOCAL' ? execution.value.resource_id : undefined,
@@ -107,6 +109,7 @@ const submitDraft = () => {
   emit('submit', {
     taskType: props.taskType,
     execution: execution.value,
+    ...(execution.value.location === 'SERVER' && localCollaborationIntent.value ? { enableLocalCollaboration: true } : {}),
     agentModel: models.selection.value,
     name: name.value,
     requirementId: isDiagnosisTask.value ? undefined : props.selectedRequirement?.id,
@@ -128,6 +131,7 @@ const reset = () => {
   phenomenon.value = ''
   priority.value = 'P2'
   sopAutoRun.value = false
+  localCollaborationIntent.value = false
   requirementDuration.value = 8
   specFile.value = null
   diagnosisFiles.value = []
@@ -333,6 +337,7 @@ defineExpose({ reset })
     </div>
 
     <!-- 行 4：Worktree 仓库载入触发条（整行可点击展开右侧仓库树） -->
+    <label v-if="isDesktop() && execution.location === 'SERVER' && reposTotal > 0" class="collaboration-intent"><input v-model="localCollaborationIntent" type="checkbox" :disabled="creating" />{{ $t('collaboration.createIntent') }}<small>{{ $t('collaboration.createIntentHint') }}</small></label>
     <div v-if="reposTotal > 0" class="form-meta-container">
       <div
         class="meta-skills-bar skills-entry-card repo-entry-card"
@@ -402,6 +407,7 @@ defineExpose({ reset })
 
 <style scoped src="@/styles/task-create/task-create-shared.css"></style>
 <style scoped>
+.collaboration-intent { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; }.collaboration-intent small { width: 100%; color: var(--text-secondary); padding-left: 22px; }
 .requirement-context-hint { color:var(--color-text-muted); font-size:.72rem; }
 .requirement-selection { max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .requirement-context-error { color:#b91c1c; font-size:.75rem; }

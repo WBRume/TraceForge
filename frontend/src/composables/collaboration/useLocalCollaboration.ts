@@ -1,0 +1,566 @@
+import { computed, effectScope, onScopeDispose, reactive, ref, shallowRef, watch, type EffectScope } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { useAuthStore } from '@/stores/auth'
+import { getSddDesktop } from '@/utils/runtime'
+import { formatApiError } from '@/utils/error'
+import { onRepoPreferencesChanged, readRepoPreferences } from '@/composables/localRepoPreferences'
+import { remoteUrlsMatch } from '@/composables/local-agent/localAgentUtils'
+import { collaborationApi, base64Bytes, bytesBase64 } from '@/services/collaborationApi'
+import type { CollaborationBackup, CollaborationCapture, CollaborationConflict, CollaborationManifest, CollaborationMappingCheck, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
+import { expandManifest, expandStatus, manifestDelta } from '../../../shared/collaboration-delta'
+
+const INSTANCE_KEY = 'traceforge.collaboration.instance'
+const INSTANCE_ID = sessionStorage.getItem(INSTANCE_KEY) || crypto.randomUUID()
+sessionStorage.setItem(INSTANCE_KEY, INSTANCE_ID)
+function clientId() {
+  const key = 'traceforge.collaboration.client'
+  let id = localStorage.getItem(key)
+  if (!id) { id = crypto.randomUUID(); localStorage.setItem(key, id) }
+  return id
+}
+type SavedBinding = { workspaceId: string; taskId: string }
+const bindingKey = (userId: string) => `traceforge.collaboration.bindings:${userId}`
+function savedBindings(userId: string): SavedBinding[] {
+  try { const value = JSON.parse(localStorage.getItem(bindingKey(userId)) || '[]'); return Array.isArray(value) ? value.filter(row => typeof row.workspaceId === 'string' && typeof row.taskId === 'string') : [] }
+  catch { return [] }
+}
+
+function createController(options: { workspaceId: () => string; task: () => Record<string, any> | null }, t: ReturnType<typeof useI18n>['t'], auth: ReturnType<typeof useAuthStore>) {
+  const desktop = getSddDesktop()
+  const state = shallowRef<CollaborationState | null>(null), local = shallowRef<LocalCollaborationStatus | null>(null)
+  const input = shallowRef<CollaborationManifest | null>(null), cloud = shallowRef<CollaborationManifest | null>(null)
+  const previewConflicts = shallowRef<CollaborationConflict[]>([])
+  const error = shallowRef(''), busy = shallowRef(false), loading = shallowRef(true)
+  const preparationRequired = shallowRef(false)
+  const deliveryRetryRequired = shallowRef(false)
+  const mappingChecks = shallowRef<CollaborationMappingCheck[]>([]), operationStage = shallowRef(''), operationSeconds = shallowRef(0)
+  let stageStarted = 0
+  const setStage = (stage: string) => { operationStage.value = stage; operationSeconds.value = 0; stageStarted = Date.now() }
+  const stageClock = setInterval(() => { if (busy.value && operationStage.value) operationSeconds.value = Math.floor((Date.now() - stageStarted) / 1000) }, 1000)
+  const directories = shallowRef<{ mapped_repositories?: number; task_root: string; repositories: Array<{ task_repository_id: string; local_worktree_path: string }> } | null>(null)
+  const activity = ref({ direction: '', done: 0, total: 0, bytes: 0, totalBytes: 0 })
+  const progressive = shallowRef(localStorage.getItem(`traceforge.collaboration.progressive:${options.task()?.id}`) === 'true')
+  const view = ref({ tab: 'cloud', pair: 'local-cloud', selected: '', selectedConflicts: [] as string[], conflictSetId: '' })
+  const mappings = ref<Record<string, { local_path: string; configured_git_url: string }>>({})
+  const available = Boolean(desktop?.collaboration)
+  const identity = reactive({ client_id: clientId(), instance_id: INSTANCE_ID })
+  const standaloneKey = `traceforge.collaboration.handoff:${options.workspaceId()}:${options.task()?.id}`
+  let nativeIdentityReady = false, mappingsDirty = true
+  const supported = computed(() => options.task()?.execution_location === 'SERVER')
+  const enabled = computed(() => Boolean(state.value?.enabled))
+  const driver = computed(() => state.value?.driver_user_id === auth.user?.id && state.value?.client_id === identity.client_id && state.value?.instance_id === identity.instance_id)
+  const remoteSender = computed(() => !desktop && state.value?.driver_user_id === auth.user?.id && state.value?.driver_connected === true)
+  const phase = computed(() => busy.value && !enabled.value ? 'ENABLING' : state.value?.sync_phase || 'DISABLED')
+  const label = computed(() => (preparationRequired.value ? t('collaboration.preparationRequired') : deliveryRetryRequired.value && !busy.value ? t('collaboration.deliveryRetryRequired') : t(`collaboration.phases.${phase.value}`, phase.value)) + (phase.value === 'READY' && local.value?.local_changes?.length ? ` · ${t('collaboration.localCount', { count: local.value.local_changes.length })}` : ''))
+  const blocked = computed(() => supported.value && (loading.value || (enabled.value && (preparationRequired.value || Boolean(error.value) || local.value?.state === 'RECOVERY_REQUIRED' || (!(available && driver.value) && !remoteSender.value) || state.value?.driver_connected === false || busy.value || !['READY', 'DISABLED'].includes(phase.value)))))
+  const conflicts = computed(() => ['RUNNING', 'WAITING_HITL'].includes(phase.value) ? previewConflicts.value : local.value?.conflicts || [])
+  let generation = 0, timer: ReturnType<typeof setTimeout> | undefined, refreshing = false, disposed = false
+  let refreshQueued = false
+  let lastLease = 0, leaseRetryAt = 0, lastTarget = '', lastProgress = '', lastHandoff = ''
+  const remote = () => collaborationApi(options.workspaceId(), String(options.task()?.id || ''))
+  let transportStatus: LocalCollaborationStatus | null = null
+  async function snapshot(id: string) {
+    const base = local.value?.baseline?.snapshot_id ? local.value.baseline : cloud.value || input.value
+    const wire = await remote().snapshot(id, base?.snapshot_id)
+    return expandManifest(base, wire)
+  }
+  const native = async <T>(kind: string, payload: Record<string, unknown>): Promise<T> => {
+    if (!desktop?.collaboration) throw new Error(t('collaboration.desktopRequired'))
+    const target = payload.target as CollaborationManifest | undefined
+    const result = await desktop.collaboration.execute({ kind, payload: { ...payload,
+      ...(target && transportStatus?.transport?.token && local.value?.baseline?.snapshot_id ? { target: manifestDelta(local.value.baseline, target) } : {}),
+      delta_transport: true, status_token: transportStatus?.transport?.token,
+      manifest_delta: state.value?.capabilities?.manifest_delta === 1,
+    } }) as any
+    const incoming = kind === 'capture' ? result.status : result
+    if (incoming?.state && incoming.task_id) {
+      transportStatus = expandStatus(transportStatus, incoming)
+      return (kind === 'capture' ? { ...result, status: transportStatus } : transportStatus) as T
+    }
+    return result as T
+  }
+  const fence = () => ({ ...identity, lease_epoch: state.value!.lease_epoch, expected_state_version: state.value!.state_version, expected_workspace_revision: state.value!.workspace_revision, session_generation: state.value!.session_generation, session_revision: state.value!.session_revision })
+  const check = (token: number) => { if (generation !== token || disposed) throw new Error('COLLABORATION_CONTEXT_CHANGED') }
+  const renew = async () => {
+    if (enabled.value && driver.value && state.value?.driver_connected !== false && Date.now() >= leaseRetryAt && Date.now() - lastLease > 20000) {
+      try {
+        await remote().post('lease', { ...identity, lease_epoch: state.value!.lease_epoch })
+        lastLease = Date.now(); leaseRetryAt = 0
+      } catch (reason) {
+        const response = (reason as { response?: { status?: number; data?: { detail?: { code?: string } } } })?.response
+        if (response?.status !== 409 || response.data?.detail?.code !== 'TASK_BUSY') throw reason
+        // A held task row is not a renewed lease. Keep the last success and retry on the next heartbeat.
+        leaseRetryAt = Date.now() + 10000
+      }
+    }
+  }
+  const heartbeat = setInterval(() => { void renew().catch(reason => { error.value = formatApiError(reason, t('collaboration.failed')) }) }, 10000)
+  function rememberBinding() {
+    const userId = String(auth.user?.id || '')
+    if (!userId) return
+    const taskId = String(options.task()?.id || ''), workspaceId = options.workspaceId()
+    const rows = savedBindings(userId).filter(row => row.taskId !== taskId || row.workspaceId !== workspaceId)
+    if (enabled.value && driver.value) rows.push({ taskId, workspaceId })
+    localStorage.setItem(bindingKey(userId), JSON.stringify(rows))
+  }
+
+  async function loadMappings() {
+    const token = generation, wsId = options.workspaceId()
+    mappingsDirty = false
+    const preferences = readRepoPreferences(wsId, String(auth.user?.id || ''))
+    const next: typeof mappings.value = {}
+    for (const repo of state.value?.repositories || []) {
+      const stored = await desktop?.config.getRepoMapping({ workspaceId: wsId, remoteUrl: repo.repo_url })
+      check(token)
+      const preference = preferences.find(row => Boolean(repo.repository_id && row.repository_id === repo.repository_id) || remoteUrlsMatch(row.configured_git_url, repo.repo_url))
+      if (stored?.localPath || preference?.local_path) next[repo.task_repository_id] = { local_path: stored?.localPath || preference!.local_path, configured_git_url: stored?.gitRemoteUrl || preference?.configured_git_url || repo.repo_url }
+    }
+    mappings.value = next
+    if (available && (!nativeIdentityReady || !directories.value)) {
+      const described = await native<NonNullable<typeof directories.value> & { client_id?: string; instance_id?: string }>('describe', { task_id: String(options.task()?.id), directory_mode: 'MAPPED', repositories: (state.value?.repositories || []).map(repo => ({ ...repo, ...next[repo.task_repository_id] })) })
+      check(token); directories.value = described
+      if (described.client_id && described.instance_id) Object.assign(identity, { client_id: described.client_id, instance_id: described.instance_id })
+      nativeIdentityReady = true
+    }
+  }
+
+  function bindingPrepared(status: LocalCollaborationStatus | null) {
+    const expected = state.value?.repositories.map(repo => repo.task_repository_id).sort() || []
+    return Boolean(status?.directory_mode === 'MAPPED' && status.baseline && expected.length && (!status.binding_id || status.binding_id === state.value?.binding_id)
+      && JSON.stringify(status.repositories?.map(repo => repo.task_repository_id).sort()) === JSON.stringify(expected)
+      && JSON.stringify(status.baseline.repositories.map(repo => repo.task_repository_id).sort()) === JSON.stringify(expected))
+  }
+
+  function mappedRepositories() {
+    return state.value!.repositories.map(repo => ({ ...repo, ...mappings.value[repo.task_repository_id] }))
+  }
+  async function inspectMappings(token: number) {
+    if (directories.value?.mapped_repositories !== 1) throw new Error(t('collaboration.restartDesktop'))
+    const repositories = mappedRepositories()
+    if (repositories.some(repo => !repo.local_path)) throw new Error(t('collaboration.mappingRequired'))
+    setStage('checkingMappings')
+    const result = await native<{ ready: boolean; checks: CollaborationMappingCheck[] }>('inspect_mappings', { task_id: String(options.task()?.id), repositories })
+    check(token); mappingChecks.value = result.checks
+    if (!result.ready) throw new Error(t('collaboration.mappingCheckFailed'))
+    return repositories
+  }
+
+  async function prepareCurrentBinding(token: number, previousBindingId = local.value?.binding_id) {
+    if (bindingPrepared(local.value)) { preparationRequired.value = false; return }
+    preparationRequired.value = true
+    await loadMappings(); check(token)
+    const accepted = state.value!
+    const repositories = await inspectMappings(token)
+    setStage('capturingBaseline')
+    const prepared = await native<LocalCollaborationStatus>('prepare', { ...accepted, task_id: String(options.task()?.id),
+      directory_mode: 'MAPPED', previous_binding_id: previousBindingId, repositories })
+    check(token); local.value = prepared
+    if (!bindingPrepared(prepared)) throw new Error(prepared.errors?.join('\n') || t('collaboration.preparationRequired'))
+    preparationRequired.value = false
+  }
+
+  async function cacheManifest(manifest: CollaborationManifest, token: number) {
+    // A viewed manifest is only metadata. Download relative to the native baseline,
+    // even when the server wire delta was empty relative to an already viewed input.
+    manifest = local.value?.baseline ? manifestDelta(local.value.baseline, manifest) : manifest
+    const api = remote()
+    const hashes = [...new Set(manifest.repositories.flatMap(repo => repo.files.map(file => file.sha256)))]
+    const sizes = new Map(manifest.repositories.flatMap(repo => repo.files.map(file => [file.sha256, file.size] as const)))
+    activity.value = { direction: 'download', done: 0, total: 0, bytes: 0, totalBytes: 0 }
+    for (let start = 0; start < hashes.length; start += 2000) {
+      const cached = await native<{ missing: string[] }>('missing_objects', { sha256: hashes.slice(start, start + 2000) })
+      activity.value.total += cached.missing.length; activity.value.totalBytes += cached.missing.reduce((sum, hash) => sum + (sizes.get(hash) || 0), 0)
+      for (let index = 0; index < cached.missing.length; index += 4) {
+        const objects = await Promise.all(cached.missing.slice(index, index + 4).map(async hash => {
+          check(token)
+          const content = bytesBase64(await api.object(hash)); check(token)
+          activity.value.done++; activity.value.bytes += sizes.get(hash) || 0
+          return { sha256: hash, content }
+        }))
+        check(token); await native('cache_objects', { objects })
+      }
+    }
+  }
+
+  async function receipt(snapshotId: string, status: LocalCollaborationStatus, token: number) {
+    check(token)
+    const payload = {
+      ...fence(), operation_id: crypto.randomUUID(), snapshot_id: snapshotId, local_scan_id: crypto.randomUUID(),
+      repository_results: (state.value?.repositories || []).map(repo => ({ task_repository_id: repo.task_repository_id, status: status.state === 'RECOVERY_REQUIRED' || status.errors?.length ? 'FAILED' : status.conflicts?.some(row => row.task_repository_id === repo.task_repository_id) ? 'CONFLICTS' : status.local_changes?.some(row => row.task_repository_id === repo.task_repository_id) ? 'LOCAL_CHANGES' : 'ALIGNED' })),
+      conflicts: status.conflicts || [], pending_local_changes: status.local_changes || [],
+    }
+    const result = await remote().post('receipt', payload)
+    check(token); state.value = result
+  }
+
+  async function uploadManifest(manifest: CollaborationManifest, token: number, objects = new Map<string, { sha256: string; content: string }>()) {
+    const api = remote()
+    const uploadIdentity = { ...identity, lease_epoch: state.value!.lease_epoch }, bindingId = state.value!.binding_id
+    const checkUpload = () => {
+      check(token)
+      if (state.value?.binding_id !== bindingId || state.value?.lease_epoch !== uploadIdentity.lease_epoch
+        || identity.client_id !== uploadIdentity.client_id || identity.instance_id !== uploadIdentity.instance_id) throw new Error('COLLABORATION_CONTEXT_CHANGED')
+    }
+    const hashes = [...new Set(manifest.repositories.flatMap(repo => repo.files.map(file => file.sha256)))]
+    if (!hashes.length) return
+    const sizes = new Map(manifest.repositories.flatMap(repo => repo.files.map(file => [file.sha256, file.size] as const)))
+    activity.value = { direction: 'upload', done: 0, total: 0, bytes: 0, totalBytes: 0 }
+    for (let start = 0; start < hashes.length; start += 1000) {
+      checkUpload()
+      const batch = hashes.slice(start, start + 1000)
+      const missing = await api.post<{ missing: string[] }>('objects/missing', { hashes: batch })
+      checkUpload()
+      activity.value.total += missing.missing.length; activity.value.totalBytes += missing.missing.reduce((sum, hash) => sum + (sizes.get(hash) || 0), 0)
+      for (let index = 0; index < missing.missing.length; index += 4) {
+        await Promise.all(missing.missing.slice(index, index + 4).map(async hash => {
+          checkUpload()
+          const object = objects.get(hash) || await native<{ sha256: string; content: string }>('read_object', { sha256: hash })
+          checkUpload(); await api.upload(hash, base64Bytes(object.content), uploadIdentity)
+          checkUpload()
+          activity.value.done++; activity.value.bytes += sizes.get(hash) || 0
+        }))
+      }
+    }
+  }
+
+  async function reconcile(manifest: CollaborationManifest, token: number, preview = false) {
+    const ownedBusy = !busy.value
+    busy.value = true
+    try {
+      // Keep the known cloud file list visible even if receiving its bytes fails.
+      // This is preview metadata, never evidence of a received local baseline.
+      check(token); cloud.value = manifest
+      setStage('downloadingChanges')
+      await cacheManifest(manifest, token)
+      check(token)
+      if (preview && progressive.value) {
+        const current = await remote().state(); check(token)
+        if (current.progress_snapshot_id !== manifest.snapshot_id || !['RUNNING', 'WAITING_HITL'].includes(current.sync_phase)) return
+      }
+      setStage('applyingChanges')
+      const result = await native<LocalCollaborationStatus>('reconcile', { task_id: manifest.task_id, operation_id: `${preview ? 'preview' : 'delivery'}-${manifest.snapshot_id}`, target: manifest, preview, progressive: preview && progressive.value })
+      check(token)
+      local.value = result; cloud.value = manifest
+      if (preview) previewConflicts.value = result.preview_conflicts || []
+      if (!preview) { await receipt(manifest.snapshot_id, result, token); lastTarget = manifest.snapshot_id }
+      deliveryRetryRequired.value = false; error.value = ''
+    } catch (reason) {
+      if (token === generation) deliveryRetryRequired.value = true
+      throw reason
+    } finally { if (ownedBusy && token === generation) busy.value = false }
+  }
+
+  async function prepareInput(token: number) {
+    const preparation = state.value?.pending_submission_id && state.value.pending_submission_id !== state.value.input_submission_id ? { submission_id: state.value.pending_submission_id, operation_id: `handoff:${state.value.pending_submission_id}` } : null
+    if (!preparation || lastHandoff === preparation.operation_id) return
+    const api = remote(), taskId = String(options.task()?.id)
+    busy.value = true
+    try {
+      const capture = await native<CollaborationCapture>('capture', { task_id: taskId, operation_id: preparation.operation_id, include_objects: false, session_generation: state.value!.session_generation, session_revision: state.value!.session_revision })
+      check(token); local.value = capture.status
+      await uploadManifest(capture.manifest, token, new Map((capture.objects || []).map(object => [object.sha256, object])))
+      check(token)
+      const next = await api.post('handoff', { ...fence(), ...preparation, manifest: capture.manifest, input_cut_seq: capture.input_cut_seq ?? 0 })
+      check(token); state.value = next; lastHandoff = preparation.operation_id
+    } finally { if (token === generation) busy.value = false }
+  }
+
+  async function refreshOnce() {
+    const token = generation
+    try {
+      const next = await remote().state(); check(token)
+      state.value = next; loading.value = false
+      if (mappingsDirty || (available && !nativeIdentityReady) || preparationRequired.value) await loadMappings()
+      if (driver.value || !next.enabled) rememberBinding()
+      if (!next.enabled) { preparationRequired.value = false; deliveryRetryRequired.value = false; error.value = ''; await loadMappings(); return }
+      if (!available || !driver.value) {
+        const target = ['RUNNING', 'WAITING_HITL'].includes(next.sync_phase) ? next.progress_snapshot_id || next.snapshot_id : next.snapshot_id
+        if (target && cloud.value?.snapshot_id !== target) { const manifest = await snapshot(target); check(token); cloud.value = manifest }
+        if (next.input_snapshot_id && input.value?.snapshot_id !== next.input_snapshot_id) { const manifest = await snapshot(next.input_snapshot_id); check(token); input.value = manifest }
+        error.value = ''; return
+      }
+      if (next.driver_connected === false) return
+      await renew(); check(token)
+      // Preparation failures require an explicit retry; polling must not create directories or hide the failure.
+      if (preparationRequired.value || deliveryRetryRequired.value) return
+      if (!local.value) await loadMappings()
+      const capturesLocal = next.sync_phase === 'PREPARING'
+        || (next.snapshot_id !== lastTarget && ['DELIVERY_PENDING', 'CONFLICT_PENDING'].includes(next.sync_phase))
+        || (['RUNNING', 'WAITING_HITL'].includes(next.sync_phase) && next.progress_snapshot_id && next.progress_snapshot_id !== lastProgress)
+      if (!bindingPrepared(local.value) || !capturesLocal) try {
+        const scanned = await native<LocalCollaborationStatus>('status', { task_id: String(options.task()?.id), background: true }); check(token); local.value = scanned
+      } catch (reason) {
+        if (!bindingPrepared(local.value)) {
+          preparationRequired.value = true
+          // Older desktop hosts return the filesystem error instead of a domain code.
+          if (/COLLABORATION_BINDING_MISSING|ENOENT[^\n]*[\\/]collaboration[\\/]bindings[\\/]/i.test(String(reason))) throw new Error(t('collaboration.preparationRequired'))
+        }
+        throw reason
+      }
+      if (!bindingPrepared(local.value)) { preparationRequired.value = true; error.value = t('collaboration.preparationRequired'); return }
+      if (next.input_snapshot_id && input.value?.snapshot_id !== next.input_snapshot_id) {
+        const accepted = await snapshot(next.input_snapshot_id); check(token)
+        if (accepted.source === 'HUMAN_HANDOFF' && (!local.value?.baseline || local.value.baseline.workspace_revision < accepted.workspace_revision)) {
+          const operationId = next.input_submission_id ? `handoff:${next.input_submission_id}` : localStorage.getItem(standaloneKey)
+          if (!operationId) throw new Error('COLLABORATION_INPUT_RECEIPT_REQUIRED')
+          const advanced = await native<LocalCollaborationStatus>('accept_input', { task_id: accepted.task_id, operation_id: operationId, target: accepted }); check(token); local.value = advanced
+          if (!next.input_submission_id) localStorage.removeItem(standaloneKey)
+        }
+        input.value = accepted
+      }
+      if (next.sync_phase === 'PREPARING') await prepareInput(token)
+      else if (next.snapshot_id && next.snapshot_id !== lastTarget && ['DELIVERY_PENDING', 'CONFLICT_PENDING'].includes(next.sync_phase)) {
+        await reconcile(await snapshot(next.snapshot_id), token)
+      } else if (next.sync_phase === 'READY' && next.snapshot_id && !cloud.value) {
+        const final = await snapshot(next.snapshot_id); check(token); cloud.value = final; lastTarget = next.snapshot_id
+      } else if (['RUNNING', 'WAITING_HITL'].includes(next.sync_phase) && next.progress_snapshot_id && next.progress_snapshot_id !== lastProgress) {
+        const candidate = await snapshot(next.progress_snapshot_id); check(token)
+        await reconcile(candidate, token, true)
+        lastProgress = next.progress_snapshot_id
+      }
+      error.value = ''
+    } catch (reason) { if (token === generation) { error.value = formatApiError(reason, t('collaboration.failed')); loading.value = false } }
+  }
+
+  async function refresh() {
+    if (!supported.value || !options.task()?.id || disposed) return
+    refreshQueued = true
+    if (refreshing || busy.value) return
+    refreshing = true
+    try {
+      do {
+        refreshQueued = false
+        await refreshOnce()
+      } while (refreshQueued && !busy.value && !disposed)
+    } finally { refreshing = false }
+  }
+  watch(busy, value => { if (!value) { operationStage.value = ''; if (refreshQueued) void refresh() } })
+
+  async function enable() {
+    if (busy.value || !available || !state.value) return
+    if (state.value.enabled) { await recover(); return }
+    busy.value = true; error.value = ''
+    const token = generation, taskId = String(options.task()?.id)
+    try {
+      await loadMappings(); check(token)
+      if (state.value.repositories.some(repo => !mappings.value[repo.task_repository_id])) throw new Error(t('collaboration.mappingRequired'))
+      await inspectMappings(token)
+      setStage('enablingCloud')
+      const operationKey = `traceforge.collaboration.enable:${options.workspaceId()}:${taskId}`
+      const operationId = localStorage.getItem(operationKey) || crypto.randomUUID()
+      localStorage.setItem(operationKey, operationId)
+      let previousBindingId = local.value?.binding_id
+      if (!previousBindingId) { try { local.value = await native<LocalCollaborationStatus>('status', { task_id: taskId }); previousBindingId = local.value.binding_id } catch { /* A first-time binding has no local status yet. */ } }
+      check(token)
+      const accepted = await remote().post('enable', { ...identity, operation_id: operationId }); check(token); state.value = accepted
+      rememberBinding()
+      preparationRequired.value = true
+      await prepareCurrentBinding(token, previousBindingId)
+      if (accepted.snapshot_id) await reconcile(await snapshot(accepted.snapshot_id), token)
+      localStorage.removeItem(operationKey)
+      if (state.value.sync_phase === 'READY') await openDirectory()
+    } catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
+    finally { if (token === generation) busy.value = false }
+  }
+
+  async function restore(selected: CollaborationConflict[], conflictSetId: string) {
+    if (!selected.length || busy.value || !driver.value || !state.value?.snapshot_id || phase.value !== 'CONFLICT_PENDING') return
+    const token = generation
+    busy.value = true; error.value = ''
+    try {
+      local.value = await native<LocalCollaborationStatus>('restore', { task_id: String(options.task()?.id), operation_id: crypto.randomUUID(), conflict_set_id: conflictSetId, selected: selected.map(row => ({ task_repository_id: row.task_repository_id, path: row.path, expected_sha256: row.expected_sha256 ?? row.local?.sha256 ?? null })) })
+      check(token); await receipt(state.value.snapshot_id, local.value, token)
+    } catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
+    finally { if (token === generation) busy.value = false }
+  }
+
+  async function readText(hash: string): Promise<string> {
+    let data: Uint8Array
+    try { data = base64Bytes((await native<{ content: string }>('read_object', { sha256: hash })).content) }
+    catch { data = new Uint8Array(await remote().object(hash)) }
+    if (data.length > 2 * 1024 * 1024 || data.includes(0)) throw new Error(t('collaboration.binary'))
+    return new TextDecoder('utf-8', { fatal: true }).decode(data)
+  }
+  async function refreshComparison() {
+    if (busy.value) return
+    try {
+      await loadMappings()
+      if (!available) return
+      if (!enabled.value || preparationRequired.value) { await inspectMappings(generation); error.value = ''; return }
+      if (!driver.value) return
+      const scanned = await native<LocalCollaborationStatus>('status', { task_id: String(options.task()?.id), verify: true })
+      local.value = scanned
+      if (cloud.value?.source === 'PROGRESS') {
+        const preview = await native<LocalCollaborationStatus>('reconcile', { task_id: String(options.task()?.id), operation_id: `compare-${cloud.value.snapshot_id}`, target: cloud.value, preview: true, progressive: false })
+        previewConflicts.value = preview.preview_conflicts || []
+      }
+    } catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
+  }
+  async function handoffLocalChanges() {
+    if (busy.value || !driver.value || state.value?.driver_connected === false || local.value?.state === 'RECOVERY_REQUIRED' || phase.value !== 'READY') return
+    error.value = ''
+    const operationId = localStorage.getItem(standaloneKey) || `manual-${crypto.randomUUID()}`, token = generation
+    localStorage.setItem(standaloneKey, operationId); busy.value = true
+    try {
+      const capture = await native<CollaborationCapture>('capture', { task_id: String(options.task()?.id), operation_id: operationId, include_objects: false, session_generation: state.value!.session_generation, session_revision: state.value!.session_revision })
+      check(token); await uploadManifest(capture.manifest, token, new Map())
+      const accepted = await remote().post('handoff', { ...fence(), operation_id: operationId, manifest: capture.manifest, input_cut_seq: capture.input_cut_seq ?? 0 }); check(token); state.value = accepted
+      const manifest = await snapshot(accepted.input_snapshot_id!); check(token)
+      const advanced = await native<LocalCollaborationStatus>('accept_input', { task_id: manifest.task_id, operation_id: operationId, target: manifest }); check(token)
+      local.value = advanced; input.value = manifest; cloud.value = manifest; lastTarget = manifest.snapshot_id; localStorage.removeItem(standaloneKey)
+    } catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
+    finally { if (token === generation) busy.value = false }
+  }
+  async function disable() {
+    if (busy.value || !driver.value || phase.value !== 'READY') return
+    busy.value = true
+    try {
+      const bindingId = state.value!.binding_id
+      state.value = await remote().post('disable', { ...fence(), operation_id: crypto.randomUUID() }); rememberBinding()
+      await native('release', { task_id: String(options.task()?.id), binding_id: bindingId }); error.value = ''
+    }
+    catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
+    finally { busy.value = false }
+  }
+  const listBackups = () => native<{ backup_directory: string; backups: CollaborationBackup[] }>('backups', { task_id: String(options.task()?.id) })
+  async function exportBackup(backup: CollaborationBackup) {
+    if (!desktop || !backup.sha256) return
+    const object = await native<{ content: string }>('read_object', { sha256: backup.sha256 })
+    await desktop.download.save({ suggestedName: `${backup.task_repository_id}-${backup.path.replace(/[\\/]/g, '_')}`, data: base64Bytes(object.content), mimeType: 'application/octet-stream' })
+  }
+  async function cancelPreparation() {
+    const submissionId = state.value?.pending_submission_id
+    if (!submissionId || !driver.value) return
+    try {
+      const result = await remote().post('cancel-preparation', { ...fence(), operation_id: crypto.randomUUID(), submission_id: submissionId })
+      generation++; state.value = result; busy.value = false; error.value = ''
+    } catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
+  }
+  async function claimDriver() {
+    if (!state.value?.enabled || busy.value || !available) return
+    busy.value = true
+    try {
+      const claimed = await remote().post('claim-driver', { ...identity, operation_id: crypto.randomUUID() }); state.value = claimed
+      try { local.value = await native<LocalCollaborationStatus>('status', { task_id: String(options.task()?.id) }) } catch { local.value = null }
+      await prepareCurrentBinding(generation)
+      lastTarget = ''; lastProgress = ''; lastLease = 0; leaseRetryAt = 0; deliveryRetryRequired.value = false; error.value = ''
+    } catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
+    finally { busy.value = false }
+    await refresh()
+  }
+  async function recover() {
+    if (busy.value || !driver.value || !state.value || state.value.driver_connected === false) return
+    busy.value = true; error.value = ''; setStage('checkingMappings')
+    const token = generation
+    try {
+      const current = await remote().state(); check(token); state.value = current
+      if (!driver.value || !current.enabled || current.driver_connected === false) throw new Error(t('collaboration.claimDriverRequired'))
+      if (state.value.recovery_kind === 'SERVER_INPUT') state.value = await remote().post('recover-input', { ...fence(), operation_id: state.value.recovery_operation_id || `handoff:${state.value.pending_submission_id}` })
+      else if (state.value.recovery_kind === 'SERVER_OUTPUT' || phase.value === 'STOPPING') state.value = await remote().post('recover-output', { ...fence(), operation_id: crypto.randomUUID() })
+      else if (['RUNNING', 'WAITING_HITL'].includes(state.value.sync_phase) && state.value.progress_snapshot_id) {
+        const id = state.value.progress_snapshot_id
+        await reconcile(await snapshot(id), token, true); lastProgress = id
+      }
+      else if (state.value.snapshot_id) {
+        if (!['DELIVERY_PENDING', 'CONFLICT_PENDING', 'RECOVERY_REQUIRED'].includes(state.value.sync_phase)) throw new Error(t('collaboration.claimDriverRequired'))
+        if (preparationRequired.value || !bindingPrepared(local.value)) {
+          try { local.value = await native<LocalCollaborationStatus>('status', { task_id: String(options.task()?.id) }) } catch { /* Prepare validates and resumes only the owned binding. */ }
+          check(token); await prepareCurrentBinding(token)
+        }
+        lastTarget = ''; await reconcile(await snapshot(state.value.snapshot_id), token)
+      }
+      deliveryRetryRequired.value = false; error.value = ''
+    } catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
+    finally { busy.value = false }
+  }
+  function setProgressive(value: boolean) { progressive.value = value; localStorage.setItem(`traceforge.collaboration.progressive:${options.task()?.id}`, String(value)); lastProgress = '' }
+  function onEvent(payload: Record<string, unknown>) {
+    if (payload.task_id !== options.task()?.id || Number(payload.state_version || 0) < Number(state.value?.state_version || 0)) return
+    void refresh()
+  }
+  const openDirectory = (repositoryId?: string) => {
+    const path = repositoryId ? local.value?.repositories?.find(repo => repo.task_repository_id === repositoryId)?.local_worktree_path : local.value?.repositories?.[0]?.local_worktree_path
+    return path ? desktop?.system.openPath(path) : undefined
+  }
+  const submissionMetadata = () => {
+    // Only a persisted PREPARING state or explicit handoff may upload local input.
+    return enabled.value ? { collaboration: { ...(remoteSender.value ? { request_driver_input: true } : identity), binding_id: state.value?.binding_id, lease_epoch: state.value?.lease_epoch } } : {}
+  }
+  const schedule = () => { timer = setTimeout(() => { void refresh(); if (!disposed) schedule() }, 2500) }
+  const stopMappingUpdates = onRepoPreferencesChanged(options.workspaceId(), String(auth.user?.id || ''), () => {
+    mappingsDirty = true; mappingChecks.value = []
+    void refresh()
+  })
+  watch(() => [options.workspaceId(), options.task()?.id], () => {
+    generation++; transportStatus = null; state.value = null; local.value = null; input.value = null; cloud.value = null; error.value = ''; busy.value = false; loading.value = supported.value
+    lastTarget = ''; lastProgress = ''; lastHandoff = ''; lastLease = 0; leaseRetryAt = 0; mappings.value = {}; preparationRequired.value = false; deliveryRetryRequired.value = false
+    refreshQueued = false; mappingsDirty = true; directories.value = null
+    void refresh()
+  }, { immediate: true })
+  schedule()
+  onScopeDispose(() => { disposed = true; generation++; clearTimeout(timer); clearInterval(heartbeat); clearInterval(stageClock); stopMappingUpdates() })
+  return { supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, cancelPreparation, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, refreshComparison, view, handoffLocalChanges, disable, listBackups, exportBackup }
+}
+type Controller = ReturnType<typeof createController>
+const controllers = new Map<string, { scope: EffectScope; controller: Controller }>()
+function ensureController(workspaceId: string, task: Record<string, any>, t: ReturnType<typeof useI18n>['t'], auth: ReturnType<typeof useAuthStore>) {
+  const userId = auth.user!.id, key = JSON.stringify([userId, workspaceId, task.id])
+  let entry = controllers.get(key)
+  if (!entry) {
+    const scope = effectScope(true)
+    const controller = scope.run(() => {
+      watch(() => auth.user?.id, current => { if (current !== userId) { controllers.delete(key); scope.stop() } })
+      return createController({ workspaceId: () => workspaceId, task: () => task }, t, auth)
+    })!
+    entry = { scope, controller }; controllers.set(key, entry)
+  }
+  return entry.controller
+}
+
+/** Resume known bindings after authentication, including while no task page is open. */
+export function useCollaborationBackground() {
+  const { t } = useI18n(), auth = useAuthStore()
+  watch(() => auth.user?.id, userId => {
+    if (!userId || !getSddDesktop()?.collaboration) return
+    for (const row of savedBindings(userId)) ensureController(row.workspaceId, { id: row.taskId, execution_location: 'SERVER' }, t, auth)
+  }, { immediate: true })
+}
+
+/** Native bindings and polling survive drawer and route unmounts; logout disposes them. */
+export function useLocalCollaboration(options: { workspaceId: () => string; task: () => Record<string, any> | null }) {
+  const { t } = useI18n(), auth = useAuthStore()
+  const active = shallowRef<Controller | null>(null)
+  watch(() => [options.workspaceId(), options.task()?.id, options.task()?.execution_location, auth.user?.id], () => {
+    const task = options.task(), workspaceId = options.workspaceId(), userId = auth.user?.id
+    if (!task?.id || task.execution_location !== 'SERVER' || !userId) { active.value = null; return }
+    active.value = ensureController(workspaceId, task, t, auth)
+  }, { immediate: true })
+  return {
+    supported: computed(() => Boolean(active.value)), available: Boolean(getSddDesktop()?.collaboration),
+    state: computed(() => active.value?.state.value || null), local: computed(() => active.value?.local.value || null),
+    cloud: computed(() => active.value?.cloud.value || null), input: computed(() => active.value?.input.value || null),
+    error: computed(() => active.value?.error.value || ''), busy: computed(() => active.value?.busy.value || false),
+    loading: computed(() => active.value?.loading.value || false), enabled: computed(() => active.value?.enabled.value || false),
+    preparationRequired: computed(() => active.value?.preparationRequired.value || false),
+    mappingChecks: computed(() => active.value?.mappingChecks.value || []),
+    operationStage: computed(() => active.value?.operationStage.value || ''), operationSeconds: computed(() => active.value?.operationSeconds.value || 0),
+    driver: computed(() => active.value?.driver.value || false), phase: computed(() => active.value?.phase.value || 'OFF'),
+    remoteSender: computed(() => active.value?.remoteSender.value || false),
+    label: computed(() => active.value?.label.value || ''), blocked: computed(() => active.value?.blocked.value || false),
+    conflicts: computed(() => active.value?.conflicts.value || []), mappings: computed(() => active.value?.mappings.value || {}),
+    directories: computed(() => active.value?.directories.value || null), activity: computed(() => active.value?.activity.value || { direction: '', done: 0, total: 0, bytes: 0, totalBytes: 0 }),
+    view: computed(() => active.value?.view.value || { tab: 'cloud', pair: 'local-cloud', selected: '', selectedConflicts: [] as string[], conflictSetId: '' }),
+    progressive: computed(() => active.value?.progressive.value || false), setProgressive: (value: boolean) => active.value?.setProgressive(value),
+    refresh: async () => { await active.value?.refresh() }, enable: async () => { await active.value?.enable() },
+    restore: async (selected: CollaborationConflict[], id: string) => { await active.value?.restore(selected, id) },
+    readText: async (hash: string) => { if (!active.value) throw new Error('COLLABORATION_CONTEXT_CHANGED'); return active.value.readText(hash) },
+    openDirectory: (repositoryId?: string) => active.value?.openDirectory(repositoryId), submissionMetadata: () => active.value?.submissionMetadata() || {},
+    cancelPreparation: async () => { await active.value?.cancelPreparation() },
+    claimDriver: async () => { await active.value?.claimDriver() }, recover: async () => { await active.value?.recover() },
+    onEvent: (payload: Record<string, unknown>) => active.value?.onEvent(payload),
+    refreshComparison: async () => { await active.value?.refreshComparison() },
+    handoffLocalChanges: async () => { await active.value?.handoffLocalChanges() }, disable: async () => { await active.value?.disable() },
+    listBackups: async () => active.value ? active.value.listBackups() : { backup_directory: '', backups: [] as CollaborationBackup[] }, exportBackup: async (backup: CollaborationBackup) => { await active.value?.exportBackup(backup) },
+  }
+}
+export type LocalCollaboration = ReturnType<typeof useLocalCollaboration>

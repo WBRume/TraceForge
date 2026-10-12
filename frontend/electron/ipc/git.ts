@@ -1,4 +1,5 @@
-import { dialog, ipcMain } from '../../desktop/native'
+import { app, dialog, ipcMain } from '../../desktop/native'
+import { rejectManagedWrite } from '../../desktop/local-resource/collaboration-guard'
 import { execFile } from 'node:child_process'
 import { mkdir } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
@@ -79,6 +80,7 @@ export const runGit = async (
 ): Promise<GitCommandResult> => {
   const cwd = assertRepoPath(repoPath)
   const command = args[0]
+  if (['apply', 'checkout', 'pull'].includes(command)) rejectManagedWrite(join(app.getPath('userData'), 'local-resources', 'collaboration-managed-roots.json'), cwd)
   if (!command || !ALLOWED_GIT_COMMANDS.has(command)) {
     throw new Error('Git command is not allowed')
   }

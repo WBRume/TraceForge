@@ -922,6 +922,36 @@ def _load_message_session_fields_sync(db: Session, message_id: str) -> dict:
     }
 
 
+async def _submit_pre_input_turn(task_id, actor_user_id, merged_text, metadata):
+    from app.domains.workspace_collaboration.control import accept_pre_input, schedule_control
+
+    task_status = await run_db(_load_task_status_value, task_id)
+    async with lock_task(task_id):
+        if task_status == TaskStatus.INTERRUPTED.value:
+            resumed = await task_session_control_service.resume_interrupted_task(
+                task_id=task_id,
+                actor_user_id=str(actor_user_id),
+                prompt=merged_text,
+                confirm_continue=False,
+                metadata_json=metadata,
+            )
+            job = resumed.get("job") or {}
+            context = job.get("context_json") or {}
+            return context.get("chat_message_id") or None, job.get("id") or None, resumed.get("submission")
+        receipt = await run_db_txn(lambda db: accept_pre_input(db, task_id, str(actor_user_id), merged_text, metadata))
+        if receipt:
+            await schedule_control(receipt)
+            return None, None, receipt
+        created = await task_session_service.create_task_chat_turn(
+            task_id=task_id,
+            actor_user_id=str(actor_user_id),
+            content=merged_text,
+            context_json=metadata,
+            client_message_id=None,
+        )
+        return created.message_id, created.job_id, None
+
+
 async def submit_pre_input(
     *,
     pre_input_id: str,
@@ -958,33 +988,10 @@ async def submit_pre_input(
     task_id = claimed_state["task_id"]
     merged_text = claimed_state["merged_text"]
     metadata = claimed_state["metadata"]
-
     try:
-        task_status = await run_db(_load_task_status_value, task_id)
-        if task_status == str(getattr(TaskStatus.INTERRUPTED, "value", TaskStatus.INTERRUPTED)):
-            async with lock_task(task_id):
-                resume_payload = await task_session_control_service.resume_interrupted_task(
-                    task_id=task_id,
-                    actor_user_id=str(actor_user_id),
-                    prompt=merged_text,
-                    confirm_continue=False,
-                    metadata_json=metadata,
-                )
-            resume_job = resume_payload.get("job") or {}
-            resume_context = resume_job.get("context_json") or {}
-            message_id = str(resume_context.get("chat_message_id") or "") or None
-            job_id = str(resume_job.get("id") or "") or None
-        else:
-            async with lock_task(task_id):
-                created = await task_session_service.create_task_chat_turn(
-                    task_id=task_id,
-                    actor_user_id=str(actor_user_id),
-                    content=merged_text,
-                    context_json=metadata,
-                    client_message_id=None,
-                )
-            message_id = created.message_id
-            job_id = created.job_id
+        message_id, job_id, collaboration_receipt = await _submit_pre_input_turn(
+            task_id, actor_user_id, merged_text, metadata
+        )
     except PreInputError:
         raise
     except Exception:
@@ -1083,7 +1090,10 @@ async def submit_pre_input(
     except Exception:
         logger.exception(f"Failed to dispatch submit notifications for pre input {pre_input_id}")
 
-    return {"pre_input_id": pre_input_id, "chat_message_id": message_id, "ai_job_id": job_id}
+    result = {"pre_input_id": pre_input_id, "chat_message_id": message_id, "ai_job_id": job_id}
+    if collaboration_receipt:
+        result["submission"] = collaboration_receipt
+    return result
 
 
 def _load_task_status_value(task_id: str) -> str | None:

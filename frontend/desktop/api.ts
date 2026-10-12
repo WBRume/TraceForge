@@ -26,6 +26,7 @@ export function createDesktopApi(bridge: DesktopBridge): SddDesktopApi {
       ensure: payload => invoke('resources:ensure', payload),
       start: payload => invoke('resources:start', payload),
     },
+    collaboration: { execute: payload => invoke('collaboration:execute', payload) },
     download: { save: payload => invoke('download:save', payload) },
     git: {
       selectDirectory: () => invoke('git:select-directory'),

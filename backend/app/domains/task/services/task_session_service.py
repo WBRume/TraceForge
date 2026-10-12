@@ -266,6 +266,11 @@ def _prepare_chat_turn_sync(
         submission.session_generation = int(task.session_generation)
         submission.session_revision = int(task.session_revision)
 
+    from app.domains.workspace_collaboration.hooks import advance_session
+    from app.domains.workspace_collaboration.service import input_worktree_checkpoint
+
+    advance_session(db, task, submission_id)
+
     from app.agents.selection import resolve_task_backend
 
     provider = resolve_task_backend(db, task.id)
@@ -279,6 +284,7 @@ def _prepare_chat_turn_sync(
         "workspace_name": str(task.workspace.name or ""),
         "task_name": str(task.name or ""),
         "initial_workspace_checkpoint": (task.task_meta_json or {}).get("initial_workspace_checkpoint"),
+        "pinned_worktree": input_worktree_checkpoint(db, task, submission_id),
         "project_path": str(task.project_path or ""),
         "repo_rel_paths": _repo_rel_paths(task),
         "generation": int(task.session_generation),
@@ -394,6 +400,12 @@ def _persist_chat_turn_sync(
         commit=False,
     )
     turn.ai_job_id = job.id
+    if metadata.get("_collaboration_control") and metadata.get("pre_input_id"):
+        from app.domains.task.models.pre_input import SddTaskPreInput
+
+        pre_input = db.query(SddTaskPreInput).filter_by(id=metadata["pre_input_id"], task_id=task_id).first()
+        if pre_input:
+            pre_input.submitted_message_id = message.id
     # 阅读捕获与源消息同事务（task 行锁已取得）：先登记条目，
     # outbox 事件的 DTO 才能携带共享内容版本 reading_change_seq
     from app.domains.task.services import reading_capture_service
@@ -495,6 +507,7 @@ async def create_task_chat_turn(
             task_id=str(prepared["task_id"]),
             task_name=prepared["task_name"],
             initial_checkpoint=prepared.get("initial_workspace_checkpoint"),
+            **({"pinned_worktree": prepared["pinned_worktree"]} if prepared.get("pinned_worktree") else {}),
         )
         checkpoint_root = str(checkpoint["root"])
         prepared["checkpoint_root"] = checkpoint_root
@@ -968,6 +981,9 @@ def _prepare_undo_sync(
     target, target_message = _load_turn_target(db, task, message_id)
     suffix = _suffix_turns(db, task, target)
     message_ids = _suffix_message_ids(db, task, target_message, suffix)
+    from app.domains.workspace_collaboration.hooks import begin_restore
+
+    begin_restore(db, task, operation_id)
     operation = TaskSessionOperation(
         task_id=task.id,
         workspace_id=task.workspace_id,
@@ -1104,6 +1120,9 @@ def _fail_undo_sync(db: Session, *, task_id: str, operation_id: str) -> None:
         operation.error_code = "UNDO_FAILED"
         operation.error_message = "Undo failed; recovery checkpoint retained"
         operation.finished_at = datetime.utcnow()
+        from app.domains.workspace_collaboration import service as collaboration
+
+        collaboration.mark_recovery(db, task_id, "历史恢复失败，请先核对保留的恢复记录")
         db.commit()
 
 
@@ -1254,6 +1273,9 @@ async def undo_task_message(
                     forked_dsh_session_id=forked_dsh_session_id,
                 ),
             )
+            from app.domains.workspace_collaboration.hooks import finish_restore
+
+            await finish_restore(resolved_task_id, lambda body: run_db_txn_with_bind(db_bind, body))
             for checkpoint_path in context["checkpoint_paths"]:
                 try:
                     await task_session_snapshot_service.cleanup_checkpoint(checkpoint_path)

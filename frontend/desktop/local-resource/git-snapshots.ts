@@ -2,7 +2,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { atomic, fail, hash, readJson, writeJson, type Receipt } from './filesystem'
+import { atomic, fail, gitEnvironment, hash, readJson, writeJson, type Receipt } from './filesystem'
 
 const excluded = new Set(['node_modules', 'dist', 'build', 'coverage', '.next', '.nuxt', '.output', '.vite', '.cache', '.turbo', '.parcel-cache', '.svelte-kit', 'target', '.gradle', '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.nox', 'htmlcov'])
 type Policy = { excluded_dirs: string[]; excluded_suffixes: string[] }
@@ -10,12 +10,12 @@ const defaultPolicy: Policy = { excluded_dirs: [...excluded], excluded_suffixes:
 const ignored = (p: string, policy: Policy) => p.split('/').some(x => policy.excluded_dirs.includes(x)) || policy.excluded_suffixes.some(suffix => p.endsWith(suffix))
 const nul = (xs: Iterable<string>) => Buffer.from([...xs].map(x => x + '\0').join(''))
 function git(cwd: string, args: string[], input?: Buffer, inputFile?: number): Buffer {
-  const result = spawnSync('git', args, { cwd, input, stdio: [inputFile ?? 'pipe', 'pipe', 'pipe'], windowsHide: true, timeout: 180_000, maxBuffer: 256 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' } })
+  const result = spawnSync('git', args, { cwd, input, stdio: [inputFile ?? 'pipe', 'pipe', 'pipe'], windowsHide: true, timeout: 180_000, maxBuffer: 256 * 1024 * 1024, env: gitEnvironment() })
   if (result.error) throw result.error
   if (result.status !== 0) fail(`SNAPSHOT_GIT_ERROR: ${result.stderr.toString().slice(-500)}`)
   return result.stdout
 }
-function shadowGit(directory: string, args: string[], input?: Buffer, inputFile?: number): Buffer {
+export function shadowGit(directory: string, args: string[], input?: Buffer, inputFile?: number): Buffer {
   // Git checks GIT_DIR's UTF-8 length before core.longpaths can help.
   return git(directory, ['--git-dir=.', '-c', 'core.longpaths=true', ...args], input, inputFile)
 }
@@ -38,7 +38,7 @@ function safe(root: string, relative: string, checked?: Set<string>) {
 function exists(p: string) { try { fs.lstatSync(p); return true } catch (e: any) { if (e.code === 'ENOENT') return false; throw e } }
 
 type Repo = { repo_rel_path: string; repo_path: string; head: string | null; branch: string | null; git_dir: string; index_path: string; index_copy: string | null; index_sha256: string | null }
-type Part = { relative: string; git_dir: string; tree: string; ref: string }
+export type Part = { relative: string; git_dir: string; tree: string; ref: string }
 export type GitSnapshot = { version: 4; task_root: string; object_store: string; policy: Policy; directory_links: string[]; directories: string[]; modes: Record<string, number>; tracked: string[]; partitions: Part[]; repositories: Repo[]; quarantined_controls?: Record<string, string> }
 type Entry = { oid: string; mode: string; git_dir: string }
 
@@ -75,7 +75,21 @@ function repoState(root: string, repo: string, destination: string): Repo {
   return { repo_rel_path: relative, repo_path: repo, head, branch, git_dir: gitDir, index_path: index, index_copy: copy, index_sha256: copy ? hash(fs.readFileSync(copy)) : null }
 }
 
-function capturePart(root: string, store: string, relative: string, source: string | null, protectedPaths: string[], ref: string): Part {
+export interface GitCaptureOptions { modes?: Map<string, string>; rejectLinks?: boolean; forceContent?: boolean; changedPaths?: ReadonlySet<string> }
+/** Update only the journal's paths; read-tree anchors a shared rollback index to the known cut. */
+export function capturePartPaths(root: string, part: Part, existing: string[], removed: string[], options: GitCaptureOptions, retain = true): Part {
+  const cwd = part.relative === '.' ? root : safe(root, part.relative)
+  const owner = readJson(path.join(part.git_dir, 'owner.json'))
+  if (owner.root !== root || owner.relative !== part.relative) fail('SNAPSHOT_IDENTITY_CHANGED')
+  const run = (args: string[], data?: Buffer) => shadowGit(part.git_dir, ['--work-tree=' + cwd, ...args], data)
+  run(['read-tree', '-m', part.tree])
+  if (removed.length) run(['update-index', '--force-remove', '-z', '--stdin'], nul(removed))
+  if (existing.length) importBlobs(cwd, part.git_dir, existing, run, options)
+  const tree = run(['write-tree']).toString().trim()
+  if (retain) run(['update-ref', part.ref, tree])
+  return { ...part, tree }
+}
+export function capturePart(root: string, store: string, relative: string, source: string | null, protectedPaths: string[], ref: string, options: GitCaptureOptions = {}): Part {
   const cwd = relative === '.' ? root : safe(root, relative)
   const directory = path.join(store, 'shadow', hash(relative).slice(0, 24))
   const run = (args: string[], input?: Buffer) => shadowGit(directory, ['--work-tree=' + cwd, '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', '-c', 'core.attributesFile=', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', ...args], input)
@@ -102,6 +116,7 @@ function capturePart(root: string, store: string, relative: string, source: stri
     const owner = readJson(path.join(directory, 'owner.json'))
     if (owner.root !== root || owner.relative !== relative || !fs.existsSync(path.join(directory, 'index')) || fs.existsSync(path.join(directory, 'objects/info/alternates'))) fail('SNAPSHOT_INDEX_INVALID')
   }
+  if (options.rejectLinks && process.platform === 'win32') run(['config', 'core.symlinks', 'false'])
   const rows = run(['ls-files', '--stage', '-z']).toString().split('\0').filter(Boolean).map(row => {
     const i = row.indexOf('\t'); return [row.slice(0, i).split(' '), row.slice(i + 1)] as const
   })
@@ -132,8 +147,16 @@ function capturePart(root: string, store: string, relative: string, source: stri
   if (remove.size) run(['update-index', '--force-remove', '-z', '--stdin'], nul(remove))
   const dirty = new Set(run(['diff-files', '--name-only', '-z']).toString().split('\0').filter(Boolean))
   const remaining = new Set(names.filter(name => !remove.has(name)))
-  const changed = protectedPaths.filter(name => dirty.has(name) || !remaining.has(name))
-  if (changed.length) importBlobs(cwd, directory, changed, run)
+  const hinted = (name: string) => {
+    if (!options.changedPaths?.size) return false
+    const parts = name.split('/')
+    return parts.some((_, index) => options.changedPaths!.has(parts.slice(0, index + 1).join('/')))
+  }
+  const changed = protectedPaths.filter(name => (cold && options.rejectLinks) || dirty.has(name) || !remaining.has(name) || hinted(name))
+  if (changed.length) importBlobs(cwd, directory, changed, run, options)
+  // Windows Git uses creation time for index ctime. A restored mtime can hide a write;
+  // authority may require Git itself to refresh bytes, with private attributes disabling filters.
+  if (options.forceContent && protectedPaths.length) run(['add', '--renormalize', '-f', '--pathspec-from-file=-', '--pathspec-file-nul'], nul(protectedPaths))
   run(['update-index', '--refresh'])
   const tree = protectedPaths.length ? run(['write-tree']).toString().trim() : run(['hash-object', '-t', 'tree', '-w', '--stdin'], Buffer.alloc(0)).toString().trim()
   run(['update-ref', ref, tree])
@@ -167,7 +190,7 @@ function capturePart(root: string, store: string, relative: string, source: stri
   return { relative, git_dir: directory, tree, ref }
 }
 
-function importBlobs(cwd: string, directory: string, changed: string[], run: (args: string[], data?: Buffer) => Buffer) {
+function importBlobs(cwd: string, directory: string, changed: string[], run: (args: string[], data?: Buffer) => Buffer, options: GitCaptureOptions = {}) {
   const temporary = fs.mkdtempSync(path.join(directory, '.import-'))
   const streamPath = path.join(temporary, 'blobs'), marksPath = path.join(temporary, 'marks'), modes: string[] = []
   try {
@@ -175,10 +198,11 @@ function importBlobs(cwd: string, directory: string, changed: string[], run: (ar
     try {
       const buffer = Buffer.alloc(1024 * 1024)
       for (let i = 0; i < changed.length; i++) {
-        const full = path.join(cwd, changed[i]), before = fs.lstatSync(full)
+        const full = safe(cwd, changed[i]), before = fs.lstatSync(full)
         const link = before.isSymbolicLink() ? Buffer.from(fs.readlinkSync(full)) : null
+        if (link && options.rejectLinks) fail('COLLABORATION_SYMLINK_UNSUPPORTED')
         if (!link && !before.isFile()) fail('SNAPSHOT_UNSUPPORTED_FILE')
-        modes.push(link ? '120000' : process.platform !== 'win32' && (before.mode & 0o111) ? '100755' : '100644')
+        modes.push(link ? '120000' : options.modes?.get(changed[i]) ?? (process.platform !== 'win32' && (before.mode & 0o111) ? '100755' : '100644'))
         fs.writeSync(output, `blob\nmark :${i + 1}\ndata ${link ? link.length : before.size}\n`)
         if (link) fs.writeSync(output, link)
         else {
@@ -310,7 +334,13 @@ export function collectGitSnapshots(store: string) {
   for (const name of fs.readdirSync(shadows)) {
     const directory = path.join(shadows, name)
     const refs = shadowGit(directory, ['for-each-ref', '--format=%(refname)', 'refs/traceforge/']).toString().trim().split('\n').filter(Boolean)
-    for (const ref of refs) if (!live.get(directory)?.has(ref)) shadowGit(directory, ['update-ref', '-d', ref])
+    for (const ref of refs) if (!ref.startsWith('refs/traceforge/collaboration/') && !live.get(directory)?.has(ref)) shadowGit(directory, ['update-ref', '-d', ref])
     shadowGit(directory, ['-c', 'pack.window=0', 'gc', '--prune=now'])
   }
+}
+
+export function withSnapshotLock<T>(owner: string, action: () => T): T {
+  fs.mkdirSync(owner, { recursive: true })
+  const lock = path.join(owner, '.snapshot.lock'), fd = fs.openSync(lock, 'wx')
+  try { return action() } finally { fs.closeSync(fd); fs.unlinkSync(lock) }
 }

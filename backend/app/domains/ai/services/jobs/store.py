@@ -551,6 +551,10 @@ def create_task_chat_job(
         session_revision=session_revision,
     )
     db.add(job)
+    db.flush()
+    from app.domains.workspace_collaboration.hooks import authorize_job
+
+    authorize_job(db, job)
     if not commit:
         # The turn owner commits message, job and submission together and seeds
         # token accounting afterwards (that helper performs its own commits).

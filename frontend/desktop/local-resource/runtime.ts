@@ -7,8 +7,10 @@ import { skills } from './content'
 import { documents } from './plan-documents'
 import { snapshot } from './snapshots'
 import { cleanupSession, forkSession, sessionRoot } from './provider'
+import { CollaborationRuntime } from './collaboration'
+import { rejectManagedWrite } from './collaboration-guard'
 
-export interface Config { roots_config_path?: string; state_root: string; allowed_roots: string[]; token: string; listen_host?: string; port?: number; dsh_session_root?: string }
+export interface Config { roots_config_path?: string; state_root: string; allowed_roots: string[]; token: string; listen_host?: string; port?: number; dsh_session_root?: string; collaboration_registry_path?: string }
 export interface Operation { operation_id: string; resource_id: string; task_id: string; kind: string; payload_hash: string; payload: any }
 // Compatible with Python json.dumps(sort_keys=True, ensure_ascii=False).
 export function canonical(value: any): string {
@@ -18,6 +20,7 @@ export function canonical(value: any): string {
 }
 export class Runtime {
   readonly db: JournalDatabase
+  readonly collaboration: CollaborationRuntime
   get roots(): string[] {
     const roots = this.config.roots_config_path ? readJson(this.config.roots_config_path).allowed_roots : this.config.allowed_roots
     if (!Array.isArray(roots) || roots.some(root => typeof root !== 'string' || !path.isAbsolute(root))) fail('INVALID_ALLOWED_ROOTS')
@@ -28,6 +31,7 @@ export class Runtime {
   constructor(config: Config) {
     this.config = config
     this.state = path.resolve(config.state_root)
+    this.collaboration = new CollaborationRuntime(path.join(this.state, 'collaboration'), () => this.roots)
     fs.mkdirSync(this.state, { recursive: true })
     this.db = platform().database(path.join(this.state, 'journal.sqlite3'))
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, hash TEXT NOT NULL, state TEXT NOT NULL, result TEXT); CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, resource TEXT NOT NULL, root TEXT NOT NULL)')
@@ -59,6 +63,11 @@ export class Runtime {
   private execute(command: Operation): any {
     const payload = command.payload
     const task = this.db.query('SELECT resource,root FROM tasks WHERE id=?').get(command.task_id) as { resource: string; root: string } | null
+    if (task && !['repository_details', 'generate_patch'].includes(command.kind)) rejectManagedWrite(this.config.collaboration_registry_path, task.root)
+    if (command.kind === 'apply_patch' || command.kind === 'provision') {
+      const target = child(inside(payload.workspace_root, this.roots), (command.kind === 'apply_patch' ? 'patches/' : 'tasks/') + command.task_id)
+      rejectManagedWrite(this.config.collaboration_registry_path, target)
+    }
     if (command.kind === 'apply_patch') return applyPatches(command.task_id, command.operation_id, payload, this.roots, this.state)
     if (command.kind === 'provision') {
       const root = child(inside(payload.workspace_root, this.roots), 'tasks/' + command.task_id)

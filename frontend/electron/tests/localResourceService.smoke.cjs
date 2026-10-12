@@ -1,5 +1,5 @@
 const { app } = require('electron')
-const { mkdtempSync, writeFileSync } = require('node:fs')
+const { mkdtempSync, mkdirSync, writeFileSync, readFileSync } = require('node:fs')
 const { join, resolve } = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { tmpdir } = require('node:os')
@@ -49,12 +49,33 @@ app.whenReady().then(async () => {
     assert.deepEqual(await (await execute()).json(), provision)
     const journal = await (await fetch(url + '/v1/operations/smoke', { headers })).json()
     assert.equal(journal.state, 'SUCCEEDED')
+    const source = join(root, 'mapped-repo')
+    mkdirSync(source)
+    const git = (...args) => execFileSync('git', args, { cwd: source, encoding: 'utf8', windowsHide: true }).trim()
+    git('init', '-b', 'main'); git('config', 'user.name', 'Smoke'); git('config', 'user.email', 'smoke@example.com')
+    writeFileSync(join(source, 'code.txt'), 'base\n'); git('add', '.'); git('commit', '-m', 'base')
+    git('remote', 'add', 'origin', 'https://example.com/repo.git')
+    const prepared = await host.dispatch('collaboration', { kind: 'prepare', payload: {
+      task_id: 'sync-task', binding_id: 'desktop', workspace_root: join(root, 'sync-tasks'),
+      session_generation: 1, session_revision: 1, repository_set_digest: 'fixture', repositories: [{
+        task_repository_id: 'repo', repository_id: 'repo', repo_url: 'https://example.com/repo.git', repo_slug: 'repo',
+        rel_path: 'repo', branch_name: 'feature/server-branch', base_commit_sha: git('rev-parse', 'HEAD'),
+        local_path: source, configured_git_url: 'https://example.com/repo.git',
+      }],
+    } })
+    const taskFile = join(prepared.repositories[0].local_worktree_path, 'code.txt')
+    writeFileSync(taskFile, 'local changed\n')
+    const captured = await host.dispatch('collaboration', { kind: 'capture', payload: { task_id: 'sync-task', operation_id: 'fixed-input' } })
+    assert.equal(captured.manifest.repositories[0].files[0].sha256, createHash('sha256').update('local changed\n').digest('hex'))
+    assert.equal(readFileSync(join(source, 'code.txt'), 'utf8'), 'base\n')
     await Promise.all([host.close(), host.close()])
     assert.equal(host.isRunning(), false)
     await assert.rejects(fetch(url + '/v1/identity', { headers, signal: AbortSignal.timeout(1000) }))
     host = await startLocalResourceService({ ...config, port })
     assert.deepEqual(await (await fetch(url + '/v1/identity', { headers })).json(), identity)
-    console.log('Electron embedded resources: same PID, worker failure isolation, auth, grants, provision, replay and shutdown passed')
+    const restored = await host.dispatch('collaboration', { kind: 'status', payload: { task_id: 'sync-task' } })
+    assert.equal(restored.local_changes.length, 1)
+    console.log('Electron embedded resources: same PID, worker failure isolation, auth, grants, provision, collaboration worktree/capture/restart, replay and shutdown passed')
   } catch (error) {
     console.error(error)
     process.exitCode = 1

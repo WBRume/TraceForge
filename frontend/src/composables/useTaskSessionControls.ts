@@ -6,6 +6,7 @@ type WorkspaceIdGetter = () => string
 
 interface UseTaskSessionControlsOptions {
   getWorkspaceId: WorkspaceIdGetter
+  getSubmissionMetadata?: () => Record<string, unknown>
 }
 
 interface ResumeInterruptedOptions {
@@ -49,6 +50,7 @@ export function useTaskSessionControls(options: UseTaskSessionControlsOptions) {
         confirm_continue: Boolean(resumeOptions.confirmContinue),
         client_message_id: String(resumeOptions.clientMessageId || '').trim() || undefined,
         agent_model: resumeOptions.agentModel,
+        metadata: options.getSubmissionMetadata?.(),
       })
       return res.data
     } finally {

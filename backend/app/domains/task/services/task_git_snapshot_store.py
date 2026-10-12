@@ -19,15 +19,49 @@ from typing import BinaryIO
 
 from loguru import logger
 
-from app.core.subprocess_runner import run_git
+from app.core.subprocess_runner import GIT_REPOSITORY_ENV_VARS, run_git
 from app.domains.task.services import task_snapshot_store as files
 
 VERSION = 4
 ATTRIBUTES = b"* -text -filter -ident -working-tree-encoding -eol\n"
 
 
+def read_blobs(directory: str, objects: list[tuple[str, int]]):
+    """Read raw immutable blobs in bounded batches, never one process per file."""
+    batch, total = [], 0
+    for item in [*objects, ("", 0)]:
+        oid, size = item
+        if size > 64 * 1024 * 1024 or size < 0:
+            raise ValueError("Snapshot blob exceeds transfer limits")
+        if batch and (not oid or total + size > 32 * 1024 * 1024 or len(batch) >= 1000):
+            raw = shadow_git(directory, ["cat-file", "--batch"], "".join(value[0] + "\n" for value in batch).encode())
+            offset = 0
+            for expected, expected_size in batch:
+                end = raw.index(b"\n", offset)
+                header = raw[offset:end].split()
+                if header != [expected.encode(), b"blob", str(expected_size).encode()]:
+                    raise ValueError("Snapshot blob identity differs")
+                offset = end + 1
+                value = raw[offset : offset + expected_size]
+                if len(value) != expected_size or raw[offset + expected_size : offset + expected_size + 1] != b"\n":
+                    raise ValueError("Snapshot blob is incomplete")
+                algorithm = hashlib.sha1 if len(expected) == 40 else hashlib.sha256
+                if algorithm(b"blob " + str(expected_size).encode() + b"\0" + value).hexdigest() != expected:
+                    raise ValueError("Snapshot blob checksum differs")
+                yield expected, value
+                offset += expected_size + 1
+            if offset != len(raw):
+                raise ValueError("Unexpected snapshot blob output")
+            batch, total = [], 0
+        if oid:
+            batch.append(item)
+            total += size
+
+
 def git(root: str, args: list[str], data: bytes | None = None, *, stdin_file: BinaryIO | None = None) -> bytes:
-    result = run_git(args, cwd=root, decode_text=False, input_data=data, stdin_file=stdin_file)
+    result = run_git(
+        args, cwd=root, decode_text=False, input_data=data, stdin_file=stdin_file, unset_env=GIT_REPOSITORY_ENV_VARS
+    )
     if result.returncode:
         raise ValueError(f"Snapshot Git {args[0]} failed: {result.stderr.decode('utf-8', 'replace')[-500:]}")
     return result.stdout
@@ -193,10 +227,39 @@ class Shadow:
                     equal_eol.add(os.fsdecode(name))
             remove.update(conversion - equal_eol)
 
-    def capture(self, protected: list[str], ref: str) -> dict:
+    def _windows_modes(self, entries) -> list[str]:
+        link_placeholders = []
+        if os.name == "nt" and self.source:
+            source_modes = {}
+            for row in git(self.source, ["ls-files", "--stage", "-z"]).split(b"\0"):
+                if row:
+                    header, name = row.split(b"\t", 1)
+                    source_modes[name] = header.split()[0]
+            updates = []
+            for header, name in entries:
+                mode, oid, stage = header.split()
+                expected = source_modes.get(name, mode)
+                if expected in {b"100644", b"100755", b"120000"} and mode != expected and stage == b"0":
+                    updates.append(expected + b" " + oid + b"\t" + name + b"\0")
+            if updates:
+                self.run(["update-index", "-z", "--index-info"], b"".join(updates))
+            link_placeholders = [
+                os.fsdecode(name)
+                for name, mode in source_modes.items()
+                if mode == b"120000"
+                and os.path.isfile(os.path.join(self.cwd, os.fsdecode(name)))
+                and not os.path.islink(os.path.join(self.cwd, os.fsdecode(name)))
+            ]
+        return link_placeholders
+
+    def capture(self, protected: list[str], ref: str, *, force_raw: bool = False) -> dict:
         self.initialize()
+        if os.name == "nt" and self.source:
+            config = git(self.source, ["config", "--list", "--null"])
+            self.run(["config", "core.symlinks", "false" if b"core.symlinks\nfalse\0" in config else "true"])
         indexed = self.run(["ls-files", "--stage", "-z"])
         entries = [row.split(b"\t", 1) for row in indexed.split(b"\0") if row]
+        link_placeholders = self._windows_modes(entries)
         if any(row[0].split()[2] != b"0" for row in entries):
             raise ValueError("Snapshot source index has unresolved conflicts")
         names = {os.fsdecode(row[1]) for row in entries}
@@ -213,6 +276,11 @@ class Shadow:
         changed = sorted(set(protected) & (dirty | (set(protected) - (names - remove))))
         if changed:
             self.import_blobs(changed)
+        if force_raw and protected:
+            # Windows Git stat caches can miss equal-sized edits whose mtime
+            # was restored. Renormalize forces Git itself to read raw bytes;
+            # our highest-precedence info/attributes disables all conversions.
+            self.run(["add", "--renormalize", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"], nul(protected))
         # Populate stat entries without creating one loose object per file.
         self.run(["update-index", "--refresh"])
         tree = self.run(["write-tree"]).decode().strip()
@@ -224,7 +292,13 @@ class Shadow:
             self.solidify(tree)
             os.remove(os.path.join(self.directory, "objects", "info", "alternates"))
             self.run(["fsck", "--connectivity-only", "--no-dangling", tree])
-        return {"relative": self.relative, "git_dir": self.directory, "tree": tree, "ref": ref}
+        return {
+            "relative": self.relative,
+            "git_dir": self.directory,
+            "tree": tree,
+            "ref": ref,
+            "link_placeholders": link_placeholders,
+        }
 
     def solidify(self, tree: str) -> None:
         """Share immutable Git objects on one volume; never link live files.
@@ -265,12 +339,20 @@ class Shadow:
                             destination.parent.mkdir(exist_ok=True)
                             os.link(loose.path, destination)
 
-    def import_blobs(self, changed: list[str]) -> None:
+    def import_blobs(self, changed: list[str], *, source_modes: dict[str, str] | None = None) -> None:
         """Feed raw contents to Git's pack writer, using bounded memory.
 
         fast-import writes a pack for the whole batch. Exported marks supply
         object IDs to update-index; user attributes/filters never run.
         """
+        supplied_modes = source_modes is not None
+        source_modes = source_modes if supplied_modes else {}
+        if not supplied_modes and os.name == "nt" and self.source:
+            scope = ["--", *changed] if len(changed) < 500 else []
+            for row in git(self.source, ["--literal-pathspecs", "ls-files", "--stage", "-z", *scope]).split(b"\0"):
+                if row:
+                    header, name = row.split(b"\t", 1)
+                    source_modes[os.fsdecode(name)] = header.split()[0].decode()
         with tempfile.TemporaryDirectory(prefix=".import-", dir=self.directory) as temporary:
             stream_path = os.path.join(temporary, "blobs")
             marks_path = os.path.join(temporary, "marks")
@@ -278,7 +360,7 @@ class Shadow:
             total_bytes = 0
             with open(stream_path, "wb") as stream:
                 for number, relative in enumerate(changed, 1):
-                    full = os.path.join(self.cwd, relative)
+                    full = files.safe_path(self.cwd, relative)
                     before = os.lstat(full)
                     if stat.S_ISLNK(before.st_mode):
                         data = os.fsencode(os.readlink(full))
@@ -286,7 +368,13 @@ class Shadow:
                     elif stat.S_ISREG(before.st_mode):
                         data = None
                         size = before.st_size
-                        mode = "100755" if os.name != "nt" and before.st_mode & 0o111 else "100644"
+                        mode = (
+                            source_modes.get(relative, "100644")
+                            if os.name == "nt"
+                            else "100755"
+                            if before.st_mode & 0o111
+                            else "100644"
+                        )
                     else:
                         raise ValueError(f"Unsupported snapshot file: {relative}")
                     modes.append(mode)
@@ -328,23 +416,62 @@ class Shadow:
             self.run(["update-index", "-z", "--index-info"], index)
             logger.info("Snapshot packed: changed_files={} bytes={}", len(changed), total_bytes)
 
+    def capture_paths(
+        self,
+        previous: dict,
+        existing: list[str],
+        removed: list[str],
+        ref: str,
+        *,
+        source_modes: dict[str, str] | None = None,
+        retain: bool = True,
+    ) -> dict:
+        """Refresh named paths against an immutable tree, without a worktree walk."""
+        self.initialize()
+        if self.cold or previous["git_dir"] != self.directory:
+            raise ValueError("Incremental snapshot index is unavailable")
+        self.run(["read-tree", "-m", previous["tree"]])
+        if removed:
+            self.run(["update-index", "--force-remove", "-z", "--stdin"], nul(removed))
+        if existing:
+            self.import_blobs(existing, source_modes=source_modes)
+        tree = self.run(["write-tree"]).decode().strip()
+        if retain:
+            self.run(["update-ref", ref, tree])
+        return {**previous, "tree": tree, "ref": ref}
 
-def tree_entries(part: dict, root: str, paths: files.ReadPhasePaths | None = None) -> dict:
+
+def tree_entries(
+    part: dict, root: str, paths: files.ReadPhasePaths | None = None, selected: list[str] | None = None
+) -> dict:
     paths = paths or files.ReadPhasePaths(root)
-    out = shadow_git(part["git_dir"], ["ls-tree", "-r", "-z", part["tree"]])
+    if selected == []:
+        return {}
+    out = shadow_git(
+        part["git_dir"],
+        [
+            "--literal-pathspecs",
+            "ls-tree",
+            "-r",
+            "-l",
+            "-z",
+            part["tree"],
+            *(["--", *selected] if selected is not None else []),
+        ],
+    )
     result = {}
     for row in out.split(b"\0"):
         if not row:
             continue
         header, name = row.split(b"\t", 1)
-        mode, kind, oid = header.split()
+        mode, kind, oid, size = header.split()
         if kind != b"blob":
             raise ValueError("Snapshot contains an unexpanded nested repository")
         relative = os.fsdecode(name)
         if part["relative"] != ".":
             relative = part["relative"] + "/" + relative
         paths(relative)
-        result[relative] = {"oid": oid.decode(), "git_dir": part["git_dir"], "mode": mode.decode()}
+        result[relative] = {"oid": oid.decode(), "git_dir": part["git_dir"], "mode": mode.decode(), "size": int(size)}
     return result
 
 
@@ -355,6 +482,9 @@ def capture(
     object_store: str,
     policy: dict,
     extra_tracked: set[str] | None = None,
+    *,
+    force_raw: bool = False,
+    capture_controls: bool = True,
 ) -> dict:
     from app.domains.task.services import task_session_snapshot_service as service
 
@@ -388,7 +518,11 @@ def capture(
     token = hashlib.sha256(os.path.abspath(checkpoint).encode()).hexdigest()
     parts = []
     for relative, source in partition_sources.items():
-        parts.append(Shadow(root, object_store, relative, source).capture(groups[relative], "refs/traceforge/" + token))
+        parts.append(
+            Shadow(root, object_store, relative, source).capture(
+                groups[relative], "refs/traceforge/" + token, force_raw=force_raw
+            )
+        )
     metadata_dir = os.path.join(checkpoint, "git")
     os.makedirs(metadata_dir, exist_ok=True)
     payload = {
@@ -406,7 +540,14 @@ def capture(
             if stat.S_ISLNK(info.st_mode)
             and getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0)
         ],
-        "repositories": [service._git_state(root, repo, metadata_dir) for repo in repositories],
+        "link_placeholders": [
+            ((part["relative"] + "/") if part["relative"] != "." else "") + name
+            for part in parts
+            for name in part.get("link_placeholders", [])
+        ],
+        "repositories": [service._git_state(root, repo, metadata_dir) for repo in repositories]
+        if capture_controls
+        else [],
     }
     files.write_json(os.path.join(checkpoint, "worktree.json"), payload)
     logger.info(
@@ -431,6 +572,38 @@ def entries(payload: dict) -> dict:
         if result.keys() & values.keys():
             raise ValueError("Snapshot partitions overlap")
         result.update(values)
+    return result
+
+
+def retain_checkpoint(payload: dict, task_root: str, object_store: str, checkpoint: str, policy: dict) -> dict:
+    """Pin a complete H for undo without recapturing its already fixed bytes."""
+    if (
+        payload.get("version") != VERSION
+        or payload.get("policy") != policy
+        or os.path.normcase(os.path.abspath(payload["task_root"])) != os.path.normcase(os.path.abspath(task_root))
+        or os.path.normcase(os.path.abspath(payload["object_store"])) != os.path.normcase(os.path.abspath(object_store))
+        or not payload.get("repositories")
+    ):
+        raise ValueError("Pinned checkpoint identity or rollback scope differs")
+    result = json.loads(json.dumps(payload))
+    token = hashlib.sha256(os.path.abspath(checkpoint).encode()).hexdigest()
+    for part in result["partitions"]:
+        directory = Path(part["git_dir"]).resolve(strict=True)
+        if not directory.is_relative_to(Path(object_store).resolve()):
+            raise ValueError("Pinned checkpoint Git directory escapes store")
+        part["ref"] = "refs/traceforge/" + token
+        shadow_git(str(directory), ["update-ref", part["ref"], part["tree"]])
+    metadata = Path(checkpoint, "git")
+    metadata.mkdir(parents=True, exist_ok=True)
+    for number, repo in enumerate(result["repositories"]):
+        if repo.get("index_copy"):
+            raw = Path(repo["index_copy"]).read_bytes()
+            if hashlib.sha256(raw).hexdigest() != repo["index_sha256"]:
+                raise ValueError("Pinned checkpoint Git index is corrupt")
+            path = metadata / f"index-{number}.bin"
+            path.write_bytes(raw)
+            repo["index_copy"] = str(path)
+    files.write_json(os.path.join(checkpoint, "worktree.json"), result)
     return result
 
 
@@ -481,7 +654,7 @@ def _restore_worktree_files(root, current, saved, before, desired, changed):
             os.rmdir(path)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         data = shadow_git(item["git_dir"], ["cat-file", "blob", item["oid"]])
-        if item["mode"] == "120000":
+        if item["mode"] == "120000" and rel not in saved.get("link_placeholders", []):
             os.symlink(os.fsdecode(data), path, target_is_directory=rel in saved.get("directory_links", []))
         else:
             fd, temporary = tempfile.mkstemp(prefix=".restore-", dir=os.path.dirname(path))
@@ -576,7 +749,11 @@ def restore(checkpoint: str, root: str, backup: str) -> None:
 
 def collect(object_store: str) -> None:
     live: dict[str, set[str]] = {}
-    for path in Path(object_store).glob("turn-*/**/worktree.json"):
+    paths = [
+        *Path(object_store).glob("turn-*/**/worktree.json"),
+        *Path(object_store).glob("collaboration-*/**/worktree.json"),
+    ]
+    for path in paths:
         payload = json.loads(path.read_text(encoding="utf-8"))
         if payload.get("version") == VERSION:
             for part in payload["partitions"]:

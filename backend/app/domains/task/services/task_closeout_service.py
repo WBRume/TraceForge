@@ -69,6 +69,13 @@ def _get_open_task(db: Session, workspace_id: str, task_id: str) -> SddTask:
         raise TaskCloseoutError("Task is BASELINED and locked for changes", status_code=403)
     if task.status in {TaskStatus.DONE, TaskStatus.FAILED}:
         raise TaskCloseoutError("Task is already closed", status_code=409)
+    from app.domains.task.services.task_session_control_service import TaskSessionControlError
+    from app.domains.workspace_collaboration.control import require_ready
+
+    try:
+        require_ready(db, task_id)
+    except TaskSessionControlError as exc:
+        raise TaskCloseoutError(str(exc), status_code=exc.status_code) from exc
     return task
 
 
@@ -204,6 +211,16 @@ def _finalize_task(db: Session, task: SddTask, *, status: TaskStatus, message: s
     db.refresh(task)
 
 
+def _bind_closeout_snapshot(db, task, payload, evidence_payloads):
+    from app.domains.workspace_collaboration.control import closeout_snapshot
+
+    snapshot = closeout_snapshot(db, task, payload.confirmed_server_snapshot_id)
+    if snapshot:
+        for item in evidence_payloads:
+            item.source_metadata = {**(item.source_metadata or {}), "collaboration": snapshot}
+    return snapshot["snapshot_id"] if snapshot else None
+
+
 def complete_task_closeout(
     db: Session,
     workspace_id: str,
@@ -219,6 +236,7 @@ def complete_task_closeout(
     task_type = TaskType(task.task_type or TaskType.DEVELOPMENT)
     is_diagnosis = task_type == TaskType.DIAGNOSIS
     evidence_payloads = _complete_evidence_payloads(payload, task_type)
+    snapshot_id = _bind_closeout_snapshot(db, task, payload, evidence_payloads)
 
     if payload.requirement_id:
         requirement = db.query(SddRequirement).filter_by(id=payload.requirement_id, workspace_id=workspace_id).first()
@@ -274,7 +292,11 @@ def complete_task_closeout(
                 else "Review Task Detail evidence and promote reusable knowledge when needed."
             ),
             final_evidence_ids=evidence_ids,
-            change_reason=f"Task completion closeout. Method: {payload.landing_method}.",
+            review_checklist={"collaboration_snapshot_id": snapshot_id, "unhanded_local_changes_excluded": True}
+            if snapshot_id
+            else None,
+            change_reason=f"Task completion closeout. Method: {payload.landing_method}."
+            + (f" Confirmed server snapshot: {snapshot_id}; unhanded local edits excluded." if snapshot_id else ""),
         ),
     )
     from app.domains.notification.services.task_awareness import capture_business
@@ -292,6 +314,7 @@ def complete_task_closeout(
         business_state="TASK_COMPLETED",
         evidence_ids=evidence_ids,
         final_summary_id=final_summary_id,
+        confirmed_server_snapshot_id=snapshot_id,
     )
 
 
@@ -309,6 +332,7 @@ def fail_task_closeout(
     _validate_closeout_values(task, payload)
     task_type = TaskType(task.task_type or TaskType.DEVELOPMENT)
     evidence_payloads = _failure_evidence_payloads(payload, task_type)
+    snapshot_id = _bind_closeout_snapshot(db, task, payload, evidence_payloads)
 
     evidence_ids = [
         evidence_writes.create_evidence(db, workspace_id, task_id, actor_id, evidence_payload, _skip_phase_check=True)
@@ -330,7 +354,11 @@ def fail_task_closeout(
                 else "Review failure evidence, clarify requirements or environment, then initialize a fresh session if needed."
             ),
             final_evidence_ids=evidence_ids,
-            change_reason="Task failure closeout.",
+            review_checklist={"collaboration_snapshot_id": snapshot_id, "unhanded_local_changes_excluded": True}
+            if snapshot_id
+            else None,
+            change_reason="Task failure closeout."
+            + (f" Confirmed server snapshot: {snapshot_id}; unhanded local edits excluded." if snapshot_id else ""),
         ),
     )
     from app.domains.notification.services.task_awareness import capture_business
@@ -344,4 +372,5 @@ def fail_task_closeout(
         business_state="TASK_FAILED",
         evidence_ids=evidence_ids,
         final_summary_id=final_summary_id,
+        confirmed_server_snapshot_id=snapshot_id,
     )
