@@ -1,6 +1,6 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { hash, fail, readJson, writeJson } from './filesystem'
+import { hash, fail, gitRaw, readJson, writeJson } from './filesystem'
 import { capturePart, capturePartPaths, shadowGit, withSnapshotLock, type Part } from './git-snapshots'
 import { treeEntries } from './git-content'
 import { pathsInRepository, validateRepositoryIdentity, type LocalRepository, type SyncFile, type SyncObjects, type SyncRepository } from './collaboration-store'
@@ -9,6 +9,23 @@ export interface GitScanMetrics {
   kind: 'git' | 'git-delta' | 'git-forced' | 'cached'; files_read: number; bytes_read: number; files_reused: number;
   paths_checked?: number; full_inventory?: boolean;
   cas_bytes_read: number; new_blobs: number; new_blob_bytes: number; elapsed_ms: number; forced_content_checks: number;
+}
+
+/** A disconnected interval is checked by Git against the retained private index. */
+export function disconnectedChanges(repo: LocalRepository, snapshot: SyncRepository, part: Part) {
+  const worktree = '--work-tree=' + repo.local_worktree_path
+  let changed = shadowGit(part.git_dir, [worktree, 'diff-files', '--name-only', '-z']).toString().split('\0').filter(Boolean)
+  if (changed.length) {
+    // Imported blobs have no stat cache yet. Porcelain diff filters these false
+    // positives without writing either index; check links before it reads.
+    allowlist(repo, changed, snapshot.files)
+    changed = shadowGit(part.git_dir, ['--no-optional-locks', worktree, '-c', 'diff.autoRefreshIndex=true', 'diff', '--name-only', '-z',
+      '--no-renames', '--no-ext-diff', '--no-textconv']).toString().split('\0').filter(Boolean)
+  }
+  const known = new Set(snapshot.files.map(file => file.path))
+  const added = gitRaw(repo.local_worktree_path, ['ls-files', '--others', '--exclude-standard', '-z']).toString().split('\0').filter(name => name && !known.has(name)
+    && !name.split('/').some(part => /^\.traceforge-sync/.test(part) || /^\.env(?:\.|$)/.test(part)))
+  return new Set([...changed, ...added])
 }
 
 /** Reuse an existing task snapshot owner, including its lock, before creating one for SERVER tasks. */

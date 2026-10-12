@@ -129,10 +129,54 @@ def test_message_is_durable_while_waiting_for_actual_input(collaboration_db):
 def test_another_desktop_cannot_submit_using_same_user(collaboration_db):
     db = collaboration_db
     with pytest.raises(submissions.SubmissionError, match="bound desktop"):
-        submissions._accept_sync(db, "t", "u", "web", "Update login", {})
+        submissions._accept_sync(db, "t", "u", "web", "Update login", {"collaboration": {"client_id": "other"}})
     db.rollback()
     assert db.query(TaskChatSubmission).count() == 0
     assert db.get(CollaborationState, "t").sync_phase == "READY"
+
+
+@pytest.mark.parametrize("phase", ["READY", "DELIVERY_PENDING", "CONFLICT_PENDING", "RECOVERY_REQUIRED"])
+def test_cloud_message_uses_fixed_server_code_without_a_desktop_lease(collaboration_db, phase):
+    from app.domains.workspace_collaboration.models import CollaborationHandoff
+    from app.domains.workspace_collaboration.schemas import EnableRequest
+
+    db = collaboration_db
+    state = db.get(CollaborationState, "t")
+    state.sync_phase = phase
+    state.recovery_kind = "LOCAL_DELIVERY" if phase == "RECOVERY_REQUIRED" else None
+    state.lease_expires_at = datetime.utcnow() - timedelta(minutes=5)
+    result = submissions._accept_sync(db, "t", "u", "cloud-message", "Read cloud code", {})
+    db.commit()
+    assert submissions._load_preparation(db, result["id"]) is not None
+    assert state.input_snapshot_id == "input"
+    assert state.input_submission_id == result["id"]
+    assert service.get_state(db, db.get(SddTask, "t"))["input_mode"] == "CLOUD"
+    # Reconnection must not cancel an already prepared cloud-only message.
+    service.claim_driver(
+        db,
+        db.get(SddTask, "t"),
+        "u",
+        EnableRequest(operation_id="connect", client_id="desktop", instance_id="instance"),
+    )
+    assert db.get(TaskChatSubmission, result["id"]).status == "PREPARING"
+    state.lease_expires_at = datetime.utcnow() - timedelta(minutes=5)
+    accepted = service.authorize_execution(db, db.get(SddTask, "t"), result["id"], "cloud-job")
+    assert accepted["snapshot_id"] == "input"
+    assert state.sync_phase == "RUNNING"
+    assert service.validate_execution(db, db.get(SddTask, "t"), "cloud-job")["snapshot_id"] == "input"
+    assert db.query(CollaborationHandoff).count() == 0
+
+
+@pytest.mark.parametrize(
+    "phase,kind", [("RUNNING", None), ("RECOVERY_REQUIRED", "SERVER_INPUT"), ("RECOVERY_REQUIRED", "SERVER_OUTPUT")]
+)
+def test_cloud_message_still_respects_server_writer_and_recovery(collaboration_db, phase, kind):
+    db = collaboration_db
+    state = db.get(CollaborationState, "t")
+    state.sync_phase = phase
+    state.recovery_kind = kind
+    with pytest.raises(submissions.SubmissionError, match="cloud execution or workspace recovery"):
+        submissions._accept_sync(db, "t", "u", "cloud-blocked", "Read cloud code", {})
 
 
 def test_job_creation_cannot_bypass_input_barrier(collaboration_db):

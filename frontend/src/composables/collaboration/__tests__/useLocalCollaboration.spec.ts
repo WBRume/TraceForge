@@ -65,6 +65,37 @@ afterEach(async () => {
 })
 
 describe('local collaboration coordinator', () => {
+  it('allows cloud messages after disconnect without attaching local input metadata', async () => {
+    setup(); await flushPromises(); await controller.enable(); await controller.leave()
+    expect(controller.participating.value).toBe(false)
+    expect(controller.blocked.value).toBe(false)
+    expect(controller.submissionMetadata()).toEqual({})
+  })
+  it('does not replay an old human handoff when reconnecting to a cloud-only input', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    manifest = { ...manifest, snapshot_id: 'cloud-input', workspace_revision: 2, source: 'HUMAN_HANDOFF' }
+    state = { ...state, sync_phase: 'PREPARING', input_mode: 'CLOUD', input_snapshot_id: manifest.snapshot_id,
+      input_submission_id: 'cloud-message', pending_submission_id: 'cloud-message' }
+    mocks.native.mockClear(); mocks.api.post.mockClear()
+    await controller.refresh()
+    expect(controller.error.value).toBe('')
+    expect(controller.input.value?.snapshot_id).toBe('cloud-input')
+    expect(mocks.native.mock.calls.some(([request]) => ['capture', 'accept_input'].includes(request.kind))).toBe(false)
+    expect(mocks.api.post.mock.calls.some(([action]) => action === 'handoff')).toBe(false)
+  })
+  it('labels reconnection as reusing the baseline and skips the first-connection cleanliness gate', async () => {
+    setup(); await flushPromises(); await controller.enable(); await controller.leave()
+    local = { ...local, released: true, suspended: true }
+    const native = mocks.native.getMockImplementation()!
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = resolve })
+    mocks.native.mockImplementation(async request => { if (request.kind === 'prepare') await pending; return native(request) })
+    mocks.native.mockClear()
+    const connecting = controller.enable(); await flushPromises()
+    expect(controller.operationStage.value).toBe('resumingBaseline')
+    expect(mocks.native.mock.calls.some(([request]) => request.kind === 'inspect_mappings')).toBe(false)
+    finish(); await connecting
+  })
   it('receives once without enabling, claiming, uploading, or acknowledging another driver delivery', async () => {
     state = { ...state, enabled: true, sync_phase: 'RUNNING', driver_user_id: 'someone-else', driver_connected: true }
     setup(); await flushPromises()
@@ -493,7 +524,8 @@ describe('local collaboration coordinator', () => {
     expect(controller.submissionMetadata()).toEqual({ collaboration: { request_driver_input: true, binding_id: 'binding', lease_epoch: 1 } })
     expect(mocks.native).not.toHaveBeenCalled()
     state = { ...state, driver_connected: false }; await controller.refresh()
-    expect(controller.blocked.value).toBe(true)
+    expect(controller.blocked.value).toBe(false)
+    expect(controller.submissionMetadata()).toEqual({})
   })
   it('re-comparing never applies files, sends receipts, or starts a pending input handoff', async () => {
     setup(); await flushPromises(); await controller.enable()

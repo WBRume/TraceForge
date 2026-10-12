@@ -48,7 +48,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const canReconnect = computed(() => available && enabled.value && state.value?.driver_user_id === auth.user?.id && (driver.value || state.value?.driver_connected === false))
   const phase = computed(() => busy.value && !enabled.value ? 'ENABLING' : state.value?.sync_phase || 'DISABLED')
   const label = computed(() => (preparationRequired.value ? t('collaboration.preparationRequired') : deliveryRetryRequired.value && !busy.value ? t('collaboration.deliveryRetryRequired') : t(`collaboration.phases.${phase.value}`, phase.value)) + (phase.value === 'READY' && local.value?.local_changes?.length ? ` · ${t('collaboration.localCount', { count: local.value.local_changes.length })}` : ''))
-  const blocked = computed(() => supported.value && (loading.value || leaving.value || (enabled.value && (preparationRequired.value || Boolean(error.value) || local.value?.state === 'RECOVERY_REQUIRED' || (!(available && driver.value && participating.value) && !remoteSender.value) || state.value?.driver_connected === false || busy.value || !['READY', 'DISABLED'].includes(phase.value)))))
+  const blocked = computed(() => supported.value && (busy.value || leaving.value || (participating.value || remoteSender.value) && (loading.value || enabled.value && (preparationRequired.value || Boolean(error.value) || local.value?.state === 'RECOVERY_REQUIRED' || (!driver.value && !remoteSender.value) || state.value?.driver_connected === false || !['READY', 'DISABLED'].includes(phase.value)))))
   const conflicts = computed(() => participating.value && ['RUNNING', 'WAITING_HITL'].includes(phase.value) ? previewConflicts.value : local.value?.conflicts || [])
   let generation = 0, timer: ReturnType<typeof setTimeout> | undefined, refreshing = false, disposed = false
   let refreshQueued = false
@@ -176,7 +176,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     await loadMappings(); check(token)
     const accepted = state.value!
     const repositories = local.value?.suspended && local.value?.baseline ? mappedRepositories() : await inspectMappings(token)
-    setStage('capturingBaseline')
+    setStage(local.value?.suspended && local.value?.baseline ? 'resumingBaseline' : 'capturingBaseline')
     const prepared = await native<LocalCollaborationStatus>('prepare', { ...accepted, task_id: String(options.task()?.id),
       directory_mode: 'MAPPED', previous_binding_id: previousBindingId, repositories })
     check(token); local.value = prepared
@@ -327,7 +327,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       if (!bindingPrepared(local.value)) { preparationRequired.value = true; error.value = t('collaboration.preparationRequired'); return }
       if (next.input_snapshot_id && input.value?.snapshot_id !== next.input_snapshot_id) {
         const accepted = await snapshot(next.input_snapshot_id); check(token)
-        if (accepted.source === 'HUMAN_HANDOFF' && (!local.value?.baseline || local.value.baseline.workspace_revision < accepted.workspace_revision)) {
+        if (next.input_mode !== 'CLOUD' && accepted.source === 'HUMAN_HANDOFF' && (!local.value?.baseline || local.value.baseline.workspace_revision < accepted.workspace_revision)) {
           const operationId = next.input_submission_id ? `handoff:${next.input_submission_id}` : localStorage.getItem(standaloneKey)
           if (!operationId) throw new Error('COLLABORATION_INPUT_RECEIPT_REQUIRED')
           const advanced = await native<LocalCollaborationStatus>('accept_input', { task_id: accepted.task_id, operation_id: operationId, target: accepted }); check(token); local.value = advanced
@@ -444,18 +444,6 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       local.value = advanced; input.value = manifest; cloud.value = manifest; lastTarget = manifest.snapshot_id; localStorage.removeItem(standaloneKey)
     } catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
     finally { if (token === generation) busy.value = false }
-  }
-  async function disable() {
-    if (busy.value || !driver.value || phase.value !== 'READY') return
-    busy.value = true
-    try {
-      const bindingId = state.value!.binding_id
-      state.value = await remote().post('disable', { ...fence(), operation_id: crypto.randomUUID() })
-      await native('release', { task_id: String(options.task()?.id), binding_id: bindingId }); error.value = ''
-      participating.value = false
-    }
-    catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
-    finally { busy.value = false }
   }
   const listBackups = () => native<{ backup_directory: string; backups: CollaborationBackup[] }>('backups', { task_id: String(options.task()?.id) })
   async function exportBackup(backup: CollaborationBackup) {
@@ -587,7 +575,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }, { immediate: true })
   schedule()
   onScopeDispose(() => { disposed = true; generation++; clearTimeout(timer); clearInterval(heartbeat); clearInterval(stageClock); stopMappingUpdates() })
-  return { participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, cancelPreparation, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, disable, listBackups, exportBackup }
+  return { participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, cancelPreparation, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
 }
 type Controller = ReturnType<typeof createController>
 const controllers = new Map<string, { scope: EffectScope; controller: Controller; users: number }>()
@@ -653,7 +641,7 @@ export function useLocalCollaboration(options: { workspaceId: () => string; task
     onEvent: (payload: Record<string, unknown>) => active.value?.onEvent(payload),
     refreshComparison: async () => { await active.value?.refreshComparison() },
     checkMappings: async () => { await active.value?.checkMappings() }, selectMapping: async (repositoryId: string) => { await active.value?.selectMapping(repositoryId) },
-    handoffLocalChanges: async () => { await active.value?.handoffLocalChanges() }, disable: async () => { await active.value?.disable() },
+    handoffLocalChanges: async () => { await active.value?.handoffLocalChanges() },
     listBackups: async () => active.value ? active.value.listBackups() : { backup_directory: '', backups: [] as CollaborationBackup[] }, exportBackup: async (backup: CollaborationBackup) => { await active.value?.exportBackup(backup) },
   }
 }

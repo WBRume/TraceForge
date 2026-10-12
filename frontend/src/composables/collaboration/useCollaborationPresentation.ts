@@ -34,7 +34,7 @@ export function collaborationPresentation(c: CollaborationContext) {
   else if (c.blocked) { key = 'unavailable'; action = 'recover'; tone = 'warning' }
   const setup = !c.participating && c.available ? !c.receivedOnce : !c.enabled || (c.driver && (c.preparationRequired || !c.local?.baseline))
   const canRestore = localAvailable && !c.busy && !c.error && (c.receivedOnce && !c.participating || c.phase === 'CONFLICT_PENDING')
-  const inputKey = !c.enabled || key === 'browse' ? '' : c.blocked ? key : localCount && localAvailable ? 'local' : ''
+  const inputKey = !c.enabled || (!c.participating && !c.remoteSender) ? '' : c.blocked ? key : localCount && localAvailable ? 'local' : ''
   return { key, action, tone, count, conflicts, localCount, localAvailable, setup, running, canRestore, inputKey }
 }
 

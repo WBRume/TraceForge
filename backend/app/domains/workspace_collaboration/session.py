@@ -6,6 +6,36 @@ from . import content, service
 from .models import CollaborationSnapshot
 
 
+def is_cloud_input(db, task_id, submission_id):
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+
+    submission = db.get(TaskChatSubmission, submission_id) if submission_id else None
+    return bool(
+        submission and submission.task_id == task_id and "collaboration" not in (submission.metadata_json or {})
+    )
+
+
+def request_cloud_input(db, task, state, submission_id):
+    """Pin existing cloud code; a detached desktop is never an input dependency."""
+    local_delivery_error = state.sync_phase == "RECOVERY_REQUIRED" and state.recovery_kind == "LOCAL_DELIVERY"
+    if state.sync_phase not in {"READY", "DELIVERY_PENDING", "CONFLICT_PENDING"} and not local_delivery_error:
+        service._fail("CLOUD_WORKSPACE_NOT_READY", "Wait for the cloud execution or workspace recovery to finish")
+    service._assert_no_writer(db, task.id)
+    service.get_snapshot(db, task.id, state.snapshot_id)
+    state.pending_submission_id = submission_id
+    state.input_submission_id = submission_id
+    state.input_snapshot_id = state.snapshot_id
+    state.input_cut_seq = None
+    state.run_id = None
+    state.progress_snapshot_id = None
+    state.recovery_kind = None
+    state.recovery_message = None
+    state.sync_phase = "PREPARING"
+    service._bump(state)
+    db.flush()
+    return service.get_state(db, task)
+
+
 def download(db, task, user_id, base_snapshot_id):
     target = latest_snapshot(db, task, user_id, None)
     if base_snapshot_id:
