@@ -1,24 +1,40 @@
 # TraceForge 前端和双桌面构建
 
-Vue 3 + TypeScript 的同一套页面同时运行于 Web、Electron 和 Tauri 2。业务通过 `getSddDesktop()` 和 `SddDesktopApi` 调用配置、Git、补丁、文件保存、命令输出、OAuth 和本地资源服务。
+[项目首页](../README.md) · [全部文档](../README.md#文档导航) · [后端启动](../backend/README.md) · [Docker 部署](../deploy/docker/README.md)
 
-浏览器仅允许创建服务器资源任务；本地资源任务的创建和本地服务配置仅在 Electron、Tauri 客户端开放。请求拦截器根据原生桥接设置 `X-TraceForge-Client: desktop` 或 `web`，任务创建 API 对缺少桌面端标识的 `LOCAL` 请求返回 `403 / LOCAL_TASK_DESKTOP_REQUIRED`，且不创建任务记录或资源准备作业。
+同一套 Vue 3 + TypeScript 页面运行于 Web、Electron 和 Tauri 2。浏览器使用服务器资源；本机资源任务、本地服务配置和本地协同在桌面客户端使用。客户端内置文件、Git、快照、Skills 和文档服务，无需另外安装资源服务或 IDE 插件。
 
-本地文件、Git worktree、快照、补丁、Skills 和文档操作实现位于 `desktop/local-resource/`，由客户端启动并管理，不再提供独立资源服务的安装包、启动器或托盘。原有任务执行绑定和本地状态目录继续使用。
+[开发](#开发) · [本地协同](#本地协同) · [Windows 打包](#windows-x64-安装包) · [开发检查](#适配边界和检查) · [语音输入](#语音输入构建时选择-api--离线--关闭)
 
 ## 开发
+
+需要 Node.js 22.12+；先按[后端指南](../backend/README.md#首次启动)启动 API。以下命令均在 `frontend/` 目录执行：
 
 ```powershell
 npm ci
 npm run dev             # 浏览器
-npm run dev:electron    # 原有 Electron 开发，不需要 Rust
+npm run dev:electron    # Electron 桌面端，不需要 Rust
 ```
+
+两种启动命令任选其一。Web 默认访问 [localhost:5173](http://localhost:5173)，Vite 将 `/api` 和 `/ws` 代理到 `http://localhost:8000`；后端地址不同时，在 `frontend/.env.local` 设置 `VITE_DEV_API_TARGET`。桌面端通过客户端的服务器配置选择后端。
 
 Electron 开发沿用快速启动流程，预热入口和首页，在初始路由完成渲染后显示窗口。Vite 仅扫描 `index.html`，不把 Tauri 编译缓存或安装包内的 HTML 当作入口，文件监听也排除这些构建产物。Electron 使用已有 preload，仅 Tauri 等待异步桥接和原生 HTTP 初始化。桌面开发使用系统字体，避免外部字体网络请求。开发端口固定为 `127.0.0.1:5173`，端口占用会直接报错。
 
 开发工具按需打开，按 `F12` 切换。设置 `TRACEFORGE_DEVTOOLS=1` 可恢复启动时自动打开。
 
 Tauri 开发另外需要 Rust stable 和系统构建工具。Windows 安装 Visual Studio C++ Build Tools 和 WebView2，然后执行 `npm run dev:tauri`。Bun 由 npm 开发依赖提供，不要求全局安装。桌面用户无需安装 Node、Bun 或 Rust；本地 Agent 和 Git 的要求与原 Electron 相同。
+
+## 本地协同
+
+适用于 **Agent 在服务器执行的研发任务**：你在本机编辑器中改代码，通过桌面客户端交接修改和接收结果。问题定位任务不提供本地协同。
+
+1. 打开任务的本地协同入口，为各个任务仓库选择对应本地目录。首次绑定要求每个仓库的 HEAD 与任务记录的初始提交一致，且没有已暂存、未暂存或未跟踪的修改。
+2. 核对仓库与分支后启用。客户端直接使用映射的目录，多个仓库分别记录基线与同步结果。
+3. 编辑本地代码后，选择交接本地修改并发送，或主动交接；也可选择纯云端输入，继续使用服务器上的代码。磁盘变化不会自动作为新的 Agent 输入提交。
+4. Agent 执行期间仍可编辑本地文件。收到云端结果后查看差异；冲突按文件处理，恢复所选文件前保留备份，不整体重置本地仓库。
+5. 离开会话时按提示选择仅接收或挂起；重新进入后可恢复协同。任务收尾使用已确认的云端版本，需要纳入的本地修改应先完成交接。
+
+本地协同与“在本机运行 Agent”是两种使用方式；后者的内网资源配置见[后端说明](../backend/README.md#本机-agent-资源)。
 
 ## Windows x64 安装包
 
@@ -40,6 +56,19 @@ Tauri 包含编译后的桌面服务和内置本地资源 Worker，使用系统 
 ## 适配边界和检查
 
 `desktop/api.ts` 维护统一命令/事件协议。Electron preload 与 `src/desktop/initialize.ts` 的 Tauri 适配器复用它；Vue 入口在加载路由/API 模块前安装适配器。`desktop/native.ts` 定义原生依赖边界，Tauri 的 Bun 编译阶段替换为 `tauri-native.ts`，复用 `electron/ipc/` 中的业务实现。Rust 只向本地 main 窗口开放桥入口，提供原生对话框、外部打开和服务生命周期管理，IPC 不开放 TCP 端口。
+
+本地资源实现位于 `desktop/local-resource/`。请求拦截器按原生桥接设置 `X-TraceForge-Client: desktop` 或 `web`；创建 API 拒绝没有桌面标识的 `LOCAL` 请求，返回 `403 / LOCAL_TASK_DESKTOP_REQUIRED`，不会创建任务或资源准备作业。
+
+常规 Web 检查：
+
+```powershell
+npm run check:file-lines
+npm run test:run
+npm run build
+npm run preview
+```
+
+桌面相关检查：
 
 ```powershell
 npm run test:run -- src/desktop/__tests__ electron/ipc/__tests__/localResources.spec.ts

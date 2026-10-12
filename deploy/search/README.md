@@ -1,5 +1,9 @@
 # 全局历史搜索部署
 
+[项目首页](../../README.md) · [全部文档](../../README.md#文档导航) · [后端启动](../../backend/README.md) · [Docker 部署](../docker/README.md)
+
+只需关键词搜索时使用 SQLite；需要语义检索时再配置 Elasticsearch 和向量服务。两种方式均需 MySQL 业务库与 Redis 分页状态。
+
 ## 轻量部署：SQLite BM25
 
 无 ES 时可以直接启用检索，使用 Python 自带 SQLite FTS5：
@@ -31,9 +35,9 @@ SQLite 适合单机轻量部署；多个主机独立消费同一 Outbox 时应�
 
 在 backend/.env 或部署目录 .env 中设置 `.env.example` 的 SEARCH 字段。密钥不能提交 Git。`SEARCH_CONFIG_ENCRYPTION_KEY` 是语义配置所需的 Fernet 密钥，与业务库中加密后的配置一同备份；纯 SQLite 模式无需配置。`SEARCH_CURSOR_SECRET` 可使用独立随机值，留空则从 JWT 密钥派生专用密钥。API、worker 必须配置相同的数据库、Redis 命名空间及相应密钥。
 
-1. 备份现有数据库，检查 `python -m alembic current` 和 `heads`。新增迁移 `d5f60718293a` 接续 `c4e5f6a7b8d9`，仅增加搜索表和 nullable 排序列，不清空业务数据。
+1. 备份现有数据库，检查 `python -m alembic current` 和 `heads`，按[迁移说明](../../backend/alembic/README.md)升级至当前 head，不清空业务数据。
 2. 在 backend 目录安装 requirements 并执行 `python -m alembic upgrade head`，先保持 `SEARCH_ENABLED=false`。新应用需要新 schema；不要先启动新代码再迁移。
-3. 使用管理员页面配置 endpoint/key/model 并测试；也可使用 `python -m app.domains.search.cli configure` 从本地 `SEARCH_EMBEDDING_API_KEY` 创建已探测且加密保存的硅基流动 profile。配置完成后可清除环境中的 bootstrap API key，保留 Fernet 密钥。
+3. 使用管理员页面配置协议、endpoint、key、model 并测试；也可使用 `python -m app.domains.search.cli configure` 从 `SEARCH_EMBEDDING_*` 环境配置创建已探测且加密保存的 profile。配置完成后可清除环境中的 bootstrap API key，保留 Fernet 密钥。
 4. 创建目标：`python -m app.domains.search.cli create-index --target traceforge-search-v1-000001 --embedding-profile PROFILE_ID`。物理索引绑定不可变模型空间；仅轮换 API key 无需重建。
 5. 设置 `SEARCH_ENABLED=true` 后照常启动 backend，正文与向量 worker 自动运行；auto 模式未激活 ES 索引时先使用 SQLite BM25。系统配置页可完成模型测试、建立索引、验证和激活，下面的 CLI 命令是可选方式。
 6. 执行 `python -m app.domains.search.cli backfill --target traceforge-search-v1-000001 --batch-size 100`。断线可 `resume --run-id RUN_ID`，search worker 也会继续 pending 回填。管理员“建立新索引”会创建持久化回填记录。回填走相同版本协议并分批补齐 sort_seq。
