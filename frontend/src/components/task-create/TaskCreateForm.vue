@@ -109,7 +109,7 @@ const submitDraft = () => {
   emit('submit', {
     taskType: props.taskType,
     execution: execution.value,
-    ...(execution.value.location === 'SERVER' && localCollaborationIntent.value ? { enableLocalCollaboration: true } : {}),
+    ...(!isDiagnosisTask.value && execution.value.location === 'SERVER' && localCollaborationIntent.value ? { enableLocalCollaboration: true } : {}),
     agentModel: models.selection.value,
     name: name.value,
     requirementId: isDiagnosisTask.value ? undefined : props.selectedRequirement?.id,
@@ -337,7 +337,7 @@ defineExpose({ reset })
     </div>
 
     <!-- 行 4：Worktree 仓库载入触发条（整行可点击展开右侧仓库树） -->
-    <label v-if="isDesktop() && execution.location === 'SERVER' && reposTotal > 0" class="collaboration-intent"><input v-model="localCollaborationIntent" type="checkbox" :disabled="creating" />{{ $t('collaboration.createIntent') }}<small>{{ $t('collaboration.createIntentHint') }}</small></label>
+    <label v-if="!isDiagnosisTask && isDesktop() && execution.location === 'SERVER' && reposTotal > 0" class="collaboration-intent"><input v-model="localCollaborationIntent" type="checkbox" :disabled="creating" />{{ $t('collaboration.createIntent') }}<small>{{ $t('collaboration.createIntentHint') }}</small></label>
     <div v-if="reposTotal > 0" class="form-meta-container">
       <div
         class="meta-skills-bar skills-entry-card repo-entry-card"

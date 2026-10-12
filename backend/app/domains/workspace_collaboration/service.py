@@ -14,7 +14,7 @@ from uuid import uuid4
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, object_session
 
-from app.domains.task.models.task import SddTask
+from app.domains.task.models.task import SddTask, TaskType
 from app.domains.task.models.task_repository import SddTaskRepository
 
 from . import content
@@ -34,6 +34,13 @@ class CollaborationError(ValueError):
 
 def _fail(code: str, message: str) -> None:
     raise CollaborationError(code, message)
+
+
+def _check_task(task: SddTask) -> None:
+    if task.task_type == TaskType.DIAGNOSIS:
+        _fail("TASK_TYPE_UNSUPPORTED", "问题定位任务不支持本地协同")
+    if task.execution_location != "SERVER":
+        _fail("SERVER_TASK_REQUIRED", "Local collaboration is available only for server tasks")
 
 
 def _state(db: Session, task_id: str, *, lock: bool = True, nowait: bool = False) -> CollaborationState | None:
@@ -79,8 +86,7 @@ def repository_metadata(db: Session, task: SddTask) -> list[dict]:
 
 
 def _check_session(state: CollaborationState, task: SddTask) -> None:
-    if task.execution_location != "SERVER":
-        _fail("SERVER_TASK_REQUIRED", "Collaboration binding cannot change task execution location")
+    _check_task(task)
     if (state.session_generation, state.session_revision) != (task.session_generation, task.session_revision):
         _fail("SESSION_CHANGED", "Task session changed; collaboration must be reconciled")
 
@@ -389,12 +395,11 @@ def handoff_history(db: Session, task_id: str) -> list[dict]:
 
 
 def enable(db: Session, task: SddTask, user_id: str, request: EnableRequest) -> dict:
+    _check_task(task)
     state = _state(db, task.id)
     previous = _operation(db, task.id, request.operation_id, "ENABLE", request.model_dump())
     if previous:
         return previous
-    if str(task.execution_location) != "SERVER":
-        _fail("SERVER_TASK_REQUIRED", "Local collaboration is available only for server tasks")
     if state and state.enabled:
         _fail("ALREADY_ENABLED", "Task collaboration is already enabled")
     _assert_no_writer(db, task.id)
@@ -1111,6 +1116,7 @@ def recover_input(db: Session, task: SddTask, user_id: str, request: Fence, oper
 
 
 def claim_driver(db: Session, task: SddTask, user_id: str, request: EnableRequest) -> dict:
+    _check_task(task)
     state = _state(db, task.id)
     if not state or not state.enabled:
         _fail("COLLABORATION_DISABLED", "Enable local collaboration first")

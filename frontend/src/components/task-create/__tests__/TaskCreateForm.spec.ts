@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import * as runtime from '@/utils/runtime'
 
 const api = vi.hoisted(() => ({ get: vi.fn() }))
 vi.mock('@/utils/api', () => ({ default: api }))
@@ -41,6 +42,20 @@ const mountForm = () =>
   })
 
 describe('TaskCreateForm spec upload', () => {
+  it('removes local collaboration and excludes a previously checked intent when switching to diagnosis', async () => {
+    const desktop = vi.spyOn(runtime, 'isDesktop').mockReturnValue(true)
+    const wrapper = mountForm()
+    await wrapper.setProps({ reposTotal: 2 })
+    await wrapper.get('.collaboration-intent input').setValue(true)
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({ enableLocalCollaboration: true })
+    await wrapper.setProps({ taskType: 'DIAGNOSIS' })
+    expect(wrapper.find('.collaboration-intent').exists()).toBe(false)
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.emitted('submit')?.[1]?.[0]).toMatchObject({ taskType: 'DIAGNOSIS' })
+    expect(wrapper.emitted('submit')?.[1]?.[0]).not.toHaveProperty('enableLocalCollaboration')
+    wrapper.unmount(); desktop.mockRestore()
+  })
   it('opens the requirements sidebar and submits the selected association or an independent task', async () => {
     const wrapper = mountForm()
       await wrapper.find('.requirement-entry-card').trigger('click')

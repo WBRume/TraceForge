@@ -605,9 +605,9 @@ function ensureController(workspaceId: string, task: Record<string, any>, t: Ret
 export function useLocalCollaboration(options: { workspaceId: () => string; task: () => Record<string, any> | null }) {
   const { t } = useI18n(), auth = useAuthStore()
   const active = shallowRef<Controller | null>(null)
-  watch(() => [options.workspaceId(), options.task()?.id, options.task()?.execution_location, auth.user?.id], (_, __, onCleanup) => {
+  watch(() => [options.workspaceId(), options.task()?.id, options.task()?.execution_location, options.task()?.task_type, auth.user?.id], (_, __, onCleanup) => {
     const task = options.task(), workspaceId = options.workspaceId(), userId = auth.user?.id
-    if (!task?.id || task.execution_location !== 'SERVER' || !userId) { active.value = null; return }
+    if (!task?.id || task.execution_location !== 'SERVER' || task.task_type === 'DIAGNOSIS' || !userId) { active.value = null; return }
     const retained = ensureController(workspaceId, task, t, auth)
     active.value = retained.controller
     onCleanup(retained.release)

@@ -93,7 +93,8 @@ const app = createApp(defineComponent({
   components: { ApplyPatchDrawer, ChatExecutionInput, CollaborationEntry, CollaborationInputStatus },
   setup() {
     useAuthStore().setUser({ id: 'fixture-user', email: 'fixture@example.test', display_name: 'Fixture' })
-    const task = { id: 'fixture-task', name: '修复登录过期后的重试逻辑', workspace_id: 'fixture-workspace', execution_location: 'SERVER', status: 'CODING' }
+    const diagnosis = new URLSearchParams(location.search).has('diagnosis')
+    const task = { id: 'fixture-task', name: diagnosis ? '定位登录失败原因' : '修复登录过期后的重试逻辑', task_type: diagnosis ? 'DIAGNOSIS' : 'DEVELOPMENT', workspace_id: 'fixture-workspace', execution_location: 'SERVER', status: 'CODING' }
     const collaboration = useLocalCollaboration({ workspaceId: () => 'fixture-workspace', task: () => task })
     const show = ref(mappingRecovery || deliveryFailure), draft = ref('继续优化登录重试逻辑')
     Object.assign(window, { mappingFixture: {
@@ -135,13 +136,13 @@ const app = createApp(defineComponent({
   },
   template: `<main style="height:100vh;padding:30px;background:#f6f8fb;display:flex;flex-direction:column;gap:22px">
     <small>实际 Vue 组件交互验证 · 模拟传输数据 · 不操作本地文件</small>
-    <header style="display:flex;gap:12px;align-items:center"><h2 style="flex:1">{{task.name}}</h2><CollaborationEntry :controller="collaboration" @open="show=true"/></header>
-    <div style="display:flex;gap:12px"><button @click="scene('running')">模拟执行中</button><button @click="scene('conflict')">模拟最终冲突</button></div>
+    <header style="display:flex;gap:12px;align-items:center"><h2 style="flex:1">{{task.name}}</h2><CollaborationEntry v-if="collaboration.supported.value" :controller="collaboration" @open="show=true"/></header>
+    <div v-if="collaboration.supported.value" style="display:flex;gap:12px"><button @click="scene('running')">模拟执行中</button><button @click="scene('conflict')">模拟最终冲突</button></div>
     <section style="flex:1">云端会话内容区域。关闭抽屉后协同继续工作。</section>
     <ChatExecutionInput v-model="draft" :disabled="false" :send-blocked="collaboration.blocked.value" :running="false" :can-interrupt="false" :interrupting="false" :can-start-pre-input="true" placeholder="继续写草稿" send-title="发送" interrupt-title="停止" :show-model-selector="true" selected-model="volcengine-plan/deepseek-v4.1-flash" :model-options="[{value:'volcengine-plan/deepseek-v4.1-flash',label:'deepseek-v4.1-flash',provider:'volcengine-plan'}]" @submit="submit">
-      <template #status><CollaborationInputStatus :controller="collaboration" @open="show=true"/></template>
+      <template #status><CollaborationInputStatus v-if="collaboration.supported.value" :controller="collaboration" @open="show=true"/></template>
     </ChatExecutionInput>
-    <ApplyPatchDrawer :show="show" :task="task" :workspace="{id:'fixture-workspace'}" :collaboration="collaboration" @close="show=false"/>
+    <ApplyPatchDrawer v-if="collaboration.supported.value" :show="show" :task="task" :workspace="{id:'fixture-workspace'}" :collaboration="collaboration" @close="show=false"/>
   </main>`,
 }))
 app.use(createPinia()).use(i18n).use(ElementPlus).use(createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] })).mount('#app')
