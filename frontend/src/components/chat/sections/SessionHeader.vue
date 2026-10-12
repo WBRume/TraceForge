@@ -15,7 +15,7 @@ import {
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import ChatMoreActionsMenu from '@/components/chat/ChatMoreActionsMenu.vue'
 import TaskPinButton from '@/components/floating/TaskPinButton.vue'
-import CollaborationTransferStatus from '@/components/collaboration/CollaborationTransferStatus.vue'
+import CollaborationEntry from '@/components/collaboration/CollaborationEntry.vue'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
 
@@ -119,13 +119,11 @@ const workspaceStore = useWorkspaceStore()
         <CheckCircle2 class="w-4 h-4" />
       </button>
 
-      <button class="btn-micro" v-if="props.vm.collaboration?.supported.value || !props.vm.hidePatchWorkflows" :disabled="!props.vm.currentTask" @click="emit('open-apply-patch')">
+      <CollaborationEntry v-if="props.vm.collaboration?.supported.value" :controller="props.vm.collaboration" @open="emit('open-apply-patch')" />
+      <button class="btn-micro" v-else-if="!props.vm.hidePatchWorkflows" :disabled="!props.vm.currentTask" @click="emit('open-apply-patch')">
         <GitPullRequest class="w-4 h-4" />
-        {{ props.vm.collaboration?.supported.value ? t('collaboration.code') : t('chat.change_apply_button') }}
+        {{ t('chat.change_apply_button') }}
       </button>
-      <button v-if="props.vm.collaboration?.supported.value && !props.vm.collaboration.enabled.value" class="btn-primary" @click="emit('open-apply-patch')">{{ t('collaboration.enable') }}</button>
-      <span v-else-if="props.vm.collaboration?.supported.value" class="badge" role="status">{{ props.vm.collaboration.label.value }}</span>
-      <CollaborationTransferStatus v-if="props.vm.collaboration?.enabled.value" :activity="props.vm.collaboration.activity.value" />
       <div class="mode-toggle">
         <button
           class="mode-toggle-btn"

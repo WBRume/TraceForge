@@ -6,13 +6,13 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import zh from '@/locales/zh.json'
 import type { CollaborationManifest, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
 
-const mocks = vi.hoisted(() => ({ desktop: true, api: { state: vi.fn(), post: vi.fn(), snapshot: vi.fn(), object: vi.fn(), upload: vi.fn() }, native: vi.fn(), mapping: vi.fn(), open: vi.fn(), auth: { user: null as { id: string } | null } }))
+const mocks = vi.hoisted(() => ({ desktop: true, api: { state: vi.fn(), post: vi.fn(), snapshot: vi.fn(), object: vi.fn(), upload: vi.fn() }, native: vi.fn(), mapping: vi.fn(), setMapping: vi.fn(), directory: vi.fn(), validate: vi.fn(), remotes: vi.fn(), open: vi.fn(), auth: { user: null as { id: string } | null } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => mocks.auth }))
-vi.mock('@/utils/runtime', () => ({ getSddDesktop: () => mocks.desktop ? ({ collaboration: { execute: mocks.native }, config: { getRepoMapping: mocks.mapping }, system: { openPath: mocks.open } }) : null }))
+vi.mock('@/utils/runtime', () => ({ getSddDesktop: () => mocks.desktop ? ({ collaboration: { execute: mocks.native }, config: { getRepoMapping: mocks.mapping, setRepoMapping: mocks.setMapping }, git: { selectDirectory: mocks.directory, validateGitRepo: mocks.validate, getFetchRemotes: mocks.remotes }, system: { openPath: mocks.open } }) : null }))
 vi.mock('@/services/collaborationApi', () => ({ collaborationApi: () => mocks.api, base64Bytes: () => new Uint8Array([1]), bytesBase64: () => 'AQ==' }))
 vi.mock('@/components/collaboration/CodeComparison.vue', () => ({ default: { template: '<div />' } }))
 import { useLocalCollaboration, type LocalCollaboration } from '../useLocalCollaboration'
-import { saveRepoPreferences } from '@/composables/localRepoPreferences'
+import { readRepoPreferences, saveRepoPreferences } from '@/composables/localRepoPreferences'
 import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
 import { manifestDelta } from '../../../../shared/collaboration-delta'
 
@@ -42,9 +42,13 @@ beforeEach(() => {
     return { ...state }
   })
   mocks.mapping.mockResolvedValue({ localPath: 'G:/api', gitRemoteUrl: repo.repo_url })
+  mocks.directory.mockResolvedValue({ canceled: false, path: 'G:/selected-api' })
+  mocks.validate.mockResolvedValue({ ok: true })
+  mocks.remotes.mockResolvedValue([{ name: 'origin', fetchUrl: repo.repo_url }])
+  mocks.setMapping.mockImplementation(async (mapping) => { mocks.mapping.mockResolvedValue(mapping); return mapping })
   mocks.api.upload.mockReset().mockResolvedValue(undefined)
   mocks.native.mockImplementation(async ({ kind }) => {
-    if (kind === 'inspect_mappings') return { ready: true, checks: [] }
+    if (kind === 'inspect_mappings') return { ready: true, checks: manifest.repositories.map(repo => ({ task_repository_id: repo.task_repository_id, local_path: `G:/${repo.repo_slug}`, expected_head: repo.base_commit_sha, local_head: repo.base_commit_sha, clean: true, changes: [], errors: [] })) }
     if (kind === 'describe') return { mapped_repositories: 1, task_root: local.task_root, repositories: local.repositories }
     if (kind === 'status' && !state.enabled) throw new Error('ENOENT: local binding does not exist')
     if (kind === 'missing_objects') return { missing: [] }
@@ -58,6 +62,35 @@ afterEach(async () => {
 })
 
 describe('local collaboration coordinator', () => {
+  it('configures the selected repository inline without enabling or writing files', async () => {
+    manifest.repositories[0]!.repository_id = ''
+    saveRepoPreferences('ws', mocks.auth.user!.id, [{ repository_id: '', configured_git_url: 'https://example.test/other', local_path: 'G:/other' }])
+    setup(); await flushPromises()
+    await controller.selectMapping('repo1')
+    expect(mocks.setMapping).toHaveBeenCalledWith({ workspaceId: 'ws', remoteUrl: manifest.repositories[0]!.repo_url, localPath: 'G:/selected-api', gitRemoteUrl: manifest.repositories[0]!.repo_url })
+    expect(controller.mappings.value.repo1?.local_path).toBe('G:/selected-api')
+    expect(controller.mappingChecks.value).toHaveLength(1)
+    expect(readRepoPreferences('ws', mocks.auth.user!.id).some(row => row.local_path === 'G:/other')).toBe(true)
+    expect(mocks.api.post.mock.calls.some(([action]) => action === 'enable')).toBe(false)
+    expect(mocks.native.mock.calls.some(([request]) => ['prepare', 'reconcile', 'restore'].includes(request.kind))).toBe(false)
+  })
+  it('does not change a mapping when directory selection is canceled or invalid', async () => {
+    setup(); await flushPromises()
+    mocks.directory.mockResolvedValue({ canceled: true })
+    await controller.selectMapping('repo1')
+    expect(mocks.validate).not.toHaveBeenCalled()
+    mocks.directory.mockResolvedValue({ canceled: false, path: 'G:/not-a-repo' })
+    mocks.validate.mockResolvedValue({ ok: false })
+    await controller.selectMapping('repo1')
+    expect(mocks.setMapping).not.toHaveBeenCalled()
+    expect(controller.error.value).toBeTruthy()
+    expect(controller.busy.value).toBe(false)
+  })
+  it('keeps an active binding mapped to the same directory', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    await controller.selectMapping('repo1')
+    expect(mocks.directory).not.toHaveBeenCalled()
+  })
   it('downloads missing dual-repository objects when an input manifest was viewed but never received locally', async () => {
     const first = manifest.repositories[0]!
     const second = { ...first, task_repository_id: 'repo2', repository_id: 'r2', repo_slug: 'web', rel_path: 'web' }
@@ -182,6 +215,8 @@ describe('local collaboration coordinator', () => {
     expect(mocks.native.mock.calls.map(([request]) => request.kind)).toContain('prepare')
     expect(mocks.api.post).toHaveBeenCalledWith('receipt', expect.objectContaining({ repository_results: [{ task_repository_id: 'repo1', status: 'ALIGNED' }] }))
     expect(controller.phase.value).toBe('READY')
+    expect(mocks.open).not.toHaveBeenCalled()
+    await controller.openDirectory('repo1')
     expect(mocks.open).toHaveBeenCalledWith('G:/private/task/api')
   })
   it('retries failed local preparation using the enabled server binding without another enable request', async () => {
@@ -270,7 +305,8 @@ describe('local collaboration coordinator', () => {
     expect(panel.text()).toContain('G:/web')
     expect(panel.text()).not.toContain(zh.collaboration.mappingMissing)
     expect(panel.text()).not.toContain('ENOENT')
-    const retry = panel.findAll('button').find(button => button.text() === zh.collaboration.recover)!
+    await flushPromises()
+    const retry = panel.findAll('button').find(button => button.text() === '连接 2 个仓库')!
     expect(retry.element.disabled).toBe(false)
     await vi.advanceTimersByTimeAsync(5000)
     expect(mocks.native.mock.calls.filter(([request]) => request.kind === 'describe')).toHaveLength(1)
