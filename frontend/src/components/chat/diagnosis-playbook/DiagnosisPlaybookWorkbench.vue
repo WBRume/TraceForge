@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { PlaybookRun } from '@/types/diagnosisPlaybook'
 import PlaybookStageRail from './PlaybookStageRail.vue'
 import HypothesisCard from './HypothesisCard.vue'
@@ -8,7 +9,11 @@ import HypothesisDAG from './HypothesisDAG.vue'
 import VerificationComparison from './VerificationComparison.vue'
 const props = defineProps<{ run: PlaybookRun; elapsed: number; tail: string; error: string; busy: boolean; canContinue: boolean }>()
 const emit = defineEmits<{ command: [action: string, extra?: Record<string, unknown>] }>()
-const isolation = computed(() => ({ CONTAINER_SANDBOX: '容器沙箱物理隔离', WORKTREE_BROKER: '受管工作树隔离', ADVISORY_GUARD: '建议级软防护（本地未隔离）' }[props.run.enforcement ?? ''] ?? '环境尚未绑定'))
+const { t, te } = useI18n()
+const isolation = computed(() => {
+  const key = `feature_config.options.${props.run.enforcement ?? ''}`
+  return props.run.enforcement && te(key) ? t(key) : '环境尚未绑定'
+})
 </script>
 <template>
   <section id="diagnosis-playbook-workbench" class="playbook-workbench" aria-label="故障诊断规程">

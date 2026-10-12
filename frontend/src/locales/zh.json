@@ -4043,7 +4043,7 @@
     "features": {
       "speech": "语音输入",
       "search": "全局搜索",
-      "diagnosis": "诊断规程防线",
+      "diagnosis": "规程诊断执行设置",
       "oauth": "三方登录",
       "agent": "Agent 引擎"
     },
@@ -4095,9 +4095,9 @@
       "semantic": "语义 / 向量检索",
       "lexical": "远程关键词检索",
       "github": "GitHub",
-      "ADVISORY_GUARD": "建议防线",
-      "WORKTREE_BROKER": "工作树代理防线",
-      "CONTAINER_SANDBOX": "容器沙箱防线",
+      "ADVISORY_GUARD": "提示词约束（默认）",
+      "WORKTREE_BROKER": "工作目录隔离",
+      "CONTAINER_SANDBOX": "容器环境隔离",
       "claude-code": "Claude Code",
       "opencode": "OpenCode Server",
       "dsh": "DSH Web Host",

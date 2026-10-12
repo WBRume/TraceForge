@@ -52,6 +52,7 @@ watch(() => values.provider, () => {
 })
 const canReset = computed(() => props.config.revision > 0 || props.config.fields.some(field => field.source === 'database'))
 const inputId = (key: string) => `feature-${props.config.feature}-${key}`
+const isDiagnosisEnforcement = (field: FeatureField) => props.config.feature === 'diagnosis' && field.key === 'enforcement'
 const secretInput = (key: string, event: Event) => updateSecret(key, (event.target as HTMLInputElement).value)
 const optionLabel = (value: string) => t('feature_config.options.' + value, value)
 
@@ -74,7 +75,7 @@ const runSave = async (reset = false) => {
         <legend>{{ t('feature_config.groups.' + group.name) }}</legend>
         <div class="feature-fields">
           <div v-for="field in group.fields" :key="field.key" class="feature-field"
-            :class="{ wide: field.kind === 'secret' || field.kind === 'url' || field.kind === 'https' }">
+            :class="{ wide: field.kind === 'secret' || field.kind === 'url' || field.kind === 'https' || isDiagnosisEnforcement(field) }">
             <div class="field-heading">
               <div class="field-title">
                 <label :for="inputId(field.key)">{{ field.label }}</label>
@@ -83,7 +84,7 @@ const runSave = async (reset = false) => {
                   :content="field.hint"
                   placement="top"
                   :show-after="80"
-                  popper-class="feature-field-tip"
+                  :popper-class="isDiagnosisEnforcement(field) ? 'feature-field-tip diagnosis-execution-tip' : 'feature-field-tip'"
                 >
                   <button
                     type="button"
@@ -134,6 +135,7 @@ const runSave = async (reset = false) => {
             <input v-else-if="field.kind === 'number'" :id="inputId(field.key)" v-model.number="values[field.key]"
               type="number" :min="field.minimum" :max="field.maximum" required />
             <input v-else :id="inputId(field.key)" v-model="values[field.key]" type="text" :maxlength="field.maximum" />
+            <p v-if="isDiagnosisEnforcement(field) && field.hint" class="execution-mode-help">{{ field.hint }}</p>
           </div>
         </div>
       </fieldset>
@@ -193,6 +195,14 @@ const runSave = async (reset = false) => {
 .feature-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 28px; }
 .feature-field { min-width: 0; }
 .feature-field.wide { grid-column: 1 / -1; }
+.execution-mode-help {
+  margin: 14px 0 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.8;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
 .field-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
 .field-heading label { font-size: 13px; font-weight: 600; color: #1e293b; }
 .field-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
@@ -327,4 +337,5 @@ const runSave = async (reset = false) => {
   font-size: 12px;
   white-space: pre-line;
 }
+.diagnosis-execution-tip.el-popper { max-width: min(480px, calc(100vw - 32px)); }
 </style>
