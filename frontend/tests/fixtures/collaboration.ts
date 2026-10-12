@@ -124,9 +124,24 @@ const app = createApp(defineComponent({
       state = { ...state, ...identity, driver_connected: true, sync_phase: name === 'running' ? 'RUNNING' : 'DELIVERY_PENDING', snapshot_id: name === 'running' ? 'initial' : snapshotId, progress_snapshot_id: name === 'running' ? snapshotId : null }
       await collaboration.refresh(); show.value = true
     }
-    Object.assign(window, { uiFixture: { scene, show: () => { show.value = true } } })
+    async function composerState(phase: string) {
+      if (!state.enabled) await collaboration.enable()
+      state = { ...state, ...identity, driver_connected: true, sync_phase: phase, progress_snapshot_id: null }
+      await collaboration.refresh()
+      show.value = false
+    }
+    Object.assign(window, { uiFixture: { scene, composerState, show: () => { show.value = true } } })
     return { task, collaboration, show, draft, scene, sent, submit: () => { sent = true } }
   },
-  template: `<main style="height:100vh;padding:30px;background:#f6f8fb;display:flex;flex-direction:column;gap:22px"><small>实际 Vue 组件交互验证 · 模拟传输数据 · 不操作本地文件</small><header style="display:flex;gap:12px;align-items:center"><h2 style="flex:1">{{task.name}}</h2><CollaborationEntry :controller="collaboration" @open="show=true"/></header><div style="display:flex;gap:12px"><button @click="scene('running')">模拟执行中</button><button @click="scene('conflict')">模拟最终冲突</button></div><section style="flex:1">云端会话内容区域。关闭抽屉后协同继续工作。</section><CollaborationInputStatus :controller="collaboration" @open="show=true"/><ChatExecutionInput v-model="draft" :disabled="false" :send-blocked="collaboration.blocked.value" :running="false" :can-interrupt="false" :interrupting="false" placeholder="继续写草稿" send-title="发送" interrupt-title="停止" @submit="submit"/><ApplyPatchDrawer :show="show" :task="task" :workspace="{id:'fixture-workspace'}" :collaboration="collaboration" @close="show=false"/></main>`,
+  template: `<main style="height:100vh;padding:30px;background:#f6f8fb;display:flex;flex-direction:column;gap:22px">
+    <small>实际 Vue 组件交互验证 · 模拟传输数据 · 不操作本地文件</small>
+    <header style="display:flex;gap:12px;align-items:center"><h2 style="flex:1">{{task.name}}</h2><CollaborationEntry :controller="collaboration" @open="show=true"/></header>
+    <div style="display:flex;gap:12px"><button @click="scene('running')">模拟执行中</button><button @click="scene('conflict')">模拟最终冲突</button></div>
+    <section style="flex:1">云端会话内容区域。关闭抽屉后协同继续工作。</section>
+    <ChatExecutionInput v-model="draft" :disabled="false" :send-blocked="collaboration.blocked.value" :running="false" :can-interrupt="false" :interrupting="false" :can-start-pre-input="true" placeholder="继续写草稿" send-title="发送" interrupt-title="停止" :show-model-selector="true" selected-model="volcengine-plan/deepseek-v4.1-flash" :model-options="[{value:'volcengine-plan/deepseek-v4.1-flash',label:'deepseek-v4.1-flash',provider:'volcengine-plan'}]" @submit="submit">
+      <template #status><CollaborationInputStatus :controller="collaboration" @open="show=true"/></template>
+    </ChatExecutionInput>
+    <ApplyPatchDrawer :show="show" :task="task" :workspace="{id:'fixture-workspace'}" :collaboration="collaboration" @close="show=false"/>
+  </main>`,
 }))
 app.use(createPinia()).use(i18n).use(ElementPlus).use(createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] })).mount('#app')
