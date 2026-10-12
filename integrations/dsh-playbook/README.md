@@ -1,5 +1,9 @@
 # DSH 故障诊断执行前 guard
 
+[项目首页](../../README.md) · [全部文档](../../README.md#文档导航) · [诊断规程与执行策略](../../backend/app/domains/diagnosis_playbook/README.md)
+
+普通诊断会话和默认 `ADVISORY_GUARD` 不需要安装此插件。先按[诊断规程说明](../../backend/app/domains/diagnosis_playbook/README.md#启用)确认所选执行策略及环境要求。
+
 这个 Cordis 插件只用于诊断 Run 的专属 DSH Host。它会拒绝未绑定会话的所有工具，也会拒绝绑定会话的 shell、文件写入、委派和 PTC 执行。允许的四个工具经平台 MCP 入口执行，凭据只授权当前 Run 的候选提交或源码读取，不授权证据写入。
 
 DSH 需要具有 `ctx.tools.guard` 的版本。该接口在 `tools/pre-execute` 之后、工具函数执行之前作单调拒绝；普通工具事件订阅不能替代它。插件不声称提供操作系统沙箱。

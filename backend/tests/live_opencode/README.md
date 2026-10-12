@@ -1,5 +1,7 @@
 # OpenCode 真实执行恢复验收
 
+[项目首页](../../../README.md) · [全部文档](../../../README.md#文档导航) · [后端与 Agent 配置](../../README.md)
+
 从 `backend` 目录显式执行（会调用真实模型与 shell 工具）：
 
 ```powershell
