@@ -64,6 +64,8 @@ export class CollaborationRuntime {
       case 'inspect_mappings': { const { repositories: _bound, ...result } = inspectMappedRepositories(payload.repositories, this.roots()); return result }
       case 'prepare': return this.prepare(payload)
       case 'release': return this.release(payload)
+      case 'suspend': return this.release({ ...payload, suspend: true })
+      case 'binding': return this.load(payload.task_id, true)
       case 'cache_objects': return this.objects.receive(payload.objects)
       case 'read_object': return { sha256: payload.sha256, content: this.objects.get(payload.sha256).toString('base64') }
       case 'missing_objects': return { missing: this.objects.git.check((payload.sha256 as string[]).map(sha256 => ({ sha256 }))) }
@@ -138,19 +140,19 @@ export class CollaborationRuntime {
   private prepareMapped(payload: any) {
     const file = this.bindingFile(payload.task_id)
     const previous = fs.existsSync(file) ? readJson<SyncBinding>(file) : null
-    if (previous?.directory_mode === 'MAPPED' && !previous.released && previous.binding_id === payload.binding_id && previous.baseline) {
+    if (previous?.directory_mode === 'MAPPED' && (!previous.released || previous.suspended) && previous.baseline
+      && (previous.binding_id === payload.binding_id || (previous.suspended && payload.previous_binding_id === previous.binding_id))) {
       if (previous.repositories.length !== payload.repositories.length || previous.repositories.some(repo => !payload.repositories.some((input: LocalRepository) =>
         input.task_repository_id === repo.task_repository_id && resolved(input.local_path) === repo.mapped_repo_root
         && input.base_commit_sha === repo.base_commit_sha && input.rel_path === repo.rel_path && input.branch_name === repo.branch_name))) fail('COLLABORATION_BINDING_CONFLICT')
+      this.requireUnoccupied(payload.task_id, previous.repositories)
+      previous.repositories.forEach(validateRepositoryIdentity)
+      previous.released = false; previous.suspended = false; previous.binding_id = payload.binding_id
+      this.save(previous)
       return this.status(this.load(payload.task_id))
     }
     const repositories = requireCleanMappings(payload.repositories, this.roots())
-    for (const other of this.bindings()) if (!other.released && other.task_id !== payload.task_id) {
-      for (const repo of repositories) for (const occupied of other.repositories) {
-        const overlaps = (a: string, b: string) => { const relative = path.relative(a, b); return !relative || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)) }
-        if (overlaps(repo.local_worktree_path, occupied.local_worktree_path) || overlaps(occupied.local_worktree_path, repo.local_worktree_path)) fail('COLLABORATION_DIRECTORY_IN_USE: ' + repo.local_worktree_path)
-      }
-    }
+    this.requireUnoccupied(payload.task_id, repositories)
     if (previous && (previous.target || previous.conflicts.length || Object.keys(previous.applied).length)) fail('COLLABORATION_DELIVERY_REQUIRED')
     if (previous && !previous.released && previous.binding_id !== payload.binding_id && payload.previous_binding_id !== previous.binding_id) fail('COLLABORATION_BINDING_CONFLICT')
     const binding: SyncBinding = { task_id: payload.task_id, binding_id: payload.binding_id, directory_mode: 'MAPPED',
@@ -170,6 +172,14 @@ export class CollaborationRuntime {
     return this.status(binding, baseline)
   }
   close() { this.index.close() }
+  private requireUnoccupied(taskId: string, repositories: LocalRepository[]) {
+    for (const other of this.bindings()) if (!other.released && other.task_id !== taskId) {
+      for (const repo of repositories) for (const occupied of other.repositories) {
+        const overlaps = (a: string, b: string) => { const relative = path.relative(a, b); return !relative || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)) }
+        if (overlaps(repo.local_worktree_path, occupied.local_worktree_path) || overlaps(occupied.local_worktree_path, repo.local_worktree_path)) fail('COLLABORATION_DIRECTORY_IN_USE: ' + repo.local_worktree_path)
+      }
+    }
+  }
   private bindings(): SyncBinding[] {
     const directory = path.join(this.state, 'bindings')
     return fs.existsSync(directory) ? fs.readdirSync(directory).filter(file => file.endsWith('.json')).map(file => readJson<SyncBinding>(path.join(directory, file))) : []
@@ -177,8 +187,9 @@ export class CollaborationRuntime {
   private release(payload: any) {
     const binding = this.load(payload.task_id, true)
     if (binding.binding_id !== payload.binding_id) fail('COLLABORATION_BINDING_CONFLICT')
-    if (binding.target || binding.conflicts.length || binding.errors.length) fail('COLLABORATION_DELIVERY_REQUIRED')
-    binding.released = true; this.save(binding)
+    if (!payload.suspend && (binding.target || binding.conflicts.length || binding.errors.length)) fail('COLLABORATION_DELIVERY_REQUIRED')
+    binding.released = true; binding.suspended = payload.suspend === true; this.save(binding)
+    this.index.close(binding.task_id); this.observations.delete(binding.task_id); this.transports.delete(binding.task_id)
     return { managed_roots: this.bindings().filter(row => !row.released).flatMap(row => row.directory_mode === 'MAPPED'
       ? row.repositories.map(repo => repo.local_worktree_path) : [row.task_root]) }
   }

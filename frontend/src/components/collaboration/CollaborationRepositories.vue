@@ -13,17 +13,15 @@ const repos = computed(() => (c.value.state?.repositories || []).map(repo => ({ 
   check: c.value.mappingChecks.find(row => row.task_repository_id === repo.task_repository_id),
 })))
 const allMapped = computed(() => repos.value.length > 0 && repos.value.every(repo => repo.path))
-const allChecked = computed(() => allMapped.value && repos.value.every(repo => repo.check && !repo.check.errors.length))
-const checkFailed = computed(() => repos.value.some(repo => repo.check?.errors.length))
-const canPrepare = computed(() => c.value.available && (!c.value.enabled || (c.value.driver && c.value.state?.driver_connected !== false)))
+const resumable = computed(() => Boolean(c.value.local?.baseline && (!c.value.local.released || c.value.local.suspended)))
+const canPrepare = computed(() => c.value.available && (!c.value.participating || c.value.driver))
 const problemText = (code: string) => t(code === 'HEAD_MISMATCH' ? 'collaboration.headMismatch' : code === 'WORKTREE_DIRTY' ? 'collaboration.worktreeDirty' : 'collaboration.ui.repoCheckError', { code })
 // One read-only preflight on entering setup, never a repeating full-workspace verification.
 watch(() => props.setup && allMapped.value && canPrepare.value && !c.value.loading, ready => {
   if (ready && !c.value.busy && !c.value.mappingChecks.length) void c.value.checkMappings()
 }, { immediate: true })
 async function connect() {
-  if (!allChecked.value) { await c.value.checkMappings(); return }
-  if (c.value.enabled) await c.value.recover()
+  if (c.value.participating) await c.value.recover()
   else await c.value.enable()
 }
 </script>
@@ -31,18 +29,22 @@ async function connect() {
 <template>
   <section class="repository-settings">
     <h2>{{ t(setup ? 'collaboration.ui.connectTitle' : 'collaboration.ui.settings') }}</h2>
-    <p class="intro">{{ t(setup ? 'collaboration.ui.connectHint' : 'collaboration.ui.settingsHint') }}</p>
+    <p class="intro">{{ t(setup ? resumable ? 'collaboration.session.resumeHint' : 'collaboration.ui.connectHint' : 'collaboration.ui.settingsHint') }}</p>
     <div class="repositories">
       <article v-for="repo in repos" :key="repo.task_repository_id">
-        <div class="repo-heading"><strong>{{ repo.repo_slug }}</strong><code>{{ repo.branch_name }}</code><span v-if="setup" :class="{ warning: repo.check?.errors.length }">{{ t(!repo.path ? 'collaboration.ui.mappingMissing' : repo.check?.errors.length ? 'collaboration.ui.checkFailed' : repo.check ? 'collaboration.ui.checkPassed' : 'collaboration.ui.notChecked') }}</span></div>
+        <div class="repo-heading"><strong>{{ repo.repo_slug }}</strong><code>{{ repo.branch_name }}</code><span v-if="setup" :class="{ warning: repo.check?.errors.length }">{{ t(!repo.path ? 'collaboration.ui.mappingMissing' : repo.check?.errors.length ? 'collaboration.ui.checkFailed' : resumable ? 'collaboration.session.resumeBaseline' : repo.check ? 'collaboration.ui.checkPassed' : 'collaboration.ui.notChecked') }}</span></div>
         <div class="repo-path"><span :title="repo.path">{{ repo.path || t(setup ? 'collaboration.ui.chooseDirectory' : 'collaboration.ui.localUnavailable') }}</span><button v-if="setup && canPrepare" class="text-action" type="button" :disabled="c.busy" @click="c.selectMapping(repo.task_repository_id)">{{ t(repo.path ? 'collaboration.ui.changeDirectory' : 'collaboration.ui.chooseDirectory') }}</button><button v-else-if="ui?.localAvailable" class="text-action" type="button" @click="c.openDirectory(repo.task_repository_id)">{{ t('collaboration.ui.openDirectory') }}</button></div>
         <details class="check-details"><summary>{{ t('collaboration.ui.taskBaseline') }} <code>{{ repo.base_commit_sha.slice(0, 8) }}</code><span v-if="repo.check && !repo.check.errors.length && setup"> · {{ t('collaboration.ui.cleanHead') }}</span></summary><p>{{ t('collaboration.base') }}: {{ repo.base_commit_sha }}</p><p v-if="setup && repo.check">{{ t('collaboration.localHead') }}: {{ repo.check.local_head }} · {{ repo.check.local_branch }}</p><pre v-if="setup && repo.check?.changes.length">{{ repo.check.changes.join('\n') }}</pre></details>
         <p v-for="problem in setup ? repo.check?.errors || [] : []" :key="problem" class="repo-error" role="alert">{{ problemText(problem) }}</p>
       </article>
     </div>
-    <div v-if="setup" class="setup-actions"><small>{{ t(c.available ? 'collaboration.ui.mappingReuse' : 'collaboration.desktopRequired') }}</small><button v-if="canPrepare" class="btn-primary" type="button" :disabled="c.busy || c.loading || !allMapped" @click="connect">{{ c.busy ? t('collaboration.working') : t(allChecked ? 'collaboration.ui.connectRepos' : checkFailed ? 'collaboration.ui.recheck' : 'collaboration.ui.checkRepos', { count: repos.length }) }}</button></div>
+    <div v-if="setup" class="setup-actions">
+      <small>{{ t(c.available ? 'collaboration.session.choiceHint' : 'collaboration.desktopRequired') }}</small>
+      <button v-if="canPrepare && !c.participating" class="btn-secondary" type="button" :disabled="c.busy || c.loading || !allMapped" @click="c.receiveOnce()">{{ t('collaboration.session.receive') }}</button>
+      <button v-if="canPrepare" class="btn-primary" type="button" :disabled="c.busy || c.loading || !allMapped || c.enabled && !c.participating && !c.canReconnect" @click="connect">{{ t(c.participating ? 'collaboration.ui.actions.recover' : 'collaboration.session.connect') }}</button>
+    </div>
     <template v-else>
-      <label v-if="c.driver && c.available" class="setting"><span>{{ t('collaboration.ui.autoReceive') }}<small>{{ t('collaboration.ui.autoReceiveHint') }}</small></span><input type="checkbox" :checked="c.progressive" :disabled="c.busy" @change="c.setProgressive(($event.target as HTMLInputElement).checked)" /></label>
+      <label v-if="c.participating && c.driver && c.available" class="setting"><span>{{ t('collaboration.ui.autoReceive') }}<small>{{ t('collaboration.ui.autoReceiveHint') }}</small></span><input type="checkbox" :checked="c.progressive" :disabled="c.busy" @change="c.setProgressive(($event.target as HTMLInputElement).checked)" /></label>
       <div class="setting"><span>{{ t('collaboration.ui.device') }}<small>{{ t(c.state?.driver_connected === false ? 'collaboration.ui.deviceOffline' : c.driver ? 'collaboration.ui.thisDevice' : 'collaboration.ui.otherDevice') }}</small></span><button v-if="c.available && !c.driver" class="text-action" type="button" @click="emit('device')">{{ t('collaboration.ui.deviceDetails') }}</button></div>
       <p v-if="c.state?.driver_connected === false && !c.canReconnect" class="intro">{{ t('collaboration.ui.reconnectElsewhereHint') }}</p>
     </template>

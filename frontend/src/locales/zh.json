@@ -4218,8 +4218,8 @@
       "settings": "仓库与同步设置",
       "more": "更多协同操作",
       "syncOnly": "仅同步到云端",
-      "connectTitle": "连接你正在编辑的仓库",
-      "connectHint": "Agent 在云端执行，修改同步到以下本地目录。发送下一条消息时，会带上你的本地修改。",
+      "connectTitle": "连接本地仓库",
+      "connectHint": "复用仓库映射。首次连接需各仓库 HEAD 与任务基线一致，且工作区干净。",
       "settingsHint": "这些目录就是你在本地 IDE 中编辑的仓库。",
       "mappingMissing": "未选择目录",
       "checkFailed": "检查未通过",
@@ -4378,8 +4378,50 @@
           "title": "本地协同尚未就绪",
           "description": "核对连接状态后继续。",
           "input": "本地协同尚未就绪，处理后可发送。"
+        },
+        "browse": {
+          "short": "未连接",
+          "title": "选择本次操作",
+          "description": "仅查看会话不会连接本地仓库。",
+          "input": "当前未参与本地协同。开启协同后可交接本地修改并发送消息。"
+        },
+        "received": {
+          "short": "已接收",
+          "title": "本次代码已接收",
+          "description": "无冲突的云端变更已写入映射仓库，本地修改未上传，连接已释放。",
+          "input": "本次仅接收代码；如需交接本地修改并发送消息，请开启协同。"
+        },
+        "receivedConflict": {
+          "short": "待处理冲突",
+          "title": "已接收无冲突文件",
+          "description": "冲突文件保留本地内容。可查看差异并选择需要备份后恢复的文件。",
+          "input": "本次仅接收代码，冲突文件保留在本地。"
+        },
+        "leaving": {
+          "short": "正在断开",
+          "title": "正在释放本地连接",
+          "description": "保留代码和备份，停止本地同步。",
+          "input": "正在断开本地协同。"
         }
       }
+    },
+    "session": {
+      "resumeBaseline": "已有同步基线",
+      "publishedSource": "本次接收的云端版本",
+      "beforeReceive": "接收前的同步基线",
+      "receiveScope": "本次接收",
+      "cloudChanges": "云端修改",
+      "noChanges": "本次没有新增云端变更",
+      "noChangesHint": "已接收到当前可用版本。需要更新时，再点击“接收最新代码”。",
+      "resumeHint": "复用上次同步基线。本地修改继续保留，接收代码时只处理变更文件。",
+      "leaveTitle": "离开本地协同？",
+      "leaveHint": "离开后将断开本机协同并释放仓库占用。云端任务继续运行，已接收的代码、未同步的本地修改和冲突备份均保留。",
+      "stay": "留在会话",
+      "leave": "断开并离开",
+      "disconnect": "断开本地协同",
+      "receive": "接收最新代码",
+      "connect": "开启本地协同",
+      "choiceHint": "接收一次仅下载云端代码；开启协同后，发送消息时会交接本地修改。"
     }
   }
 }

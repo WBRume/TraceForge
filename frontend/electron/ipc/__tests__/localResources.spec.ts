@@ -114,10 +114,10 @@ describe('Embedded local resource lifecycle', () => {
     } })).rejects.toThrow('COLLABORATION_MAPPING_CHECK_FAILED')
     expect(vi.mocked(writeFile).mock.calls.some(([file]) => String(file).includes('collaboration-managed-roots'))).toBe(false)
   })
-  it('replaces managed roots after disabling a binding while retaining other tasks', async () => {
+  it.each(['release', 'suspend'])('replaces managed roots after %s while retaining other tasks', async kind => {
     const { writeFile } = await import('node:fs/promises')
     mocks.startResource.mockResolvedValue({ ...resource(), dispatch: vi.fn().mockResolvedValue({ managed_roots: ['G:/repos/other'] }) })
-    await mocks.handlers.get('sdd:collaboration:execute')!(null, { kind: 'release', payload: { task_id: 'task', binding_id: 'binding' } })
+    await mocks.handlers.get('sdd:collaboration:execute')!(null, { kind, payload: { task_id: 'task', binding_id: 'binding' } })
     const saved = vi.mocked(writeFile).mock.calls.find(([file]) => String(file).includes('collaboration-managed-roots'))
     expect(JSON.parse(String(saved?.[1]))).toEqual(['G:/repos/other'])
   })

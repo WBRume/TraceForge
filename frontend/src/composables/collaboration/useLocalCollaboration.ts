@@ -19,13 +19,6 @@ function clientId() {
   if (!id) { id = crypto.randomUUID(); localStorage.setItem(key, id) }
   return id
 }
-type SavedBinding = { workspaceId: string; taskId: string }
-const bindingKey = (userId: string) => `traceforge.collaboration.bindings:${userId}`
-function savedBindings(userId: string): SavedBinding[] {
-  try { const value = JSON.parse(localStorage.getItem(bindingKey(userId)) || '[]'); return Array.isArray(value) ? value.filter(row => typeof row.workspaceId === 'string' && typeof row.taskId === 'string') : [] }
-  catch { return [] }
-}
-
 function createController(options: { workspaceId: () => string; task: () => Record<string, any> | null }, t: ReturnType<typeof useI18n>['t'], auth: ReturnType<typeof useAuthStore>) {
   const desktop = getSddDesktop()
   const state = shallowRef<CollaborationState | null>(null), local = shallowRef<LocalCollaborationStatus | null>(null)
@@ -33,6 +26,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const previewConflicts = shallowRef<CollaborationConflict[]>([])
   const error = shallowRef(''), busy = shallowRef(false), loading = shallowRef(true)
   const preparationRequired = shallowRef(false)
+  const participating = shallowRef(false), leaving = shallowRef(false), receivedOnce = shallowRef(false)
   const deliveryRetryRequired = shallowRef(false)
   const mappingChecks = shallowRef<CollaborationMappingCheck[]>([]), operationStage = shallowRef(''), operationSeconds = shallowRef(0)
   let stageStarted = 0
@@ -46,16 +40,16 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const available = Boolean(desktop?.collaboration)
   const identity = reactive({ client_id: clientId(), instance_id: INSTANCE_ID })
   const standaloneKey = `traceforge.collaboration.handoff:${options.workspaceId()}:${options.task()?.id}`
-  let nativeIdentityReady = false, mappingsDirty = true
+  let nativeIdentityReady = false, mappingsDirty = true, bindingMetadataLoaded = false
   const supported = computed(() => options.task()?.execution_location === 'SERVER')
   const enabled = computed(() => Boolean(state.value?.enabled))
   const driver = computed(() => state.value?.driver_user_id === auth.user?.id && state.value?.client_id === identity.client_id && state.value?.instance_id === identity.instance_id)
   const remoteSender = computed(() => !desktop && state.value?.driver_user_id === auth.user?.id && state.value?.driver_connected === true)
-  const canReconnect = computed(() => available && enabled.value && state.value?.driver_user_id === auth.user?.id && state.value?.driver_connected === false)
+  const canReconnect = computed(() => available && enabled.value && state.value?.driver_user_id === auth.user?.id && (driver.value || state.value?.driver_connected === false))
   const phase = computed(() => busy.value && !enabled.value ? 'ENABLING' : state.value?.sync_phase || 'DISABLED')
   const label = computed(() => (preparationRequired.value ? t('collaboration.preparationRequired') : deliveryRetryRequired.value && !busy.value ? t('collaboration.deliveryRetryRequired') : t(`collaboration.phases.${phase.value}`, phase.value)) + (phase.value === 'READY' && local.value?.local_changes?.length ? ` · ${t('collaboration.localCount', { count: local.value.local_changes.length })}` : ''))
-  const blocked = computed(() => supported.value && (loading.value || (enabled.value && (preparationRequired.value || Boolean(error.value) || local.value?.state === 'RECOVERY_REQUIRED' || (!(available && driver.value) && !remoteSender.value) || state.value?.driver_connected === false || busy.value || !['READY', 'DISABLED'].includes(phase.value)))))
-  const conflicts = computed(() => ['RUNNING', 'WAITING_HITL'].includes(phase.value) ? previewConflicts.value : local.value?.conflicts || [])
+  const blocked = computed(() => supported.value && (loading.value || leaving.value || (enabled.value && (preparationRequired.value || Boolean(error.value) || local.value?.state === 'RECOVERY_REQUIRED' || (!(available && driver.value && participating.value) && !remoteSender.value) || state.value?.driver_connected === false || busy.value || !['READY', 'DISABLED'].includes(phase.value)))))
+  const conflicts = computed(() => participating.value && ['RUNNING', 'WAITING_HITL'].includes(phase.value) ? previewConflicts.value : local.value?.conflicts || [])
   let generation = 0, timer: ReturnType<typeof setTimeout> | undefined, refreshing = false, disposed = false
   let refreshQueued = false
   let lastLease = 0, leaseRetryAt = 0, lastTarget = '', lastProgress = '', lastHandoff = ''
@@ -84,7 +78,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const fence = () => ({ ...identity, lease_epoch: state.value!.lease_epoch, expected_state_version: state.value!.state_version, expected_workspace_revision: state.value!.workspace_revision, session_generation: state.value!.session_generation, session_revision: state.value!.session_revision })
   const check = (token: number) => { if (generation !== token || disposed) throw new Error('COLLABORATION_CONTEXT_CHANGED') }
   const renew = async () => {
-    if (enabled.value && driver.value && state.value?.driver_connected !== false && Date.now() >= leaseRetryAt && Date.now() - lastLease > 20000) {
+    if (participating.value && !leaving.value && enabled.value && driver.value && state.value?.driver_connected !== false && Date.now() >= leaseRetryAt && Date.now() - lastLease > 20000) {
       try {
         await remote().post('lease', { ...identity, lease_epoch: state.value!.lease_epoch })
         lastLease = Date.now(); leaseRetryAt = 0
@@ -97,14 +91,6 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     }
   }
   const heartbeat = setInterval(() => { void renew().catch(reason => { error.value = formatApiError(reason, t('collaboration.failed')) }) }, 10000)
-  function rememberBinding() {
-    const userId = String(auth.user?.id || '')
-    if (!userId) return
-    const taskId = String(options.task()?.id || ''), workspaceId = options.workspaceId()
-    const rows = savedBindings(userId).filter(row => row.taskId !== taskId || row.workspaceId !== workspaceId)
-    if (enabled.value && driver.value) rows.push({ taskId, workspaceId })
-    localStorage.setItem(bindingKey(userId), JSON.stringify(rows))
-  }
 
   async function loadMappings() {
     const token = generation, wsId = options.workspaceId()
@@ -123,6 +109,11 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       check(token); directories.value = described
       if (described.client_id && described.instance_id) Object.assign(identity, { client_id: described.client_id, instance_id: described.instance_id })
       nativeIdentityReady = true
+    }
+    if (available && !bindingMetadataLoaded) {
+      try { local.value = await native<LocalCollaborationStatus>('binding', { task_id: String(options.task()?.id) }) }
+      catch (reason) { if (!/COLLABORATION_BINDING_MISSING|ENOENT/.test(String(reason))) throw reason }
+      check(token); bindingMetadataLoaded = true
     }
   }
 
@@ -148,16 +139,16 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }
 
   async function checkMappings() {
-    if (busy.value || !available || (enabled.value && !preparationRequired.value)) return
+    if (busy.value || !available || participating.value && !preparationRequired.value) return
     const token = generation
     busy.value = true; error.value = ''
-    try { await loadMappings(); check(token); await inspectMappings(token) }
+    try { await loadMappings(); check(token); if (!(local.value?.baseline && (!local.value.released || local.value.suspended))) await inspectMappings(token) }
     catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
     finally { if (token === generation) busy.value = false }
   }
 
   async function selectMapping(repositoryId: string) {
-    if (!desktop || busy.value || (enabled.value && (!driver.value || !preparationRequired.value))) return
+    if (!desktop || busy.value || participating.value && !preparationRequired.value) return
     const repo = state.value?.repositories.find(row => row.task_repository_id === repositoryId)
     if (!repo) return
     const token = generation
@@ -180,11 +171,11 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }
 
   async function prepareCurrentBinding(token: number, previousBindingId = local.value?.binding_id) {
-    if (bindingPrepared(local.value)) { preparationRequired.value = false; return }
+    if (bindingPrepared(local.value) && !local.value?.released) { preparationRequired.value = false; return }
     preparationRequired.value = true
     await loadMappings(); check(token)
     const accepted = state.value!
-    const repositories = await inspectMappings(token)
+    const repositories = local.value?.suspended && local.value?.baseline ? mappedRepositories() : await inspectMappings(token)
     setStage('capturingBaseline')
     const prepared = await native<LocalCollaborationStatus>('prepare', { ...accepted, task_id: String(options.task()?.id),
       directory_mode: 'MAPPED', previous_binding_id: previousBindingId, repositories })
@@ -303,15 +294,17 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     const token = generation
     try {
       const next = await remote().state(); check(token)
-      state.value = next; loading.value = false
+      state.value = next
       if (mappingsDirty || (available && !nativeIdentityReady) || preparationRequired.value) await loadMappings()
-      if (driver.value || !next.enabled) rememberBinding()
-      if (!next.enabled) { preparationRequired.value = false; deliveryRetryRequired.value = false; error.value = ''; await loadMappings(); return }
-      if (!available || !driver.value) {
+      check(token); loading.value = false
+      if (!next.enabled) { preparationRequired.value = false; deliveryRetryRequired.value = false; await loadMappings(); return }
+      if (!available || !driver.value || !participating.value || leaving.value) {
+        // Keep a one-time receipt and its comparison pinned to the version actually downloaded.
+        if (receivedOnce.value && !participating.value) return
         const target = ['RUNNING', 'WAITING_HITL'].includes(next.sync_phase) ? next.progress_snapshot_id || next.snapshot_id : next.snapshot_id
         if (target && cloud.value?.snapshot_id !== target) { const manifest = await snapshot(target); check(token); cloud.value = manifest }
         if (next.input_snapshot_id && input.value?.snapshot_id !== next.input_snapshot_id) { const manifest = await snapshot(next.input_snapshot_id); check(token); input.value = manifest }
-        error.value = ''; return
+        return
       }
       if (next.driver_connected === false) return
       await renew(); check(token)
@@ -357,7 +350,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }
 
   async function refresh() {
-    if (!supported.value || !options.task()?.id || disposed) return
+    if (!supported.value || !options.task()?.id || disposed || leaving.value) return
     refreshQueued = true
     if (refreshing || busy.value) return
     refreshing = true
@@ -372,13 +365,17 @@ function createController(options: { workspaceId: () => string; task: () => Reco
 
   async function enable() {
     if (busy.value || !available || !state.value) return
-    if (state.value.enabled) { await recover(); return }
+    if (state.value.enabled) { if (!participating.value) await claimDriver(); else await recover(); return }
     busy.value = true; error.value = ''
     const token = generation, taskId = String(options.task()?.id)
     try {
       await loadMappings(); check(token)
       if (state.value.repositories.some(repo => !mappings.value[repo.task_repository_id])) throw new Error(t('collaboration.mappingRequired'))
-      await inspectMappings(token)
+      try { local.value = await native<LocalCollaborationStatus>('binding', { task_id: taskId }) } catch (reason) {
+        if (!/COLLABORATION_BINDING_MISSING|ENOENT/.test(String(reason))) throw reason
+      }
+      check(token)
+      if (!local.value?.suspended || !local.value.baseline) await inspectMappings(token)
       setStage('enablingCloud')
       const operationKey = `traceforge.collaboration.enable:${options.workspaceId()}:${taskId}`
       const operationId = localStorage.getItem(operationKey) || crypto.randomUUID()
@@ -387,7 +384,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       if (!previousBindingId) { try { local.value = await native<LocalCollaborationStatus>('status', { task_id: taskId }); previousBindingId = local.value.binding_id } catch { /* A first-time binding has no local status yet. */ } }
       check(token)
       const accepted = await remote().post('enable', { ...identity, operation_id: operationId }); check(token); state.value = accepted
-      rememberBinding()
+      participating.value = true; receivedOnce.value = false
       preparationRequired.value = true
       await prepareCurrentBinding(token, previousBindingId)
       if (accepted.snapshot_id) await reconcile(await snapshot(accepted.snapshot_id), token)
@@ -397,14 +394,18 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }
 
   async function restore(selected: CollaborationConflict[], conflictSetId: string) {
-    if (!selected.length || busy.value || !driver.value || !state.value?.snapshot_id || phase.value !== 'CONFLICT_PENDING') return
+    if (!selected.length || busy.value || (!receivedOnce.value && (!participating.value || !driver.value || !state.value?.snapshot_id || phase.value !== 'CONFLICT_PENDING'))) return
     const token = generation
     busy.value = true; error.value = ''
     try {
+      if (!participating.value) await resumeForDownload(token)
       local.value = await native<LocalCollaborationStatus>('restore', { task_id: String(options.task()?.id), operation_id: crypto.randomUUID(), conflict_set_id: conflictSetId, selected: selected.map(row => ({ task_repository_id: row.task_repository_id, path: row.path, expected_sha256: row.expected_sha256 ?? row.local?.sha256 ?? null })) })
-      check(token); await receipt(state.value.snapshot_id, local.value, token)
+      check(token); if (participating.value) await receipt(state.value!.snapshot_id!, local.value, token)
     } catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
-    finally { if (token === generation) busy.value = false }
+    finally {
+      try { if (!participating.value) await suspendLocal() } catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
+      if (token === generation) busy.value = false
+    }
   }
 
   async function readText(hash: string): Promise<string> {
@@ -419,7 +420,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     try {
       await loadMappings()
       if (!available) return
-      if (!enabled.value || preparationRequired.value) { await inspectMappings(generation); error.value = ''; return }
+      if (!participating.value || !enabled.value || preparationRequired.value) { await inspectMappings(generation); error.value = ''; return }
       if (!driver.value) return
       const scanned = await native<LocalCollaborationStatus>('status', { task_id: String(options.task()?.id), verify: true })
       local.value = scanned
@@ -430,7 +431,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     } catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
   }
   async function handoffLocalChanges() {
-    if (busy.value || !driver.value || state.value?.driver_connected === false || local.value?.state === 'RECOVERY_REQUIRED' || phase.value !== 'READY') return
+    if (busy.value || !participating.value || !driver.value || state.value?.driver_connected === false || local.value?.state === 'RECOVERY_REQUIRED' || phase.value !== 'READY') return
     error.value = ''
     const operationId = localStorage.getItem(standaloneKey) || `manual-${crypto.randomUUID()}`, token = generation
     localStorage.setItem(standaloneKey, operationId); busy.value = true
@@ -449,8 +450,9 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     busy.value = true
     try {
       const bindingId = state.value!.binding_id
-      state.value = await remote().post('disable', { ...fence(), operation_id: crypto.randomUUID() }); rememberBinding()
+      state.value = await remote().post('disable', { ...fence(), operation_id: crypto.randomUUID() })
       await native('release', { task_id: String(options.task()?.id), binding_id: bindingId }); error.value = ''
+      participating.value = false
     }
     catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
     finally { busy.value = false }
@@ -472,10 +474,12 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   async function claimDriver() {
     if (!state.value?.enabled || busy.value || !available) return
     busy.value = true
+    const token = generation
     try {
-      const claimed = await remote().post('claim-driver', { ...identity, operation_id: crypto.randomUUID() }); state.value = claimed
-      try { local.value = await native<LocalCollaborationStatus>('status', { task_id: String(options.task()?.id) }) } catch { local.value = null }
-      await prepareCurrentBinding(generation)
+      await loadMappings(); check(token)
+      const claimed = await remote().post('claim-driver', { ...identity, operation_id: crypto.randomUUID() }); check(token); state.value = claimed; participating.value = true; receivedOnce.value = false
+      try { local.value = await native<LocalCollaborationStatus>('binding', { task_id: String(options.task()?.id) }) } catch { local.value = null }
+      check(token); await prepareCurrentBinding(token)
       lastTarget = ''; lastProgress = ''; lastLease = 0; leaseRetryAt = 0; deliveryRetryRequired.value = false; error.value = ''
     } catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
     finally { busy.value = false }
@@ -507,6 +511,57 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     finally { busy.value = false }
   }
   function setProgressive(value: boolean) { progressive.value = value; localStorage.setItem(`traceforge.collaboration.progressive:${options.task()?.id}`, String(value)); lastProgress = '' }
+  async function suspendLocal() {
+    const bindingId = local.value?.binding_id
+    if (!bindingId) return
+    await native('suspend', { task_id: String(options.task()?.id), binding_id: bindingId })
+    if (local.value) local.value = { ...local.value, released: true, suspended: true }
+    transportStatus = null
+  }
+  async function leave(): Promise<boolean> {
+    if (leaving.value) return false
+    if (!participating.value) return true
+    leaving.value = true; generation++; refreshQueued = false
+    const lease = state.value && { ...identity, lease_epoch: state.value.lease_epoch, operation_id: crypto.randomUUID() }
+    try {
+      await suspendLocal()
+      if (lease && driver.value && enabled.value) state.value = await remote().post('release-driver', lease)
+      participating.value = false; error.value = ''; return true
+    } catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')); return false }
+    finally { leaving.value = false; busy.value = false }
+  }
+  async function resumeForDownload(token: number) {
+    await loadMappings(); check(token)
+    try { local.value = await native<LocalCollaborationStatus>('binding', { task_id: String(options.task()?.id) }) } catch { local.value = null }
+    check(token)
+    const repositories = local.value?.baseline && local.value?.directory_mode === 'MAPPED' ? mappedRepositories() : await inspectMappings(token)
+    local.value = await native<LocalCollaborationStatus>('prepare', { ...state.value, task_id: String(options.task()?.id),
+      binding_id: local.value?.binding_id || `receive-${options.task()?.id}`, directory_mode: 'MAPPED', repositories })
+    check(token)
+  }
+  async function receiveOnce() {
+    if (!available || busy.value || participating.value || !state.value) return
+    const token = generation
+    busy.value = true; error.value = ''; receivedOnce.value = false
+    try {
+      await resumeForDownload(token)
+      const before = local.value?.baseline || null
+      setStage('downloadingChanges')
+      const wire = await remote().post<CollaborationManifest>('latest-snapshot', { base_snapshot_id: local.value?.baseline?.snapshot_id || null }); check(token)
+      const manifest = expandManifest(local.value?.baseline, wire)
+      await cacheManifest(manifest, token); check(token)
+      input.value = before; cloud.value = manifest
+      setStage('applyingChanges')
+      local.value = await native<LocalCollaborationStatus>('reconcile', { task_id: manifest.task_id, operation_id: `receive-${manifest.snapshot_id}`, target: manifest, preview: false })
+      check(token)
+      if (local.value.errors?.length || local.value.state === 'RECOVERY_REQUIRED') throw new Error(local.value.errors?.join('\n') || t('collaboration.failed'))
+      receivedOnce.value = true
+    } catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
+    finally {
+      try { await suspendLocal() } catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
+      if (token === generation) busy.value = false
+    }
+  }
   function onEvent(payload: Record<string, unknown>) {
     if (payload.task_id !== options.task()?.id || Number(payload.state_version || 0) < Number(state.value?.state_version || 0)) return
     void refresh()
@@ -517,7 +572,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }
   const submissionMetadata = () => {
     // Only a persisted PREPARING state or explicit handoff may upload local input.
-    return enabled.value ? { collaboration: { ...(remoteSender.value ? { request_driver_input: true } : identity), binding_id: state.value?.binding_id, lease_epoch: state.value?.lease_epoch } } : {}
+    return enabled.value && (participating.value || remoteSender.value) ? { collaboration: { ...(remoteSender.value ? { request_driver_input: true } : identity), binding_id: state.value?.binding_id, lease_epoch: state.value?.lease_epoch } } : {}
   }
   const schedule = () => { timer = setTimeout(() => { void refresh(); if (!disposed) schedule() }, 2500) }
   const stopMappingUpdates = onRepoPreferencesChanged(options.workspaceId(), String(auth.user?.id || ''), () => {
@@ -532,10 +587,10 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }, { immediate: true })
   schedule()
   onScopeDispose(() => { disposed = true; generation++; clearTimeout(timer); clearInterval(heartbeat); clearInterval(stageClock); stopMappingUpdates() })
-  return { supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, cancelPreparation, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, disable, listBackups, exportBackup }
+  return { participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, cancelPreparation, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, disable, listBackups, exportBackup }
 }
 type Controller = ReturnType<typeof createController>
-const controllers = new Map<string, { scope: EffectScope; controller: Controller }>()
+const controllers = new Map<string, { scope: EffectScope; controller: Controller; users: number }>()
 function ensureController(workspaceId: string, task: Record<string, any>, t: ReturnType<typeof useI18n>['t'], auth: ReturnType<typeof useAuthStore>) {
   const userId = auth.user!.id, key = JSON.stringify([userId, workspaceId, task.id])
   let entry = controllers.get(key)
@@ -545,30 +600,34 @@ function ensureController(workspaceId: string, task: Record<string, any>, t: Ret
       watch(() => auth.user?.id, current => { if (current !== userId) { controllers.delete(key); scope.stop() } })
       return createController({ workspaceId: () => workspaceId, task: () => task }, t, auth)
     })!
-    entry = { scope, controller }; controllers.set(key, entry)
+    entry = { scope, controller, users: 0 }; controllers.set(key, entry)
   }
-  return entry.controller
+  entry.users++
+  const retained = entry
+  return { controller: entry.controller, release: () => {
+    retained.users--
+    if (retained.users) return
+    void retained.controller.leave().finally(() => {
+      if (!retained.users) { if (controllers.get(key) === retained) controllers.delete(key); retained.scope.stop() }
+    })
+  } }
 }
 
-/** Resume known bindings after authentication, including while no task page is open. */
-export function useCollaborationBackground() {
-  const { t } = useI18n(), auth = useAuthStore()
-  watch(() => auth.user?.id, userId => {
-    if (!userId || !getSddDesktop()?.collaboration) return
-    for (const row of savedBindings(userId)) ensureController(row.workspaceId, { id: row.taskId, execution_location: 'SERVER' }, t, auth)
-  }, { immediate: true })
-}
-
-/** Native bindings and polling survive drawer and route unmounts; logout disposes them. */
+/** Drawers share the page controller; leaving the task releases its lease and watchers. */
 export function useLocalCollaboration(options: { workspaceId: () => string; task: () => Record<string, any> | null }) {
   const { t } = useI18n(), auth = useAuthStore()
   const active = shallowRef<Controller | null>(null)
-  watch(() => [options.workspaceId(), options.task()?.id, options.task()?.execution_location, auth.user?.id], () => {
+  watch(() => [options.workspaceId(), options.task()?.id, options.task()?.execution_location, auth.user?.id], (_, __, onCleanup) => {
     const task = options.task(), workspaceId = options.workspaceId(), userId = auth.user?.id
     if (!task?.id || task.execution_location !== 'SERVER' || !userId) { active.value = null; return }
-    active.value = ensureController(workspaceId, task, t, auth)
+    const retained = ensureController(workspaceId, task, t, auth)
+    active.value = retained.controller
+    onCleanup(retained.release)
   }, { immediate: true })
   return {
+    participating: computed(() => active.value?.participating.value || false), leaving: computed(() => active.value?.leaving.value || false),
+    receivedOnce: computed(() => active.value?.receivedOnce.value || false),
+    leave: async () => active.value ? active.value.leave() : true, receiveOnce: async () => { await active.value?.receiveOnce() },
     supported: computed(() => Boolean(active.value)), available: Boolean(getSddDesktop()?.collaboration),
     state: computed(() => active.value?.state.value || null), local: computed(() => active.value?.local.value || null),
     cloud: computed(() => active.value?.cloud.value || null), input: computed(() => active.value?.input.value || null),

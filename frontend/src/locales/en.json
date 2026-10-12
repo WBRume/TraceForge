@@ -4213,8 +4213,8 @@
       "settings": "Repositories & sync",
       "more": "More collaboration actions",
       "syncOnly": "Sync to server only",
-      "connectTitle": "Connect the repositories you edit",
-      "connectHint": "The Agent runs on the server. Changes arrive in these local folders; your next message includes local edits.",
+      "connectTitle": "Connect local repositories",
+      "connectHint": "Reuse repository mappings. The first connection requires matching task base commits and clean working trees.",
       "settingsHint": "These are the repositories you edit in your local IDE.",
       "mappingMissing": "No folder selected",
       "checkFailed": "Check failed",
@@ -4373,8 +4373,50 @@
           "title": "Local collaboration is not ready",
           "description": "Check the connection to continue.",
           "input": "Restore collaboration before sending."
+        },
+        "browse": {
+          "short": "Disconnected",
+          "title": "Choose an action",
+          "description": "Viewing the conversation does not connect local repositories.",
+          "input": "Start local collaboration to hand off local edits and send a message."
+        },
+        "received": {
+          "short": "Received",
+          "title": "Code received",
+          "description": "Non-conflicting cloud changes were applied. Local edits were not uploaded and the connection was released.",
+          "input": "Code was received once. Start collaboration to hand off edits and send messages."
+        },
+        "receivedConflict": {
+          "short": "Conflicts",
+          "title": "Non-conflicting files received",
+          "description": "Conflicting local files were preserved. Compare and select files to back up and restore.",
+          "input": "Code was received once; conflicting files remain local."
+        },
+        "leaving": {
+          "short": "Disconnecting",
+          "title": "Releasing local connection",
+          "description": "Stopping synchronization while preserving code and backups.",
+          "input": "Disconnecting local collaboration."
         }
       }
+    },
+    "session": {
+      "resumeBaseline": "Baseline available",
+      "publishedSource": "Cloud version received this time",
+      "beforeReceive": "Baseline before receiving",
+      "receiveScope": "This download",
+      "cloudChanges": "Cloud changes",
+      "noChanges": "No new cloud changes in this download",
+      "noChangesHint": "The available version has been received. Click Receive latest code again when you need an update.",
+      "resumeHint": "Reuse the previous synchronization baseline. Local edits are preserved; receiving code processes changed files only.",
+      "leaveTitle": "Leave local collaboration?",
+      "leaveHint": "Leaving disconnects this device and releases the repositories. The cloud task continues; received code, local edits and conflict backups are preserved.",
+      "stay": "Stay",
+      "leave": "Disconnect and leave",
+      "disconnect": "Disconnect local collaboration",
+      "receive": "Receive latest code",
+      "connect": "Start local collaboration",
+      "choiceHint": "Receive once downloads cloud code only. Collaboration hands off local edits when you send a message."
     }
   }
 }

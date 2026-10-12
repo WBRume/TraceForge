@@ -22,7 +22,7 @@ const routeMock = vi.hoisted(() => ({
 const routerMock = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn() }))
 
 vi.mock('@/utils/api', () => ({ default: apiMock }))
-vi.mock('vue-router', () => ({ useRoute: () => routeMock, useRouter: () => routerMock }))
+vi.mock('vue-router', () => ({ useRoute: () => routeMock, useRouter: () => routerMock, onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn() }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('element-plus', () => ({
   ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },

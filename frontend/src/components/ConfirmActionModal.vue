@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { AlertTriangle, Loader2 } from '@/components/icons'
 
-type Tone = 'danger' | 'primary' | 'success'
+type Tone = 'danger' | 'primary' | 'success' | 'warning'
 
 const props = withDefaults(defineProps<{
   show: boolean
@@ -175,6 +175,10 @@ onBeforeUnmount(() => {
   border-top-color: var(--color-accent-emerald);
 }
 
+.modal.is-warning {
+  border-top-color: #facc15;
+}
+
 .modal-header {
   display: flex;
   align-items: center;
@@ -189,6 +193,10 @@ onBeforeUnmount(() => {
 
 .modal-header.is-success {
   color: var(--color-accent-emerald);
+}
+
+.modal-header.is-warning {
+  color: #eab308;
 }
 
 .modal-title {
@@ -229,6 +237,11 @@ onBeforeUnmount(() => {
   background: #ecfdf5;
 }
 
+.modal-emphasis.is-warning {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
 .modal-emphasis-label {
   margin: 0 0 4px;
   font-size: 0.75rem;
@@ -261,6 +274,11 @@ onBeforeUnmount(() => {
 
 .modal-emphasis.is-success .modal-emphasis-value {
   color: #047857;
+}
+
+.modal-emphasis.is-warning .modal-emphasis-label,
+.modal-emphasis.is-warning .modal-emphasis-value {
+  color: #92400e;
 }
 
 .modal-actions {
@@ -310,6 +328,15 @@ onBeforeUnmount(() => {
 
 .confirm-btn.is-success:hover {
   background: #059669;
+}
+
+.confirm-btn.is-warning {
+  background: #facc15;
+  color: #fff;
+}
+
+.confirm-btn.is-warning:hover {
+  background: #eab308;
 }
 
 .confirm-btn:disabled,
