@@ -338,8 +338,8 @@ async def probe_diagnosis(values, app, draft):
             "diagnosis",
             "READY" if verified and (online or draft) else "DEGRADED",
             level,
-            "强制防线已启用，每次执行将核验绑定环境" if verified else "尚无满足当前防线的已验证执行环境",
-            "安装并验证隔离执行环境；不满足约束的任务会被拒绝执行",
+            "已找到匹配的隔离执行环境，每次执行前仍需重新核验" if verified else "尚无满足所选执行约束方式的已验证环境",
+            "请接入并验证匹配当前 Agent 的隔离执行环境；条件不满足将拒绝执行，不会自动降为提示词约束",
             worker_online=online,
             sandbox_verified=verified,
             per_run_verification_required=True,
@@ -348,8 +348,10 @@ async def probe_diagnosis(values, app, draft):
         "diagnosis",
         "READY" if online or draft else "DEGRADED",
         level,
-        "建议防线可用；此模式不提供强制沙箱隔离" if online or draft else "诊断工作进程尚未在线",
-        "需要强制隔离时配置工作树代理或容器沙箱",
+        "提示词约束可用；Agent 仍可使用原有工具，不强制阻止文件修改或命令执行"
+        if online or draft
+        else "诊断工作进程尚未在线",
+        "日常日志排查、代码分析可使用提示词约束；需要限制操作范围时，先配置工作目录隔离或容器环境隔离所需的执行环境",
         worker_online=online,
         sandbox_enforced=False,
     )

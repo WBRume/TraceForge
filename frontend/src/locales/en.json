@@ -4038,7 +4038,7 @@
     "features": {
       "speech": "Speech input",
       "search": "Global search",
-      "diagnosis": "Diagnosis guard",
+      "diagnosis": "Diagnostic procedure execution",
       "oauth": "Third-party login",
       "agent": "Agent engine"
     },
@@ -4090,9 +4090,9 @@
       "semantic": "Semantic / vector search",
       "lexical": "Remote keyword search",
       "github": "GitHub",
-      "ADVISORY_GUARD": "Advisory guard",
-      "WORKTREE_BROKER": "Worktree broker",
-      "CONTAINER_SANDBOX": "Container sandbox",
+      "ADVISORY_GUARD": "Prompt constraints (default)",
+      "WORKTREE_BROKER": "Working directory isolation",
+      "CONTAINER_SANDBOX": "Container environment isolation",
       "claude-code": "Claude Code",
       "opencode": "OpenCode Server",
       "dsh": "DSH Web Host",
