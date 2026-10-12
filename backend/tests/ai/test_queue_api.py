@@ -133,6 +133,28 @@ def test_stale_import_skill_job_uses_started_at_before_local_updated_at(monkeypa
 
 
 def test_retry_queue_job_returns_new_job_id(monkeypatch):
+    import asyncio
+    import threading
+
+    caller_threads = {}
+
+    def start_job(job_id, job_type):
+        assert asyncio.get_running_loop().is_running()
+        caller_threads["dispatch"] = threading.get_ident()
+        assert (job_id, job_type) == ("job-2", "CREATE_WORKSPACE")
+
+    monkeypatch.setattr(queue_service, "start_provision_job", start_job)
+
+    def retry_in_worker(*args, **kwargs):
+        caller_threads["database"] = threading.get_ident()
+        return {
+            "source": "provision",
+            "job_id": "job-1",
+            "new_job_id": "job-2",
+            "provision_job_type": "CREATE_WORKSPACE",
+            "message": "retry queued",
+        }
+
     app = FastAPI()
     app.include_router(queue_router.router, prefix="/api")
     app.dependency_overrides[queue_router.get_db] = _override_db
@@ -141,12 +163,7 @@ def test_retry_queue_job_returns_new_job_id(monkeypatch):
     monkeypatch.setattr(
         queue_router.queue_service,
         "retry_queue_job",
-        lambda *args, **kwargs: {
-            "source": "provision",
-            "job_id": "job-1",
-            "new_job_id": "job-2",
-            "message": "retry queued",
-        },
+        retry_in_worker,
     )
 
     client = TestClient(app)
@@ -156,6 +173,7 @@ def test_retry_queue_job_returns_new_job_id(monkeypatch):
     assert payload["ok"] is True
     assert payload["action"] == "retry"
     assert payload["new_job_id"] == "job-2"
+    assert caller_threads["database"] != caller_threads["dispatch"]
 
 
 def test_get_queue_job_detail_returns_item(monkeypatch):

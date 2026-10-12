@@ -224,7 +224,7 @@ def test_run_create_workspace_job_standalone_materializes_repos(monkeypatch):
         calls["created_repositories"] = list(context.get("repositories") or [])
         return {"workspace_id": "ws-9", "repositories": []}
 
-    def _fake_materialize(*, workspace_id):
+    def _fake_materialize(*, workspace_id, job_id=""):
         calls["materialized_workspace_id"] = workspace_id
         return {"repositories": []}
 

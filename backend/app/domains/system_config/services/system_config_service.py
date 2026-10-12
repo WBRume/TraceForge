@@ -62,6 +62,7 @@ _CONFIG_SPECS: dict[str, dict[str, Any]] = {
         "description": (
             "工作区根目录；env（WORKSPACE_ROOT_DIR）提供默认值，"
             "界面保存的配置非空时覆盖 env 默认值，清空后回退 env 默认值；"
+            "两处均为空时不启用根目录约束，工作区路径由创建时指定；"
             "生效时新建工作区路径默认为 根目录/workspace/工作区名称，"
             "且仅允许位于 根目录/workspace 之内"
         ),

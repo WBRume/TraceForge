@@ -341,6 +341,9 @@ async def act_queue_job(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if action == "retry" and source == "provision" and payload.get("new_job_id"):
+        # Database work runs in a worker thread; dispatch on the request's event loop.
+        queue_service.start_provision_job(str(payload["new_job_id"]), str(payload["provision_job_type"]))
     if action == "retry" and source == "bootstrap" and payload.get("queue_key"):
         from app.domains.ai.services.jobs.registry import runtime as ai_job_runtime
 

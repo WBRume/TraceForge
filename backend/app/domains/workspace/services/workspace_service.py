@@ -561,6 +561,7 @@ def create_workspace(
     repositories: list[dict[str, str]] | None = None,
     project_name: str | None = None,
     product_name: str | None = None,
+    provision_job_id: str | None = None,
 ) -> Workspace:
     if product_ids and len(product_ids) > 1:
         raise ValueError("workspace can only select one product")
@@ -640,6 +641,15 @@ def create_workspace(
         is_expert=True,
     )
     db.add(member)
+    if provision_job_id:
+        from app.domains.workflow.models.provision_job import SddProvisionJob
+
+        job = db.get(SddProvisionJob, provision_job_id)
+        if not job:
+            raise ValueError("Workspace provision job not found")
+        # Publish the association atomically with the workspace so polling and
+        # retries can find it before any repository has finished cloning.
+        job.workspace_id = workspace.id
     try:
         db.commit()
         db.refresh(workspace)
@@ -649,12 +659,34 @@ def create_workspace(
     return workspace
 
 
+def _ready_workspace_filter(db: Session):
+    from sqlalchemy import and_
+
+    from app.domains.workflow.models.provision_job import ProvisionJobStatus, ProvisionJobType, SddProvisionJob
+    from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository, WorkspaceRepositoryState
+
+    creation_jobs = db.query(SddProvisionJob.id).filter(
+        SddProvisionJob.workspace_id == Workspace.id,
+        SddProvisionJob.job_type == ProvisionJobType.CREATE_WORKSPACE,
+    )
+    return and_(
+        ~Workspace.repositories.any(SddWorkspaceRepository.state != WorkspaceRepositoryState.READY),
+        ~creation_jobs.filter(
+            SddProvisionJob.status.in_([ProvisionJobStatus.PENDING, ProvisionJobStatus.RUNNING])
+        ).exists(),
+        or_(
+            ~creation_jobs.exists(),
+            creation_jobs.filter(SddProvisionJob.status == ProvisionJobStatus.SUCCESS).exists(),
+        ),
+    )
+
+
 def list_user_workspaces(db: Session, user: User) -> list[Workspace]:
     member_rows = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == user.id).all()
     ws_ids = [m.workspace_id for m in member_rows]
     if not ws_ids:
         return []
-    return db.query(Workspace).filter(Workspace.id.in_(ws_ids)).all()
+    return db.query(Workspace).filter(Workspace.id.in_(ws_ids), _ready_workspace_filter(db)).all()
 
 
 def list_user_workspace_summaries(db: Session, user: User) -> list[dict[str, object]]:
@@ -665,7 +697,7 @@ def list_user_workspace_summaries(db: Session, user: User) -> list[dict[str, obj
     by_workspace = {m.workspace_id: m for m in member_rows}
     workspaces = (
         db.query(Workspace)
-        .filter(Workspace.id.in_(list(by_workspace.keys())))
+        .filter(Workspace.id.in_(list(by_workspace.keys())), _ready_workspace_filter(db))
         .options(
             joinedload(Workspace.owner),
             joinedload(Workspace.project)
