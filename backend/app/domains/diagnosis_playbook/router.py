@@ -133,7 +133,7 @@ def active_promotions(db: Session = Depends(get_db), user: User = Depends(get_cu
     from .promotion import KIND, view
 
     accessible = db.query(WorkspaceMember.workspace_id).filter_by(user_id=user.id)
-    from sqlalchemy import or_
+    from sqlalchemy import func, or_
 
     rows = (
         db.query(SddAiJob)
@@ -141,6 +141,7 @@ def active_promotions(db: Session = Depends(get_db), user: User = Depends(get_cu
             SddAiJob.creator_id == user.id,
             SddAiJob.workspace_id.in_(accessible),
             SddAiJob.queue_key.like(f"{KIND}:%"),
+            func.coalesce(SddAiJob.result_json["dismissed"].as_boolean(), False).is_(False),
             or_(SddAiJob.status.notin_(FINAL_STATUSES), SddAiJob.result_json["review_state"].as_string() == "PENDING"),
         )
         .order_by(SddAiJob.created_at.desc())
@@ -184,6 +185,10 @@ def promotion_jobs(
     )
     if job_id:
         query = query.filter_by(id=job_id)
+    else:
+        from sqlalchemy import func
+
+        query = query.filter(func.coalesce(SddAiJob.result_json["dismissed"].as_boolean(), False).is_(False))
     rows = query.order_by(SddAiJob.created_at.desc()).limit(20).all()
     return {"items": [view(job) for job in rows]}
 
@@ -265,6 +270,24 @@ def regenerate_promotion(
     return result
 
 
+@router.post("/cases/playbook-promotions/{job_id}/dismiss")
+def dismiss_promotion(
+    ws_id: str,
+    job_id: str,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    access(db, ws_id, user, write=True)
+    from app.domains.ai.services.jobs.publishing import publish_job_state
+
+    from .promotion import dismiss_job, owned_job
+
+    result = commit(db, lambda: dismiss_job(owned_job(db, ws_id, job_id, user.id)))
+    background.add_task(publish_job_state, job_id)
+    return result
+
+
 @router.post("/cases/playbook-promotions/{job_id}/cancel")
 def cancel_promotion(
     ws_id: str,
@@ -274,25 +297,24 @@ def cancel_promotion(
     user: User = Depends(get_current_user),
 ):
     access(db, ws_id, user, write=True)
-    from app.domains.ai.models.ai_job import SddAiJob
     from app.domains.ai.services.jobs.attempts import cancel_job
+    from app.domains.ai.services.jobs.constants import FINAL_STATUSES
     from app.domains.ai.services.jobs.publishing import publish_job_state
 
-    from .promotion import KIND, view
+    from .promotion import dismiss_job, owned_job, view
 
-    job = (
-        db.query(SddAiJob)
-        .filter_by(id=job_id, workspace_id=ws_id, creator_id=user.id)
-        .filter(SddAiJob.queue_key.like(f"{KIND}:%"))
-        .first()
-    )
-    if not job:
-        raise HTTPException(404, "Promotion not found")
-    cancel_job(db, workspace_id=ws_id, job_id=job_id)
-    db.commit()
-    db.refresh(job)
+    def close():
+        job = owned_job(db, ws_id, job_id, user.id)
+        # Completion may win the race with a close click in another client.
+        if job.status in FINAL_STATUSES:
+            return dismiss_job(job)
+        cancel_job(db, workspace_id=ws_id, job_id=job_id)
+        db.refresh(job)
+        return view(job)
+
+    result = commit(db, close)
     background.add_task(publish_job_state, job_id)
-    return view(job)
+    return result
 
 
 def access(db, ws_id, user, task_id=None, write=False):

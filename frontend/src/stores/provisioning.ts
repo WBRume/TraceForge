@@ -69,6 +69,7 @@ type ProvisionJobApiPayload = {
 }
 
 type RequirementPreviewJobApiPayload = {
+  dismissed?: boolean
   result?: { review_state?: string }
   cases?: { id: string; title: string }[]
   job_id?: string | null
@@ -118,10 +119,6 @@ export const useProvisioningStore = defineStore('provisioning', () => {
   const taskListRefreshToken = ref(0)
   const restored = ref(false)
   const dismissedPromotions = new Set<string>()
-  try {
-    const saved = JSON.parse(localStorage.getItem('dismissedPromotions') || '[]')
-    if (Array.isArray(saved)) saved.filter(id => typeof id === 'string').forEach(id => dismissedPromotions.add(id))
-  } catch { /* Ignore an invalid browser preference. */ }
 
   let timer: number | null = null
   const inFlight = new Set<string>()
@@ -561,7 +558,8 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     if (!normalizedJobId) return null
     if (dismissedPromotions.has(normalizedJobId)) return null
     const reviewState = payload.result?.review_state
-    if (reviewState === 'CONFIRMED' || reviewState === 'DISCARDED' || payload.status === 'CANCELLED' || payload.status === 'REVERTED') {
+    if (payload.dismissed || reviewState === 'CONFIRMED' || reviewState === 'DISCARDED' || payload.status === 'CANCELLED' || payload.status === 'REVERTED') {
+      dismissedPromotions.add(normalizedJobId)
       dismiss(normalizedJobId)
       return null
     }
@@ -759,15 +757,26 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     void fetchJob(normalizedJobId)
   }
 
-  /** 关闭浮窗中的终态任务卡片（取消/失败后任务已被服务端删除） */
+  /** 终态晋升关闭持久化到服务端，成功后才移除卡片。 */
+  const dismissPromotionJob = async (jobId: string): Promise<boolean> => {
+    const job = jobs.value[asJobId(jobId)]
+    if (!job || job.kind !== 'playbook_promotion') return true
+    try {
+      const { data } = await api.post(`/workspaces/${job.workspaceId}/cases/playbook-promotions/${job.jobId}/dismiss`)
+      ingestPromotionJob(data)
+      dismissedPromotions.add(job.jobId)
+      dismiss(job.jobId)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** 清理本地任务视图；晋升关闭操作须先由服务端确认。 */
   const dismiss = (jobId: string) => {
     const normalizedJobId = asJobId(jobId)
     if (!normalizedJobId) return
     const dismissed = jobs.value[normalizedJobId]
-    if (dismissed?.kind === 'playbook_promotion') {
-      dismissedPromotions.add(normalizedJobId)
-      localStorage.setItem('dismissedPromotions', JSON.stringify([...dismissedPromotions].slice(-200)))
-    }
     const next = { ...jobs.value }
     delete next[normalizedJobId]
     jobs.value = next
@@ -808,6 +817,7 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     minimize,
     expand,
     cancel,
+    dismissPromotionJob,
     dismiss,
   }
 })
