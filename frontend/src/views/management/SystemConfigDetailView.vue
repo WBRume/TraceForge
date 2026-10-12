@@ -51,6 +51,7 @@ const workspaceRootDir = ref('')
 const loadingStore = ref(false)
 const savingMgmt = ref(false)
 const savingRoot = ref(false)
+const rootPolicyEnabled = computed(() => Boolean(systemConfigStore.workspaceRootDir.trim()))
 
 const rootDirInvalid = computed(() => {
   const value = workspaceRootDir.value.trim()
@@ -92,6 +93,7 @@ const saveRootDir = async () => {
   savingRoot.value = true
   try {
     await systemConfigStore.updateWorkspaceRootDir(workspaceRootDir.value.trim())
+    workspaceRootDir.value = systemConfigStore.workspaceRootDir
     ElMessage.success(t('system_config.saved'))
   } catch (err) {
     ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
@@ -346,15 +348,15 @@ watch(() => route.params.feature, () => {
               <div class="impact-section">
                 <h4 class="impact-title">路径规则安全约束说明</h4>
                 <div class="impact-cards">
-                  <div class="impact-item active">
-                    <CheckCircleIcon class="impact-icon green" />
+                  <div class="impact-item" :class="{ active: rootPolicyEnabled }">
+                    <InformationCircleIcon class="impact-icon" />
                     <div>
                       <strong>默认生效位置：</strong>
                       <span>{{ $t('system_config.workspace_root_effect_default') }}</span>
                     </div>
                   </div>
-                  <div class="impact-item active">
-                    <ShieldCheckIcon class="impact-icon green" />
+                  <div class="impact-item" :class="{ active: rootPolicyEnabled }">
+                    <ShieldCheckIcon class="impact-icon" />
                     <div>
                       <strong>沙盒防护隔离：</strong>
                       <span>{{ $t('system_config.workspace_root_effect_scope') }}</span>
@@ -403,10 +405,12 @@ watch(() => route.params.feature, () => {
             </div>
             <div v-else class="diag-box neutral">
               <div class="diag-status-name">
-                <CheckCircleIcon class="icon-sm" />
-                <span>基础设置规则已生效</span>
+                <InformationCircleIcon class="icon-sm" />
+                <span v-if="currentTarget === 'root'">{{ $t(rootPolicyEnabled ? 'system_config.workspace_root_enabled' : 'system_config.workspace_root_disabled') }}</span>
+                <span v-else>基础设置规则已生效</span>
               </div>
-              <p class="diag-desc">工作区基础参数直接作用于平台项目生成器与文件存储底座。</p>
+              <p v-if="currentTarget === 'root'" class="diag-desc">{{ $t('system_config.workspace_root_effect_env') }}</p>
+              <p v-else class="diag-desc">工作区基础参数直接作用于平台项目生成器与文件存储底座。</p>
             </div>
 
             <div class="diag-rules-list">

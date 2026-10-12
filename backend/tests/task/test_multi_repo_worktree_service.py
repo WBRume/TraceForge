@@ -29,6 +29,7 @@ class MultiRepoWorktreeServiceTest(unittest.TestCase):
             mock.patch.object(git_worktree_service, "ensure_workspace_repo_matches_remote"),
             mock.patch.object(os.path, "exists", return_value=False),
             mock.patch("os.makedirs"),
+            mock.patch("os.rename"),
         ):
             base = git_worktree_service.ensure_base_repository("https://git.example.com/r.git", "C:/ws/r")
             self.assertEqual(base, os.path.abspath("C:/ws/r"))

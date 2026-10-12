@@ -47,6 +47,7 @@ const stageText = computed(() => {
     WAITING_REPO_LOCK: t('provisioning.stage_waiting_lock'),
     WAITING_TASK_QUEUE: t('provisioning.stage_waiting_queue'),
     CLONING_REPOSITORY: t('provisioning.stage_cloning'),
+    MATERIALIZE_REPOS: t('provisioning.stage_cloning'),
     CREATING_WORKSPACE: t('provisioning.stage_creating_workspace'),
     PREPARING_TASK: t('provisioning.stage_preparing_task'),
     PREPARING_WORKTREE: t('provisioning.stage_preparing_worktree'),
@@ -173,7 +174,7 @@ const fetchJob = async () => {
 
 const goBack = () => {
   const fallbackWorkspace = String(job.value?.workspace_id || '').trim()
-  if (fallbackWorkspace) {
+  if (job.value?.job_type === 'CREATE_TASK' && fallbackWorkspace) {
     router.replace(`/workspaces/${fallbackWorkspace}/dashboard`)
     return
   }
@@ -204,7 +205,7 @@ onBeforeUnmount(() => {
         <Loader2 v-if="!hasFinished" class="spin h-5 w-5 text-primary" />
         <CheckCircle2 v-else-if="isSuccess" class="h-5 w-5 text-success" />
         <AlertTriangle v-else class="h-5 w-5 text-danger" />
-        <h1>{{ $t('provisioning.title') }}</h1>
+        <h1>{{ $t(isFailed ? 'provisioning.stage_failed' : 'provisioning.title') }}</h1>
       </header>
 
       <p class="subtitle" v-if="loading">{{ $t('provisioning.loading') }}</p>
@@ -265,6 +266,7 @@ onBeforeUnmount(() => {
   margin: 12px 0 0;
   color: #475569;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .stage-block {

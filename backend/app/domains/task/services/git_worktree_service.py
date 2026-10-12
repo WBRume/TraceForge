@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 from datetime import datetime
+from uuid import uuid4
 
 
 class GitWorktreeError(ValueError):
@@ -63,14 +64,19 @@ def _normalize_remote_url(url: str) -> str:
 
 
 def _run_git_raw(args: list[str], *, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+    from app.config import settings
     from app.core.subprocess_runner import ProcessTimeoutError, run_git
 
     try:
-        return run_git(list(args), cwd=cwd, timeout_seconds=180)
+        timeout = settings.GIT_CLONE_TIMEOUT_SECONDS if args and args[0] == "clone" else None
+        return run_git(list(args), cwd=cwd, timeout_seconds=timeout)
     except FileNotFoundError as exc:
         raise GitWorktreeError("Git executable not found in PATH", status_code=500) from exc
     except ProcessTimeoutError as exc:
-        raise GitWorktreeError(f"Git command timed out: git {' '.join(args)}", status_code=409) from exc
+        raise GitWorktreeError(
+            f"Git command timed out after {exc.timeout_seconds:g}s: git {' '.join(args)}",
+            status_code=409,
+        ) from exc
 
 
 def _command_output(result: subprocess.CompletedProcess[str]) -> str:
@@ -437,14 +443,38 @@ def ensure_base_repository(repo_url: str, base_dir: str) -> str:
         raise GitWorktreeError("base_dir parent directory is invalid", status_code=400)
     os.makedirs(parent_dir, exist_ok=True)
 
+    staging_dir = f"{abs_base}.clone-{uuid4().hex}"
     try:
-        _run_git_checked(["clone", repo_url, abs_base], status_code=400)
-        ensure_workspace_repo_matches_remote(abs_base, repo_url)
+        _run_git_checked(["clone", repo_url, staging_dir], status_code=400)
+        ensure_workspace_repo_matches_remote(staging_dir, repo_url)
+        # A timed-out clone must not reserve the final repository directory,
+        # even when Windows cannot immediately remove its temporary files.
+        os.rename(staging_dir, abs_base)
     except Exception:
-        if os.path.isdir(abs_base):
-            shutil.rmtree(abs_base, ignore_errors=True)
+        if os.path.isdir(staging_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
         raise
     return abs_base
+
+
+def prepare_workspace_repository(repo_url: str, base_dir: str, branch_name: str, *, ref_type: str = "BRANCH") -> str:
+    """Prepare the selected ref and require a readable commit before publishing READY."""
+    abs_base = ensure_base_repository(repo_url, base_dir)
+    ref = str(branch_name or "").strip()
+    if not ref:
+        raise GitWorktreeError("Repository branch or tag is required", status_code=400)
+    if ref_type.upper() == "TAG":
+        _run_git_checked(["checkout", "--detach", f"refs/tags/{ref}", "--"], cwd=abs_base)
+    else:
+        _run_git_checked(["check-ref-format", "--branch", ref], cwd=abs_base, status_code=400)
+        if not _remote_branch_exists(abs_base, f"origin/{ref}"):
+            raise GitWorktreeError(f"Branch '{ref}' does not exist on origin", status_code=400)
+        # Checkout without forcing: retries must preserve any existing local edits.
+        _run_git_checked(["checkout", ref, "--"], cwd=abs_base)
+    head = read_repo_head_sha(abs_base)
+    if not head:
+        raise GitWorktreeError(f"Repository has no readable HEAD commit: {abs_base}", status_code=400)
+    return head
 
 
 def _cleanup_stale_worktree_dir(path: str) -> None:

@@ -106,6 +106,8 @@ class Settings(BaseSettings):
     FILE_OFFLOAD_MAX_INFLIGHT: int | None = None
     # 本地 git 命令硬超时（秒）：subprocess_runner 统一注入，超时整组回收，防止 offload 线程被挂死 git 永久占用
     GIT_COMMAND_TIMEOUT_SECONDS: int = 180
+    # 工作区完整克隆可包含大量历史对象，独立于短 Git 命令设置超时。
+    GIT_CLONE_TIMEOUT_SECONDS: int = Field(default=900, ge=1)
 
     @property
     def DATABASE_URL(self) -> str:

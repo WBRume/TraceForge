@@ -974,7 +974,7 @@ def get_queue_job(
     raise ValueError("Unsupported queue source")
 
 
-def _start_provision_job(new_job_id: str, job_type: str) -> None:
+def start_provision_job(new_job_id: str, job_type: str) -> None:
     loop = asyncio.get_running_loop()
     if job_type == ProvisionJobType.CREATE_WORKSPACE.value:
         retain_background_task(loop.create_task(provision_job_service.run_create_workspace_job(new_job_id)))
@@ -1114,7 +1114,6 @@ def _retry_provision_job(db, job_id, normalized_user_id, normalized_source):
         creator_id=normalized_user_id,
         message="Provision retry queued",
     )
-    _start_provision_job(new_job.id, _enum_text(new_job.job_type))
     audit_log(
         action="queue_retry",
         outcome="success",
@@ -1130,6 +1129,7 @@ def _retry_provision_job(db, job_id, normalized_user_id, normalized_source):
         "source": normalized_source,
         "job_id": source_job.id,
         "new_job_id": new_job.id,
+        "provision_job_type": _enum_text(new_job.job_type),
         "message": "Provision retry queued",
     }
 

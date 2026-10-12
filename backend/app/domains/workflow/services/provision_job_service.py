@@ -247,6 +247,7 @@ def mark_failed(
     stage: str,
     message: str | None,
     error_message: str,
+    result_json: dict[str, Any] | None = None,
 ) -> None:
     db = SessionLocal()
     try:
@@ -261,6 +262,7 @@ def mark_failed(
             progress=max(int(job.progress or 0), 1),
             message=message,
             error_message=str(error_message or "Provisioning failed"),
+            result_json=result_json,
             finished_at=_utcnow(),
         )
     finally:
@@ -362,7 +364,11 @@ def _create_workspace_sync(*, job_id: str, creator_id: str, context: dict[str, A
         if not user:
             raise ValueError("Workspace creator not found")
 
-        workspace = workspace_service.create_workspace(
+        job = get_job(db, job_id)
+        workspace = db.get(Workspace, job.workspace_id) if job and job.workspace_id else None
+        if workspace and workspace.owner_id != creator_id:
+            raise ValueError("Workspace creator does not match provision job")
+        workspace = workspace or workspace_service.create_workspace(
             db,
             user,
             str(context.get("name") or "").strip(),
@@ -374,6 +380,7 @@ def _create_workspace_sync(*, job_id: str, creator_id: str, context: dict[str, A
             repositories=context.get("repositories") if isinstance(context.get("repositories"), list) else None,
             project_name=context.get("project_name"),
             product_name=context.get("product_name"),
+            provision_job_id=job_id,
         )
         repositories = []
         for row in workspace.repositories:
@@ -398,7 +405,7 @@ def _json_safe_value(value: Any) -> Any:
     return value
 
 
-def _materialize_workspace_repos_sync(*, workspace_id: str) -> dict[str, Any]:
+def _materialize_workspace_repos_sync(*, workspace_id: str, job_id: str = "") -> dict[str, Any]:
     import os as _os
 
     from app.domains.workspace.models.workspace_repository import (
@@ -409,8 +416,9 @@ def _materialize_workspace_repos_sync(*, workspace_id: str) -> dict[str, Any]:
     db = SessionLocal()
     try:
         workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
-        if workspace and workspace.project_path:
-            _os.makedirs(workspace.project_path, exist_ok=True)
+        if not workspace or not workspace.project_path:
+            raise ValueError("Workspace or project path is missing")
+        _os.makedirs(workspace.project_path, exist_ok=True)
         rows = (
             db.query(SddWorkspaceRepository)
             .filter(SddWorkspaceRepository.workspace_id == workspace_id)
@@ -418,18 +426,33 @@ def _materialize_workspace_repos_sync(*, workspace_id: str) -> dict[str, Any]:
             .all()
         )
         results: dict[str, Any] = {"repositories": []}
-        for row in rows:
+        for index, row in enumerate(rows):
+            if job_id:
+                mark_progress(
+                    job_id,
+                    stage="MATERIALIZE_REPOS",
+                    progress=40 + int(50 * index / len(rows)),
+                    message=f"Preparing repository {index + 1}/{len(rows)}: {row.repo_name} ({row.branch_name})",
+                )
             try:
-                git_worktree_service.ensure_base_repository(row.repo_url, row.base_dir or "")
-                head = git_worktree_service.read_repo_head_sha(row.base_dir or "")
+                head = git_worktree_service.prepare_workspace_repository(
+                    row.repo_url, row.base_dir or "", row.branch_name, ref_type=row.ref_type or "BRANCH"
+                )
                 row.state = WorkspaceRepositoryState.READY
                 row.base_commit_sha = head
                 row.error_message = None
                 results["repositories"].append(
-                    {"repository_id": row.repository_id, "repo_name": row.repo_name, "state": "READY"}
+                    {
+                        "repository_id": row.repository_id,
+                        "repo_name": row.repo_name,
+                        "state": "READY",
+                        "base_commit_sha": head,
+                        "base_dir": row.base_dir,
+                    }
                 )
             except Exception as exc:
                 row.state = WorkspaceRepositoryState.FAILED
+                row.base_commit_sha = None
                 row.error_message = str(exc)
                 results["repositories"].append(
                     {
@@ -439,7 +462,10 @@ def _materialize_workspace_repos_sync(*, workspace_id: str) -> dict[str, Any]:
                         "error": str(exc),
                     }
                 )
-        db.commit()
+            # Persist each outcome so a later timeout does not hide earlier work.
+            db.commit()
+        if job_id:
+            mark_progress(job_id, stage="MATERIALIZE_REPOS", progress=90, message="Checking repository results")
         return results
     finally:
         db.close()
@@ -580,6 +606,7 @@ async def run_create_workspace_job(job_id: str) -> None:
     # 独立模式（无 project_id）时按 project_path 隔离锁；不能落到全局常量“project:”上，
     # 否则所有独立模式的工作区创建会互相串行阻塞。
     creation_lock_url = git_repo_url if use_repo_lock else (f"project:{project_id}" if project_id else "")
+    result: dict[str, Any] | None = None
 
     with bind_log_context(job_id=job_id, user_id=creator_id):
         try:
@@ -617,8 +644,25 @@ async def run_create_workspace_job(job_id: str) -> None:
                                 repo_result = await run_git_job(
                                     _materialize_workspace_repos_sync,
                                     workspace_id=str(result.get("workspace_id") or "").strip(),
+                                    job_id=job_id,
                                 )
                                 result["repository_materialization"] = repo_result
+                                outcomes = repo_result.get("repositories") or []
+                                by_repo = {row["repository_id"]: row for row in outcomes}
+                                for repository in result.get("repositories") or []:
+                                    outcome = by_repo.get(repository["repository_id"], {})
+                                    repository.update(
+                                        state=outcome.get("state", "FAILED"),
+                                        base_commit_sha=outcome.get("base_commit_sha"),
+                                        error_message=outcome.get("error"),
+                                    )
+                                failed = [row for row in outcomes if row.get("state") != "READY"]
+                                if failed or len(outcomes) != len(result.get("repositories") or []):
+                                    details = "; ".join(
+                                        f"{row.get('repo_name')}: {row.get('error') or 'Repository is not ready'}"
+                                        for row in failed
+                                    )
+                                    raise ValueError(details or "Repository preparation results are incomplete")
                             else:
                                 mark_progress(
                                     job_id,
@@ -688,6 +732,7 @@ async def run_create_workspace_job(job_id: str) -> None:
                 stage="FAILED",
                 message="Workspace provisioning failed",
                 error_message=str(exc),
+                result_json=result,
             )
             audit_log(
                 action="create_workspace",
