@@ -30,7 +30,7 @@ export interface SyncBinding {
   metadata: Omit<SyncManifest, 'repositories'>; baseline: SyncManifest | null;
   target: SyncManifest | null; conflicts: SyncConflict[]; conflict_set_id: string | null;
   applied: Record<string, SyncFile | null>; errors: string[];
-  directory_mode?: 'MAPPED'; released?: boolean;
+  directory_mode?: 'MAPPED'; released?: boolean; suspended?: boolean;
 }
 
 export function durableJson(file: string, value: unknown) {

@@ -20,7 +20,8 @@ function page(name: string) { close(); c.value.view.page = name }
       <button type="button" :disabled="c.busy" @click="close(); c.refreshComparison()">{{ t('collaboration.refresh') }}</button>
       <button v-if="c.driver && c.local?.baseline" type="button" @click="page('backups')">{{ t('collaboration.backups') }}</button>
       <button type="button" @click="close(); emit('history')">{{ t('collaboration.history') }}</button>
-      <template v-if="c.driver && c.phase === 'READY'">
+      <button v-if="c.participating" type="button" :disabled="c.busy || c.leaving" @click="page('disconnect')">{{ t('collaboration.session.disconnect') }}…</button>
+      <template v-if="c.participating && c.driver && c.phase === 'READY'">
         <button v-if="c.local?.local_changes?.length" type="button" :disabled="c.blocked" @click="close(); c.handoffLocalChanges()">{{ t('collaboration.ui.syncOnly') }}</button>
         <hr /><button type="button" :disabled="c.blocked" @click="page('disable')">{{ t('collaboration.disable') }}…</button>
       </template>

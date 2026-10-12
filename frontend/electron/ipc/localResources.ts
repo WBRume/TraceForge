@@ -113,10 +113,10 @@ export const registerLocalResourcesIpc = () => {
         if (command.kind === 'prepare') managedRoots = mapped ? grants : [resolve(command.payload.workspace_root, command.payload.task_id)]
       }
       const result = await resourceServices.get('collaboration')!.dispatch('collaboration', command)
-      if (command.kind === 'release') managedRoots = (result as { managed_roots: string[] }).managed_roots
+      if (['release', 'suspend'].includes(command.kind)) managedRoots = (result as { managed_roots: string[] }).managed_roots
       if (managedRoots) {
         const registry = join(app.getPath('userData'), 'local-resources', 'collaboration-managed-roots.json')
-        const registered: string[] = command.kind !== 'release' && existsSync(registry) ? JSON.parse(await readFile(registry, 'utf8')) : []
+        const registered: string[] = !['release', 'suspend'].includes(command.kind) && existsSync(registry) ? JSON.parse(await readFile(registry, 'utf8')) : []
         const temporary = registry + '.' + randomUUID() + '.tmp'
         await writeFile(temporary, JSON.stringify([...new Set([...registered, ...managedRoots])]), { mode: 0o600 })
         await rename(temporary, registry)

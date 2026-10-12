@@ -75,5 +75,9 @@ export class CollaborationIndex {
       for (const key of Object.keys(changes)) if (key.startsWith(prefix)) { index.changedPaths.add(key.slice(prefix.length)); index.dirty = true }
     }
   }
-  close() { for (const index of this.indexes.values()) index.watcher?.close(); this.indexes.clear() }
+  close(taskId?: string) {
+    for (const [key, index] of this.indexes) if (!taskId || index.taskId === taskId) {
+      index.watcher?.close(); index.barrier?.done(); this.indexes.delete(key)
+    }
+  }
 }

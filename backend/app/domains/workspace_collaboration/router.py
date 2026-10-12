@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import Field
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -13,7 +13,7 @@ from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.workspace.services import workspace_service
 
-from . import content, service
+from . import content, service, session
 from .schemas import (
     DeliveryReceipt,
     DisableRequest,
@@ -105,6 +105,36 @@ async def claim_driver(
 def handoffs(ws_id: str, task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _task(db, ws_id, task_id, user)
     return _invoke(db, service.handoff_history, task_id)
+
+
+class ReleaseRequest(LeaseRequest):
+    operation_id: str = Field(min_length=1, max_length=128)
+
+
+@router.post("/release-driver")
+async def release_driver(
+    ws_id: str,
+    task_id: str,
+    data: ReleaseRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return await _locked(db, ws_id, task_id, user, session.release_driver, data)
+
+
+class LatestSnapshotRequest(BaseModel):
+    base_snapshot_id: str | None = Field(default=None, max_length=128)
+
+
+@router.post("/latest-snapshot")
+async def latest_snapshot(
+    ws_id: str,
+    task_id: str,
+    data: LatestSnapshotRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return await _locked(db, ws_id, task_id, user, session.download, data.base_snapshot_id)
 
 
 @router.get("/snapshots/{snapshot_id}")

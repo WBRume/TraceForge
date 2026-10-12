@@ -1100,6 +1100,9 @@ def claim_driver(db: Session, task: SddTask, user_id: str, request: EnableReques
     if state.driver_user_id != user_id:
         _fail("DRIVER_REQUIRED", "Only the existing driver user may reconnect this binding")
     if state.lease_expires_at > datetime.utcnow():
+        if (state.client_id, state.instance_id) == (request.client_id, request.instance_id):
+            state.lease_expires_at = datetime.utcnow() + timedelta(seconds=LEASE_SECONDS)
+            return _record(db, task, request.operation_id, "CLAIM_DRIVER", request.model_dump())
         _fail("DRIVER_ACTIVE", "The existing desktop still has an active lease")
     _check_session(state, task)
     _check_repositories(db, state, task)

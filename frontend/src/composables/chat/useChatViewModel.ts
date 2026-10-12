@@ -50,6 +50,7 @@ import { fetchReadingResume } from '@/services/taskReadingApi'
 import { useTaskRailStore } from '@/stores/taskRail'
 import { requirementLabel, type RequirementOption } from '@/types/taskRail'
 import { useLocalCollaboration } from '@/composables/collaboration/useLocalCollaboration'
+import { useCollaborationLeave } from '@/composables/collaboration/useCollaborationLeave'
 
 /**
  * Chat 视图模型组合根：把各领域模块（任务列表、消息、历史、卡片、jobs、
@@ -75,6 +76,7 @@ export function useChatViewModel() {
   // ─── 会话实体与协作对象 ───
   const taskState = useCurrentTask()
   const collaboration = useLocalCollaboration({ workspaceId: getWorkspaceId, task: () => taskState.currentTask.value })
+  const collaborationLeave = useCollaborationLeave(collaboration)
   const agentModels = useAgentModels(() => ({
     workspaceId: taskState.currentTask.value ? getWorkspaceId() : '',
     taskId: taskState.getTaskId(),
@@ -802,6 +804,7 @@ export function useChatViewModel() {
 
   async function selectTask(task: any) {
     if (!task) return
+    if (task.id !== taskState.getTaskId() && !await collaborationLeave.request()) return
     // 切换会话即开启新的初始化代次：取消旧请求，旧快照不再写回新会话
     sessionState.beginTaskSwitch()
     engine.persistForTask(taskState.getTaskId())
@@ -1063,6 +1066,7 @@ export function useChatViewModel() {
     selectAgentModel: agentModels.select,
     reloadAgentModels: agentModels.reload,
     collaboration,
+    collaborationLeave,
     sendChat: send.sendChat,
     sendChatContent: send.sendChatContent,
     sendVerification: send.sendVerification,

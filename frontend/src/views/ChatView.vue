@@ -9,6 +9,7 @@ import PreInputPanel from '@/components/chat/PreInputPanel.vue'
 import ChatCliWorkbench from '@/components/chat/terminal/ChatCliWorkbench.vue'
 import ApplyPatchDrawer from '@/components/local-agent/ApplyPatchDrawer.vue'
 import CollaborationInputStatus from '@/components/collaboration/CollaborationInputStatus.vue'
+import CollaborationLeaveDialog from '@/components/collaboration/CollaborationLeaveDialog.vue'
 import TaskCloseoutPanel from '@/components/chat/task-closeout/TaskCloseoutPanel.vue'
 import TaskRequirementLinkDrawer from '@/components/chat/task-rail/TaskRequirementLinkDrawer.vue'
 import TaskSessionShareDialog from '@/components/chat/TaskSessionShareDialog.vue'
@@ -173,6 +174,7 @@ watch(
 )
 </script>
 <template>
+  <CollaborationLeaveDialog :controller="vm.collaboration" :guard="vm.collaborationLeave" />
   <div class="chat-layout">
     <!-- Left Sidebar: Task List（SOP 模式下可折叠，宽位动画由 .is-collapsed 驱动） -->
     <TaskSidebar

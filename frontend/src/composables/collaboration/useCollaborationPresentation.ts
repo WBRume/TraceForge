@@ -7,14 +7,19 @@ export type CollaborationAction = 'none' | 'connect' | 'recover' | 'reconnect' |
 
 /** One presentation contract for the entry, drawer and composer; never changes execution permissions. */
 export function collaborationPresentation(c: CollaborationContext) {
-  const running = ['RUNNING', 'WAITING_HITL'].includes(c.phase)
-  const conflicts = c.conflicts.length || c.state?.conflicts?.length || 0
+  const running = Boolean(c.participating && ['RUNNING', 'WAITING_HITL'].includes(c.phase))
+  const conflicts = c.conflicts.length || (c.participating ? c.state?.conflicts?.length : 0) || 0
   const localCount = c.local?.local_changes?.filter(file => !c.conflicts.some(conflict =>
     conflict.task_repository_id === file.task_repository_id && conflict.path === file.path)).length || 0
-  const localAvailable = Boolean(c.available && c.driver && c.enabled && !c.preparationRequired
-    && c.state?.driver_connected !== false && c.local?.baseline && !c.local?.errors?.length && c.local?.state !== 'RECOVERY_REQUIRED')
+  const localAvailable = Boolean(c.available && (c.receivedOnce || c.participating && c.driver && c.enabled && c.state?.driver_connected !== false)
+    && !c.preparationRequired && c.local?.baseline && !c.local?.errors?.length && c.local?.state !== 'RECOVERY_REQUIRED')
   let key = 'ready', action: CollaborationAction = 'none', tone = 'neutral', count = localCount
   if (c.loading) key = 'loading'
+  else if (c.leaving) key = 'leaving'
+  else if (!c.participating && c.available) {
+    key = c.busy ? 'transferring' : c.error ? 'error' : c.receivedOnce ? conflicts ? 'receivedConflict' : 'received' : 'browse'
+    if (c.error || conflicts) tone = 'warning'
+  }
   else if (!c.enabled) { key = c.busy ? 'connecting' : 'connect'; action = c.busy ? 'none' : 'connect' }
   else if (c.state?.driver_connected === false) { key = 'offline'; action = c.canReconnect ? 'reconnect' : 'device'; tone = 'warning' }
   else if (!c.driver) { key = 'device'; action = 'device' }
@@ -27,8 +32,8 @@ export function collaborationPresentation(c: CollaborationContext) {
   else if (['SETTLING', 'STOPPING', 'DELIVERY_PENDING'].includes(c.phase)) key = 'transferring'
   else if (localCount) key = 'local'
   else if (c.blocked) { key = 'unavailable'; action = 'recover'; tone = 'warning' }
-  const setup = !c.enabled || (c.driver && (c.preparationRequired || !c.local?.baseline))
-  const canRestore = localAvailable && !c.busy && !c.error && c.phase === 'CONFLICT_PENDING'
+  const setup = !c.participating && c.available ? !c.receivedOnce : !c.enabled || (c.driver && (c.preparationRequired || !c.local?.baseline))
+  const canRestore = localAvailable && !c.busy && !c.error && (c.receivedOnce && !c.participating || c.phase === 'CONFLICT_PENDING')
   const inputKey = !c.enabled ? '' : c.blocked ? key : localCount && localAvailable ? 'local' : ''
   return { key, action, tone, count, conflicts, localCount, localAvailable, setup, running, canRestore, inputKey }
 }

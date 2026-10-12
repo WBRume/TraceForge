@@ -29,6 +29,7 @@ export type CollaborationState = {
   progress_seq?: number; progress_epoch?: string; final_progress_seq?: number
 }
 export type LocalCollaborationStatus = {
+  released?: boolean; suspended?: boolean
   directory_mode?: 'MAPPED'
   transport?: { token: string; base_token?: string; bases?: Record<string, string> }
   task_id: string; binding_id?: string; task_root?: string
