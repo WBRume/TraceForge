@@ -2890,7 +2890,7 @@
           "human_review": "人工审查",
           "human_review_body": "人工审查结论、意见与补充要求",
           "human_delta": "人工修改差异",
-          "human_delta_body": "AI 输出与人工最终修改差异",
+          "human_delta_body": "各次本地修改与交接前代码的差异",
           "evidence": "证据",
           "evidence_body": "真实代码、测试、审查与运行证据",
           "decisions": "关键决策",
@@ -2966,15 +2966,15 @@
           "empty": "等待审查人提交真实结论、意见或 required changes；不会把普通说明伪造成审查通过。"
         },
         "human_delta": {
-          "title": "AI Patch vs Final Patch 对比",
-          "boundary": "不计算 AI 贡献率，不假设平台拥有最终代码。",
+          "title": "人工修改差异",
+          "boundary": "本地协同按每次交接保留人工修改，与交接前已确认的云端版本比对。旧补丁提案仍可与落地证据对比。",
           "suggest_title": "待对比的 Patch 组合",
           "suggest_empty": "暂无待对比的 AI Patch 和 Final Patch 组合",
           "generate_delta": "生成 Delta",
           "comparing": "正在对比...",
           "compare_success": "对比完成",
           "compare_pending": "对比任务已提交",
-          "existing_title": "已有 Delta 记录",
+          "existing_title": "修改记录",
           "diff_stats": "{files} 文件, +{ins} / -{del}",
           "ai_patch": "AI Patch",
           "final_patch": "Human Patch",
@@ -2990,14 +2990,14 @@
           "metadata_saved": "元数据已保存",
           "retry": "重试对比",
           "empty_title": "暂无 Human Delta",
-          "empty": "需要先有 ChangeProposal (AI Patch) 和 Evidence (Final Patch) 才能生成 Delta。",
-          "back_to_list": "返回 Delta 列表",
+          "empty": "本地协同交接的人工修改会自动记录；旧补丁流程可选择提案与落地证据生成对比。",
+          "back_to_list": "返回人工修改差异",
           "no_delta_found": "未找到 Delta 记录",
           "open_workbench": "打开工作台"
         },
         "delta_workbench": {
           "loading": "加载工作台...",
-          "back": "返回 Delta 列表"
+          "back": "返回人工修改差异"
         },
         "summary": {
           "files": "文件",
@@ -4109,13 +4109,11 @@
     "createIntent": "创建后启用本地协同",
     "createIntentHint": "仓库和逐仓分支准备完成后核对映射；本地 HEAD 与任务基准一致且全部仓库干净，才能启用。",
     "confirmSnapshot": "使用已确认云端版本 {snapshot}",
-    "excludeLocal": "本机尚未交接的修改不包含在本次结果中。需要包含本地修改时，先带入本地修改，再确认更新后的版本。",
     "backups": "本地备份",
     "noBackups": "暂无本地备份",
     "viewBackup": "查看备份",
     "exportBackup": "导出备份",
     "backupSource": "恢复前的本地备份",
-    "handoff": "带入本地修改",
     "disable": "关闭本地协同",
     "disableHint": "关闭后，本机文件不再自动交接。以下本地修改仍保留在映射仓库中，本次关闭不会把它们上传到服务器；后续纯服务器执行不包含这些修改。",
     "noLocalPending": "当前没有待带入的本地修改。",
@@ -4148,8 +4146,21 @@
     "title": "本地协同",
     "code": "本地协同",
     "enable": "启用本地协同",
-    "history": "历史补丁",
-    "historyReadonly": "历史补丁只读；本地协同接收当前代码，无需生成或应用补丁。",
+    "history": "人工修改记录",
+    "humanHistory": {
+      "hint": "查看本地修改交接到云端前后的代码。记录按仓库和文件保留，与后续 Agent 修改相互独立。",
+      "recordTitle": "本地协同 · 人工修改",
+      "compareHint": "查看交接前的云端代码与本次人工修改后的差异。",
+      "before": "交接前 · 云端已确认版本",
+      "after": "交接后 · 本次人工修改",
+      "fileCount": "{count} 个文件",
+      "localUser": "本地用户",
+      "empty": "暂无已交接的人工修改。发送消息时带入的本地改动会自动记录在这里。",
+      "previous": "上一页",
+      "next": "下一页",
+      "largeFile": "文件超过 2 MiB，暂不提供在线文本比对。原始版本仍完整保留。",
+      "binaryFile": "此文件不是 UTF-8 文本，暂不提供文本比对。原始版本仍完整保留。"
+    },
     "back": "返回本地协同",
     "refresh": "刷新文件状态",
     "split": "左右对照",
@@ -4382,8 +4393,7 @@
         "browse": {
           "short": "未连接",
           "title": "选择本次操作",
-          "description": "仅查看会话不会连接本地仓库。",
-          "input": "当前未参与本地协同。开启协同后可交接本地修改并发送消息。"
+          "description": "仅查看会话不会连接本地仓库。"
         },
         "received": {
           "short": "已接收",

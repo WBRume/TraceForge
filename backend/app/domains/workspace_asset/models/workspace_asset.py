@@ -533,6 +533,9 @@ class SddHumanDelta(Base):
     created_by_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
 
     # --- Core references ---
+    collaboration_handoff_id = Column(
+        String(36), ForeignKey("task_collaboration_handoffs.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
     proposal_id = Column(
         String(36), ForeignKey("sdd_task_change_proposals.id", ondelete="SET NULL"), nullable=True, index=True
     )

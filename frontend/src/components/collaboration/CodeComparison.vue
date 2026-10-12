@@ -7,6 +7,7 @@ import BaseSelect from '@/components/BaseSelect.vue'
 const props = defineProps<{
   leftHash?: string; rightHash?: string; leftLabel: string; rightLabel: string
   readText: (hash: string) => Promise<string>; path: string
+  wordWrap?: boolean
 }>()
 const { t } = useI18n()
 const media = window.matchMedia('(max-width: 720px)')
@@ -35,7 +36,7 @@ watch(() => [props.leftHash, props.rightHash, props.path], async (_, __, onClean
     <div class="comparison-sources"><span>{{ leftLabel }}{{ !leftHash ? ` · ${t('collaboration.absent')}` : '' }}</span><span>{{ rightLabel }}{{ !rightHash ? ` · ${t('collaboration.absent')}` : '' }}</span></div>
     <p v-if="error" role="alert">{{ error }}</p>
     <p v-else-if="loading" role="status">{{ t('common.loading') }}</p>
-    <MonacoDiffViewer v-else :original="original" :modified="modified" :render-side-by-side="layout === 'split'" theme="vs" height="100%" />
+    <MonacoDiffViewer v-else :original="original" :modified="modified" :render-side-by-side="layout === 'split'" :word-wrap="wordWrap ? 'on' : 'off'" theme="vs" height="100%" />
   </section>
 </template>
 

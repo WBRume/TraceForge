@@ -2888,7 +2888,7 @@
           "human_review": "Human Review",
           "human_review_body": "Human conclusions, comments, and required changes",
           "human_delta": "Human Delta",
-          "human_delta_body": "Difference between AI output and final human changes",
+          "human_delta_body": "Local edits compared with the code before each handoff",
           "evidence": "Evidence",
           "evidence_body": "Real code, test, review, and runtime evidence",
           "decisions": "Decisions",
@@ -2964,15 +2964,15 @@
           "empty": "Waiting for a reviewer to submit real conclusions, comments, or required changes. Plain notes are not treated as accepted review."
         },
         "human_delta": {
-          "title": "AI Patch vs Final Patch Comparison",
-          "boundary": "The page does not calculate AI contribution or assume the platform owns final code.",
+          "title": "Human Changes",
+          "boundary": "Local collaboration records each human handoff against its confirmed cloud baseline. Legacy proposals can still be compared with delivery evidence.",
           "suggest_title": "Patch Pairs to Compare",
           "suggest_empty": "No unpaired AI Patch and Human Patch combinations available",
           "generate_delta": "Generate Delta",
           "comparing": "Comparing...",
           "compare_success": "Comparison complete",
           "compare_pending": "Comparison task submitted",
-          "existing_title": "Existing Delta Records",
+          "existing_title": "Change Records",
           "diff_stats": "{files} files, +{ins} / -{del}",
           "ai_patch": "AI Patch",
           "final_patch": "Final Patch",
@@ -2988,14 +2988,14 @@
           "metadata_saved": "Metadata saved",
           "retry": "Retry",
           "empty_title": "No Human Delta",
-          "empty": "A ChangeProposal (AI Patch) and Evidence (Final Patch) are required before generating a Delta.",
-          "back_to_list": "Back to Delta List",
+          "empty": "Local collaboration records human handoffs automatically. Legacy proposals can be compared with delivery evidence.",
+          "back_to_list": "Back to human changes",
           "no_delta_found": "Delta record not found",
           "open_workbench": "Open Workbench"
         },
         "delta_workbench": {
           "loading": "Loading workbench...",
-          "back": "Back to Delta List"
+          "back": "Back to human changes"
         },
         "summary": {
           "files": "files",
@@ -4104,13 +4104,11 @@
     "createIntent": "Enable local collaboration after creation",
     "createIntentHint": "Review mappings after repositories and branches are ready. Every local HEAD must match its task base commit and every repository must be clean before enabling.",
     "confirmSnapshot": "Use confirmed cloud snapshot {snapshot}",
-    "excludeLocal": "Local changes not handed off are excluded from this result. Hand them off first if needed, then confirm the updated snapshot.",
     "backups": "Local backups",
     "noBackups": "No local backups",
     "viewBackup": "View backup",
     "exportBackup": "Export backup",
     "backupSource": "Local backup before restoration",
-    "handoff": "Hand off local changes",
     "disable": "Disable collaboration",
     "disableHint": "Disabling stops automatic handoff. The local changes below remain in the mapped repositories and will not be uploaded by this action or included in subsequent server-only execution.",
     "noLocalPending": "No pending local changes.",
@@ -4143,8 +4141,21 @@
     "title": "Local collaboration",
     "code": "Local collaboration",
     "enable": "Enable local collaboration",
-    "history": "Patch history",
-    "historyReadonly": "Historical patches are read-only. Collaboration receives current code without generating patches.",
+    "history": "Human change history",
+    "humanHistory": {
+      "hint": "Compare code before and after local changes were handed to the cloud. Records preserve each repository and file independently of later Agent edits.",
+      "recordTitle": "Local collaboration · Human changes",
+      "compareHint": "Compare the confirmed cloud version with this human handoff.",
+      "before": "Before · Confirmed cloud version",
+      "after": "After · This human handoff",
+      "fileCount": "{count} files",
+      "localUser": "Local user",
+      "empty": "No human changes have been handed off yet. Local edits sent with a message appear here automatically.",
+      "previous": "Previous",
+      "next": "Next",
+      "largeFile": "Online text comparison is unavailable for files over 2 MiB. Original versions remain preserved.",
+      "binaryFile": "This is not UTF-8 text. Original versions remain preserved."
+    },
     "back": "Back to local collaboration",
     "refresh": "Refresh file status",
     "split": "Side by side",
@@ -4377,8 +4388,7 @@
         "browse": {
           "short": "Disconnected",
           "title": "Choose an action",
-          "description": "Viewing the conversation does not connect local repositories.",
-          "input": "Start local collaboration to hand off local edits and send a message."
+          "description": "Viewing the conversation does not connect local repositories."
         },
         "received": {
           "short": "Received",

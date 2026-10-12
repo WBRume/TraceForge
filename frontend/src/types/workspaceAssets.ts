@@ -410,6 +410,7 @@ export type HumanDeltaFileDiff = {
 
 export type HumanDelta = {
   id: string
+  collaboration_handoff_id?: string | null
   workspace_id: string
   task_id: string
   title?: string | null
@@ -469,6 +470,7 @@ export type PatchSnapshot = {
 
 export type WorkbenchDelta = {
   id: string
+  collaboration_handoff_id?: string | null
   workspace_id: string
   task_id: string
   status: string

@@ -80,6 +80,7 @@ function statusTagType(status: string): string {
 
 function diffStats(delta: HumanDeltaLight): string {
   const files = delta.changed_files_count ?? 0
+  if (delta.collaboration_handoff_id) return t('collaboration.humanHistory.fileCount', { count: files })
   const ins = delta.insertions ?? 0
   const del = delta.deletions ?? 0
   return t('workspace_assets.task_detail.workbench.human_delta.diff_stats', { files, ins, del })
@@ -176,6 +177,11 @@ onMounted(loadSuggestions)
           <span v-if="delta.decision_count" class="delta-decisions">{{ delta.decision_count }} decisions</span>
         </div>
         <div class="delta-body">
+          <div v-if="delta.collaboration_handoff_id" class="delta-source">
+            <strong>{{ t('collaboration.humanHistory.recordTitle') }}</strong>
+            <span> · {{ delta.created_at?.replace('T', ' ') }}</span>
+            <p>{{ t('collaboration.humanHistory.compareHint') }}</p>
+          </div>
           <div v-if="delta.proposal_summary" class="delta-source">
             <span class="source-label">{{ t('workspace_assets.task_detail.workbench.human_delta.ai_patch') }}:</span>
             Proposal #{{ delta.proposal_summary.proposal_no }} / PS{{ delta.proposal_summary.patch_set_no }}
@@ -184,7 +190,7 @@ onMounted(loadSuggestions)
             <span class="source-label">{{ t('workspace_assets.task_detail.workbench.human_delta.final_patch') }}:</span>
             {{ delta.final_evidence_summary.source_type }}: {{ delta.final_evidence_summary.source_ref || delta.final_evidence_summary.source_uri || '-' }}
           </div>
-          <div v-if="delta.change_category" class="delta-category">{{ delta.change_category }}</div>
+          <div v-if="delta.change_category && !delta.collaboration_handoff_id" class="delta-category">{{ delta.change_category }}</div>
         </div>
         <div class="delta-actions" @click.stop>
           <el-button
