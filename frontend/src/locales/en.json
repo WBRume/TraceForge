@@ -59,18 +59,39 @@
   "task_rail": {
     "back_to_session": "Back to task session",
     "link_requirement": "Link requirement",
-    "document_location": "Document location", "document_location_placeholder": "Document URL or path (optional; otherwise stored in the requirement)",
-    "stored_document": "Workspace requirement content", "source_document": "Source document", "initial_prompt": "Initialization prompt", "no_prompt": "No initialization prompt",
-    "direct_prompt": "Direct import prompt (optional)", "direct_prompt_placeholder": "Defaults to document content; AI preview prompts can be edited in the next step", "clear_search": "Clear search",
-    "views": "Task views", "all": "All tasks", "following": "My favorites", "independent": "Independent tasks",
-    "more": "More requirements", "search_placeholder": "Search requirement titles",
-    "search": "Search requirement titles", "optional": "Optional", "selected_requirement": "Linked", "select_requirement": "Browse requirements",
-    "leaf_only": "Expand parent requirements and select a child", "clear_requirement": "Clear requirement", "loading_context": "Loading requirement prompt and document…",
+    "document_location": "Document location",
+    "document_location_placeholder": "Document URL or path (optional; otherwise stored in the requirement)",
+    "stored_document": "Workspace requirement content",
+    "source_document": "Source document",
+    "initial_prompt": "Initialization prompt",
+    "no_prompt": "No initialization prompt",
+    "direct_prompt": "Direct import prompt (optional)",
+    "direct_prompt_placeholder": "Defaults to document content; AI preview prompts can be edited in the next step",
+    "clear_search": "Clear search",
+    "views": "Task views",
+    "all": "All tasks",
+    "following": "My favorites",
+    "independent": "Independent tasks",
+    "more": "More requirements",
+    "search_placeholder": "Search requirement titles",
+    "search": "Search requirement titles",
+    "optional": "Optional",
+    "selected_requirement": "Linked",
+    "select_requirement": "Browse requirements",
+    "leaf_only": "Expand parent requirements and select a child",
+    "clear_requirement": "Clear requirement",
+    "loading_context": "Loading requirement prompt and document…",
     "context_error": "Requirement content could not load or has children. Retry or select another requirement.",
-    "no_requirements": "No requirements found", "pin": "Pin requirement (up to 2)", "unpin": "Unpin requirement",
-    "requirement_optional": "Requirement (optional)", "inherited": "Inherited current requirement",
-    "create_for_requirement": "Create task for requirement", "owner_unknown": "Unknown creator", "retry": "Load failed. Retry",
-    "load_more": "Load more", "empty_tasks": "No tasks in {view}"
+    "no_requirements": "No requirements found",
+    "pin": "Pin requirement (up to 2)",
+    "unpin": "Unpin requirement",
+    "requirement_optional": "Requirement (optional)",
+    "inherited": "Inherited current requirement",
+    "create_for_requirement": "Create task for requirement",
+    "owner_unknown": "Unknown creator",
+    "retry": "Load failed. Retry",
+    "load_more": "Load more",
+    "empty_tasks": "No tasks in {view}"
   },
   "common": {
     "login": "Login",
@@ -134,25 +155,41 @@
         "title": "Asset Management & Traceability",
         "desc": "Transform requirements, architecture decisions, human deltas, and execution evidence into structured digital assets with 100% full-chain traceability.",
         "tag": "Assets & Matrix",
-        "points": ["Hierarchical Splitting & Spec Review", "Architecture ADRs & Evidence Registry", "Full-Chain Coverage Matrix"]
+        "points": [
+          "Hierarchical Splitting & Spec Review",
+          "Architecture ADRs & Evidence Registry",
+          "Full-Chain Coverage Matrix"
+        ]
       },
       "terminal_hitl": {
         "title": "Terminal Collab & Human-In-The-Loop",
         "desc": "Deep Claude CLI interactive integration with speech-to-text. High-risk decisions trigger authorization pauses, clearing ambiguity with bidirectional clarifications.",
         "tag": "Collab & Safety",
-        "points": ["PTY Terminal Session & Token Attribution", "Web Direct & Offline Whisper Speech", "HITL Authorization & Clarification Thread"]
+        "points": [
+          "PTY Terminal Session & Token Attribution",
+          "Web Direct & Offline Whisper Speech",
+          "HITL Authorization & Clarification Thread"
+        ]
       },
       "contract_mock": {
         "title": "Contract Isolation & Dynamic Gateway",
         "desc": "Automatically infer data entities and multi-scenario mock cases from OpenAPI specs. Dynamic gateway supports per-endpoint routing, decoupling frontend and backend.",
         "tag": "Contract-First",
-        "points": ["OpenAPI Parsing & Entity Inference", "Multi-Scenario Mock Cases", "Mock / Proxy Traffic Switching & Chaos"]
+        "points": [
+          "OpenAPI Parsing & Entity Inference",
+          "Multi-Scenario Mock Cases",
+          "Mock / Proxy Traffic Switching & Chaos"
+        ]
       },
       "delta_playbook": {
         "title": "Delta Attribution & Case Playbooks",
         "desc": "Diff AI proposals against final human code with 4D root-cause attribution. Three-step closeout solidifies audits, distilling production incident SOP playbooks.",
         "tag": "Experience Distillation",
-        "points": ["ChangeProposal AST Attribution", "3-Step Closeout (Baseline/Review/Summary)", "Case Center & Reusable Playbooks"]
+        "points": [
+          "ChangeProposal AST Attribution",
+          "3-Step Closeout (Baseline/Review/Summary)",
+          "Case Center & Reusable Playbooks"
+        ]
       }
     },
     "version_badge": "Development Asset Management · Enterprise Platform",
@@ -4068,8 +4105,8 @@
     "createIntentHint": "Review mappings after repositories and branches are ready. Every local HEAD must match its task base commit and every repository must be clean before enabling.",
     "confirmSnapshot": "Use confirmed cloud snapshot {snapshot}",
     "excludeLocal": "Local changes not handed off are excluded from this result. Hand them off first if needed, then confirm the updated snapshot.",
-    "backups": "Conflict recovery backups",
-    "noBackups": "No recovery backups yet",
+    "backups": "Local backups",
+    "noBackups": "No local backups",
     "viewBackup": "View backup",
     "exportBackup": "Export backup",
     "backupSource": "Local backup before restoration",
@@ -4103,13 +4140,13 @@
     "upload": "Uploading changes",
     "download": "Receiving changes",
     "files": "files",
-    "title": "Code collaboration",
-    "code": "Code",
+    "title": "Local collaboration",
+    "code": "Local collaboration",
     "enable": "Enable local collaboration",
     "history": "Patch history",
     "historyReadonly": "Historical patches are read-only. Collaboration receives current code without generating patches.",
-    "back": "Back to collaboration",
-    "refresh": "Compare again",
+    "back": "Back to local collaboration",
+    "refresh": "Refresh file status",
     "split": "Side by side",
     "unified": "Unified diff",
     "absent": "File absent",
@@ -4136,19 +4173,19 @@
     },
     "localCloud": "Local ↔ Cloud",
     "inputCloud": "Round input ↔ Cloud",
-    "receivedSource": "Last received local version",
-    "inputSource": "Round input",
-    "localSource": "Local disk · current scan",
-    "candidateSource": "Cloud work in progress",
-    "finalSource": "Sealed cloud version",
+    "receivedSource": "Last received version",
+    "inputSource": "Start of this round",
+    "localSource": "Current local",
+    "candidateSource": "Agent version · In progress",
+    "finalSource": "Agent version",
     "conflict": "Both modified",
     "noChanges": "No file changes between these sources",
     "restoreHint": "Restore selected final conflicts only. Independent local changes are preserved.",
-    "restoreSelected": "Restore {count} selected conflicts",
-    "restoreTitle": "Confirm conflict restoration",
-    "backupFirst": "Back up current local files, then restore sealed cloud versions. Deletions are backed up too. Further local changes stop restoration for another check. Only disk content is checked; unsaved IDE buffers cannot be read. Resolve editor buffers before restoration and reload the disk version when the IDE asks afterward.",
-    "confirmRestore": "Back up and restore selected files",
-    "delete": "Deleted in cloud",
+    "restoreSelected": "Use Agent version ({count})",
+    "restoreTitle": "Replace {count} local files?",
+    "backupFirst": "Back up the selected local files, then adopt the Agent version. Other files are unchanged. Files deleted by the Agent will be removed locally after backup.",
+    "confirmRestore": "Back up and replace",
+    "delete": "Will delete local file",
     "failed": "Local collaboration is unavailable. Retry to recover.",
     "mappingRequired": "Configure a mapping for every task repository.",
     "binary": "Binary, non UTF-8, or files larger than 2 MB cannot be shown as text.",
@@ -4169,6 +4206,175 @@
       "DELIVERY_PENDING": "Receiving cloud code",
       "CONFLICT_PENDING": "Conflicts need restoration",
       "RECOVERY_REQUIRED": "Collaboration needs recovery"
+    },
+    "ui": {
+      "handleFiles": "Resolve files",
+      "view": "View",
+      "settings": "Repositories & sync",
+      "more": "More collaboration actions",
+      "syncOnly": "Sync to server only",
+      "connectTitle": "Connect the repositories you edit",
+      "connectHint": "The Agent runs on the server. Changes arrive in these local folders; your next message includes local edits.",
+      "settingsHint": "These are the repositories you edit in your local IDE.",
+      "mappingMissing": "No folder selected",
+      "checkFailed": "Check failed",
+      "checkPassed": "Ready to connect",
+      "notChecked": "Not checked",
+      "chooseDirectory": "Choose local folder",
+      "changeDirectory": "Change folder",
+      "openDirectory": "Open folder",
+      "taskBaseline": "Task baseline",
+      "cleanHead": "Matching HEAD · Clean working tree",
+      "mappingReuse": "Reuse existing mappings. Every repository must pass before connecting.",
+      "connectRepos": "Connect {count} repositories",
+      "recheck": "Check again",
+      "checkRepos": "Check repositories",
+      "invalidRepo": "The selected folder is not a valid Git repository.",
+      "repoCheckError": "Repository check failed: {code}",
+      "autoReceive": "Receive changes during execution",
+      "autoReceiveHint": "When off, preview changes and receive them after execution.",
+      "device": "Sync device",
+      "thisDevice": "This device · Connected",
+      "otherDevice": "Another desktop client",
+      "deviceOffline": "Disconnected",
+      "reconnectElsewhereHint": "Reconnect the local repositories in TraceForge Desktop using the account that enabled collaboration.",
+      "deviceDetails": "View sync device",
+      "activeDeviceHint": "Another desktop is syncing. Close that client and wait for its connection to expire before reconnecting here. You can view Agent changes now.",
+      "reconnectHint": "Check local repositories against the current task version before resuming. Local edits are retained and conflicts handled individually.",
+      "changedFiles": "Changed files",
+      "selectFile": "Select {path}",
+      "pending": "Resolve",
+      "previewConflict": "After execution",
+      "pendingSend": "Not sent",
+      "agent": "Agent",
+      "received": "Received",
+      "pendingReceive": "Pending",
+      "backToBackups": "Back to local backups",
+      "backupsHint": "Local files saved before adopting the Agent version.",
+      "errorDetails": "View error details",
+      "fileSources": "Change source",
+      "thisRound": "This round",
+      "compareVersions": "Compare versions",
+      "defaultComparison": "Default comparison",
+      "diffLayout": "Diff layout",
+      "previewConflictHint": "Both local and Agent changes exist. Resolve after the Agent finishes.",
+      "restoreNotice": "The current local content will be backed up before adopting the Agent version.",
+      "localNotice": "This change is synced with your next message.",
+      "runningNotice": "Work in progress. The Agent may change this file again.",
+      "agentNotice": "Agent changes made during this round.",
+      "fileMode": "File mode",
+      "loadingFiles": "Reading file status",
+      "noLocalChanges": "No local edits waiting to be sent",
+      "noAgentChanges": "No code changes this round",
+      "noLocalHint": "Local edits will appear here.",
+      "noAgentHint": "File diffs will appear when the Agent changes code.",
+      "selectAllConflicts": "Select all conflicts",
+      "selectedCount": "Selected {count} / {total}",
+      "localUnavailable": "Local files are currently unavailable",
+      "filters": {
+        "all": "All",
+        "cloud": "Agent changes",
+        "local": "Local edits",
+        "conflicts": "To resolve"
+      },
+      "actions": {
+        "connect": "Connect locally",
+        "recover": "Retry receiving",
+        "reconnect": "Reconnect",
+        "device": "View sync device"
+      },
+      "states": {
+        "loading": {
+          "short": "Loading",
+          "title": "Reading collaboration status",
+          "description": "Please wait.",
+          "input": "Reading collaboration status…"
+        },
+        "connect": {
+          "short": "Connect locally",
+          "title": "Connect local repositories",
+          "description": "Review task repository mappings to connect.",
+          "input": ""
+        },
+        "connecting": {
+          "short": "Connecting",
+          "title": "Connecting local repositories",
+          "description": "Checking and preparing each repository.",
+          "input": "Preparing local repositories…"
+        },
+        "unprepared": {
+          "short": "Not ready",
+          "title": "Repositories are not ready on this device",
+          "description": "Review repositories to continue connecting.",
+          "input": "Connect local repositories before sending."
+        },
+        "ready": {
+          "short": "Synced",
+          "title": "Synced to local repositories",
+          "description": "Review Agent changes for this round below.",
+          "input": ""
+        },
+        "offline": {
+          "short": "Disconnected",
+          "title": "Local connection interrupted",
+          "description": "Reconnect to resume. Drafts and local edits are retained.",
+          "input": "Reconnect the local client before sending."
+        },
+        "device": {
+          "short": "Another device",
+          "title": "Another device is syncing",
+          "description": "You can review Agent changes here.",
+          "input": "This device is viewing only. Reconnect locally to send."
+        },
+        "error": {
+          "short": "Receive failed",
+          "title": "Could not receive code",
+          "description": "Received files are retained. Retry the remaining changes.",
+          "input": "Code delivery is incomplete. Retry before sending."
+        },
+        "conflict": {
+          "short": "{count} to resolve",
+          "title": "{count} files need attention",
+          "description": "Both you and the Agent changed these files. Review their diffs.",
+          "input": "Resolve {count} files before sending."
+        },
+        "preparing": {
+          "short": "Syncing",
+          "title": "Preparing code for this round",
+          "description": "Syncing changed files before execution.",
+          "input": "Syncing edits for this message…"
+        },
+        "running": {
+          "short": "Running",
+          "title": "The Agent is working",
+          "description": "Changes are previewed as they arrive. You can keep editing locally.",
+          "input": ""
+        },
+        "waiting": {
+          "short": "Awaiting response",
+          "title": "The Agent needs your response",
+          "description": "Respond in the conversation. File changes remain available.",
+          "input": ""
+        },
+        "transferring": {
+          "short": "Reconciling",
+          "title": "Syncing and checking code",
+          "description": "The next round is available once this completes.",
+          "input": "Completing code delivery…"
+        },
+        "local": {
+          "short": "{count} local edits",
+          "title": "{count} local files changed",
+          "description": "Your next message includes these edits.",
+          "input": "Your message will include {count} local edits."
+        },
+        "unavailable": {
+          "short": "Not ready",
+          "title": "Local collaboration is not ready",
+          "description": "Check the connection to continue.",
+          "input": "Restore collaboration before sending."
+        }
+      }
     }
   }
 }

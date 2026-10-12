@@ -59,18 +59,39 @@
   "task_rail": {
     "back_to_session": "返回任务会话",
     "link_requirement": "关联需求",
-    "document_location": "文档位置", "document_location_placeholder": "文档链接或路径（可选，留空保存在需求正文中）",
-    "stored_document": "工作区需求正文", "source_document": "源文档", "initial_prompt": "初始化提示词", "no_prompt": "暂无初始化提示词",
-    "direct_prompt": "直接导入初始化提示词（可选）", "direct_prompt_placeholder": "留空时使用文档正文；AI 预览可在下一步编辑每项提示词", "clear_search": "清空搜索",
-    "views": "任务视图", "all": "全部任务", "following": "我的收藏", "independent": "独立任务",
-    "more": "更多需求", "search_placeholder": "搜索需求标题",
-    "search": "搜索需求标题", "optional": "可选", "selected_requirement": "已关联", "select_requirement": "展开选择需求",
-    "leaf_only": "有子需求的父需求请展开后选择子需求", "clear_requirement": "取消关联", "loading_context": "正在载入需求提示词与文档…",
+    "document_location": "文档位置",
+    "document_location_placeholder": "文档链接或路径（可选，留空保存在需求正文中）",
+    "stored_document": "工作区需求正文",
+    "source_document": "源文档",
+    "initial_prompt": "初始化提示词",
+    "no_prompt": "暂无初始化提示词",
+    "direct_prompt": "直接导入初始化提示词（可选）",
+    "direct_prompt_placeholder": "留空时使用文档正文；AI 预览可在下一步编辑每项提示词",
+    "clear_search": "清空搜索",
+    "views": "任务视图",
+    "all": "全部任务",
+    "following": "我的收藏",
+    "independent": "独立任务",
+    "more": "更多需求",
+    "search_placeholder": "搜索需求标题",
+    "search": "搜索需求标题",
+    "optional": "可选",
+    "selected_requirement": "已关联",
+    "select_requirement": "展开选择需求",
+    "leaf_only": "有子需求的父需求请展开后选择子需求",
+    "clear_requirement": "取消关联",
+    "loading_context": "正在载入需求提示词与文档…",
     "context_error": "需求内容载入失败或已有子需求，请重试或重新选择",
-    "no_requirements": "未找到需求", "pin": "固定需求（最多 2 个）", "unpin": "取消固定",
-    "requirement_optional": "关联需求（可选）", "inherited": "已继承当前需求",
-    "create_for_requirement": "为此需求创建任务", "owner_unknown": "创建人未知", "retry": "加载失败，点击重试",
-    "load_more": "加载更多", "empty_tasks": "「{view}」暂无任务"
+    "no_requirements": "未找到需求",
+    "pin": "固定需求（最多 2 个）",
+    "unpin": "取消固定",
+    "requirement_optional": "关联需求（可选）",
+    "inherited": "已继承当前需求",
+    "create_for_requirement": "为此需求创建任务",
+    "owner_unknown": "创建人未知",
+    "retry": "加载失败，点击重试",
+    "load_more": "加载更多",
+    "empty_tasks": "「{view}」暂无任务"
   },
   "common": {
     "login": "登录",
@@ -134,25 +155,41 @@
         "title": "开发态资产管理与全链路追溯",
         "desc": "将需求拆分、架构决策、人机差异与执行证据转化为结构化数字资产。覆盖度矩阵贯穿全链路，消除开发黑盒，让每次交付都有据可查。",
         "tag": "资产与追溯",
-        "points": ["需求树状拆分与块级评审", "架构决策 (ADR) 与证据注册", "全链路追溯覆盖度矩阵"]
+        "points": [
+          "需求树状拆分与块级评审",
+          "架构决策 (ADR) 与证据注册",
+          "全链路追溯覆盖度矩阵"
+        ]
       },
       "terminal_hitl": {
         "title": "终端协同会话与人在回路 (HITL)",
         "desc": "深度桥接 Claude CLI 交互式终端，支持在线与离线语音输入。关键高风险决策人工授权拦截，双向澄清歧义，计划快照高亮变更。",
         "tag": "协同与安全",
-        "points": ["PTY 终端会话与 Token 归因", "Web 直连与离线 Whisper 语音", "HITL 关键授权与双向澄清问答"]
+        "points": [
+          "PTY 终端会话与 Token 归因",
+          "Web 直连与离线 Whisper 语音",
+          "HITL 关键授权与双向澄清问答"
+        ]
       },
       "contract_mock": {
         "title": "契约隔离与动态代理网关",
         "desc": "基于 OpenAPI 规范自动推导数据实体与多场景 Mock 用例。动态切流网关支持单接口按需路由，彻底解耦前后端联调依赖。",
         "tag": "契约先行",
-        "points": ["OpenAPI 规范导入与实体推导", "多分支 Mock Case 场景推导", "Mock / Proxy 灵活切流与混沌测试"]
+        "points": [
+          "OpenAPI 规范导入与实体推导",
+          "多分支 Mock Case 场景推导",
+          "Mock / Proxy 灵活切流与混沌测试"
+        ]
       },
       "delta_playbook": {
         "title": "人机差异归因与故障排障剧本",
         "desc": "精确比对 AI 提议与人工最终代码并四维归因。三步收尾工作流固化证据，将真实生产排障攻坚沉淀为可复用 SOP 剧本 (Playbook)。",
         "tag": "经验沉淀",
-        "points": ["ChangeProposal AST 差异归因", "三步收尾工作流 (基准/审查/摘要)", "案例中心与排障剧本 (Playbook)"]
+        "points": [
+          "ChangeProposal AST 差异归因",
+          "三步收尾工作流 (基准/审查/摘要)",
+          "案例中心与排障剧本 (Playbook)"
+        ]
       }
     },
     "version_badge": "开发态资产管理 · 企业级协作平台",
@@ -4073,8 +4110,8 @@
     "createIntentHint": "仓库和逐仓分支准备完成后核对映射；本地 HEAD 与任务基准一致且全部仓库干净，才能启用。",
     "confirmSnapshot": "使用已确认云端版本 {snapshot}",
     "excludeLocal": "本机尚未交接的修改不包含在本次结果中。需要包含本地修改时，先带入本地修改，再确认更新后的版本。",
-    "backups": "冲突恢复备份",
-    "noBackups": "暂无冲突恢复备份",
+    "backups": "本地备份",
+    "noBackups": "暂无本地备份",
     "viewBackup": "查看备份",
     "exportBackup": "导出备份",
     "backupSource": "恢复前的本地备份",
@@ -4108,13 +4145,13 @@
     "upload": "上传增量",
     "download": "接收增量",
     "files": "个文件",
-    "title": "代码协同",
-    "code": "代码",
+    "title": "本地协同",
+    "code": "本地协同",
     "enable": "启用本地协同",
     "history": "历史补丁",
     "historyReadonly": "历史补丁只读；本地协同接收当前代码，无需生成或应用补丁。",
-    "back": "返回代码协同",
-    "refresh": "重新比对",
+    "back": "返回本地协同",
+    "refresh": "刷新文件状态",
     "split": "左右对照",
     "unified": "统一差异",
     "absent": "文件不存在",
@@ -4141,19 +4178,19 @@
     },
     "localCloud": "本地 ↔ 云端",
     "inputCloud": "本轮输入 ↔ 云端",
-    "receivedSource": "本地已接收版本",
-    "inputSource": "本轮输入",
-    "localSource": "本地磁盘 · 本次检查",
-    "candidateSource": "执行中云端版本",
-    "finalSource": "已封存云端版本",
+    "receivedSource": "上次接收的版本",
+    "inputSource": "本轮开始时",
+    "localSource": "当前本地",
+    "candidateSource": "Agent 版本 · 执行中",
+    "finalSource": "Agent 版本",
     "conflict": "双方修改",
     "noChanges": "这组来源之间没有文件变化",
     "restoreHint": "仅恢复选中的最终冲突文件。独立的本地修改继续保留。",
-    "restoreSelected": "恢复所选 {count} 个冲突文件",
-    "restoreTitle": "确认恢复冲突文件",
-    "backupFirst": "先备份这些文件的当前本地版本，再恢复为当前已封存云端版本。删除也会保留备份；确认后如本地内容再次变化，操作将停止并重新核对。 本操作仅核对磁盘内容，无法读取 IDE 尚未落盘的缓冲区；恢复前请处理编辑器中的未落盘内容，恢复后按 IDE 提示重新加载磁盘版本。",
-    "confirmRestore": "备份并恢复所选文件",
-    "delete": "云端已删除",
+    "restoreSelected": "采用 Agent 版本（{count}）",
+    "restoreTitle": "替换 {count} 个本地文件？",
+    "backupFirst": "先备份所选文件当前的本地内容，再采用 Agent 版本。其他文件不受影响；云端已删除的文件会在备份后从本地删除。",
+    "confirmRestore": "备份并替换",
+    "delete": "将删除本地文件",
     "failed": "本地协同暂不可用，请重试",
     "mappingRequired": "请先为本任务的每个仓库配置本地映射",
     "binary": "此文件为二进制、非 UTF-8 或超过 2 MB，无法在文本比对中显示。",
@@ -4174,6 +4211,175 @@
       "DELIVERY_PENDING": "正在接收云端代码",
       "CONFLICT_PENDING": "冲突文件待恢复",
       "RECOVERY_REQUIRED": "本地协同需要恢复"
+    },
+    "ui": {
+      "handleFiles": "处理文件",
+      "view": "查看",
+      "settings": "仓库与同步设置",
+      "more": "更多协同操作",
+      "syncOnly": "仅同步到云端",
+      "connectTitle": "连接你正在编辑的仓库",
+      "connectHint": "Agent 在云端执行，修改同步到以下本地目录。发送下一条消息时，会带上你的本地修改。",
+      "settingsHint": "这些目录就是你在本地 IDE 中编辑的仓库。",
+      "mappingMissing": "未选择目录",
+      "checkFailed": "检查未通过",
+      "checkPassed": "可连接",
+      "notChecked": "待检查",
+      "chooseDirectory": "选择本地目录",
+      "changeDirectory": "更换目录",
+      "openDirectory": "打开目录",
+      "taskBaseline": "任务基线",
+      "cleanHead": "HEAD 一致 · 工作区干净",
+      "mappingReuse": "沿用已有仓库映射；全部仓库通过检查后连接。",
+      "connectRepos": "连接 {count} 个仓库",
+      "recheck": "重新检查",
+      "checkRepos": "检查仓库",
+      "invalidRepo": "所选目录不是可用的 Git 仓库。",
+      "repoCheckError": "仓库检查未通过：{code}",
+      "autoReceive": "执行中自动接收修改",
+      "autoReceiveHint": "关闭后仍可预览，任务结束时接收。",
+      "device": "同步设备",
+      "thisDevice": "本机 · 已连接",
+      "otherDevice": "另一台桌面客户端",
+      "deviceOffline": "连接已断开",
+      "reconnectElsewhereHint": "请使用启用协同的账号，在 TraceForge 桌面客户端重新连接本地仓库。",
+      "deviceDetails": "查看同步设备",
+      "activeDeviceHint": "另一台桌面客户端正在同步。请先关闭原客户端并等待连接释放，再在此设备重新连接；当前可查看 Agent 修改。",
+      "reconnectHint": "重新核对本机仓库与当前任务版本，再恢复同步。已有本地修改会保留，冲突文件单独处理。",
+      "changedFiles": "修改文件",
+      "selectFile": "选择 {path}",
+      "pending": "待处理",
+      "previewConflict": "待结束处理",
+      "pendingSend": "待发送",
+      "agent": "Agent",
+      "received": "已接收",
+      "pendingReceive": "待接收",
+      "backToBackups": "返回本地备份",
+      "backupsHint": "采用 Agent 版本前保留的本地文件。",
+      "errorDetails": "查看错误详情",
+      "fileSources": "修改来源",
+      "thisRound": "本轮修改",
+      "compareVersions": "比较版本",
+      "defaultComparison": "默认比较",
+      "diffLayout": "差异显示方式",
+      "previewConflictHint": "本地和 Agent 都有修改，待 Agent 结束后处理。",
+      "restoreNotice": "采用 Agent 版本前，会备份该文件当前的本地内容。",
+      "localNotice": "此修改将在发送下一条消息时同步。",
+      "runningNotice": "执行中的版本，Agent 可能继续修改。",
+      "agentNotice": "显示 Agent 在本轮对该文件的修改。",
+      "fileMode": "文件模式",
+      "loadingFiles": "正在读取文件状态",
+      "noLocalChanges": "没有待发送的本地修改",
+      "noAgentChanges": "本轮暂无代码修改",
+      "noLocalHint": "本地文件发生变化后，会显示在这里。",
+      "noAgentHint": "Agent 修改代码后，文件差异会出现在这里。",
+      "selectAllConflicts": "全选待处理文件",
+      "selectedCount": "已选 {count} / {total}",
+      "localUnavailable": "当前无法读取本地文件",
+      "filters": {
+        "all": "全部",
+        "cloud": "Agent 修改",
+        "local": "本地修改",
+        "conflicts": "待处理"
+      },
+      "actions": {
+        "connect": "连接本地",
+        "recover": "重试接收",
+        "reconnect": "重新连接",
+        "device": "查看同步设备"
+      },
+      "states": {
+        "loading": {
+          "short": "加载中",
+          "title": "正在读取协同状态",
+          "description": "请稍候。",
+          "input": "正在读取协同状态…"
+        },
+        "connect": {
+          "short": "连接本地",
+          "title": "连接本地仓库",
+          "description": "核对任务仓库映射后启用。",
+          "input": ""
+        },
+        "connecting": {
+          "short": "连接中",
+          "title": "正在连接本地仓库",
+          "description": "逐仓检查并准备同步。",
+          "input": "正在准备本地仓库…"
+        },
+        "unprepared": {
+          "short": "待连接",
+          "title": "此设备尚未准备好仓库",
+          "description": "核对以下仓库后继续连接。",
+          "input": "本机仓库尚未就绪，连接后可发送。"
+        },
+        "ready": {
+          "short": "已同步",
+          "title": "已同步到本地",
+          "description": "本轮 Agent 修改可在下方查看。",
+          "input": ""
+        },
+        "offline": {
+          "short": "连接中断",
+          "title": "本地连接已断开",
+          "description": "恢复连接后继续同步，草稿和本地修改保留。",
+          "input": "本地连接已断开，暂时无法发送。"
+        },
+        "device": {
+          "short": "其他设备同步",
+          "title": "另一台设备正在同步",
+          "description": "当前设备可查看 Agent 修改。",
+          "input": "此设备仅查看，请先恢复本机同步连接。"
+        },
+        "error": {
+          "short": "接收失败",
+          "title": "代码接收失败",
+          "description": "已接收的文件保留，未完成部分可重试。",
+          "input": "代码尚未接收完成，暂时无法发送。"
+        },
+        "conflict": {
+          "short": "待处理 {count}",
+          "title": "{count} 个文件需要处理",
+          "description": "这些文件本地和 Agent 都修改过，请先查看差异。",
+          "input": "{count} 个文件待处理，处理后可发送。"
+        },
+        "preparing": {
+          "short": "同步中",
+          "title": "正在准备本轮代码",
+          "description": "仅同步变更文件，完成后开始执行。",
+          "input": "正在同步本次修改…"
+        },
+        "running": {
+          "short": "接收中",
+          "title": "Agent 正在执行",
+          "description": "修改持续预览，本地仍可继续编辑。",
+          "input": ""
+        },
+        "waiting": {
+          "short": "等待确认",
+          "title": "Agent 等待确认",
+          "description": "请在会话中完成当前确认，文件修改仍可查看。",
+          "input": ""
+        },
+        "transferring": {
+          "short": "核对中",
+          "title": "正在同步并核对代码",
+          "description": "完成后即可继续下一轮。",
+          "input": "正在完成本轮代码同步…"
+        },
+        "local": {
+          "short": "本地修改 {count}",
+          "title": "本地有 {count} 个文件修改",
+          "description": "发送下一条消息时，一起交给 Agent。",
+          "input": "本地 {count} 个文件将随本次消息发送。"
+        },
+        "unavailable": {
+          "short": "待恢复",
+          "title": "本地协同尚未就绪",
+          "description": "核对连接状态后继续。",
+          "input": "本地协同尚未就绪，处理后可发送。"
+        }
+      }
     }
   }
 }

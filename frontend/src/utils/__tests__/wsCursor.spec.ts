@@ -122,4 +122,40 @@ describe('ws cursor protocol', () => {
     if (oldEvent.kind === 'event') oldEvent.commit()
     expect(getWsCursor('task:one')?.lastAppliedSequence).toBe(100)
   })
+
+  it('replaces an ahead cursor only after a confirmed snapshot and rejects pre-resync completions', () => {
+    const stored = prepareWsFrame('task:one', {
+      type: 'event', epoch: 'same-server', sequence: 500, event_id: 'old-500',
+    })
+    if (stored.kind === 'event') stored.commit()
+    const stale = prepareWsFrame('task:one', {
+      type: 'event', epoch: 'same-server', sequence: 501, event_id: 'old-501',
+    })
+    sendResyncComplete({ send: () => undefined } as unknown as WebSocket, {
+      type: 'resync_required', epoch: 'same-server', reason: 'cursor_ahead', barrier_sequence: 80,
+    }, 'task:one')
+    expect(getWsCursor('task:one')?.lastAppliedSequence).toBe(500)
+    if (stale.kind === 'event') stale.commit()
+    finalizeWsResync('task:one', { type: 'resync_ok', epoch: 'same-server', high_watermark: 80 })
+    expect(getWsCursor('task:one')).toMatchObject({ lastAppliedSequence: 80, recentEventIds: [] })
+    expect(buildWsCursorQuery('task:one').last_sequence).toBe('80')
+    const reply = prepareWsFrame('task:one', {
+      type: 'event', epoch: 'same-server', sequence: 81, event_id: 'reply', event_type: 'chat_message',
+    })
+    expect(reply.kind).toBe('event')
+    if (reply.kind === 'event') reply.commit()
+    expect(getWsCursor('task:one')?.lastAppliedSequence).toBe(81)
+  })
+
+  it('does not let a pre-resync callback advance a replacement journal after confirmation', () => {
+    const stale = prepareWsFrame('task:one', {
+      type: 'event', epoch: 'same-server', sequence: 501, event_id: 'stale',
+    })
+    sendResyncComplete({ send: () => undefined } as unknown as WebSocket, {
+      type: 'resync_required', epoch: 'same-server', barrier_sequence: 80,
+    }, 'task:one')
+    finalizeWsResync('task:one', { type: 'resync_ok', epoch: 'same-server', high_watermark: 80 })
+    if (stale.kind === 'event') stale.commit()
+    expect(getWsCursor('task:one')?.lastAppliedSequence).toBe(80)
+  })
 })

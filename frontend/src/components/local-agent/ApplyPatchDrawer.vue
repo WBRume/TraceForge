@@ -14,6 +14,7 @@ import { useLocalAgentStore } from '@/stores/localAgent'
 import type { AgentTask } from '@/types/agent'
 import { formatApiError } from '@/utils/error'
 import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
+import CollaborationMenu from '@/components/collaboration/CollaborationMenu.vue'
 import type { LocalCollaboration } from '@/composables/collaboration/useLocalCollaboration'
 
 const props = defineProps<{
@@ -315,15 +316,17 @@ const openHistory = async () => { historyVisible.value = true; await hydrate() }
   <AppSideDrawer
     :show="show"
     :title="isCollaboration ? $t('collaboration.title') : $t('chat.change_apply_drawer_title')"
+    :class="{ 'collaboration-drawer': isCollaboration }"
     v-model:level="drawerLevel"
     resizable
-    hide-close
+    :hide-close="!isCollaboration"
     @close="emit('close')"
   >
     <template #icon>
       <GitPullRequest class="w-4 h-4" />
     </template>
     <template #actions>
+      <CollaborationMenu v-if="isCollaboration && collaboration && !historyVisible" :controller="collaboration" @history="openHistory" />
       <button v-if="isCollaboration && historyVisible" class="btn-secondary" @click="historyVisible = false">{{ $t('collaboration.back') }}</button>
       <button v-if="!isCollaboration" class="btn-secondary drawer-action-button" type="button" :disabled="!canGenerate || proposalGenerating || proposalLoading" :title="canGenerate ? '' : '请等待任务创建者生成并上传变更'" @click="refreshProposal">
         <Loader2 v-if="proposalGenerating" class="w-4 h-4 spin" />
@@ -332,7 +335,7 @@ const openHistory = async () => { historyVisible.value = true; await hydrate() }
       </button>
     </template>
 
-    <LocalCollaborationPanel v-if="isCollaboration && collaboration && !historyVisible" :controller="collaboration" :workspace-id="workspaceId" @history="openHistory" />
+    <LocalCollaborationPanel v-if="isCollaboration && collaboration && !historyVisible" :controller="collaboration" :workspace-id="workspaceId" />
     <section v-else class="apply-patch-drawer">
       <OwnResourceApply v-if="proposal && !isCollaboration" :workspace-id="workspaceId" :proposal-id="proposal.id" />
       <p v-if="isCollaboration" class="warning-box">{{ $t('collaboration.historyReadonly') }}</p>
@@ -542,6 +545,10 @@ const openHistory = async () => { historyVisible.value = true; await hydrate() }
 </template>
 
 <style scoped>
+@media (max-width: 720px) {
+  .collaboration-drawer :deep(.side-drawer-panel.is-resizable) { width: 100vw; max-width: 100vw; }
+  .collaboration-drawer :deep(.drawer-side-handles) { display: none; }
+}
 .apply-patch-drawer {
   flex: 1;
   min-height: 0;

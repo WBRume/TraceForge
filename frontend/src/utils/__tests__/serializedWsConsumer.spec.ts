@@ -107,4 +107,26 @@ describe('serialized WebSocket consumer', () => {
       epoch: 'epoch-resync', lastAppliedSequence: 101,
     })
   })
+
+  it('continues rendering AI replies after a same-epoch cursor-ahead recovery', async () => {
+    window.sessionStorage.setItem('traceforge.ws.cursors', JSON.stringify({
+      'task:ahead': { epoch: 'server', lastAppliedSequence: 500, recentEventIds: ['old'] },
+    }))
+    const replies: string[] = [], failures: unknown[] = []
+    const consumer = createSerializedWsConsumer({
+      room: 'task:ahead',
+      onEvent: event => { replies.push(event.payload.content) },
+      onResync: (frame, _reason, context) => sendResyncComplete(context.socket, frame, 'task:ahead'),
+      onFailure: error => { failures.push(error) },
+    })
+    const generation = consumer.resetForConnection(socket())
+    consumer.enqueue({ type: 'resync_required', epoch: 'server', barrier_sequence: 80, reason: 'cursor_ahead' }, generation)
+    consumer.enqueue({ type: 'event', epoch: 'server', sequence: 81, event_id: 'buffered', event_type: 'chat_message', payload: { content: 'buffered reply' } }, generation)
+    consumer.enqueue({ type: 'resync_ok', epoch: 'server', high_watermark: 81 }, generation)
+    consumer.enqueue({ type: 'event', epoch: 'server', sequence: 82, event_id: 'live', event_type: 'chat_message', payload: { content: 'live reply' } }, generation)
+    await tick(); await tick()
+    expect(failures).toEqual([])
+    expect(replies).toEqual(['buffered reply', 'live reply'])
+    expect(getWsCursor('task:ahead')?.lastAppliedSequence).toBe(82)
+  })
 })

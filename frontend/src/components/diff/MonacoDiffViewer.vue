@@ -12,6 +12,7 @@ const props = defineProps<{
   modified?: string
   renderSideBySide?: boolean
   language?: string
+  theme?: 'vs' | 'vs-dark'
   height?: string
 }>()
 ensureMonacoViteSetup()
@@ -104,7 +105,7 @@ onBeforeUnmount(() => {
       :original="originalText"
       :modified="modifiedText"
       :language="language || 'plaintext'"
-      theme="vs-dark"
+      :theme="theme || 'vs-dark'"
       :options="diffEditorOptions"
       width="100%"
       :height="height || '100%'"

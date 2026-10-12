@@ -40,7 +40,17 @@ const cloneCursor = (cursor: WsCursor): WsCursor => ({
 
 const cursorMemory = new Map<string, WsCursor>()
 const pendingResync = new Map<string, WsCursor>()
+const cursorGenerations = new Map<string, symbol>()
 let hydrated = false
+
+const cursorGeneration = (room: string): symbol => {
+  let generation = cursorGenerations.get(room)
+  if (!generation) {
+    generation = Symbol(room)
+    cursorGenerations.set(room, generation)
+  }
+  return generation
+}
 
 const hydrateCursorMemory = () => {
   if (hydrated) return
@@ -85,7 +95,7 @@ export const getWsCursor = (room: string): WsCursor | null => {
   return cloneCursor(cursor)
 }
 
-const commitCursor = (room: string, cursor: WsCursor, persist = true): WsCursor => {
+const commitCursor = (room: string, cursor: WsCursor, confirmedResync = false): WsCursor => {
   hydrateCursorMemory()
   const normalized = cloneCursor(cursor)
   const existing = cursorMemory.get(room)
@@ -98,14 +108,14 @@ const commitCursor = (room: string, cursor: WsCursor, persist = true): WsCursor 
     && staged?.epoch !== normalized.epoch) {
     return cloneCursor(existing)
   }
-  // A late completion from an older handler must never move an applied cursor
-  // backwards. Epoch changes are allowed only through an explicit resync.
-  if (existing && existing.epoch === normalized.epoch
+  // Ordinary event commits stay monotonic. A confirmed REST resync may replace
+  // an ahead cursor when the room journal was recreated within the same epoch.
+  if (!confirmedResync && existing && existing.epoch === normalized.epoch
     && existing.lastAppliedSequence > normalized.lastAppliedSequence) {
     return cloneCursor(existing)
   }
   cursorMemory.set(room, normalized)
-  if (persist) persistCursorMemory()
+  persistCursorMemory()
   return cloneCursor(normalized)
 }
 
@@ -127,6 +137,7 @@ export const acknowledgeWsResync = (room: string, frame: any): WsCursor => {
     lastAppliedSequence: Math.max(0, Number(frame?.barrier_sequence ?? frame?.high_watermark ?? 0)),
     recentEventIds: [],
   }
+  cursorGenerations.set(room, Symbol(room))
   pendingResync.set(room, cursor)
   return cloneCursor(cursor)
 }
@@ -141,19 +152,21 @@ export const finalizeWsResync = (room: string, frame: any): WsCursor | null => {
     ...staged,
     lastAppliedSequence: Math.max(staged.lastAppliedSequence, Number.isFinite(sequence) ? sequence : 0),
   }
-  const committed = commitCursor(room, finalized)
+  const committed = commitCursor(room, finalized, true)
   pendingResync.delete(room)
   return committed
 }
 
 export const discardWsResync = (room: string) => {
   pendingResync.delete(room)
+  cursorGenerations.set(room, Symbol(room))
 }
 
 /** Test/support hook: clear module memory without changing the public protocol. */
 export const clearWsCursorMemory = () => {
   cursorMemory.clear()
   pendingResync.clear()
+  cursorGenerations.clear()
   hydrated = false
 }
 
@@ -192,12 +205,13 @@ export const prepareWsFrame = (room: string, frame: any): WsFrameResult => {
     return { kind: 'resync', reason: 'gap', frame }
   }
 
+  const generation = cursorGeneration(room)
   let committed = false
   return {
     kind: 'event',
     event: frame,
     commit: () => {
-      if (committed) return
+      if (committed || cursorGenerations.get(room) !== generation) return
       committed = true
       const next: WsCursor = {
         epoch,

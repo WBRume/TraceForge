@@ -3,8 +3,9 @@ import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { getSddDesktop } from '@/utils/runtime'
 import { formatApiError } from '@/utils/error'
-import { onRepoPreferencesChanged, readRepoPreferences } from '@/composables/localRepoPreferences'
+import { onRepoPreferencesChanged, readRepoPreferences, saveRepoPreferences } from '@/composables/localRepoPreferences'
 import { remoteUrlsMatch } from '@/composables/local-agent/localAgentUtils'
+import { chooseGitRemote, getLocalGitRemotes } from '@/composables/local-agent/localGitRemotes'
 import { collaborationApi, base64Bytes, bytesBase64 } from '@/services/collaborationApi'
 import type { CollaborationBackup, CollaborationCapture, CollaborationConflict, CollaborationManifest, CollaborationMappingCheck, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
 import { expandManifest, expandStatus, manifestDelta } from '../../../shared/collaboration-delta'
@@ -40,7 +41,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const directories = shallowRef<{ mapped_repositories?: number; task_root: string; repositories: Array<{ task_repository_id: string; local_worktree_path: string }> } | null>(null)
   const activity = ref({ direction: '', done: 0, total: 0, bytes: 0, totalBytes: 0 })
   const progressive = shallowRef(localStorage.getItem(`traceforge.collaboration.progressive:${options.task()?.id}`) === 'true')
-  const view = ref({ tab: 'cloud', pair: 'local-cloud', selected: '', selectedConflicts: [] as string[], conflictSetId: '' })
+  const view = ref({ page: 'files', tab: 'all', pair: 'auto', selected: '', selectedConflicts: [] as string[], conflictSetId: '' })
   const mappings = ref<Record<string, { local_path: string; configured_git_url: string }>>({})
   const available = Boolean(desktop?.collaboration)
   const identity = reactive({ client_id: clientId(), instance_id: INSTANCE_ID })
@@ -50,6 +51,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const enabled = computed(() => Boolean(state.value?.enabled))
   const driver = computed(() => state.value?.driver_user_id === auth.user?.id && state.value?.client_id === identity.client_id && state.value?.instance_id === identity.instance_id)
   const remoteSender = computed(() => !desktop && state.value?.driver_user_id === auth.user?.id && state.value?.driver_connected === true)
+  const canReconnect = computed(() => available && enabled.value && state.value?.driver_user_id === auth.user?.id && state.value?.driver_connected === false)
   const phase = computed(() => busy.value && !enabled.value ? 'ENABLING' : state.value?.sync_phase || 'DISABLED')
   const label = computed(() => (preparationRequired.value ? t('collaboration.preparationRequired') : deliveryRetryRequired.value && !busy.value ? t('collaboration.deliveryRetryRequired') : t(`collaboration.phases.${phase.value}`, phase.value)) + (phase.value === 'READY' && local.value?.local_changes?.length ? ` · ${t('collaboration.localCount', { count: local.value.local_changes.length })}` : ''))
   const blocked = computed(() => supported.value && (loading.value || (enabled.value && (preparationRequired.value || Boolean(error.value) || local.value?.state === 'RECOVERY_REQUIRED' || (!(available && driver.value) && !remoteSender.value) || state.value?.driver_connected === false || busy.value || !['READY', 'DISABLED'].includes(phase.value)))))
@@ -143,6 +145,38 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     check(token); mappingChecks.value = result.checks
     if (!result.ready) throw new Error(t('collaboration.mappingCheckFailed'))
     return repositories
+  }
+
+  async function checkMappings() {
+    if (busy.value || !available || (enabled.value && !preparationRequired.value)) return
+    const token = generation
+    busy.value = true; error.value = ''
+    try { await loadMappings(); check(token); await inspectMappings(token) }
+    catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
+    finally { if (token === generation) busy.value = false }
+  }
+
+  async function selectMapping(repositoryId: string) {
+    if (!desktop || busy.value || (enabled.value && (!driver.value || !preparationRequired.value))) return
+    const repo = state.value?.repositories.find(row => row.task_repository_id === repositoryId)
+    if (!repo) return
+    const token = generation
+    busy.value = true; error.value = ''
+    try {
+      const selected = await desktop.git.selectDirectory(); check(token)
+      if (selected.canceled || !selected.path) return
+      const result = await desktop.git.validateGitRepo(selected.path); check(token)
+      if (!result.ok) throw new Error(t('collaboration.ui.invalidRepo'))
+      const remotes = await getLocalGitRemotes(selected.path); check(token)
+      const remote = chooseGitRemote(remotes, { preferredUrl: repo.repo_url })?.fetchUrl || repo.repo_url
+      await desktop.config.setRepoMapping({ workspaceId: options.workspaceId(), remoteUrl: repo.repo_url, localPath: selected.path, gitRemoteUrl: remote }); check(token)
+      const preferences = readRepoPreferences(options.workspaceId(), String(auth.user?.id || ''))
+        .filter(row => !(repo.repository_id && row.repository_id === repo.repository_id) && !remoteUrlsMatch(row.configured_git_url, repo.repo_url))
+      saveRepoPreferences(options.workspaceId(), String(auth.user?.id || ''), [...preferences, { repository_id: repo.repository_id, configured_git_url: remote, local_path: selected.path }])
+      mappingChecks.value = []; await loadMappings(); check(token)
+      if (state.value?.repositories.every(row => mappings.value[row.task_repository_id])) await inspectMappings(token)
+    } catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
+    finally { if (token === generation) busy.value = false }
   }
 
   async function prepareCurrentBinding(token: number, previousBindingId = local.value?.binding_id) {
@@ -358,7 +392,6 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       await prepareCurrentBinding(token, previousBindingId)
       if (accepted.snapshot_id) await reconcile(await snapshot(accepted.snapshot_id), token)
       localStorage.removeItem(operationKey)
-      if (state.value.sync_phase === 'READY') await openDirectory()
     } catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
     finally { if (token === generation) busy.value = false }
   }
@@ -499,7 +532,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }, { immediate: true })
   schedule()
   onScopeDispose(() => { disposed = true; generation++; clearTimeout(timer); clearInterval(heartbeat); clearInterval(stageClock); stopMappingUpdates() })
-  return { supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, cancelPreparation, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, refreshComparison, view, handoffLocalChanges, disable, listBackups, exportBackup }
+  return { supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, cancelPreparation, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, disable, listBackups, exportBackup }
 }
 type Controller = ReturnType<typeof createController>
 const controllers = new Map<string, { scope: EffectScope; controller: Controller }>()
@@ -545,11 +578,12 @@ export function useLocalCollaboration(options: { workspaceId: () => string; task
     mappingChecks: computed(() => active.value?.mappingChecks.value || []),
     operationStage: computed(() => active.value?.operationStage.value || ''), operationSeconds: computed(() => active.value?.operationSeconds.value || 0),
     driver: computed(() => active.value?.driver.value || false), phase: computed(() => active.value?.phase.value || 'OFF'),
+    canReconnect: computed(() => active.value?.canReconnect.value || false),
     remoteSender: computed(() => active.value?.remoteSender.value || false),
     label: computed(() => active.value?.label.value || ''), blocked: computed(() => active.value?.blocked.value || false),
     conflicts: computed(() => active.value?.conflicts.value || []), mappings: computed(() => active.value?.mappings.value || {}),
     directories: computed(() => active.value?.directories.value || null), activity: computed(() => active.value?.activity.value || { direction: '', done: 0, total: 0, bytes: 0, totalBytes: 0 }),
-    view: computed(() => active.value?.view.value || { tab: 'cloud', pair: 'local-cloud', selected: '', selectedConflicts: [] as string[], conflictSetId: '' }),
+    view: computed(() => active.value?.view.value || { page: 'files', tab: 'all', pair: 'auto', selected: '', selectedConflicts: [] as string[], conflictSetId: '' }),
     progressive: computed(() => active.value?.progressive.value || false), setProgressive: (value: boolean) => active.value?.setProgressive(value),
     refresh: async () => { await active.value?.refresh() }, enable: async () => { await active.value?.enable() },
     restore: async (selected: CollaborationConflict[], id: string) => { await active.value?.restore(selected, id) },
@@ -559,6 +593,7 @@ export function useLocalCollaboration(options: { workspaceId: () => string; task
     claimDriver: async () => { await active.value?.claimDriver() }, recover: async () => { await active.value?.recover() },
     onEvent: (payload: Record<string, unknown>) => active.value?.onEvent(payload),
     refreshComparison: async () => { await active.value?.refreshComparison() },
+    checkMappings: async () => { await active.value?.checkMappings() }, selectMapping: async (repositoryId: string) => { await active.value?.selectMapping(repositoryId) },
     handoffLocalChanges: async () => { await active.value?.handoffLocalChanges() }, disable: async () => { await active.value?.disable() },
     listBackups: async () => active.value ? active.value.listBackups() : { backup_directory: '', backups: [] as CollaborationBackup[] }, exportBackup: async (backup: CollaborationBackup) => { await active.value?.exportBackup(backup) },
   }
