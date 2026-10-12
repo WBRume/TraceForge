@@ -40,6 +40,7 @@ def view(job):
         "message": job.message,
         "error": job.error_message,
         "cancel_requested": bool(job.cancel_requested_at),
+        "dismissed": bool((job.result_json or {}).get("dismissed")),
         "case_ids": (job.context_json or {}).get("case_ids", []),
         "cases": [{"id": s["id"], "title": s["title"]} for s in (job.context_json or {}).get("sources", [])],
         "result": job.result_json or {},
@@ -295,6 +296,19 @@ def discard_draft(job, revision):
     saved = require_draft(job, revision)
     job.result_json = {**saved, "review_state": "DISCARDED"}
     job.message = "规程草案已放弃"
+    return view(job)
+
+
+def dismiss_job(job):
+    """Persist closing a finished promotion, including abandoning an unconfirmed draft."""
+    from app.domains.ai.services.jobs.constants import FINAL_STATUSES
+
+    if job.status not in FINAL_STATUSES:
+        raise PlaybookError("PROMOTION_STILL_RUNNING", status=409)
+    saved = job.result_json or {}
+    if saved.get("review_state") == "PENDING":
+        discard_draft(job, saved["draft_revision"])
+    job.result_json = {**(job.result_json or {}), "dismissed": True}
     return view(job)
 
 

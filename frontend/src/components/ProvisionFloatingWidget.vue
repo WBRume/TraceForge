@@ -78,10 +78,20 @@ const handleOpenPreview = (job: ProvisionJobView) => {
 const cancelTarget = ref<ProvisionJobView | null>(null)
 const cancelling = ref(false)
 
-// 预览作业卡片 X：请求后端取消 CLI（进行中）或直接移除（已终态）
+// 晋升关闭必须由服务端确认；进行中的作业等待取消收敛后移除。
 const cancellingPreviewId = ref('')
 
 const handleDismiss = async (job: ProvisionJobView) => {
+  if (job.kind === 'playbook_promotion' && job.terminal) {
+    if (cancellingPreviewId.value) return
+    cancellingPreviewId.value = job.jobId
+    try {
+      if (!await store.dismissPromotionJob(job.jobId)) ElMessage.error('关闭失败，请重试')
+    } finally {
+      cancellingPreviewId.value = ''
+    }
+    return
+  }
   if (isPreviewJob(job) && !job.terminal) {
     if (cancellingPreviewId.value) return
     cancellingPreviewId.value = job.jobId
@@ -306,8 +316,9 @@ const handleEnterSession = (job: ProvisionJobView) => {
               v-if="job.terminal || (isPreviewJob(job) && !job.reviewRequired)"
               type="button"
               class="widget-icon-btn"
-              :title="job.kind === 'playbook_promotion' && !job.terminal ? '隐藏此任务' : t('common.close')"
-              @click="job.kind === 'playbook_promotion' ? store.dismiss(job.jobId) : handleDismiss(job)"
+              :title="job.kind === 'playbook_promotion' ? (job.reviewRequired ? '放弃草案并关闭' : !job.terminal ? '取消任务' : t('common.close')) : t('common.close')"
+              :disabled="cancellingPreviewId === job.jobId || (!job.terminal && job.cancelRequested)"
+              @click="handleDismiss(job)"
             >
               <Loader2 v-if="cancellingPreviewId === job.jobId" class="w-4 h-4 widget-spin" />
               <X v-else class="w-4 h-4" />
