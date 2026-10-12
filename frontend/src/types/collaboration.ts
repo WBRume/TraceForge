@@ -25,6 +25,7 @@ export type CollaborationConflict = {
 }
 export type CollaborationState = {
   capabilities?: { manifest_delta?: number }
+  input_mode?: 'LOCAL' | 'CLOUD'
   enabled: boolean; sync_phase: string; state_version: number; workspace_revision: number
   snapshot_id: string | null; input_snapshot_id: string | null; progress_snapshot_id: string | null
   lease_epoch: number; lease_expires_at?: string; driver_user_id?: string

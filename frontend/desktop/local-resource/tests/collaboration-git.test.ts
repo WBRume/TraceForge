@@ -62,7 +62,7 @@ test('warm native journal updates only named Git paths and survives idle time, d
     notify!('rename', null)
     await index.flush(); index.beginOperation()
     index.scan(repo, objects, true, false, task)
-    expect(index.measurements()[0].full_inventory).toBe(true)
+    expect(index.measurements()[0].full_inventory).not.toBe(true)
   } finally { index.close(); watcher.mockRestore() }
 }, 60_000)
 

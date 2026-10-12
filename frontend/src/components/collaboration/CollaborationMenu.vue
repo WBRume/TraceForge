@@ -23,7 +23,6 @@ function page(name: string) { close(); c.value.view.page = name }
       <button v-if="c.participating" type="button" :disabled="c.busy || c.leaving" @click="page('disconnect')">{{ t('collaboration.session.disconnect') }}…</button>
       <template v-if="c.participating && c.driver && c.phase === 'READY'">
         <button v-if="c.local?.local_changes?.length" type="button" :disabled="c.blocked" @click="close(); c.handoffLocalChanges()">{{ t('collaboration.ui.syncOnly') }}</button>
-        <hr /><button type="button" :disabled="c.blocked" @click="page('disable')">{{ t('collaboration.disable') }}…</button>
       </template>
     </div>
   </details>

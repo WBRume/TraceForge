@@ -146,10 +146,11 @@ export class CollaborationRuntime {
         input.task_repository_id === repo.task_repository_id && resolved(input.local_path) === repo.mapped_repo_root
         && input.base_commit_sha === repo.base_commit_sha && input.rel_path === repo.rel_path && input.branch_name === repo.branch_name))) fail('COLLABORATION_BINDING_CONFLICT')
       this.requireUnoccupied(payload.task_id, previous.repositories)
-      previous.repositories.forEach(validateRepositoryIdentity)
+      // The Git cut validates each repository before the binding is reactivated.
+      const local = this.scan(this.load(payload.task_id, true))
       previous.released = false; previous.suspended = false; previous.binding_id = payload.binding_id
       this.save(previous)
-      return this.status(this.load(payload.task_id))
+      return this.status(previous, local)
     }
     const repositories = requireCleanMappings(payload.repositories, this.roots())
     this.requireUnoccupied(payload.task_id, repositories)
@@ -189,7 +190,8 @@ export class CollaborationRuntime {
     if (binding.binding_id !== payload.binding_id) fail('COLLABORATION_BINDING_CONFLICT')
     if (!payload.suspend && (binding.target || binding.conflicts.length || binding.errors.length)) fail('COLLABORATION_DELIVERY_REQUIRED')
     binding.released = true; binding.suspended = payload.suspend === true; this.save(binding)
-    this.index.close(binding.task_id); this.observations.delete(binding.task_id); this.transports.delete(binding.task_id)
+    if (payload.suspend) this.index.suspend(binding.task_id); else this.index.close(binding.task_id)
+    this.observations.delete(binding.task_id); this.transports.delete(binding.task_id)
     return { managed_roots: this.bindings().filter(row => !row.released).flatMap(row => row.directory_mode === 'MAPPED'
       ? row.repositories.map(repo => repo.local_worktree_path) : [row.task_root]) }
   }

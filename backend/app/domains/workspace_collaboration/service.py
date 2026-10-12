@@ -183,6 +183,7 @@ def get_state(db: Session, task: SddTask) -> dict:
     result["lease_expires_at"] = state.lease_expires_at.isoformat() + "Z"
     result["updated_at"] = state.updated_at.isoformat() + "Z" if state.updated_at else None
     result["driver_connected"] = state.enabled and state.lease_expires_at > datetime.utcnow()
+    result["input_mode"] = "CLOUD" if state.input_submission_id and state.input_cut_seq is None else "LOCAL"
     return result
 
 
@@ -491,15 +492,19 @@ def request_input(db: Session, task: SddTask, submission_id: str, user_id: str) 
     _check_repositories(db, state, task)
     if state.pending_submission_id == submission_id:
         return get_state(db, task)
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+
+    submission = db.get(TaskChatSubmission, submission_id)
+    if submission and "collaboration" not in (submission.metadata_json or {}):
+        from .session import request_cloud_input
+
+        return request_cloud_input(db, task, state, submission_id)
     if state.sync_phase != "READY":
         _fail("DELIVERY_REQUIRED", "Complete the current code delivery before starting another round")
     if state.lease_expires_at <= datetime.utcnow():
         _fail("LEASE_EXPIRED", "Open the driver desktop before starting a collaborative round")
     if state.driver_user_id != user_id:
         _fail("DRIVER_REQUIRED", "Only the driver may request a new collaborative round")
-    from app.domains.task.models.chat_submission import TaskChatSubmission
-
-    submission = db.get(TaskChatSubmission, submission_id)
     identity = (submission.metadata_json or {}).get("collaboration", {}) if submission else {}
     delegated_input = identity.get("request_driver_input") is True and (
         identity.get("binding_id"),
@@ -528,6 +533,8 @@ def request_input(db: Session, task: SddTask, submission_id: str, user_id: str) 
 
 
 def input_ready(db: Session, task_id: str, submission_id: str) -> bool:
+    from .session import is_cloud_input
+
     state = _state(db, task_id, lock=False)
     return (
         not state
@@ -536,7 +543,7 @@ def input_ready(db: Session, task_id: str, submission_id: str) -> bool:
             state.sync_phase == "PREPARING"
             and state.input_submission_id == submission_id
             and state.pending_submission_id == submission_id
-            and state.lease_expires_at > datetime.utcnow()
+            and (state.lease_expires_at > datetime.utcnow() or is_cloud_input(db, task_id, submission_id))
         )
     )
 
@@ -650,6 +657,10 @@ def handoff(db: Session, task: SddTask, user_id: str, request: HandoffRequest) -
         return previous
     _check_fence(state, task, user_id, request)
     if request.submission_id:
+        from .session import is_cloud_input
+
+        if is_cloud_input(db, task.id, request.submission_id):
+            _fail("CLOUD_INPUT_FIXED", "Cloud-only messages do not accept local file uploads")
         if state.sync_phase != "PREPARING" or state.pending_submission_id != request.submission_id:
             _fail("PREPARATION_CHANGED", "Input does not belong to the pending message")
     elif state.sync_phase != "READY":
@@ -1115,7 +1126,9 @@ def claim_driver(db: Session, task: SddTask, user_id: str, request: EnableReques
         _fail("DRIVER_ACTIVE", "The existing desktop still has an active lease")
     _check_session(state, task)
     _check_repositories(db, state, task)
-    if state.sync_phase == "PREPARING":
+    from .session import is_cloud_input
+
+    if state.sync_phase == "PREPARING" and not is_cloud_input(db, task.id, state.pending_submission_id):
         from app.domains.task.models.chat_submission import TaskChatSubmission
         from app.domains.task.services.chat_submission_service import _transition
 

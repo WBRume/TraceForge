@@ -121,7 +121,6 @@ async function primaryAction() {
       </template>
     </template>
     <ConfirmActionModal :show="Boolean(pendingRestore)" :title="t('collaboration.restoreTitle', { count: pendingRestore?.conflicts.length || 0 })" :message="t('collaboration.backupFirst')" :cancel-text="t('common.cancel')" :confirm-text="t('collaboration.confirmRestore')" :loading="c.busy" @cancel="pendingRestore = null" @confirm="confirmRestore"><template #content><pre class="restore-paths">{{ restoreDescription }}</pre></template></ConfirmActionModal>
-    <ConfirmActionModal :show="c.view.page === 'disable'" :title="t('collaboration.disable')" :message="t('collaboration.disableHint')" :cancel-text="t('common.cancel')" :confirm-text="t('collaboration.disable')" :loading="c.busy" @cancel="c.view.page = 'files'" @confirm="async () => { await c.disable(); c.view.page = 'files' }" />
     <ConfirmActionModal :show="deviceConfirmation" tone="primary" :title="t('collaboration.ui.device')" :message="t(`collaboration.ui.${deviceHint}`)" :cancel-text="t('common.cancel')" :confirm-text="t(canReconnect ? 'collaboration.ui.actions.reconnect' : 'common.confirm')" :loading="c.busy" @cancel="deviceConfirmation = false" @confirm="async () => { if (canReconnect) await c.claimDriver(); deviceConfirmation = false; c.view.page = 'files' }" />
   </section>
 </template>

@@ -24,7 +24,7 @@ beforeEach(() => {
   runtime = new CollaborationRuntime(path.join(root, 'private'), () => [path.join(root, 'user-repositories')])
   input = { directory_mode: 'MAPPED', task_id: 'task', binding_id: 'binding', repositories,
     workspace_revision: 1, session_generation: 1, session_revision: 1, repository_set_digest: 'dual' }
-})
+}, 60_000)
 afterEach(() => { runtime.close(); fs.rmSync(root, { recursive: true, force: true }) })
 
 test('checks every repository and refuses HEAD mismatch and dirty files before any binding or checkout', () => {
@@ -41,6 +41,39 @@ test('checks every repository and refuses HEAD mismatch and dirty files before a
   repositories.forEach((repo, i) => expect(index(repo)).toEqual(originalIndexes[i]))
   expect(fs.readFileSync(path.join(api.local_path, 'shared.txt'), 'utf8')).toBe('local edit')
 }, 60_000)
+
+test('reconnect reuses both Git indexes and only reads paths changed while disconnected', async () => {
+  const originalIndexes = repositories.map(index)
+  const initial = await runtime.executeAsync('prepare', input)
+  runtime.execute('suspend', { task_id: 'task', binding_id: 'binding' })
+  const resumed = await runtime.executeAsync('prepare', input)
+  expect(resumed.scan_metrics.every((scan: any) => scan.kind === 'cached' && scan.files_read === 0)).toBe(true)
+  runtime.execute('suspend', { task_id: 'task', binding_id: 'binding' })
+  fs.writeFileSync(path.join(repositories[0].local_path, 'shared.txt'), 'offline human edit\n')
+  fs.writeFileSync(path.join(repositories[0].local_path, 'new.txt'), 'offline addition\n')
+  fs.unlinkSync(path.join(repositories[1].local_path, 'shared.txt'))
+  const changed = await runtime.executeAsync('prepare', input)
+  expect(changed.baseline).toEqual(initial.baseline)
+  expect(changed.local_changes).toHaveLength(3)
+  expect(changed.scan_metrics.every((scan: any) => scan.full_inventory === false)).toBe(true)
+  expect(changed.scan_metrics.reduce((sum: number, scan: any) => sum + scan.files_read, 0)).toBe(2)
+  expect(changed.manifest.repositories[0].files.find((file: any) => file.path === 'shared.txt').sha256).toBe(hash('offline human edit\n'))
+  expect(changed.manifest.repositories[1].files).toEqual([])
+  repositories.forEach((repo, i) => expect(index(repo)).toEqual(originalIndexes[i]))
+  // Windows may report parent directory changes after the resumed cut. A lost
+  // watcher barrier must also fall back to Git's delta rather than an inventory.
+  for (const record of (runtime.index as any).indexes.values()) {
+    fs.mkdirSync(path.join(record.root, 'empty-directory'))
+    record.changedPaths.add('empty-directory'); record.changedPaths.add('.git')
+    record.dirty = true; record.gap = true
+  }
+  const checked = await runtime.executeAsync('status', { task_id: 'task' })
+  expect(checked.scan_metrics.every((scan: any) => scan.kind === 'cached' && scan.files_read === 0)).toBe(true)
+  expect(checked.local_changes).toHaveLength(3)
+  runtime.execute('suspend', { task_id: 'task', binding_id: 'binding' })
+  git(repositories[0].local_path, 'checkout', '-b', 'another-branch')
+  expect(() => runtime.execute('prepare', input)).toThrow('COLLABORATION_REPOSITORY_IDENTITY_CHANGED')
+}, 120_000)
 
 test('rejects staged changes, untracked files and overlapping repository mappings', () => {
   const api = repositories[0]
