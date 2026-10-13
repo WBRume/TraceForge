@@ -1,4 +1,6 @@
 import { ref } from 'vue'
+import type { ContextAnnotations } from '@/composables/chat/annotations/useContextAnnotations'
+import { formatAnnotationMessage } from '@/composables/chat/annotations/contextAnnotations'
 
 import type {
   TerminalCommandTone,
@@ -34,6 +36,7 @@ interface ClearHistoryResult {
 }
 
 export interface ChatTerminalBridge {
+  annotations?: ContextAnnotations
   currentTask: { id?: string; name?: string; status?: string } | null
   messages: any[]
   terminalLogs: any[]
@@ -205,11 +208,13 @@ export const useChatTerminalController = (vm: ChatTerminalBridge) => {
   }
 
   const runSend = async (text: string) => {
-    if (!text.trim()) {
+    const annotations = vm.annotations?.snapshot()
+    if (!text.trim() && !annotations?.items.length) {
       appendEcho('warning', vm.t('chat.cli_error_send_empty'))
       return
     }
-    const sent = await vm.sendChatContent(text)
+    const sent = await vm.sendChatContent(formatAnnotationMessage(text, annotations?.items || []))
+    if (sent && annotations) vm.annotations?.consume(annotations)
     if (!sent) {
       appendEcho('warning', vm.t('chat.cli_error_send_rejected'))
     }
@@ -303,7 +308,7 @@ export const useChatTerminalController = (vm: ChatTerminalBridge) => {
 
   const submitInput = async () => {
     const raw = inputValue.value.trim()
-    if (!raw) return
+    if (!raw && !vm.annotations?.items.value.length) return
     if (commandExecuting.value) {
       appendEcho('warning', vm.t('chat.cli_command_busy'))
       return

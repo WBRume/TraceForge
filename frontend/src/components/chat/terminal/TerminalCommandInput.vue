@@ -6,6 +6,7 @@ const props = defineProps<{
   disabled: boolean
   busy: boolean
   placeholder: string
+  hasContext?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -45,14 +46,14 @@ defineExpose({
       :disabled="props.disabled || props.busy"
       :placeholder="props.placeholder"
       @input="onInput"
-      @keydown.enter.prevent="emit('submit')"
+      @keydown.enter="event => { if (!event.isComposing) { event.preventDefault(); emit('submit') } }"
       @keydown.tab.prevent="emit('tab-complete')"
       @keydown.up.prevent="emit('history-prev')"
       @keydown.down.prevent="emit('history-next')"
     >
     <button
       class="cli-send-btn"
-      :disabled="props.disabled || props.busy || !props.modelValue.trim()"
+      :disabled="props.disabled || props.busy || (!props.modelValue.trim() && !props.hasContext)"
       @click="emit('submit')"
     >
       Run

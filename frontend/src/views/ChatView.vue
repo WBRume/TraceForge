@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { proxyRefs } from 'vue'
+import { proxyRefs, provide } from 'vue'
+import AnnotationPopover from '@/components/chat/annotations/AnnotationPopover.vue'
+import { contextAnnotationsKey } from '@/composables/chat/annotations/useContextAnnotations'
+import { formatAnnotationMessage } from '@/composables/chat/annotations/contextAnnotations'
 import { ChevronDown, Loader2, MessageSquare } from '@/components/icons'
 import NewTaskModal from '@/components/task-create/NewTaskModal.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
@@ -41,6 +44,7 @@ import { consumeCollaborationIntent } from '@/components/task-create/lib/localCo
  * 撤销确认流）与跨区块事件桥接。
  */
 const rawVm = useChatViewModel()
+provide(contextAnnotationsKey, rawVm.annotations)
 const vm = proxyRefs(rawVm)
 const playbook = proxyRefs(useDiagnosisPlaybook({
   workspaceId: () => String(rawVm.route.params.wsId || ''),
@@ -151,14 +155,27 @@ const confirmUndoMessage = async () => {
   }
 }
 
+const pendingAnnotationPreInputs = new Map<string, { content: string; snapshot: ReturnType<typeof rawVm.annotations.snapshot> }>()
+watch(rawVm.activePreInput, (preInput) => {
+  if (!preInput) return
+  const key = `${rawVm.route.params.wsId}:${preInput.task_id}`
+  const pending = pendingAnnotationPreInputs.get(key)
+  if (pending && preInput.main_text === pending.content) {
+    rawVm.annotations.consume(pending.snapshot)
+    pendingAnnotationPreInputs.delete(key)
+  }
+})
 const handleStartPreInput = (payload: {
   main_text: string
   mentioned_user_ids: string[]
   edit_permission: 'ALL' | 'MENTIONED' | 'EXPERTS' | 'NONE'
   wait_seconds: number
 }) => {
-  const ok = rawVm.startPreInput(payload)
+  const annotations = rawVm.annotations.snapshot()
+  const content = formatAnnotationMessage(payload.main_text, annotations.items)
+  const ok = rawVm.startPreInput({ ...payload, main_text: content })
   if (ok) {
+    if (annotations.items.length) pendingAnnotationPreInputs.set(annotations.key, { content, snapshot: annotations })
     preInputMode.value = false
     vm.chatInput = ''
     chatInputRef.value?.resetPreInputForm?.()
@@ -175,6 +192,7 @@ watch(
 )
 </script>
 <template>
+  <AnnotationPopover />
   <CollaborationLeaveDialog :controller="vm.collaboration" :guard="vm.collaborationLeave" />
   <div class="chat-layout">
     <!-- Left Sidebar: Task List（SOP 模式下可折叠，宽位动画由 .is-collapsed 驱动） -->

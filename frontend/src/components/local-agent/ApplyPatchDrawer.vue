@@ -7,6 +7,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { AlertTriangle, FileText, GitPullRequest, Loader2, RefreshCw, Settings, GitBranch, ArrowUpRight, Zap, Info, Copy } from '@/components/icons'
 import OwnResourceApply from '@/components/local-resource/OwnResourceApply.vue'
 import AppSideDrawer from '@/components/AppSideDrawer.vue'
+import DiffViewer from '@/components/diff/DiffViewer.vue'
 import { applyProposalPatch, applyProposalRepoPatches, type ApplyPatchProgress } from '@/composables/local-agent/useLocalAgentApplyPatch'
 import { normalizeRemoteUrl } from '@/composables/local-agent/localAgentUtils'
 import { useAuthStore } from '@/stores/auth'
@@ -216,45 +217,6 @@ const handleApply = async () => {
     applyRunning.value = false
   }
 }
-
-const displayPatch = computed(() => {
-  if (!patchText.value) return ''
-  
-  // If a specific file is selected, extract its hunk
-  if (selectedFilePath.value) {
-    const escapedPath = selectedFilePath.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    // Regex to match from 'diff --git a/path' to the next 'diff --git' or end of string
-    const regex = new RegExp(`diff --git a/${escapedPath} b/${escapedPath}[\\s\\S]*?(?=diff --git|$)`)
-    const match = patchText.value.match(regex)
-    return match ? match[0] : t('chat.change_apply_no_diff')
-  }
-
-  // If no file selected, show the whole thing but with truncation safety
-  const lines = patchText.value.split('\n')
-  const MAX_LINES = 3000
-  if (lines.length > MAX_LINES) {
-    return `${lines.slice(0, MAX_LINES).join('\n')}\n\n... ${t('chat.change_apply_truncated', { lines: lines.length })}`
-  }
-  
-  return patchText.value
-})
-
-const highlightedLines = computed(() => {
-  const text = displayPatch.value
-  if (!text) return []
-  
-  return text.split('\n').map(line => {
-    let type = 'plain'
-    if (line.startsWith('+') && !line.startsWith('+++')) type = 'add'
-    else if (line.startsWith('-') && !line.startsWith('---')) type = 'del'
-    else if (line.startsWith('@@')) type = 'hunk'
-    else if (line.startsWith('diff --git')) type = 'header'
-    else if (line.startsWith('index ') || line.startsWith('new file mode ') || line.startsWith('deleted file mode ')) type = 'header'
-    else if (line.startsWith('--- ') || line.startsWith('+++ ')) type = 'file'
-    
-    return { text: line || ' ', type }
-  })
-})
 
 const formatApplyStep = (step: string) => {
   const stepLabels: Record<string, string> = {
@@ -496,12 +458,7 @@ watch(
               <Loader2 class="w-4 h-4 spin" />
               <span>{{ $t('chat.change_apply_patch_loading') }}</span>
             </div>
-            <div v-else class="diff-lines">
-              <div v-for="(line, idx) in highlightedLines" :key="idx" :class="['diff-line', line.type]">
-                <span class="line-number">{{ idx + 1 }}</span>
-                <span class="line-content">{{ line.text }}</span>
-              </div>
-            </div>
+            <DiffViewer v-else :diff-text="patchText" :selected-file-path="selectedFilePath" class="patch-annotation-diff" />
           </div>
         </main>
       </div>
@@ -1115,4 +1072,8 @@ watch(
   .file-list-container { max-height: 200px; width: 100%; }
   .patch-viewer { min-height: 400px; }
 }
+</style>
+
+<style scoped>
+.patch-annotation-diff { min-height: 100%; contain: none; }
 </style>

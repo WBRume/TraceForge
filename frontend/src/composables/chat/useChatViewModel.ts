@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useProvisioningStore } from '@/stores/provisioning'
 import { useChatMessageContext } from '@/composables/useChatMessageContext'
 import { useChatSubmissions } from '@/composables/useChatSubmissions'
+import { useContextAnnotations } from './annotations/useContextAnnotations'
 import { useAgentModels } from '@/composables/useAgentModels'
 import { useTaskSessionControls } from '@/composables/useTaskSessionControls'
 import { useChatWorkbenchScroll, type ChatWorkbenchMode } from '@/composables/useChatWorkbenchScroll'
@@ -75,6 +76,7 @@ export function useChatViewModel() {
 
   // ─── 会话实体与协作对象 ───
   const taskState = useCurrentTask()
+  const annotations = useContextAnnotations(() => taskState.getTaskId() ? `${getWorkspaceId()}:${taskState.getTaskId()}` : '')
   const collaboration = useLocalCollaboration({ workspaceId: getWorkspaceId, task: () => taskState.currentTask.value })
   const collaborationLeave = useCollaborationLeave(collaboration)
   const agentModels = useAgentModels(() => ({
@@ -576,6 +578,7 @@ export function useChatViewModel() {
 
   // ─── 发送 / 消息动作 / 任务动作 ───
   const send = useChatSend({
+    annotations,
     collaborationBlocked: () => collaboration.blocked.value,
     getSubmissionMetadata: collaboration.submissionMetadata,
     getModelSelection: () => agentModels.selection.value,
@@ -1057,6 +1060,7 @@ export function useChatViewModel() {
 
     // 发送
     chatInput: send.chatInput,
+    annotations,
     sendingChat: send.sendingChat,
     chatInputPlaceholder: send.chatInputPlaceholder,
     suggestionOnly,

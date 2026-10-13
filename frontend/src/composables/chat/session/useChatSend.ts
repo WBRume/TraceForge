@@ -8,6 +8,8 @@ import { generateClientMessageId } from '../shared/messageIdentity'
 import { createResolveActionError } from '../shared/requestGuards'
 import type { HitlCard } from '../types'
 import type { AgentModelSelection } from '@/composables/useAgentModels'
+import type { ContextAnnotations } from '../annotations/useContextAnnotations'
+import { formatAnnotationMessage } from '../annotations/contextAnnotations'
 
 /**
  * 消息发送（composer）：普通输入、HITL 回复、快捷验证三种入口共用
@@ -17,6 +19,7 @@ import type { AgentModelSelection } from '@/composables/useAgentModels'
  * 3. 其余 → WebSocket 直发。
  */
 export function useChatSend(options: {
+  annotations?: ContextAnnotations
   collaborationBlocked?: () => boolean
   getSubmissionMetadata?: () => Record<string, unknown>
   getModelSelection?: () => AgentModelSelection | undefined
@@ -114,7 +117,10 @@ export function useChatSend(options: {
     if (!sendOptions.metadata?.interaction_id && options.submissions.busy.value) return false
     const normalized = String(content || '').trim()
     if (!normalized) return false
+    const targetTaskId = options.getTaskId()
+    const targetWorkspaceId = options.getWorkspaceId()
     if (options.isHistoryAnchored()) await options.returnToLatest()
+    if (options.getTaskId() !== targetTaskId || options.getWorkspaceId() !== targetWorkspaceId) return false
     const displayContent = String(sendOptions.displayContent || normalized).trim()
     const clientMessageId = generateClientMessageId()
     const modelSelection = options.getModelSelection?.()
@@ -210,13 +216,15 @@ export function useChatSend(options: {
   }
 
   const sendChat = async () => {
-    if (!chatInput.value.trim()) return
+    const annotations = options.annotations?.snapshot()
+    if (!chatInput.value.trim() && !annotations?.items.length) return
     const content = chatInput.value
     const taskId = options.getTaskId()
     // The submission bubble owns this text during the request. Clearing now
     // also prevents a slow response from carrying the sent prompt into another task.
     chatInput.value = ''
-    const sent = await sendChatContent(content)
+    const sent = await sendChatContent(formatAnnotationMessage(content, annotations?.items || []))
+    if (sent && annotations) options.annotations?.consume(annotations)
     if (!sent && options.getTaskId() === taskId && !chatInput.value) {
       chatInput.value = content
     }

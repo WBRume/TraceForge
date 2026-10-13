@@ -1,11 +1,39 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import MonacoDiffViewer from '../MonacoDiffViewer.vue'
+import { effectScope } from 'vue'
+import { contextAnnotationsKey, useContextAnnotations } from '@/composables/chat/annotations/useContextAnnotations'
 
 vi.mock('@/utils/monaco', () => ({ ensureMonacoViteSetup: vi.fn() }))
 vi.mock('@guolao/vue-monaco-editor', () => ({ VueMonacoDiffEditor: { name: 'Monaco', template: '<div />' } }))
 
 describe('Diff gutter IDE navigation', () => {
+  it('captures both panes with path, revision and exact selection coordinates', () => {
+    const scope = effectScope()
+    const annotations = scope.run(() => useContextAnnotations(() => 'task'))!
+    const wrapper = mount(MonacoDiffViewer, { props: { filePath: 'repo/a.ts', original: 'old', modified: 'new', originalRevision: 'old-hash', modifiedRevision: 'new-hash' }, global: { provide: { [contextAnnotationsKey as symbol]: annotations } } })
+    const makePane = () => {
+      const callbacks: Record<string, (event?: any) => void> = {}
+      return { callbacks, pane: {
+        createDecorationsCollection: () => ({ set: vi.fn(), clear: vi.fn() }),
+        getSelection: () => ({ isEmpty: () => false, getStartPosition: () => ({ lineNumber: 35, column: 3 }), getEndPosition: () => ({ lineNumber: 37, column: 1 }) }),
+        getModel: () => ({ getValueInRange: () => 'selected\ncode\n' }),
+        getDomNode: () => ({ getBoundingClientRect: () => ({ left: 10, top: 20 }) }),
+        getScrolledVisiblePosition: () => ({ left: 10, top: 15, height: 20 }),
+        ...Object.fromEntries(['onMouseMove', 'onMouseLeave', 'onMouseDown', 'onMouseUp', 'onKeyUp'].map(name => [name, (fn: () => void) => { callbacks[name] = fn; return { dispose: vi.fn() } }])),
+      } }
+    }
+    const original = makePane(), modified = makePane()
+    wrapper.findComponent({ name: 'Monaco' }).vm.$emit('mount', { getOriginalEditor: () => original.pane, getModifiedEditor: () => modified.pane, setModel: vi.fn() }, {})
+    original.callbacks.onMouseUp!()
+    expect(annotations.pending.value).toMatchObject({ selectedText: 'selected\ncode\n', source: { filePath: 'repo/a.ts', side: 'original', revision: 'old-hash', lineStart: 35, lineEnd: 36, selectionEndLine: 37, startColumn: 3, endColumn: 1 } })
+    annotations.dismiss()
+    modified.callbacks.onKeyUp!({ browserEvent: { key: 'Escape' } })
+    expect(annotations.pending.value).toBeNull()
+    modified.callbacks.onKeyUp!({ browserEvent: { key: 'Shift' } })
+    expect(annotations.pending.value?.source).toMatchObject({ side: 'modified', revision: 'new-hash' })
+    wrapper.unmount(); scope.stop()
+  })
   it('opens the exact clicked line on either side and disposes listeners on close', () => {
     const wrapper = mount(MonacoDiffViewer, { props: { original: 'old', modified: 'new', openInIde: true } })
     const makePane = () => {
@@ -26,7 +54,7 @@ describe('Diff gutter IDE navigation', () => {
     modified.callbacks.onMouseDown!({ target: { type: 6, position: { lineNumber: 30 } } })
     expect(wrapper.emitted('open-in-ide')).toEqual([[{ line: 12, column: 1 }], [{ line: 24, column: 1 }]])
     wrapper.unmount()
-    expect(original.dispose).toHaveBeenCalledTimes(3)
-    expect(modified.dispose).toHaveBeenCalledTimes(3)
+    expect(original.dispose).toHaveBeenCalledTimes(4)
+    expect(modified.dispose).toHaveBeenCalledTimes(4)
   })
 })

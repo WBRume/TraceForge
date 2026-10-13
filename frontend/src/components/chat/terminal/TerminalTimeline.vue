@@ -3,6 +3,17 @@ import type { TerminalTimelineEntry } from '@/utils/chat-terminal/timeline-types
 import TerminalStatusBlock from './TerminalStatusBlock.vue'
 import TerminalToolUseBlock from './TerminalToolUseBlock.vue'
 import ConfirmationHistory from '../ConfirmationHistory.vue'
+import { injectContextAnnotations } from '@/composables/chat/annotations/useContextAnnotations'
+import { readMessageSelection } from '@/composables/chat/annotations/messageSelection'
+
+const annotations = injectContextAnnotations()
+function selectForAnnotation(event: MouseEvent | KeyboardEvent, entry: TerminalTimelineEntry) {
+  if (!annotations || entry.kind !== 'message' || entry.role !== 'assistant') return
+  if (event instanceof KeyboardEvent && event.key === 'Escape') return
+  const selection = readMessageSelection(event.currentTarget as HTMLElement, entry.id.replace(/^msg-/, ''))
+  if (selection) annotations.select(selection, selection)
+  else annotations.dismiss()
+}
 
 const props = defineProps<{
   entries: TerminalTimelineEntry[]
@@ -56,13 +67,13 @@ const isHighlightedLog = (entry: TerminalTimelineEntry): boolean => (
         @hitl-submit="(cardId, response) => emit('hitl-submit', cardId, response)"
       />
 
-      <div v-else-if="entry.kind === 'message'" :class="resolveMessageClasses(entry)">
+      <div v-else-if="entry.kind === 'message'" :class="resolveMessageClasses(entry)" @mouseup="selectForAnnotation($event, entry)" @keyup="selectForAnnotation($event, entry)">
         <div class="line-meta">
           <span class="meta-title message-role">{{ entry.role }}</span>
           <span class="meta-time">{{ props.formatTime(entry.createdAt) }}</span>
         </div>
         <ConfirmationHistory v-if="entry.confirmation" :record="entry.confirmation" appearance="terminal" />
-        <pre v-else class="line-content">{{ entry.content }}</pre>
+        <pre v-else class="line-content msg-content">{{ entry.content }}</pre>
       </div>
 
       <TerminalToolUseBlock

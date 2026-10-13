@@ -8,8 +8,11 @@ import type { AgentModelOption } from '@/composables/useAgentModels'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 import { speechMode } from '@/utils/speech/mode'
 import { SpeechInsertion } from '@/utils/speech/insertion'
+import AnnotationTray from './annotations/AnnotationTray.vue'
+import { injectContextAnnotations } from '@/composables/chat/annotations/useContextAnnotations'
 
 const { t } = useI18n()
+const annotations = injectContextAnnotations()
 
 type MentionOption = {
   user_id: string
@@ -108,9 +111,10 @@ const onTextareaInput = (event: Event) => {
   emit('update:modelValue', value)
 }
 
-const canSend = computed(() => Boolean(props.modelValue.trim()) && !props.disabled && !props.sendBlocked && !speechBusy.value)
+const canSend = computed(() => Boolean(props.modelValue.trim() || annotations?.items.value.length) && !props.disabled && !props.sendBlocked && !speechBusy.value)
 
 const handleKeydown = (event: KeyboardEvent) => {
+  if (event.isComposing) return
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
     if (!canSend.value || props.running) return
@@ -276,6 +280,7 @@ defineExpose({ resetPreInputForm, focusInput })
 <template>
   <div class="chat-execution-row" :class="{ 'is-running': props.running }">
     <div class="input-card" :class="{ 'is-disabled': props.disabled, 'is-running': props.running, 'is-preinput': isPreInput }">
+      <AnnotationTray :disabled="props.disabled" />
       <!-- 文本域 -->
       <textarea
         ref="textareaRef"
