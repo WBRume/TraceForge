@@ -11,6 +11,7 @@ const preInput = computed(() => props.vm?.activePreInput)
 const isCreator = computed(() => Boolean(props.vm?.isPreInputCreator))
 const canModifyExisting = computed(() => Boolean(props.vm?.canEditPreInputShared))
 const hasParticipated = computed(() => Boolean(props.vm?.myPreInputParticipation))
+const canParticipate = computed(() => !props.vm?.isChatLocked && !props.vm?.suggestionOnly)
 
 // ── 倒计时 ──
 const nowTs = ref(Date.now())
@@ -93,7 +94,7 @@ const closeSpanPopover = () => {
 }
 
 const onDocumentMouseUp = async () => {
-  if (!preInput.value || preInput.value.status !== 'COLLECTING') return
+  if (!canParticipate.value || !preInput.value || preInput.value.status !== 'COLLECTING') return
   const selection = window.getSelection()
   const container = docContainerRef.value
   if (!selection || selection.isCollapsed || !container) {
@@ -239,11 +240,11 @@ const cancelCollect = () => {
             :title="segmentTitle(seg)"
           >{{ seg.text }}</span>
         </div>
-        <button type="button" class="text-btn" @click="startEditDocument">
+        <button v-if="canParticipate" type="button" class="text-btn" @click="startEditDocument">
           {{ $t('preInput.edit_full_text') }}
         </button>
       </div>
-      <div class="doc-edit-hint">{{ $t('preInput.span_select_hint') }}</div>
+      <div v-if="canParticipate" class="doc-edit-hint">{{ $t('preInput.span_select_hint') }}</div>
     </template>
     <template v-else>
       <textarea v-model="docDraft" class="panel-textarea doc-textarea" rows="6"></textarea>
@@ -310,12 +311,12 @@ const cancelCollect = () => {
           <Check class="w-2 h-2" />
           {{ $t('preInput.participated') }}
         </span>
-        <button v-else type="button" class="btn-mini-ghost" @click="markDone">
+        <button v-else-if="canParticipate" type="button" class="btn-mini-ghost" @click="markDone">
           {{ $t('preInput.mark_done') }}
         </button>
       </div>
 
-      <div v-if="isCreator" class="creator-actions">
+      <div v-if="isCreator && canParticipate" class="creator-actions">
         <button type="button" class="btn-mini-ghost" @click="cancelCollect">
           <X class="w-2 h-2" />
           {{ $t('preInput.cancel_collect') }}

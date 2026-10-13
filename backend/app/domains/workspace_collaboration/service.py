@@ -387,6 +387,9 @@ def _record_handoff(
         repository_deltas_json=deltas,
     )
     db.add(handoff)
+    # These mappers have no ORM relationship; persist the parent before the
+    # human-delta index references it. Both remain in the same transaction.
+    db.flush([handoff])
     from .history import record_delta
 
     record_delta(db, task, handoff)

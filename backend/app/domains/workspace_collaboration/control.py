@@ -1,5 +1,6 @@
 """Keep start/resume commands on the same durable input path as ordinary chat."""
 
+from datetime import datetime
 from uuid import uuid4
 
 from app.domains.workspace_collaboration.models import CollaborationState
@@ -42,9 +43,22 @@ async def schedule_control(receipt):
 
 def accept_pre_input(db, task_id, actor_id, text, metadata):
     from app.domains.task.models.task import SddTask
+    from app.domains.task.services import chat_submission_service
 
     if not enabled(db, task_id):
         return None
+    state = db.get(CollaborationState, task_id)
+    if state.driver_user_id != actor_id or state.lease_expires_at <= datetime.utcnow():
+        # A shared prompt from another member (or a disconnected driver) uses
+        # cloud code, just like their ordinary messages. Never claim a desktop.
+        return chat_submission_service._accept_sync(
+            db,
+            task_id,
+            actor_id,
+            f"pre-input:{metadata['pre_input_id']}",
+            text,
+            {**metadata, "source": "pre_input_collaboration"},
+        )
     return accept_control(
         db,
         db.get(SddTask, task_id),

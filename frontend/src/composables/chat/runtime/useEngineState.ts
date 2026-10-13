@@ -56,6 +56,10 @@ export function useEngineState(options: {
   /** 引擎运行态跟随活跃 job 表：有执行中 job 即视为运行。 */
   const syncFromJobs = () => {
     engineRunning.value = options.hasExecutingJob()
+    if (!engineRunning.value) {
+      resetThinking()
+      options.onStatusCardsDrop()
+    }
   }
 
   /** 离开会话前保存运行面板（执行中才值得保存，否则清除残留快照）。 */
