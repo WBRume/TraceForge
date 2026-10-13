@@ -10,6 +10,8 @@ import type { CollaborationManifest, CollaborationState, LocalCollaborationStatu
 import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
 import CollaborationInputStatus from '@/components/collaboration/CollaborationInputStatus.vue'
 import CollaborationEntry from '@/components/collaboration/CollaborationEntry.vue'
+import CollaborationHeader from '@/components/collaboration/CollaborationHeader.vue'
+import CollaborationHistory from '@/components/collaboration/CollaborationHistory.vue'
 vi.mock('@/components/collaboration/CodeComparison.vue', () => ({ default: { props: ['leftLabel', 'rightLabel'], template: '<section class="diff-stub">{{leftLabel}} / {{rightLabel}}</section>' } }))
 
 function fixture() {
@@ -32,6 +34,49 @@ function fixture() {
 const global = () => ({ plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })], stubs: { CodeComparison: { props: ['leftLabel', 'rightLabel'], template: '<section class="diff-stub">{{leftLabel}} / {{rightLabel}}</section>' } } })
 
 describe('local collaboration presentation and review', () => {
+  it('switches history inside the panel while keeping every navigation tab and the current file selection', async () => {
+    const { controller } = fixture()
+    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: {
+      ...global(), stubs: { ...global().stubs, CollaborationHistory: { props: ['workspaceId', 'taskId'], template: '<section>历史记录内容</section>' } },
+    } })
+    const selected = controller.view.value.selected
+    const tabs = () => panel.findAll('.drawer-subnav button')
+    await tabs().find(button => button.text() === '协作历史')!.trigger('click')
+    expect(panel.findComponent(CollaborationHistory).props()).toMatchObject({ workspaceId: 'ws', taskId: 'task' })
+    expect(panel.text()).toContain('历史记录内容')
+    expect(tabs()).toHaveLength(4)
+    expect(tabs().find(button => button.classes().includes('active'))?.text()).toBe('协作历史')
+    expect(panel.emitted('history')).toBeUndefined()
+    await tabs().find(button => button.text() === '变更差异')!.trigger('click')
+    expect(panel.findComponent(CollaborationHistory).exists()).toBe(false)
+    expect(controller.view.value.selected).toBe(selected)
+    panel.unmount()
+  })
+  it('shows real collaboration state and animates only ongoing work', async () => {
+    const { controller, model, state } = fixture()
+    const header = mount(CollaborationHeader, { props: { controller }, global: global() })
+    expect(header.get('[role="status"]').text()).toBe('已同步到本地')
+    expect(header.classes()).not.toContain('is-active')
+    expect(header.text()).toContain('2 个仓库')
+    expect(header.text()).not.toMatch(/Desktop Bridge|127\.0\.0\.1|8ms|已链接/)
+    for (const [phase, text, active] of [['RUNNING', 'Agent 正在执行', true], ['WAITING_HITL', 'Agent 等待确认', false], ['SETTLING', '正在同步并核对代码', true]] as const) {
+      state.value.sync_phase = phase; await nextTick()
+      expect(header.get('[role="status"]').text()).toBe(text)
+      expect(header.classes().includes('is-active')).toBe(active)
+    }
+    state.value.driver_connected = false; await nextTick()
+    expect(header.get('[role="status"]').text()).toBe('本地连接已断开')
+    expect(header.classes()).toContain('warning')
+    expect(header.classes()).not.toContain('is-active')
+    state.value.driver_connected = true; model.error.value = 'failed'; await nextTick()
+    expect(header.get('[role="status"]').text()).toBe('代码接收失败')
+    expect(header.classes()).not.toContain('is-active')
+    model.error.value = ''; model.participating.value = false; model.enabled.value = false; state.value.repositories = []; await nextTick()
+    expect(header.get('[role="status"]').text()).toBe('未启用本地协同')
+    expect(header.text()).not.toContain('个仓库')
+    expect(header.classes()).not.toContain('is-active')
+    header.unmount()
+  })
   it('shows offline instead of ready, excludes inaccessible local counts, and keeps drafts actionable', () => {
     const { controller, model, state } = fixture()
     state.value.driver_connected = false
@@ -91,7 +136,7 @@ describe('local collaboration presentation and review', () => {
     expect(notice.emitted('open')).toHaveLength(1)
     notice.unmount()
     openCollaborationView(controller)
-    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws' }, global: global(), attachTo: document.body })
+    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: global(), attachTo: document.body })
     expect(panel.text()).toContain('当前本地 / Agent 版本')
     expect(panel.findAll('input[type=checkbox]').every(input => !(input.element as HTMLInputElement).checked)).toBe(true)
     await panel.get('input[aria-label="选择 dsh/shared.txt"]').setValue(true)

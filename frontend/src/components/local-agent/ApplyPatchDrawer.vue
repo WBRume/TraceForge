@@ -14,8 +14,7 @@ import { useLocalAgentStore } from '@/stores/localAgent'
 import type { AgentTask } from '@/types/agent'
 import { formatApiError } from '@/utils/error'
 import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
-import CollaborationMenu from '@/components/collaboration/CollaborationMenu.vue'
-import CollaborationHistory from '@/components/collaboration/CollaborationHistory.vue'
+import CollaborationHeader from '@/components/collaboration/CollaborationHeader.vue'
 import type { LocalCollaboration } from '@/composables/collaboration/useLocalCollaboration'
 
 const props = defineProps<{
@@ -35,7 +34,6 @@ const { t } = useI18n()
 const localAgent = useLocalAgentStore()
 const authStore = useAuthStore()
 const isCollaboration = computed(() => props.task?.execution_location === 'SERVER' && Boolean(props.collaboration))
-const historyVisible = ref(false)
 const canGenerate = computed(() => !isCollaboration.value && (props.task?.execution_location !== 'LOCAL' || (!props.resourceBlocked && props.task?.creator_id === authStore.user?.id)))
 const {
   desktopAvailable,
@@ -309,8 +307,11 @@ watch(
   }
 )
 
-watch(() => props.task?.id, () => { historyVisible.value = false })
-const openHistory = () => { historyVisible.value = true }
+const refreshCollaboration = async () => {
+  if (props.collaboration) {
+    await props.collaboration.refresh()
+  }
+}
 </script>
 
 <template>
@@ -324,11 +325,18 @@ const openHistory = () => { historyVisible.value = true }
     @close="emit('close')"
   >
     <template #icon>
-      <GitPullRequest class="w-4 h-4" />
+      <GitPullRequest v-if="!isCollaboration" class="w-4 h-4" />
+    </template>
+    <template #title>
+      <CollaborationHeader v-if="isCollaboration && collaboration" :controller="collaboration" />
+      <span v-else>{{ $t('chat.change_apply_drawer_title') }}</span>
     </template>
     <template #actions>
-      <CollaborationMenu v-if="isCollaboration && collaboration && !historyVisible" :controller="collaboration" @history="openHistory" />
-      <button v-if="isCollaboration && historyVisible" class="btn-secondary" @click="historyVisible = false">{{ $t('collaboration.back') }}</button>
+      <template v-if="isCollaboration && collaboration">
+        <button class="icon-btn" type="button" :title="$t('collaboration.refresh')" @click="refreshCollaboration">
+          <RefreshCw class="w-4 h-4" />
+        </button>
+      </template>
       <button v-if="!isCollaboration" class="btn-secondary drawer-action-button" type="button" :disabled="!canGenerate || proposalGenerating || proposalLoading" :title="canGenerate ? '' : '请等待任务创建者生成并上传变更'" @click="refreshProposal">
         <Loader2 v-if="proposalGenerating" class="w-4 h-4 spin" />
         <RefreshCw v-else class="w-4 h-4" />
@@ -336,8 +344,7 @@ const openHistory = () => { historyVisible.value = true }
       </button>
     </template>
 
-    <LocalCollaborationPanel v-if="isCollaboration && collaboration && !historyVisible" :controller="collaboration" :workspace-id="workspaceId" />
-    <CollaborationHistory v-else-if="isCollaboration && task" :workspace-id="workspaceId" :task-id="String(task.id)" />
+    <LocalCollaborationPanel v-if="isCollaboration && collaboration && task" :controller="collaboration" :workspace-id="workspaceId" :task-id="String(task.id)" />
     <section v-else class="apply-patch-drawer">
       <OwnResourceApply v-if="proposal && !isCollaboration" :workspace-id="workspaceId" :proposal-id="proposal.id" />
       <!-- Top Bar: Task & Status Context -->
@@ -549,6 +556,28 @@ const openHistory = () => { historyVisible.value = true }
 @media (max-width: 720px) {
   .collaboration-drawer :deep(.side-drawer-panel.is-resizable) { width: 100vw; max-width: 100vw; }
   .collaboration-drawer :deep(.drawer-side-handles) { display: none; }
+}
+.collaboration-drawer :deep(.side-drawer-header) {
+  padding: 12px 18px;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+}
+.icon-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.icon-btn:hover {
+  background: #f1f5f9;
+  color: #0f172a;
 }
 .apply-patch-drawer {
   flex: 1;

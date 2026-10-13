@@ -14,6 +14,8 @@ from uuid import uuid4
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, object_session
 
+from app.domains.task.models.chat import ChatMessage
+from app.domains.task.models.session_turn import TaskSessionTurn
 from app.domains.task.models.task import SddTask, TaskType
 from app.domains.task.models.task_repository import SddTaskRepository
 
@@ -300,6 +302,19 @@ def _snapshot(db: Session, task: SddTask, state: CollaborationState, source: str
         "progress_seq": state.progress_seq,
         "repositories": repositories,
     }
+    if source in {"PROGRESS", "AGENT_OUTPUT"} and state.run_id:
+        turn = (
+            db.query(TaskSessionTurn)
+            .filter_by(task_id=task.id, ai_job_id=state.run_id, session_generation=state.session_generation)
+            .first()
+        )
+        if turn:
+            manifest.update(session_turn_id=turn.id, turn_index=turn.turn_index)
+            manifest["turn_created_at"] = turn.created_at.isoformat() + ("Z" if turn.created_at.tzinfo is None else "")
+            message = db.get(ChatMessage, turn.user_message_id) if turn.user_message_id else None
+            if message and message.task_id == task.id:
+                title = " ".join(message.content.split())
+                manifest["turn_title"] = title[:160] + ("…" if len(title) > 160 else "")
     db.add(
         CollaborationSnapshot(
             id=snapshot_id,

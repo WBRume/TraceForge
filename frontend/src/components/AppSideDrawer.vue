@@ -133,7 +133,9 @@ function onTransitionEnd() { isTransitioning.value = false }
       <header class="side-drawer-header">
         <div class="side-drawer-title">
           <slot name="icon" />
-          <span :id="titleId">{{ title }}</span>
+          <slot name="title">
+            <span :id="titleId">{{ title }}</span>
+          </slot>
         </div>
         <div class="side-drawer-actions">
           <slot name="actions" />

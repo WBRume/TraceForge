@@ -111,6 +111,7 @@ test('uses the mapped directories for dual delivery and selected recovery withou
   const initial = { ...prepared.manifest, source: 'INITIAL', snapshot_id: 'base' }
   await runtime.executeAsync('reconcile', { task_id: 'task', operation_id: 'initial', target: initial })
   const target = structuredClone(initial); target.snapshot_id = 'output'; target.workspace_revision = 2; target.source = 'AGENT_OUTPUT'
+  target.session_turn_id = 'turn-1'; target.turn_index = 1
   for (const repo of target.repositories) {
     const raw = Buffer.from(repo.repo_slug + ':cloud\n')
     runtime.execute('cache_objects', { objects: [{ sha256: hash(raw), content: raw.toString('base64') }] })
@@ -135,6 +136,8 @@ test('uses the mapped directories for dual delivery and selected recovery withou
   expect(backups).toHaveLength(1)
   expect(fs.readFileSync(backups[0].backup_path, 'utf8')).toBe('api:human\n')
   expect(backups[0].backup_path).toContain('.git')
+  expect(backups[0].context).toMatchObject({ task_id: 'task', snapshot_id: 'output', workspace_revision: 2, session_turn_id: 'turn-1', turn_index: 1, kind: 'restore', repo_slug: 'api', branch_name: 'main' })
+  expect(Number.isFinite(Date.parse(backups[0].created_at))).toBe(true)
   expect(repositories.map(head)).toEqual(originalHeads)
   repositories.forEach((repo, i) => expect(index(repo)).toEqual(originalIndexes[i]))
   const resumed = await runtime.executeAsync('prepare', input)
@@ -142,4 +145,22 @@ test('uses the mapped directories for dual delivery and selected recovery withou
   fs.writeFileSync(path.join(repositories[0].local_path, 'independent.txt'), 'independent')
   const next = await runtime.executeAsync('status', { task_id: 'task' })
   expect(next.local_changes.some((row: any) => row.path === 'independent.txt')).toBe(true)
+  runtime.execute('restore', { task_id: 'task', operation_id: 'restore-web', conflict_set_id: next.conflict_set_id, selected: next.conflicts })
+  const second = structuredClone(target); second.snapshot_id = 'output-2'; second.workspace_revision = 3; second.session_turn_id = 'turn-2'; second.turn_index = 2
+  const raw = Buffer.from('api:second round\n')
+  runtime.execute('cache_objects', { objects: [{ sha256: hash(raw), content: raw.toString('base64') }] })
+  second.repositories[0].files[0] = { ...second.repositories[0].files[0], sha256: hash(raw), size: raw.length }
+  await runtime.executeAsync('reconcile', { task_id: 'task', operation_id: 'receive-second', target: second })
+  runtime.close()
+  runtime = new CollaborationRuntime(path.join(root, 'private'), () => [path.join(root, 'user-repositories')])
+  const history = runtime.execute('backups', { task_id: 'task' }).backups
+  expect(history).toHaveLength(3)
+  expect(history.find((row: any) => row.operation_id === 'restore-api')).toEqual(backups[0])
+  expect(history.find((row: any) => row.operation_id === 'restore-web').context).toMatchObject({ snapshot_id: 'output', turn_index: 1, repo_slug: 'web' })
+  expect(history.find((row: any) => row.operation_id === 'receive-second').context).toMatchObject({ snapshot_id: 'output-2', turn_index: 2, kind: 'receive' })
+  // Older receipts cannot inherit the new round from the current binding.
+  const receiptPath = path.join(root, 'private', 'operations', 'restore-api', hash('api:shared.txt') + '.json')
+  const legacy = JSON.parse(fs.readFileSync(receiptPath, 'utf8')); delete legacy.context; delete legacy.created_at
+  fs.writeFileSync(receiptPath, JSON.stringify(legacy))
+  expect(runtime.execute('backups', { task_id: 'task' }).backups.find((row: any) => row.operation_id === 'restore-api').context).toBeUndefined()
 }, 120_000)

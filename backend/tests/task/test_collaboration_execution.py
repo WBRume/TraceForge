@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,6 +10,7 @@ from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import store as job_store
 from app.domains.auth.models.user import User, Workspace
 from app.domains.task.models.chat_submission import TaskChatSubmission
+from app.domains.task.models.session_turn import TaskSessionTurn
 from app.domains.task.models.task import SddTask, TaskStatus, TaskType
 from app.domains.task.models.task_repository import SddTaskRepository, TaskRepositoryState
 from app.domains.task.services import chat_submission_service as submissions
@@ -252,7 +254,7 @@ def test_closeout_evidence_binds_explicit_server_code_scope(collaboration_db):
 
 @pytest.mark.parametrize("initial_generation", [0, 1])
 def test_fixed_input_is_bound_to_one_job_after_checkpoint_preparation(
-    collaboration_db, monkeypatch, initial_generation
+    collaboration_db, monkeypatch, initial_generation, tmp_path
 ):
     from app.domains.task.services import context_token_service
 
@@ -291,6 +293,17 @@ def test_fixed_input_is_bound_to_one_job_after_checkpoint_preparation(
     assert job.context_json["collaboration"]["snapshot_id"] == "input"
     assert job.context_json["collaboration"]["submission_id"] == receipt.id
     assert not service.input_ready(db, "t", receipt.id)
+    turn = db.query(TaskSessionTurn).filter_by(ai_job_id=job.id).one()
+    monkeypatch.setattr(content, "ObjectStore", lambda _: SimpleNamespace(root=tmp_path))
+    for source in ("PROGRESS", "AGENT_OUTPUT"):
+        manifest = service._snapshot(db, db.get(SddTask, "t"), state, source, [])
+        assert manifest["session_turn_id"] == turn.id
+        assert manifest["turn_index"] == turn.turn_index
+        assert manifest["turn_title"] == "Update login"
+        assert manifest["turn_created_at"] == turn.created_at.isoformat() + "Z"
+        assert db.get(CollaborationSnapshot, manifest["snapshot_id"]).manifest_json == manifest
+    state.run_id = "missing-historical-job"
+    assert "turn_index" not in service._snapshot(db, db.get(SddTask, "t"), state, "AGENT_OUTPUT", [])
 
 
 def test_preparation_failure_keeps_already_accepted_input(collaboration_db):

@@ -31,17 +31,38 @@ async function connect() {
     <h2>{{ t(setup ? 'collaboration.ui.connectTitle' : 'collaboration.ui.settings') }}</h2>
     <p class="intro">{{ t(setup ? resumable ? 'collaboration.session.resumeHint' : 'collaboration.ui.connectHint' : 'collaboration.ui.settingsHint') }}</p>
     <div class="repositories">
-      <article v-for="repo in repos" :key="repo.task_repository_id">
-        <div class="repo-heading"><strong>{{ repo.repo_slug }}</strong><code>{{ repo.branch_name }}</code><span v-if="setup" :class="{ warning: repo.check?.errors.length }">{{ t(!repo.path ? 'collaboration.ui.mappingMissing' : repo.check?.errors.length ? 'collaboration.ui.checkFailed' : resumable ? 'collaboration.session.resumeBaseline' : repo.check ? 'collaboration.ui.checkPassed' : 'collaboration.ui.notChecked') }}</span></div>
-        <div class="repo-path"><span :title="repo.path">{{ repo.path || t(setup ? 'collaboration.ui.chooseDirectory' : 'collaboration.ui.localUnavailable') }}</span><button v-if="setup && canPrepare" class="text-action" type="button" :disabled="c.busy" @click="c.selectMapping(repo.task_repository_id)">{{ t(repo.path ? 'collaboration.ui.changeDirectory' : 'collaboration.ui.chooseDirectory') }}</button><button v-else-if="ui?.localAvailable" class="text-action" type="button" @click="c.openDirectory(repo.task_repository_id)">{{ t('collaboration.ui.openDirectory') }}</button></div>
-        <details class="check-details"><summary>{{ t('collaboration.ui.taskBaseline') }} <code>{{ repo.base_commit_sha.slice(0, 8) }}</code><span v-if="repo.check && !repo.check.errors.length && setup"> · {{ t('collaboration.ui.cleanHead') }}</span></summary><p>{{ t('collaboration.base') }}: {{ repo.base_commit_sha }}</p><p v-if="setup && repo.check">{{ t('collaboration.localHead') }}: {{ repo.check.local_head }} · {{ repo.check.local_branch }}</p><pre v-if="setup && repo.check?.changes.length">{{ repo.check.changes.join('\n') }}</pre></details>
+      <article v-for="repo in repos" :key="repo.task_repository_id" class="repo-card-item">
+        <div class="repo-heading">
+          <strong>{{ repo.repo_slug }}</strong>
+          <code class="branch-pill">{{ repo.branch_name }}</code>
+          <span v-if="setup" class="check-status-tag" :class="{ warning: repo.check?.errors.length }">
+            {{ t(!repo.path ? 'collaboration.ui.mappingMissing' : repo.check?.errors.length ? 'collaboration.ui.checkFailed' : resumable ? 'collaboration.session.resumeBaseline' : repo.check ? 'collaboration.ui.checkPassed' : 'collaboration.ui.notChecked') }}
+          </span>
+        </div>
+        <div class="repo-path">
+          <span :title="repo.path" class="path-text">{{ repo.path || t(setup ? 'collaboration.ui.chooseDirectory' : 'collaboration.ui.localUnavailable') }}</span>
+          <button v-if="setup && canPrepare" class="text-action" type="button" :disabled="c.busy" @click="c.selectMapping(repo.task_repository_id)">
+            {{ t(repo.path ? 'collaboration.ui.changeDirectory' : 'collaboration.ui.chooseDirectory') }}
+          </button>
+          <button v-else-if="ui?.localAvailable" class="text-action" type="button" @click="c.openDirectory(repo.task_repository_id)">
+            {{ t('collaboration.ui.openDirectory') }}
+          </button>
+        </div>
+        <details class="check-details">
+          <summary>{{ t('collaboration.ui.taskBaseline') }} <code>{{ repo.base_commit_sha.slice(0, 8) }}</code><span v-if="repo.check && !repo.check.errors.length && setup"> · {{ t('collaboration.ui.cleanHead') }}</span></summary>
+          <p>{{ t('collaboration.base') }}: {{ repo.base_commit_sha }}</p>
+          <p v-if="setup && repo.check">{{ t('collaboration.localHead') }}: {{ repo.check.local_head }} · {{ repo.check.local_branch }}</p>
+          <pre v-if="setup && repo.check?.changes.length">{{ repo.check.changes.join('\n') }}</pre>
+        </details>
         <p v-for="problem in setup ? repo.check?.errors || [] : []" :key="problem" class="repo-error" role="alert">{{ problemText(problem) }}</p>
       </article>
     </div>
     <div v-if="setup" class="setup-actions">
       <small>{{ t(c.available ? 'collaboration.session.choiceHint' : 'collaboration.desktopRequired') }}</small>
-      <button v-if="canPrepare && !c.participating" class="btn-secondary" type="button" :disabled="c.busy || c.loading || !allMapped" @click="c.receiveOnce()">{{ t('collaboration.session.receive') }}</button>
-      <button v-if="canPrepare" class="btn-primary" type="button" :disabled="c.busy || c.loading || !allMapped || c.enabled && !c.participating && !c.canReconnect" @click="connect">{{ t(c.participating ? 'collaboration.ui.actions.recover' : 'collaboration.session.connect') }}</button>
+      <div class="setup-buttons">
+        <button v-if="canPrepare && !c.participating" class="btn-secondary" type="button" :disabled="c.busy || c.loading || !allMapped" @click="c.receiveOnce()">{{ t('collaboration.session.receive') }}</button>
+        <button v-if="canPrepare" class="btn-primary" type="button" :disabled="c.busy || c.loading || !allMapped || c.enabled && !c.participating && !c.canReconnect" @click="connect">{{ t(c.participating ? 'collaboration.ui.actions.recover' : 'collaboration.session.connect') }}</button>
+      </div>
     </div>
     <template v-else>
       <label v-if="c.participating && c.driver && c.available" class="setting"><span>{{ t('collaboration.ui.autoReceive') }}<small>{{ t('collaboration.ui.autoReceiveHint') }}</small></span><input type="checkbox" :checked="c.progressive" :disabled="c.busy" @change="c.setProgressive(($event.target as HTMLInputElement).checked)" /></label>
@@ -52,6 +73,116 @@ async function connect() {
 </template>
 
 <style scoped>
-.repository-settings { padding: 28px 24px; overflow: auto; }.repository-settings h2 { margin: 0; font-size: 19px; font-weight: 600; }.intro { margin: 8px 0 24px; color: var(--color-text-muted); font-size: 12px; line-height: 1.8; }.repositories { border-top: 1px solid #e5eaf0; }.repositories article { padding: 18px 0; border-bottom: 1px solid #e5eaf0; }.repo-heading { display: flex; align-items: center; gap: 12px; font-size: 13px; }.repo-heading code { font-size: 11px; color: var(--color-text-muted); overflow-wrap: anywhere; }.repo-heading>span { margin-left: auto; color: #278267; font-size: 11px; flex-shrink: 0; }.repo-heading>span.warning { color: #a66a12; }.repo-path { display: flex; gap: 12px; align-items: flex-start; margin-top: 8px; font-size: 12px; }.repo-path>span { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--color-text-muted); }.text-action { border: 0; background: none; color: var(--color-primary-600); font: inherit; font-size: 12px; padding: 0; cursor: pointer; flex-shrink: 0; }.text-action:disabled { opacity: .5; cursor: default; }.check-details { margin-top: 8px; font-size: 11px; color: var(--color-text-muted); }.check-details summary { cursor: pointer; }.check-details p { overflow-wrap: anywhere; margin: 8px 0; }.check-details pre { max-height: 130px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }.repo-error { color: #a66a12; font-size: 12px; margin: 8px 0 0; }.setup-actions { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 24px; }.setup-actions small { color: var(--color-text-muted); font-size: 11px; }.setup-actions button { flex-shrink: 0; }.setting { display: flex; gap: 20px; justify-content: space-between; padding: 20px 0; border-bottom: 1px solid #e5eaf0; font-size: 12px; }.setting small { display: block; color: var(--color-text-muted); margin-top: 4px; }.setting input { accent-color: var(--color-primary-600); }
-@media(max-width:600px) { .repository-settings { padding: 20px 16px; }.setup-actions { flex-wrap: wrap; }.repo-path { flex-wrap: wrap; }.repo-path>span { flex-basis: 100%; } }
+.repository-settings { padding: 20px 24px; overflow-y: auto; background: var(--color-bg-base, #f8fafc); flex: 1; }
+.repository-settings h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--color-text-title, #0f172a); }
+.intro { margin: 4px 0 16px; color: var(--color-text-muted, #64748b); font-size: 12px; line-height: 1.6; }
+
+.repositories { display: flex; flex-direction: column; gap: 12px; }
+.repo-card-item {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+.repo-heading { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.repo-heading strong { font-weight: 600; color: var(--color-text-title, #0f172a); }
+.branch-pill {
+  font-size: 10.5px;
+  color: var(--color-text-muted, #64748b);
+  background: #f1f5f9;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid #e2e8f0;
+  font-family: var(--font-mono, monospace);
+  overflow-wrap: anywhere;
+}
+.check-status-tag {
+  margin-left: auto;
+  color: #059669;
+  background: #ecfdf5;
+  border: 1px solid #d1fae5;
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 1px 7px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.check-status-tag.warning {
+  color: #b45309;
+  background: #fef3c7;
+  border-color: #fde68a;
+}
+
+.repo-path {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  font-size: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 6px 12px;
+}
+.path-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text-body, #334155);
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+}
+.text-action {
+  border: 0;
+  background: none;
+  color: var(--color-primary-600, #0284c7);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.text-action:hover { text-decoration: underline; }
+.text-action:disabled { opacity: .5; cursor: default; }
+
+.check-details { margin-top: 10px; font-size: 11px; color: var(--color-text-muted, #64748b); }
+.check-details summary { cursor: pointer; }
+.check-details p { overflow-wrap: anywhere; margin: 6px 0; }
+.check-details pre { max-height: 120px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #f1f5f9; padding: 6px 10px; border-radius: 4px; }
+.repo-error { color: #dc2626; font-size: 11.5px; margin: 6px 0 0; }
+
+.setup-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+.setup-actions small { color: var(--color-text-muted, #64748b); font-size: 11px; }
+.setup-buttons { display: flex; gap: 10px; flex-shrink: 0; }
+
+.setting {
+  display: flex;
+  gap: 20px;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 0;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 12.5px;
+}
+.setting small { display: block; color: var(--color-text-muted, #64748b); margin-top: 3px; font-size: 11px; }
+.setting input { accent-color: var(--color-primary-600, #0284c7); cursor: pointer; }
+
+@media(max-width:600px) {
+  .repository-settings { padding: 16px; }
+  .setup-actions { flex-wrap: wrap; }
+  .repo-path { flex-wrap: wrap; }
+  .repo-path > span { flex-basis: 100%; }
+}
 </style>

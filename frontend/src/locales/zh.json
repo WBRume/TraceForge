@@ -4113,7 +4113,12 @@
     "noBackups": "暂无本地备份",
     "viewBackup": "查看备份",
     "exportBackup": "导出备份",
-    "backupSource": "恢复前的本地备份",
+    "backupSource": "替换前的本地备份",
+    "backupGroups": {
+      "round": "第 {count} 轮对话",
+      "unknownRound": "历史备份（未记录会话）",
+      "unknownTime": "未记录时间"
+    },
     "noLocalPending": "当前没有待带入的本地修改。",
     "waitDesktop": "发送后，由已连接的桌面客户端准备本轮代码。本浏览器不直接操作本地文件。",
     "localCount": "{count} 个本地修改待带入",
@@ -4267,7 +4272,8 @@
       "received": "已接收",
       "pendingReceive": "待接收",
       "backToBackups": "返回本地备份",
-      "backupsHint": "采用 Agent 版本前保留的本地文件。",
+      "backupsHint": "按对话查看替换前的本地文件。",
+      "repositoryCount": "{count} 个仓库",
       "errorDetails": "查看错误详情",
       "fileSources": "修改来源",
       "thisRound": "本轮修改",

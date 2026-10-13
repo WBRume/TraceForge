@@ -1,21 +1,21 @@
 <script setup lang="ts">
 import { computed, proxyRefs, shallowRef, toRaw, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, Check, GitPullRequest, Loader2 } from '@/components/icons'
+import { Check, GitPullRequest, GitBranch, FileText, Clock, Search, Shield } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import CodeComparison from './CodeComparison.vue'
-import CollaborationTransferStatus from './CollaborationTransferStatus.vue'
 import CollaborationBackups from './CollaborationBackups.vue'
 import CollaborationRepositories from './CollaborationRepositories.vue'
 import CollaborationFiles from './CollaborationFiles.vue'
+import CollaborationHistory from './CollaborationHistory.vue'
 import { collaborationFileKey } from '@/composables/collaboration/compare'
 import { collaborationReview } from '@/composables/collaboration/review'
 import { useCollaborationPresentation } from '@/composables/collaboration/useCollaborationPresentation'
 import type { LocalCollaboration } from '@/composables/collaboration/useLocalCollaboration'
 import type { CollaborationBackup, CollaborationConflict } from '@/types/collaboration'
 
-const props = defineProps<{ controller: LocalCollaboration; workspaceId: string }>()
+const props = defineProps<{ controller: LocalCollaboration; workspaceId: string; taskId: string }>()
 const { t } = useI18n()
 const c = computed(() => proxyRefs(props.controller))
 const ui = useCollaborationPresentation(() => props.controller)
@@ -26,7 +26,16 @@ const selected = computed({ get: () => c.value.view.selected, set: value => { c.
 const checked = computed({ get: () => c.value.view.selectedConflicts, set: value => { c.value.view.selectedConflicts = value } })
 const review = computed(() => collaborationReview(c.value, Boolean(ui.value?.localAvailable)))
 const files = computed(() => review.value.files.filter(file => tab.value === 'all' || file.kind === tab.value))
-const active = computed(() => files.value.find(file => file.key === selected.value))
+
+const searchQuery = shallowRef('')
+const filteredFiles = computed(() => {
+  const list = files.value
+  const query = searchQuery.value.trim().toLowerCase()
+  if (!query) return list
+  return list.filter(item => item.path.toLowerCase().includes(query) || (item.repo_slug && item.repo_slug.toLowerCase().includes(query)))
+})
+
+const active = computed(() => filteredFiles.value.find(file => file.key === selected.value) || files.value.find(file => file.key === selected.value))
 const filters = computed(() => ['all', 'cloud', 'local', ...(ui.value?.conflicts ? ['conflicts'] : [])].map(value => ({
   value, count: value === 'local' && !ui.value?.localAvailable ? '—' : value === 'all' ? review.value.files.length : review.value.files.filter(file => file.kind === value).length,
 })))
@@ -53,13 +62,31 @@ const restoreDescription = computed(() => pendingRestore.value?.conflicts.map(ro
 const canReconnect = computed(() => c.value.canReconnect)
 const deviceHint = computed(() => c.value.state?.driver_connected === false ? canReconnect.value ? 'reconnectHint' : 'reconnectElsewhereHint' : 'activeDeviceHint')
 
-watch(files, rows => { if (!rows.some(row => row.key === selected.value)) selected.value = rows[0]?.key || '' }, { immediate: true })
+function resolveActiveSingle(decision: 'accept' | 'keep') {
+  if (!active.value) return
+  if (decision === 'accept') {
+    const row = c.value.conflicts.find(item => collaborationFileKey(item.task_repository_id, item.path) === active.value?.key)
+    if (row && c.value.local?.conflict_set_id) {
+      pendingRestore.value = { conflicts: [structuredClone(toRaw(row))], id: c.value.local.conflict_set_id }
+    }
+  } else {
+    checked.value = checked.value.filter(k => k !== active.value?.key)
+  }
+}
+
+watch(filteredFiles, rows => {
+  if (!rows.some(row => row.key === selected.value)) {
+    selected.value = rows[0]?.key || ''
+  }
+}, { immediate: true })
+
 watch(() => [c.value.local?.conflict_set_id, c.value.conflicts] as const, () => {
   const current = c.value.local?.conflict_set_id || ''
   if (c.value.view.conflictSetId !== current) { c.value.view.conflictSetId = current; checked.value = [] }
   else checked.value = checked.value.filter(key => c.value.conflicts.some(row => collaborationFileKey(row.task_repository_id, row.path) === key))
   if (!c.value.conflicts.length && tab.value === 'conflicts') tab.value = ui.value?.localCount ? 'local' : 'all'
 }, { immediate: true })
+
 watch(() => ui.value?.localAvailable, available => { if (!available) { if (tab.value === 'local') tab.value = 'all'; if (pair.value === 'local-cloud') pair.value = 'auto' } })
 watch(() => c.value.view.page, () => { backup.value = null })
 function checkFile(key: string, value: boolean) { checked.value = value ? [...new Set([...checked.value, key])] : checked.value.filter(item => item !== key) }
@@ -82,6 +109,26 @@ async function primaryAction() {
 
 <template>
   <section v-if="ui" class="collaboration-panel">
+    <!-- 统一二级视图导航栏 -->
+    <nav class="drawer-subnav">
+      <button class="nav-tab-item" :class="{ active: c.view.page === 'files' }" type="button" @click="c.view.page = 'files'">
+        <FileText :size="13" />
+        <span>变更差异</span>
+      </button>
+      <button class="nav-tab-item" :class="{ active: c.view.page === 'settings' }" type="button" @click="c.view.page = 'settings'">
+        <GitBranch :size="13" />
+        <span>仓库映射</span>
+      </button>
+      <button class="nav-tab-item" :class="{ active: c.view.page === 'backups' }" type="button" @click="c.view.page = 'backups'">
+        <Clock :size="13" />
+        <span>快照备份</span>
+      </button>
+      <button class="nav-tab-item" :class="{ active: c.view.page === 'history' }" type="button" @click="c.view.page = 'history'">
+        <Clock :size="13" />
+        <span>协作历史</span>
+      </button>
+    </nav>
+
     <ConfirmActionModal :show="c.view.page === 'disconnect'" tone="primary" :title="t('collaboration.session.disconnect')" :message="t('collaboration.session.leaveHint')" :cancel-text="t('common.cancel')" :confirm-text="t('collaboration.session.disconnect')" :loading="c.busy || c.leaving" @cancel="c.view.page = 'files'" @confirm="async () => { if (await c.leave()) c.view.page = 'files' }" />
     <template v-if="c.view.page === 'settings'">
       <CollaborationRepositories :controller="controller" :setup="false" @device="deviceConfirmation = true" />
@@ -90,33 +137,90 @@ async function primaryAction() {
       <template v-if="backup"><button class="back-button" type="button" @click="backup = null">{{ t('collaboration.ui.backToBackups') }}</button><CodeComparison :path="backup.path" :left-hash="backup.sha256 || undefined" :right-hash="review.local.get(collaborationFileKey(backup.task_repository_id, backup.path))?.sha256" :left-label="t('collaboration.backupSource')" :right-label="t('collaboration.localSource')" :read-text="c.readText" /></template>
       <CollaborationBackups v-else :controller="controller" @select="backup = $event" />
     </template>
+    <CollaborationHistory v-else-if="c.view.page === 'history'" :workspace-id="workspaceId" :task-id="taskId" />
     <template v-else>
-      <div v-if="!ui.setup || c.busy || c.loading" class="state-strip" :class="ui.tone">
-        <span class="state-icon"><Loader2 v-if="c.busy || ['loading', 'running', 'preparing', 'transferring'].includes(ui.key)" :size="18" class="spin" /><AlertTriangle v-else-if="ui.tone === 'warning'" :size="18" /><Check v-else :size="18" /></span>
-        <div class="state-copy"><strong role="status">{{ ui.title }}</strong><p>{{ ui.description }}</p><CollaborationTransferStatus v-if="c.busy && c.activity.total > 0" :activity="c.activity" /><small v-if="c.busy && c.operationStage">{{ t(`collaboration.${c.operationStage}`) }} · {{ t('collaboration.elapsed', { seconds: c.operationSeconds }) }}</small></div>
-        <button v-if="ui.action !== 'none' && ui.action !== 'connect' && !c.busy" type="button" :class="ui.action === 'device' ? 'btn-secondary' : 'btn-primary'" @click="primaryAction">{{ ui.actionLabel }}</button>
-      </div>
       <details v-if="errors.length" class="error-details" :open="ui.setup"><summary>{{ t('collaboration.ui.errorDetails') }}</summary><p v-for="problem in errors" :key="problem" role="alert">{{ problem }}</p></details>
       <div v-if="!c.participating && c.available && !ui.setup" class="session-actions">
         <button class="btn-secondary" type="button" :disabled="c.busy" @click="c.receiveOnce()">{{ t('collaboration.session.receive') }}</button>
         <button class="btn-primary" type="button" :disabled="c.busy || c.enabled && !c.canReconnect" @click="c.enable()">{{ t('collaboration.session.connect') }}</button>
       </div>
+
       <CollaborationRepositories v-if="ui.setup" :controller="controller" :setup="true" />
       <template v-else>
-        <nav class="file-filters" :aria-label="t('collaboration.ui.fileSources')"><button v-for="item in filters" :key="item.value" type="button" :class="{ active: tab === item.value }" :aria-pressed="tab === item.value" :disabled="item.value === 'local' && !ui.localAvailable" :title="item.value === 'local' && !ui.localAvailable ? t('collaboration.ui.localUnavailable') : ''" @click="tab = item.value"><span>{{ t(downloadOnly && item.value === 'cloud' ? 'collaboration.session.cloudChanges' : `collaboration.ui.filters.${item.value}`) }}</span><small>{{ item.count }}</small></button><span class="scope-label">{{ t(downloadOnly ? 'collaboration.session.receiveScope' : 'collaboration.ui.thisRound') }}</span></nav>
-        <div v-if="files.length" class="file-comparison">
-          <CollaborationFiles :files="files" :repositories="c.state?.repositories || []" :selected="selected" :checked="checked" :can-restore="ui.canRestore" :local-available="ui.localAvailable" :running="ui.running" @select="selected = $event; pair = 'auto'" @check="checkFile" />
+        <!-- 分段筛选条与搜索过滤 -->
+        <div class="filter-bar-wrapper">
+          <nav class="file-filters" :aria-label="t('collaboration.ui.fileSources')">
+            <button v-for="item in filters" :key="item.value" type="button" :class="{ active: tab === item.value, 'is-warning': item.value === 'conflicts' }" :aria-pressed="tab === item.value" :disabled="item.value === 'local' && !ui.localAvailable" :title="item.value === 'local' && !ui.localAvailable ? t('collaboration.ui.localUnavailable') : ''" @click="tab = item.value">
+              <span>{{ t(downloadOnly && item.value === 'cloud' ? 'collaboration.session.cloudChanges' : `collaboration.ui.filters.${item.value}`) }}</span>
+              <small :class="{ 'warning-badge': item.value === 'conflicts' }">{{ item.count }}</small>
+            </button>
+          </nav>
+          <div class="filter-right-tools">
+            <button v-if="ui.action !== 'none' && ui.action !== 'connect' && !c.busy" type="button" class="btn-secondary btn-sm" @click="primaryAction">{{ ui.actionLabel }}</button>
+            <div class="file-search-box">
+              <Search :size="13" class="search-icon" />
+              <input v-model="searchQuery" type="text" placeholder="过滤文件路径..." class="filter-search-input" />
+            </div>
+            <span class="scope-label">{{ t(downloadOnly ? 'collaboration.session.receiveScope' : 'collaboration.ui.thisRound') }}</span>
+          </div>
+        </div>
+
+        <!-- 主内容比对区 -->
+        <div v-if="filteredFiles.length" class="file-comparison">
+          <CollaborationFiles :files="filteredFiles" :repositories="c.state?.repositories || []" :selected="selected" :checked="checked" :can-restore="ui.canRestore" :local-available="ui.localAvailable" :running="ui.running" @select="selected = $event; pair = 'auto'" @check="checkFile" />
           <div v-if="active" class="diff-workspace">
             <CodeComparison :path="`${active.repo_slug}/${active.path}`" :left-hash="comparison.left?.sha256" :right-hash="comparison.right?.sha256" :left-label="comparison.leftLabel" :right-label="comparison.rightLabel" :read-text="c.readText">
               <template #tools><BaseSelect v-model="pair" size="sm" :aria-label="t('collaboration.ui.compareVersions')" :options="[{ value: 'auto', label: t('collaboration.ui.defaultComparison') }, { value: 'local-cloud', label: t('collaboration.localCloud'), disabled: !ui.localAvailable }, { value: 'input-cloud', label: t('collaboration.inputCloud') }]" /></template>
             </CodeComparison>
-            <p class="diff-note">{{ t(active.kind === 'conflicts' ? ui.running ? 'collaboration.ui.previewConflictHint' : 'collaboration.ui.restoreNotice' : active.kind === 'local' ? 'collaboration.ui.localNotice' : ui.running ? 'collaboration.ui.runningNotice' : 'collaboration.ui.agentNotice') }}<span v-if="comparison.left?.mode !== comparison.right?.mode"> · {{ t('collaboration.ui.fileMode') }} {{ comparison.left?.mode || '—' }} → {{ comparison.right?.mode || '—' }}</span></p>
+            <div class="diff-note-bar" :class="{ 'is-decision-bar': active.kind === 'conflicts' && ui.canRestore }">
+              <p class="diff-note">
+                <span class="diff-note-icon">ℹ</span>
+                <span>{{ t(active.kind === 'conflicts' ? ui.running ? 'collaboration.ui.previewConflictHint' : 'collaboration.ui.restoreNotice' : active.kind === 'local' ? 'collaboration.ui.localNotice' : ui.running ? 'collaboration.ui.runningNotice' : 'collaboration.ui.agentNotice') }}</span>
+                <span v-if="comparison.left?.mode !== comparison.right?.mode" class="mode-tag"> · {{ t('collaboration.ui.fileMode') }} {{ comparison.left?.mode || '—' }} → {{ comparison.right?.mode || '—' }}</span>
+              </p>
+              <div v-if="active.kind === 'conflicts' && ui.canRestore" class="single-file-actions">
+                <button type="button" class="btn-secondary btn-xs" @click="resolveActiveSingle('keep')">保留本地</button>
+                <button type="button" class="btn-primary btn-xs" @click="resolveActiveSingle('accept')">采纳 Agent 版本</button>
+              </div>
+            </div>
           </div>
         </div>
-        <div v-else class="empty-state"><GitPullRequest :size="30" /><strong>{{ t(!review.cloudKnown && tab !== 'local' ? 'collaboration.ui.loadingFiles' : tab === 'local' ? 'collaboration.ui.noLocalChanges' : downloadOnly ? 'collaboration.session.noChanges' : 'collaboration.ui.noAgentChanges') }}</strong><p>{{ t(tab === 'local' ? 'collaboration.ui.noLocalHint' : downloadOnly ? 'collaboration.session.noChangesHint' : 'collaboration.ui.noAgentHint') }}</p></div>
+
+        <!-- 空状态：高品质微光卡片与操作引导 -->
+        <div v-else class="empty-state">
+          <div class="empty-state-card">
+            <div class="empty-state-icon" :class="{ 'is-empty-clean': !review.files.length }">
+              <Check v-if="!review.files.length && !downloadOnly" :size="24" />
+              <GitPullRequest v-else :size="24" />
+            </div>
+            <strong>{{ t(!review.cloudKnown && tab !== 'local' ? 'collaboration.ui.loadingFiles' : tab === 'local' ? 'collaboration.ui.noLocalChanges' : downloadOnly ? 'collaboration.session.noChanges' : 'collaboration.ui.noAgentChanges') }}</strong>
+            <p>{{ t(tab === 'local' ? 'collaboration.ui.noLocalHint' : downloadOnly ? 'collaboration.session.noChangesHint' : 'collaboration.ui.noAgentHint') }}</p>
+            <div v-if="!review.files.length" class="empty-actions">
+              <button class="btn-secondary btn-sm" type="button" @click="c.view.page = 'settings'">查看仓库映射</button>
+              <button class="btn-secondary btn-sm" type="button" @click="c.view.page = 'backups'">查看历史快照</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 底部全局操作枢纽 (Action Hub) -->
         <footer v-if="ui.canRestore && c.conflicts.length" class="conflict-actions">
-          <div><label><input type="checkbox" :checked="allChecked" @change="checked = ($event.target as HTMLInputElement).checked ? c.conflicts.map(row => collaborationFileKey(row.task_repository_id, row.path)) : []" />{{ t('collaboration.ui.selectAllConflicts') }}</label><small>{{ t('collaboration.ui.selectedCount', { count: selectedConflicts.length, total: c.conflicts.length }) }}</small></div>
-          <button class="btn-primary" type="button" :disabled="!selectedConflicts.length" @click="askRestore">{{ t('collaboration.restoreSelected', { count: selectedConflicts.length }) }}</button>
+          <div class="conflict-selection-meta">
+            <label class="select-all-label">
+              <input type="checkbox" :checked="allChecked" @change="checked = ($event.target as HTMLInputElement).checked ? c.conflicts.map(row => collaborationFileKey(row.task_repository_id, row.path)) : []" />
+              <span>{{ t('collaboration.ui.selectAllConflicts') }}</span>
+            </label>
+            <small class="selection-count-pill">{{ t('collaboration.ui.selectedCount', { count: selectedConflicts.length, total: c.conflicts.length }) }}</small>
+            <span class="safety-pill">
+              <Shield :size="12" />
+              <span>自动快照保护</span>
+            </span>
+          </div>
+          <div class="conflict-buttons">
+            <button class="btn-secondary btn-sm" type="button" @click="c.view.page = 'backups'">查看历史备份</button>
+            <button class="btn-primary btn-restore-action" type="button" :disabled="!selectedConflicts.length" @click="askRestore">
+              {{ t('collaboration.restoreSelected', { count: selectedConflicts.length }) }}
+            </button>
+          </div>
         </footer>
       </template>
     </template>
@@ -126,9 +230,366 @@ async function primaryAction() {
 </template>
 
 <style scoped>
-.session-actions { display: flex; gap: 12px; padding: 14px 24px; flex-shrink: 0; font-size: 12px; }
-.collaboration-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; color: var(--color-text-body); overflow: hidden; }.state-strip { display: flex; align-items: center; gap: 14px; margin: 0 24px; padding: 18px 0; border-bottom: 1px solid #e5eaf0; flex-shrink: 0; }.state-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: #edf7f3; color: #278267; flex-shrink: 0; }.warning .state-icon { color: #a66a12; background: #fff7e7; }.state-copy { flex: 1; min-width: 0; }.state-copy strong { display: block; font-size: 14px; font-weight: 600; }.state-copy p { margin: 3px 0 0; font-size: 12px; color: var(--color-text-muted); }.state-copy small { display: block; color: var(--color-text-muted); font-size: 11px; margin-top: 4px; }.state-strip>button { flex-shrink: 0; font-size: 12px; }.error-details { padding: 10px 24px; color: #a66a12; font-size: 12px; max-height: 130px; overflow: auto; flex-shrink: 0; }.error-details summary { cursor: pointer; }.error-details p { margin: 6px 0; overflow-wrap: anywhere; }
-.file-filters { display: flex; align-items: center; gap: 4px; padding: 13px 24px; border-bottom: 1px solid #e5eaf0; flex-shrink: 0; }.file-filters button { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border: 0; border-radius: 5px; background: none; color: var(--color-text-muted); font-size: 12px; cursor: pointer; white-space: nowrap; }.file-filters button.active { background: var(--color-primary-50); color: var(--color-primary-600); }.file-filters button:disabled { opacity: .5; cursor: default; }.file-filters small { font-size: 10px; }.scope-label { margin-left: auto; color: var(--color-text-muted); font-size: 11px; white-space: nowrap; }.file-comparison { display: flex; flex: 1; min-height: 0; }.diff-workspace { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }.diff-note { margin: 0; padding: 12px 16px; color: var(--color-text-muted); font-size: 11px; border-top: 1px solid #e5eaf0; }.empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 24px; color: var(--color-text-muted); text-align: center; }.empty-state strong { margin-top: 15px; font-size: 14px; font-weight: 500; color: var(--color-text-body); }.empty-state p { font-size: 12px; margin-top: 8px; }
-.conflict-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 24px; border-top: 1px solid #e5eaf0; flex-shrink: 0; font-size: 12px; }.conflict-actions>div { display: flex; align-items: center; gap: 10px; }.conflict-actions label { display: flex; align-items: center; gap: 6px; }.conflict-actions input { accent-color: var(--color-primary-600); }.conflict-actions small { color: var(--color-text-muted); font-size: 11px; }.restore-paths { font: 12px/1.8 var(--font-mono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }.back-button { align-self: flex-start; padding: 15px 24px; background: none; border: 0; font-size: 12px; color: var(--color-primary-600); cursor: pointer; }.spin { animation: rotate 1.5s linear infinite; }@keyframes rotate { to { transform: rotate(360deg); } }@media(prefers-reduced-motion:reduce) { .spin { animation: none; } }
-@media(max-width:720px) { .file-comparison { flex-direction: column; }.state-strip { margin: 0 16px; gap: 10px; }.file-filters { padding: 12px 8px; }.file-filters button { padding: 5px 8px; }.scope-label { display: none; }.conflict-actions { padding: 12px 16px; }.conflict-actions>div { flex-wrap: wrap; gap: 4px; }.state-icon { display: none; }.state-strip>button { padding: 6px 9px; } }
+.collaboration-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  color: var(--color-text-body, #334155);
+  background: var(--color-surface-white, #ffffff);
+  overflow: hidden;
+}
+
+/* 统一二级视图导航栏 */
+.drawer-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 16px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+.nav-tab-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.nav-tab-item:hover {
+  color: #0f172a;
+  background: #f1f5f9;
+}
+.nav-tab-item.active {
+  color: #0284c7;
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  font-weight: 600;
+}
+
+.session-actions { display: flex; gap: 12px; padding: 14px 20px; flex-shrink: 0; font-size: 12px; }
+
+.error-details {
+  margin: 0 18px 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #9a3412;
+  font-size: 12px;
+  max-height: 130px;
+  overflow: auto;
+  flex-shrink: 0;
+}
+.error-details summary { cursor: pointer; font-weight: 500; }
+.error-details p { margin: 6px 0; overflow-wrap: anywhere; }
+
+/* 筛选与搜索工具条 */
+.filter-bar-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 18px;
+  gap: 12px;
+  flex-shrink: 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+.file-filters {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: #f1f5f9;
+  padding: 3px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+.file-filters button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.file-filters button:hover { color: #0f172a; }
+.file-filters button.active {
+  background: #ffffff;
+  color: #0f172a;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+.file-filters button:disabled { opacity: .45; cursor: default; }
+.file-filters small {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.2);
+  color: #64748b;
+}
+.file-filters button.active small {
+  background: #f0f9ff;
+  color: #0284c7;
+}
+.file-filters small.warning-badge {
+  background: #f59e0b;
+  color: #ffffff;
+}
+
+.filter-right-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.file-search-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 3px 8px;
+  transition: all 0.15s ease;
+}
+.file-search-box:focus-within {
+  background: #ffffff;
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.15);
+}
+.search-icon { color: #94a3b8; flex-shrink: 0; }
+.filter-search-input {
+  border: 0;
+  background: transparent;
+  font-size: 11.5px;
+  color: #0f172a;
+  outline: none;
+  width: 140px;
+}
+.filter-search-input::placeholder { color: #94a3b8; }
+.scope-label {
+  color: #64748b;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 主内容对比区 */
+.file-comparison { display: flex; flex: 1; min-height: 0; min-width: 0; background: #ffffff; }
+.diff-workspace { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; background: #ffffff; }
+.diff-note-bar {
+  padding: 8px 16px;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.diff-note {
+  margin: 0;
+  color: #64748b;
+  font-size: 11.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.diff-note-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #e2e8f0;
+  font-size: 10px;
+  font-weight: bold;
+}
+.mode-tag { font-family: var(--font-mono, monospace); font-size: 10.5px; }
+
+.single-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.btn-xs {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+.btn-secondary.btn-xs {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+}
+.btn-secondary.btn-xs:hover { background: #f8fafc; color: #0f172a; }
+.btn-primary.btn-xs {
+  background: linear-gradient(135deg, #0ea5e9, #0284c7);
+  color: #ffffff;
+  border: 0;
+  box-shadow: 0 1px 3px rgba(2, 132, 199, 0.2);
+}
+.btn-primary.btn-xs:hover {
+  background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+}
+
+/* 空状态卡片 */
+.empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 36px 24px;
+  background: #f8fafc;
+}
+.empty-state-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 32px 40px;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
+  max-width: 420px;
+}
+.empty-state-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: #f1f5f9;
+  color: #64748b;
+  display: grid;
+  place-items: center;
+  margin-bottom: 12px;
+}
+.empty-state-icon.is-empty-clean {
+  background: #ecfdf5;
+  color: #059669;
+}
+.empty-state-card strong { font-size: 14px; font-weight: 600; color: #0f172a; }
+.empty-state-card p { font-size: 12px; color: #64748b; margin-top: 6px; line-height: 1.5; }
+.empty-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+.btn-sm {
+  font-size: 11.5px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #334155;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-sm:hover {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+/* 底部全局决策枢纽 */
+.conflict-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+  border-top: 1px solid #e2e8f0;
+  background: #ffffff;
+  flex-shrink: 0;
+  box-shadow: 0 -2px 10px rgba(15, 23, 42, 0.03);
+}
+.conflict-selection-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.select-all-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #0f172a;
+  cursor: pointer;
+}
+.select-all-label input { accent-color: #0284c7; cursor: pointer; }
+.selection-count-pill {
+  color: #64748b;
+  font-size: 11.5px;
+}
+.safety-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #059669;
+  background: #ecfdf5;
+  border: 1px solid #d1fae5;
+  padding: 1px 7px;
+  border-radius: 4px;
+}
+.conflict-buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-restore-action {
+  background: linear-gradient(135deg, #0ea5e9, #0284c7);
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.25);
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 16px;
+  border-radius: 6px;
+  color: #ffffff;
+  border: 0;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-restore-action:hover:not(:disabled) {
+  background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.35);
+  transform: translateY(-1px);
+}
+.btn-restore-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.restore-paths { font: 12px/1.8 var(--font-mono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
+.back-button { align-self: flex-start; padding: 14px 20px; background: none; border: 0; font-size: 12px; font-weight: 500; color: #0284c7; cursor: pointer; }
+
+@media(max-width:720px) {
+  .file-comparison { flex-direction: column; }
+  .filter-bar-wrapper { padding: 4px 14px 10px; flex-wrap: wrap; }
+  .filter-right-tools { width: 100%; justify-content: space-between; }
+  .scope-label { display: none; }
+  .conflict-actions { padding: 12px 14px; flex-wrap: wrap; }
+  .conflict-selection-meta { flex-wrap: wrap; gap: 6px; }
+}
 </style>

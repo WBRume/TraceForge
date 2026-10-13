@@ -432,7 +432,7 @@ describe('local collaboration coordinator', () => {
     saveRepoPreferences('ws', mocks.auth.user!.id, [{ repository_id: 'r1', local_path: 'G:/api', configured_git_url: 'https://fork.test/api' }, { repository_id: 'r2', local_path: 'G:/web', configured_git_url: second.repo_url }])
     await flushPromises()
     expect(controller.mappings.value).toEqual({ repo1: { local_path: 'G:/api', configured_git_url: 'https://fork.test/api' }, repo2: { local_path: 'G:/web', configured_git_url: second.repo_url } })
-    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws' }, global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } }), createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] })], stubs: { CodeComparison: true, CollaborationBackups: true } } })
+    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } }), createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] })], stubs: { CodeComparison: true, CollaborationBackups: true } } })
     wrappers.push(panel)
     expect(panel.text()).toContain('G:/api')
     expect(panel.text()).toContain('G:/web')

@@ -29,5 +29,57 @@ function page(name: string) { close(); c.value.view.page = name }
 </template>
 
 <style scoped>
-.toolbar-button { display: inline-flex; align-items: center; justify-content: center; height: 28px; width: 28px; padding: 0; border: 0; border-radius: 5px; color: var(--color-text-muted); background: transparent; cursor: pointer; }.toolbar-button:hover { background: var(--color-bg-base); }.collaboration-menu { position: relative; }.collaboration-menu summary { list-style: none; }.collaboration-menu summary::-webkit-details-marker { display: none; }.menu-items { position: absolute; top: 34px; right: 0; z-index: 5; width: 180px; padding: 5px; border: 1px solid #e5eaf0; border-radius: 8px; background: var(--color-surface-white); box-shadow: 0 8px 24px #162d451a; }.menu-items button { display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 4px; background: none; color: var(--color-text-body); text-align: left; font-size: 12px; cursor: pointer; }.menu-items button:hover { background: var(--color-bg-base); }.menu-items button:disabled { opacity: .45; cursor: default; }.menu-items hr { border: 0; border-top: 1px solid #e5eaf0; margin: 4px 0; }
+.toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  width: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--color-text-muted, #64748b);
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.toolbar-button:hover {
+  background: var(--color-bg-base, #f1f5f9);
+  color: var(--color-text-title, #0f172a);
+}
+.collaboration-menu { position: relative; }
+.collaboration-menu summary { list-style: none; }
+.collaboration-menu summary::-webkit-details-marker { display: none; }
+.menu-items {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  z-index: 20;
+  width: 190px;
+  padding: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.12), 0 8px 10px -6px rgba(15, 23, 42, 0.08);
+}
+.menu-items button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-body, #334155);
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.menu-items button:hover {
+  background: var(--color-bg-base, #f8fafc);
+  color: var(--color-text-title, #0f172a);
+}
+.menu-items button:disabled { opacity: .45; cursor: default; }
+.menu-items hr { border: 0; border-top: 1px solid #e2e8f0; margin: 4px 0; }
 </style>

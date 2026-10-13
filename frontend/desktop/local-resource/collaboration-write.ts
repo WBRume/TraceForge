@@ -2,12 +2,17 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { child, fail, hash, readJson } from './filesystem'
-import { durableFile, durableJson, identifier, localFile, repositoryFileModes, sameFile, type SyncFile, SyncObjects, validateFileMode } from './collaboration-store'
+import { durableFile, durableJson, identifier, localFile, repositoryFileModes, sameFile, type SyncFile, type SyncManifest, SyncObjects, validateFileMode } from './collaboration-store'
+
+export type BackupContext = Pick<SyncManifest, 'task_id' | 'snapshot_id' | 'workspace_revision' | 'session_generation' | 'session_revision' | 'session_turn_id' | 'turn_index' | 'turn_title' | 'turn_created_at' | 'source'> & {
+  kind: 'receive' | 'restore'; repo_slug: string; branch_name: string;
+}
 
 interface WriteRecord {
   task_repository_id: string; relative: string; root: string; expected: SyncFile | null;
   target: SyncFile | null; displaced: string; staged: string; state: string;
   error?: string; actual_backup_sha256?: string;
+  created_at?: string; context?: BackupContext;
 }
 
 /** A persistent file operation. Never overwrites an unexpected replacement at the destination. */
@@ -15,6 +20,7 @@ export function applyFile(options: {
   state: string; operation_id: string; task_repository_id: string; root: string;
   expected: SyncFile | null; target: SyncFile | null; relative: string; objects: SyncObjects;
   scratch_root?: string;
+  context?: BackupContext;
   beforeMove?: () => void; afterMove?: () => void;
 }) {
   const { state, operation_id, task_repository_id, root, expected, target, relative, objects } = options
@@ -40,7 +46,7 @@ export function applyFile(options: {
     fs.mkdirSync(scratch, { recursive: true })
     record = { task_repository_id, relative, root, expected, target,
       displaced: path.join(scratch, token + '-old'),
-      staged: path.join(scratch, token + '-new'), state: 'PLANNED' }
+      staged: path.join(scratch, token + '-new'), state: 'PLANNED', created_at: new Date().toISOString(), context: options.context }
     durableJson(journal, record)
   }
   const save = (step: string) => { record.state = step; durableJson(journal, record) }
