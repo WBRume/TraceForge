@@ -5,6 +5,7 @@ import { useChatTerminalController, type ChatTerminalBridge } from '@/composable
 import { mergeTerminalTimeline } from '@/utils/chat-terminal/mergeTerminalTimeline'
 import TerminalCommandInput from './TerminalCommandInput.vue'
 import TerminalTimeline from './TerminalTimeline.vue'
+import AnnotationTray from '../annotations/AnnotationTray.vue'
 
 const props = defineProps<{
   vm: ChatTerminalBridge
@@ -113,11 +114,13 @@ onBeforeUnmount(() => {
       />
     </div>
 
+    <div v-if="vm.annotations?.items.value.length" class="cli-annotations"><AnnotationTray :disabled="controller.commandExecuting.value" /></div>
     <TerminalCommandInput
       ref="commandInput"
       :model-value="controller.inputValue.value"
       :disabled="!vm.currentTask?.id || Boolean(vm.initializingTask)"
       :busy="controller.commandExecuting.value"
+      :has-context="Boolean(vm.annotations?.items.value.length)"
       :placeholder="inputPlaceholder"
       @update:model-value="(value) => { controller.inputValue.value = value }"
       @submit="submitCommand"
@@ -131,6 +134,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.cli-annotations { background: #fff; border-radius: 10px; padding: 6px 10px; }
 .cli-workbench {
   display: flex;
   flex-direction: column;

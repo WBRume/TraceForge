@@ -4,6 +4,7 @@ import { VueMonacoDiffEditor } from '@guolao/vue-monaco-editor'
 import type * as Monaco from 'monaco-editor'
 import type { DiffHunk } from '@/types/workspaceAssets'
 import { ensureMonacoViteSetup } from '@/utils/monaco'
+import { injectContextAnnotations } from '@/composables/chat/annotations/useContextAnnotations'
 
 const props = defineProps<{
   aiHunks?: DiffHunk[]
@@ -17,6 +18,11 @@ const props = defineProps<{
   height?: string
   openInIde?: boolean
   ideTitle?: string
+  filePath?: string
+  originalLabel?: string
+  modifiedLabel?: string
+  originalRevision?: string
+  modifiedRevision?: string
 }>()
 ensureMonacoViteSetup()
 
@@ -28,6 +34,9 @@ const emit = defineEmits<{
 const diffEditorRef = shallowRef<Monaco.editor.IStandaloneDiffEditor | null>(null)
 const monacoRef = shallowRef<typeof Monaco | null>(null)
 const disposables: Monaco.IDisposable[] = []
+const annotations = injectContextAnnotations()
+
+watch(() => [props.filePath, props.original, props.modified], () => annotations?.dismiss())
 
 function extractOutputText(hunks: DiffHunk[]): string {
   const lines: string[] = []
@@ -92,23 +101,39 @@ function handleDiffMount(editor: Monaco.editor.IStandaloneDiffEditor, monaco: ty
     }))
   }
 
-  modifiedEditor.onMouseUp(() => {
-    const selection = modifiedEditor.getSelection()
-    if (!selection || selection.isEmpty()) return
-    const model = modifiedEditor.getModel()
-    if (!model) return
+  for (const [pane, side] of [[editor.getOriginalEditor(), 'original'], [modifiedEditor, 'modified']] as const) {
+    const select = () => {
+      const selection = pane.getSelection()
+      if (!selection || selection.isEmpty()) { annotations?.dismiss(); return }
+      const model = pane.getModel()
+      if (!model) return
 
-    const start = selection.getStartPosition()
-    const end = selection.getEndPosition()
-    const selectedText = model.getValueInRange(selection)
+      const start = selection.getStartPosition()
+      const end = selection.getEndPosition()
+      const selectedText = model.getValueInRange(selection)
 
-    emit('range-select', {
-      lineStart: start.lineNumber,
-      lineEnd: end.lineNumber,
-      side: 'human',
-      selectedText,
-    })
-  })
+      emit('range-select', {
+        lineStart: start.lineNumber,
+        lineEnd: end.column === 1 && end.lineNumber > start.lineNumber ? end.lineNumber - 1 : end.lineNumber,
+        side: side === 'original' ? 'ai' : 'human',
+        selectedText,
+      })
+      if (!props.filePath || !annotations) return
+      const rect = pane.getDomNode()?.getBoundingClientRect()
+      const position = pane.getScrolledVisiblePosition(end)
+      annotations.select({ selectedText, source: {
+        kind: 'diff', filePath: props.filePath, side,
+        version: side === 'original' ? props.originalLabel : props.modifiedLabel,
+        revision: side === 'original' ? props.originalRevision : props.modifiedRevision,
+        lineStart: start.lineNumber,
+        lineEnd: end.column === 1 && end.lineNumber > start.lineNumber ? end.lineNumber - 1 : end.lineNumber,
+        startColumn: start.column, endColumn: end.column,
+        selectionEndLine: end.lineNumber,
+      } }, { x: (rect?.left || 0) + (position?.left || 0), y: (rect?.top || 0) + (position?.top || 0) + (position?.height || 20) + 6 })
+    }
+    disposables.push(pane.onMouseUp(select))
+    if (annotations) disposables.push(pane.onKeyUp(event => { if (event.browserEvent.key !== 'Escape') select() }))
+  }
 }
 
 watch(() => [props.aiHunks, props.humanHunks], () => {
@@ -118,6 +143,7 @@ watch(() => [props.aiHunks, props.humanHunks], () => {
 })
 
 onBeforeUnmount(() => {
+  annotations?.dismiss()
   disposables.forEach(item => item.dispose())
   if (diffEditorRef.value) {
     diffEditorRef.value.setModel(null)

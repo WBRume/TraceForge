@@ -10,6 +10,8 @@ import {
 import DecisionMarkPopover from './DecisionMarkPopover.vue'
 import DiagnosisResultCard from './DiagnosisResultCard.vue'
 import ChatMessageContent from './ChatMessageContent.vue'
+import { injectContextAnnotations } from '@/composables/chat/annotations/useContextAnnotations'
+import { readMessageSelection } from '@/composables/chat/annotations/messageSelection'
 import { diagnosisPayloadFromMessage } from '@/types/diagnosis'
 import type { ChatDecisionPayload } from '@/composables/useChatDecision'
 import { confirmationHistoryRecord, confirmationHistoryText } from '@/composables/chat/message/confirmationHistory'
@@ -24,6 +26,14 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const annotations = injectContextAnnotations()
+function selectForAnnotation(event: MouseEvent | KeyboardEvent) {
+  if (!annotations || msgRole.value !== 'assistant') return
+  if (event instanceof KeyboardEvent && event.key === 'Escape') return
+  const selection = readMessageSelection(event.currentTarget as HTMLElement, String(props.msg.id || ''))
+  if (selection) annotations.select(selection, selection)
+  else annotations.dismiss()
+}
 
 const isPopoverOpen = ref(false)
 
@@ -152,6 +162,8 @@ function openDiagnosisCase(caseId: string) {
 
 <template>
   <ChatMessageContent
+    @mouseup="selectForAnnotation"
+    @keyup="selectForAnnotation"
     :msg="msg"
     :related-messages="vm.messages"
     :author-label="vm.messageAuthorLabel(msg)"

@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch, onBeforeUnmount } from 'vue'
+import { injectContextAnnotations } from '@/composables/chat/annotations/useContextAnnotations'
+import { parseUnifiedDiff, unifiedDiffSelection, type ParsedDiffLine } from '@/composables/chat/annotations/unifiedDiff'
 
 export type DiffLineClickEvent = {
   lineNumber: number
@@ -39,10 +41,8 @@ const displayText = computed(() => {
   if (!props.diffText) return ''
 
   if (props.selectedFilePath) {
-    const escapedPath = props.selectedFilePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const regex = new RegExp(`diff --git a/${escapedPath} b/${escapedPath}[\\s\\S]*?(?=diff --git|$)`)
-    const match = props.diffText.match(regex)
-    return match ? match[0] : ''
+    return props.diffText.split(/(?=^diff --git )/m).filter(block =>
+      parseUnifiedDiff(block).some(line => line.filePath === props.selectedFilePath)).join('')
   }
 
   const lines = props.diffText.split('\n')
@@ -54,31 +54,11 @@ const displayText = computed(() => {
   return props.diffText
 })
 
-const highlightedLines = computed(() => {
-  const text = displayText.value
-  if (!text) return []
-
-  let currentFile: string | null = null
-
-  return text.split('\n').map((line) => {
-    let type = 'plain'
-    if (line.startsWith('+') && !line.startsWith('+++')) type = 'add'
-    else if (line.startsWith('-') && !line.startsWith('---')) type = 'del'
-    else if (line.startsWith('@@')) type = 'hunk'
-    else if (line.startsWith('diff --git')) {
-      type = 'header'
-      const match = line.match(/diff --git a\/(.+?) b\//)
-      if (match) currentFile = match[1]
-    }
-    else if (line.startsWith('index ') || line.startsWith('new file mode ') || line.startsWith('deleted file mode ')) type = 'header'
-    else if (line.startsWith('--- ') || line.startsWith('+++ ')) {
-      type = 'file'
-      if (line.startsWith('+++ b/')) currentFile = line.slice(6)
-    }
-
-    return { text: line || ' ', type, filePath: currentFile }
-  })
-})
+const annotations = injectContextAnnotations()
+const highlightedLines = computed(() => displayText.value ? parseUnifiedDiff(displayText.value) : [])
+const selectable = computed(() => props.rangeSelectable || Boolean(annotations))
+watch(() => [props.diffText, props.selectedFilePath], () => { clearSelection(); annotations?.dismiss() })
+onBeforeUnmount(() => annotations?.dismiss())
 
 // --- Range selection state ---
 const isDragging = ref(false)
@@ -92,8 +72,8 @@ const selectedRange = computed(() => {
   return { start, end }
 })
 
-function isSelectable(line: { type: string }) {
-  return line.type !== 'header' && line.type !== 'hunk' && line.type !== 'file'
+function isSelectable(line: ParsedDiffLine) {
+  return line.oldLine !== undefined || line.newLine !== undefined
 }
 
 function isLineSelected(idx: number) {
@@ -103,8 +83,8 @@ function isLineSelected(idx: number) {
   return isSelectable(highlightedLines.value[idx])
 }
 
-function handleMouseDown(idx: number, line: { text: string; type: string; filePath: string | null }) {
-  if (!props.rangeSelectable) return
+function handleMouseDown(idx: number, line: ParsedDiffLine) {
+  if (!selectable.value) return
   if (!isSelectable(line)) return
   isDragging.value = true
   selectionAnchor.value = idx
@@ -116,28 +96,16 @@ function handleMouseMove(idx: number) {
   selectionHead.value = idx
 }
 
-function commitRangeSelection() {
+function commitRangeSelection(event: MouseEvent) {
   const range = selectedRange.value
   if (!range) return
-  const lines = highlightedLines.value
-  let filePath: string | null = null
-  const selectedLines: string[] = []
-  for (let i = range.start; i <= range.end; i++) {
-    const line = lines[i]
-    if (!line || !isSelectable(line)) continue
-    if (!filePath && line.filePath) filePath = line.filePath
-    selectedLines.push(line.text)
-  }
-  if (!filePath || !selectedLines.length) {
-    clearSelection()
-    return
-  }
+  const selection = unifiedDiffSelection(highlightedLines.value.slice(range.start, range.end + 1))
+  if (!selection || selection.source.kind !== 'diff') { clearSelection(); return }
   emit('range-select', {
-    filePath,
-    lineStart: range.start + 1,
-    lineEnd: range.end + 1,
-    selectedText: selectedLines.join('\n'),
+    filePath: selection.source.filePath, lineStart: selection.source.lineStart,
+    lineEnd: selection.source.lineEnd, selectedText: selection.selectedText,
   })
+  annotations?.select(selection, { x: event.clientX, y: event.clientY + 8 })
 }
 
 function clearSelection() {
@@ -146,17 +114,17 @@ function clearSelection() {
   selectionHead.value = null
 }
 
-function handleMouseUp() {
+function handleMouseUp(event: MouseEvent) {
   if (!isDragging.value) return
   isDragging.value = false
-  commitRangeSelection()
+  commitRangeSelection(event)
 }
 
-function handleLineClick(idx: number, line: { text: string; type: string; filePath: string | null }) {
+function handleLineClick(idx: number, line: ParsedDiffLine) {
   if (!props.clickable) return
   if (!isSelectable(line)) return
   emit('line-click', {
-    lineNumber: idx + 1,
+    lineNumber: line.newLine ?? line.oldLine ?? idx + 1,
     text: line.text,
     type: line.type,
     filePath: line.filePath,
@@ -182,7 +150,7 @@ function handleLineClick(idx: number, line: { text: string; type: string; filePa
         v-for="(line, idx) in highlightedLines"
         :key="idx"
         :class="['diff-line', line.type, {
-          clickable: (clickable || rangeSelectable) && isSelectable(line),
+          clickable: (clickable || selectable) && isSelectable(line),
           selected: isLineSelected(idx),
           'range-anchor': selectionAnchor === idx,
         }]"
@@ -190,7 +158,8 @@ function handleLineClick(idx: number, line: { text: string; type: string; filePa
         @mousedown="handleMouseDown(idx, line)"
         @mousemove="handleMouseMove(idx)"
       >
-        <span class="line-number">{{ idx + 1 }}</span>
+        <span class="line-number">{{ line.oldLine ?? '' }}</span>
+        <span class="line-number">{{ line.newLine ?? '' }}</span>
         <span class="line-content">{{ line.text }}</span>
       </div>
     </div>

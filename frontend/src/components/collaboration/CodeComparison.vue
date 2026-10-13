@@ -81,7 +81,7 @@ const pathParts = computed(() => {
     <p v-if="error" role="alert" class="state-message error">{{ error }}</p>
     <p v-else-if="loading" role="status" class="state-message loading">{{ t('common.loading') }}</p>
     <div v-else class="monaco-wrapper">
-      <MonacoDiffViewer :open-in-ide="openInIde" :ide-title="ideTitle" @open-in-ide="emit('open-in-ide', $event)" :original="original" :modified="modified" :render-side-by-side="layout === 'split'" :word-wrap="wordWrap ? 'on' : 'off'" theme="vs" height="100%" />
+      <MonacoDiffViewer :file-path="path" :original-label="leftLabel" :modified-label="rightLabel" :original-revision="leftHash" :modified-revision="rightHash" :open-in-ide="openInIde" :ide-title="ideTitle" @open-in-ide="emit('open-in-ide', $event)" :original="original" :modified="modified" :render-side-by-side="layout === 'split'" :word-wrap="wordWrap ? 'on' : 'off'" theme="vs" height="100%" />
     </div>
   </section>
 </template>
