@@ -21,6 +21,7 @@ from tests.live_opencode.http_support import (
     FullService,
     baseline,
     cleanup_fixture,
+    load_feature_settings,
     load_models,
     read_state,
     seed_task,
@@ -346,24 +347,43 @@ async def main(args):
     root.mkdir(parents=True)
     emit("http_evidence_directory", path=str(root))
     load_models()
+    load_feature_settings()
     write_json(root / "baseline.json", baseline())
     service = FullService(root)
     service.capture_original()
-    ids, users = seed_workspace(root)
-    async with httpx.AsyncClient(base_url=BASE_URL, timeout=30, trust_env=False) as client:
-        tokens = []
-        for user in users:
-            response = await client.post(
-                "/api/auth/login", data={"username": user["email"], "password": user["password"]}
-            )
-            response.raise_for_status()
-            tokens.append(response.json()["access_token"])
     adapter = OpenCodeAdapter(**opencode_server_kwargs())
     stopped_original = False
     results = []
     try:
+        from app.config import settings
+        from app.core.redis_client import get_redis_client
+
+        assert settings.DISTRIBUTED_LOCK_BACKEND == "redis", "HTTP acceptance requires real Redis locks"
+        redis = await get_redis_client()
+        assert await redis.ping()
         await adapter.probe()
+        provider = await (await adapter._ensure_client()).get(adapter.server_url + "/api/info")
+        provider.raise_for_status()
         model = args.model or (await adapter.model_catalog(project_path=str(root)))["default_model"]
+        write_json(
+            root / "infrastructure.json",
+            {
+                "opencode_version": provider.json().get("version"),
+                "model": model,
+                "redis_version": (await redis.info("server"))["redis_version"],
+                "redis_ping": True,
+                "lock_backend": settings.DISTRIBUTED_LOCK_BACKEND,
+            },
+        )
+        ids, users = seed_workspace(root)
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30, trust_env=False) as client:
+            tokens = []
+            for user in users:
+                response = await client.post(
+                    "/api/auth/login", data={"username": user["email"], "password": user["password"]}
+                )
+                response.raise_for_status()
+                tokens.append(response.json()["access_token"])
         await service.stop_original()
         stopped_original = True
         for case in args.cases:
@@ -371,10 +391,14 @@ async def main(args):
         write_json(root / "report.json", results)
         emit("http_complete", passed=len(results), report=str(root / "report.json"))
     finally:
+        from app.core.redis_client import close_redis_client
+
         await adapter.close()
+        await close_redis_client()
         if stopped_original:
             await service.restore()
-        await cleanup_fixture(root)
+        if (root / "fixture-ids.json").exists():
+            await cleanup_fixture(root)
 
 
 if __name__ == "__main__":

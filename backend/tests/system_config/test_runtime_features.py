@@ -161,6 +161,37 @@ def test_wrong_key_fails_closed_and_admin_can_restore_environment(db, monkeypatc
     assert configs.read(db, "speech")[1] == {}
 
 
+def test_live_http_acceptance_uses_saved_opencode_credentials(db, monkeypatch):
+    from contextlib import nullcontext
+
+    from app.agents.selection import opencode_server_kwargs
+    from tests.live_opencode.http_support import load_feature_settings
+
+    monkeypatch.setattr(settings, "OPENCODE_SERVER_PASSWORD", "obsolete-environment-password")
+    save(db, "agent", {"opencode_password": "saved-live-password"})
+    monkeypatch.setattr("app.database.SessionLocal", lambda: nullcontext(db))
+
+    load_feature_settings()
+
+    assert opencode_server_kwargs()["password"] == "saved-live-password"
+    assert settings.OPENCODE_SERVER_PASSWORD == "obsolete-environment-password"
+
+
+def test_live_http_acceptance_rejects_undecryptable_agent_config(db, monkeypatch):
+    from contextlib import nullcontext
+
+    from cryptography.fernet import Fernet
+
+    from tests.live_opencode.http_support import load_feature_settings
+
+    save(db, "agent", {"opencode_password": "saved-live-password"})
+    monkeypatch.setattr(settings, "FEATURE_CONFIG_MASTER_KEY", SecretStr(Fernet.generate_key().decode()))
+    monkeypatch.setattr("app.database.SessionLocal", lambda: nullcontext(db))
+
+    with pytest.raises(RuntimeError, match="配置解密失败"):
+        load_feature_settings()
+
+
 @pytest.fixture
 def feature_api(db, monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "SEARCH_SQLITE_PATH", str(tmp_path / "search.sqlite3"))

@@ -8,7 +8,6 @@ import json
 import os
 import pkgutil
 import subprocess
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -36,6 +35,20 @@ def load_models():
                 importlib.import_module(module)
 
 
+def load_feature_settings():
+    """Use the same encrypted DB overrides as the full HTTP application."""
+    from app.core.feature_settings import feature_settings
+    from app.database import SessionLocal
+    from app.domains.system_config.services.feature_config_service import environment_snapshot
+    from app.domains.system_config.services.feature_runtime import load_runtime
+
+    with SessionLocal() as db:
+        overrides, errors = load_runtime(db)
+    if "agent" in errors:
+        raise RuntimeError(errors["agent"])
+    feature_settings.replace(environment_snapshot(overrides))
+
+
 def baseline():
     from sqlalchemy import text
 
@@ -54,7 +67,18 @@ def baseline():
         assert not active, f"Other jobs are active; do not restart: {active}"
         orphaned = db.execute(text("SELECT id FROM sdd_ai_jobs WHERE status = 'ORPHANED'")).scalars().all()
         migration = db.execute(text("SELECT version_num FROM alembic_version")).scalars().all()
-    return {"dialect": "mysql", "migration": migration, "preexisting_orphaned_ids": orphaned}
+        mysql_version = db.execute(text("SELECT VERSION()")).scalar()
+        provisioning = db.execute(
+            text("SELECT COUNT(*) FROM sdd_provision_jobs WHERE status IN ('PENDING', 'RUNNING')")
+        ).scalar()
+        assert not provisioning, "Provisioning jobs are active; do not restart"
+    return {
+        "dialect": "mysql",
+        "mysql_version": mysql_version,
+        "migration": migration,
+        "preexisting_orphaned_ids": orphaned,
+        "active_provision_jobs": provisioning,
+    }
 
 
 def seed_workspace(root):
@@ -230,7 +254,7 @@ class FullService:
         process = psutil.Process(listeners.pop())
         command = process.cmdline()
         self.original_env = process.environ()
-        assert any("main.py" in part or "uvicorn" in part for part in command), command
+        assert any(part == "app.main" or "main.py" in part or "uvicorn" in part for part in command), command
         self.original = {
             "pid": process.pid,
             "command": command,
@@ -252,7 +276,7 @@ class FullService:
         self.case_root = case_root
         self.process = self._spawn(
             [
-                sys.executable,
+                self.original["command"][0],
                 "-m",
                 "tests.live_opencode.http_service",
                 str(case_root),
@@ -262,7 +286,13 @@ class FullService:
             BACKEND,
             case_root / f"service-{time.time_ns()}.log",
         )
-        await until(readiness, seconds=90, label="complete HTTP service ready")
+
+        async def process_ready():
+            if self.process.poll() is not None:
+                raise RuntimeError(f"HTTP acceptance process exited ({self.process.returncode}); inspect {case_root}")
+            return await readiness()
+
+        await until(process_ready, seconds=90, label="complete HTTP service ready")
         assert self.process.poll() is None, "A different service owns port 8000"
         emit("http_ready", pid=self.process.pid)
 
