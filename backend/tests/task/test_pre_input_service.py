@@ -17,6 +17,7 @@ from app.domains.ai.services.jobs import (
 )
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
 from app.domains.notification.models.notification import SddUserNotification
+from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.pre_input import PreInputStatus
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import pre_input_service
@@ -368,6 +369,8 @@ def test_auto_submit_when_all_mentioned_participated(db_session):
     pre_input = _get(db, pre_input_id)
     assert pre_input.status == PreInputStatus.SUBMITTED
     assert pre_input.submit_reason == "all_done"
+    message = db.get(ChatMessage, result["submission"]["chat_message_id"])
+    assert message.creator_id == "u-owner"
 
 
 def test_submit_cas_prevents_double_submission(db_session):

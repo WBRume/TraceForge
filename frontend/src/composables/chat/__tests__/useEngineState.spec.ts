@@ -21,6 +21,23 @@ const createEngine = () => {
 }
 
 describe('useEngineState', () => {
+  it('clears thinking on terminal job events while retaining it for another running job', () => {
+    const { engine, statusCards, setExecuting } = createEngine()
+    setExecuting(true)
+    engine.applyThinkingFrame({ sequence: 1, content: 'working' })
+    statusCards.push({ id: 'running', type: 'status', status: 'RUNNING' })
+    engine.syncFromJobs()
+    expect(engine.showThinking.value).toBe(true)
+    expect(statusCards).toHaveLength(1)
+
+    setExecuting(false)
+    engine.syncFromJobs()
+    expect(engine.engineRunning.value).toBe(false)
+    expect(engine.showThinking.value).toBe(false)
+    expect(engine.thinkingContent.value).toBe('')
+    expect(statusCards).toHaveLength(0)
+  })
+
   it('applies thinking frames with sequence guard and delta append', () => {
     const { engine } = createEngine()
 

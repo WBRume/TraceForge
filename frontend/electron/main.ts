@@ -35,6 +35,9 @@ const createWindow = async () => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // Keep collaboration leases and task events alive while the user edits
+      // in an IDE and this window is minimized or covered.
+      backgroundThrottling: false,
     },
   })
   mainWindow = window

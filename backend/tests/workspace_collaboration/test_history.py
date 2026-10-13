@@ -1,6 +1,7 @@
 """Human edits retain their immutable versions and appear in task detail."""
 
 import pytest
+from sqlalchemy import text
 
 from app.domains.workspace_asset.models.workspace_asset import SddHumanDelta
 from app.domains.workspace_asset.services.tasks.sections import get_task_delta_workbench, get_task_human_deltas
@@ -13,6 +14,8 @@ environment = repository_environment
 
 def test_handoff_is_indexed_once_and_comparison_survives_later_edits(environment):
     db, task, root = environment
+    db.execute(text("PRAGMA foreign_keys=ON"))
+    assert db.execute(text("PRAGMA foreign_keys")).scalar() == 1
     state = preparing(environment)
     request = input_request(
         environment,

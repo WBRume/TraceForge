@@ -990,7 +990,7 @@ async def submit_pre_input(
     metadata = claimed_state["metadata"]
     try:
         message_id, job_id, collaboration_receipt = await _submit_pre_input_turn(
-            task_id, actor_user_id, merged_text, metadata
+            task_id, claimed_state["creator_id"], merged_text, metadata
         )
     except PreInputError:
         raise

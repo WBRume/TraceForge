@@ -218,7 +218,7 @@ class TaskWebSocketHandler:
         from app.domains.local_resource.client import ResourceError
 
         try:
-            await run_db(self._check_local_actor_sync)
+            await run_db(self._check_chat_actor_sync)
         except ResourceError as exc:
             await self._send_chat_ack(request, status="failed", message=str(exc))
             return
@@ -297,11 +297,20 @@ class TaskWebSocketHandler:
         if created is not None:
             await self._publish_chat_message(request, created)
 
-    def _check_local_actor_sync(self):
+    def _check_chat_actor_sync(self):
+        from app.domains.auth.models.user import WorkspacePermission
+        from app.domains.local_resource.client import ResourceError
         from app.domains.local_resource.service import require_operation
+        from app.domains.workspace.services import workspace_service
 
         with self._session_factory() as db:
             task = db.get(SddTask, self._task_id)
+            if task is None:
+                raise ResourceError("Task not found", "TASK_NOT_FOUND", 404)
+            if task.execution_location != "LOCAL" and not workspace_service.user_has_permission(
+                db, task.workspace_id, self._user.id, WorkspacePermission.START_TASK
+            ):
+                raise ResourceError("No permission to send messages in this task", "TASK_WRITE_FORBIDDEN", 403)
             require_operation(db, task, self._user.id)
 
     def _load_task_status_sync(self, task_id: str) -> str | None:
@@ -604,10 +613,13 @@ class TaskWebSocketHandler:
         action: str,
         payload: dict[str, Any],
     ) -> None:
+        from app.domains.local_resource.client import ResourceError
+
         try:
+            await run_db(self._check_chat_actor_sync)
             await self._dispatch_pre_input_action(action, payload)
-        except pre_input_service.PreInputError as exc:
-            await self._send_pre_input_error(action, exc.message)
+        except (pre_input_service.PreInputError, ResourceError) as exc:
+            await self._send_pre_input_error(action, str(exc))
         except Exception:
             task_logger.exception(f"Failed to process {action} for task {self._task_id}")
             await self._send_pre_input_error(action, "Failed to process pre input")

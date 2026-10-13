@@ -150,7 +150,7 @@ export function useChatViewModel() {
   })
   const isUndoing = computed(() => Boolean(undoingMessageId.value))
   const isChatLocked = computed(() => (
-    localResource.blocked.value || taskState.isTerminalStatus.value
+    !canStartTask.value || localResource.blocked.value || taskState.isTerminalStatus.value
     || taskState.isTaskPreStart.value
     || taskState.isTaskProvisioning.value
     || isUndoing.value
