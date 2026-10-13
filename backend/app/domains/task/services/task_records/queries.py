@@ -23,6 +23,7 @@ def list_tasks(
     following: bool = False,
     with_total: bool = True,
     limit: int | None = None,
+    search: str | None = None,
 ) -> tuple[list[SddTask], int]:
     query = (
         db.query(SddTask)
@@ -59,6 +60,15 @@ def list_tasks(
 
     if task_type:
         query = query.filter(SddTask.task_type == task_type)
+
+    keyword = str(search or "").strip()
+    if keyword:
+        query = query.filter(
+            or_(
+                SddTask.name.icontains(keyword, autoescape=True),
+                SddTask.id.icontains(keyword, autoescape=True),
+            )
+        )
 
     normalized_relations = {value.strip().lower() for value in str(relation or "").split(",") if value.strip()}
     normalized_relations.discard("all")

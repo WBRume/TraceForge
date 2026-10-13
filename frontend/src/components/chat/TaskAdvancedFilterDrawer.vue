@@ -1,37 +1,52 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-
-export type TaskRelationFilter =
-  | 'created_by_me'
-  | 'mentioned_me'
-  | 'messaged_by_me'
-  | 'followed_by_me'
+import BaseSelect from '@/components/BaseSelect.vue'
+import type { TaskListFilters, TaskRelationFilter, TaskSessionFilter, TaskTypeFilterValue } from '@/composables/chat/types'
 
 const props = defineProps<{
   modelValue: boolean
+  status: TaskSessionFilter
+  taskType: TaskTypeFilterValue
   relations: TaskRelationFilter[]
+  trigger: HTMLElement | null
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
-  apply: [value: TaskRelationFilter[]]
+  apply: [value: TaskListFilters]
   reset: []
 }>()
 
 const { t } = useI18n()
 const draftRelations = ref<TaskRelationFilter[]>([...props.relations])
+const draftStatus = shallowRef(props.status)
+const draftTaskType = shallowRef(props.taskType)
 const popoverRef = useTemplateRef<HTMLElement>('popover')
+const closeButton = useTemplateRef<HTMLButtonElement>('closeButton')
+const popoverMaxWidth = shallowRef('calc(100vw - 24px)')
+const updatePopoverWidth = () => {
+  const left = popoverRef.value?.getBoundingClientRect().left
+  if (left !== undefined) popoverMaxWidth.value = `${Math.max(0, document.documentElement.clientWidth - left - 12)}px`
+}
 const open = computed({
   get: () => props.modelValue,
   set: (value: boolean) => emit('update:modelValue', value),
 })
 
 watch(
-  () => [props.modelValue, props.relations] as const,
-  ([visible, relations]) => {
-    if (visible) draftRelations.value = [...relations]
+  () => props.modelValue,
+  (visible) => {
+    if (!visible) return
+    draftRelations.value = [...props.relations]
+    draftStatus.value = props.status
+    draftTaskType.value = props.taskType
+    void nextTick(() => {
+      updatePopoverWidth()
+      closeButton.value?.focus()
+    })
   },
+  { immediate: true },
 )
 
 const relationOptions = computed(() => [
@@ -50,51 +65,92 @@ const toggleRelation = (value: TaskRelationFilter) => {
 }
 
 const apply = () => {
-  emit('apply', [...draftRelations.value])
-  emit('update:modelValue', false)
+  emit('apply', { status: draftStatus.value, taskType: draftTaskType.value, relations: [...draftRelations.value] })
+  close()
 }
 
 const reset = () => {
-  draftRelations.value = []
   emit('reset')
+  close()
+}
+
+const close = () => {
   emit('update:modelValue', false)
+  props.trigger?.focus()
 }
 
 const handlePointerDown = (event: PointerEvent) => {
   const target = event.target as Node | null
-  if (target && popoverRef.value?.contains(target)) return
+  if (target && (popoverRef.value?.contains(target) || props.trigger?.contains(target))) return
   emit('update:modelValue', false)
 }
 
 const handleKeydown = (event: KeyboardEvent) => {
-  if (event.key === 'Escape') emit('update:modelValue', false)
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    close()
+  }
 }
 
 watch(open, (visible) => {
   if (visible) {
     document.addEventListener('pointerdown', handlePointerDown, true)
-    document.addEventListener('keydown', handleKeydown, true)
+    document.addEventListener('keydown', handleKeydown)
+    window.addEventListener('resize', updatePopoverWidth)
   } else {
     document.removeEventListener('pointerdown', handlePointerDown, true)
-    document.removeEventListener('keydown', handleKeydown, true)
+    document.removeEventListener('keydown', handleKeydown)
+    window.removeEventListener('resize', updatePopoverWidth)
   }
-})
+}, { immediate: true })
 
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', handlePointerDown, true)
-  document.removeEventListener('keydown', handleKeydown, true)
+  document.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('resize', updatePopoverWidth)
 })
 </script>
 
 <template>
   <Transition name="task-filter-pop">
-    <section ref="popover" v-if="open" class="task-filter-popover" role="dialog" :aria-label="t('chat.task_advanced_filter_title')">
+    <section ref="popover" v-if="open" class="task-filter-popover" :style="{ maxWidth: popoverMaxWidth }" role="dialog" :aria-label="t('chat.task_advanced_filter_title')">
       <header class="task-filter-popover-header">
         <h4>{{ t('chat.task_advanced_filter_title') }}</h4>
-        <button type="button" class="task-filter-close" :aria-label="t('common.close')" @click="open = false">×</button>
+        <button ref="closeButton" type="button" class="task-filter-close" :aria-label="t('common.close')" @click="close">×</button>
       </header>
       <div class="task-filter-popover-body">
-        <div class="task-relation-options">
+        <div class="task-filter-basics">
+          <div class="task-filter-field">
+            <span class="task-filter-label">{{ t('chat.session_filter_label') }}</span>
+            <BaseSelect
+              v-model="draftStatus"
+              :aria-label="t('chat.session_filter_label')"
+              :options="[
+                { label: t('chat.session_filter_all'), value: 'ALL' },
+                { label: t('chat.session_filter_success'), value: 'DONE' },
+                { label: t('chat.session_filter_failed'), value: 'FAILED' },
+              ]"
+              size="sm"
+              class="task-filter-select"
+            />
+          </div>
+          <div class="task-filter-field">
+            <span class="task-filter-label">{{ t('chat.session_type_label') }}</span>
+            <BaseSelect
+              v-model="draftTaskType"
+              :aria-label="t('chat.session_type_label')"
+              :options="[
+                { label: t('chat.session_type_all'), value: 'ALL' },
+                { label: t('task_types.development'), value: 'DEVELOPMENT' },
+                { label: t('task_types.diagnosis'), value: 'DIAGNOSIS' },
+              ]"
+              size="sm"
+              class="task-filter-select"
+            />
+          </div>
+        </div>
+        <fieldset class="task-relation-options">
+          <legend class="task-filter-label">{{ t('chat.task_relation_label') }}</legend>
           <label
             v-for="option in relationOptions"
             :key="option.value"
@@ -111,7 +167,7 @@ onBeforeUnmount(() => {
               <span class="task-relation-description">{{ option.description }}</span>
             </span>
           </label>
-        </div>
+        </fieldset>
       </div>
       <footer class="task-filter-popover-actions">
         <button type="button" class="task-filter-text-btn" @click="reset">{{ t('chat.task_filter_reset') }}</button>
@@ -129,8 +185,8 @@ onBeforeUnmount(() => {
   z-index: 30;
   display: flex;
   flex-direction: column;
-  width: min(328px, calc(100vw - 28px));
-  max-height: min(520px, calc(100vh - 28px));
+  width: 360px;
+  max-height: min(520px, calc(100dvh - 124px));
   overflow: hidden;
   border: 1px solid #e2e8f0;
   border-radius: var(--radius-lg);
@@ -143,7 +199,7 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 14px;
+  padding: 14px 16px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
 
@@ -177,23 +233,56 @@ onBeforeUnmount(() => {
 .task-filter-popover-body {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
   min-height: 0;
   overflow-y: auto;
-  padding: 12px 14px;
+  padding: 16px;
+}
+
+.task-filter-basics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.task-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.task-filter-label {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.task-filter-select { min-width: 0; }
+.task-filter-select:deep(.select-trigger) { height: 32px; padding: 0 8px; }
+.task-filter-select:deep(.selected-text) { font-size: 0.8rem; }
+.task-filter-select:deep(.select-dropdown) { z-index: 2; }
+
+.task-relation-options legend {
+  margin-bottom: 8px;
+  padding: 0;
 }
 
 .task-relation-options {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .task-relation-option {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 12px;
+  padding: 10px 12px;
   border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 10px;
   background: var(--color-surface-white, #fff);
@@ -237,7 +326,7 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 10px 14px 12px;
+  padding: 12px 16px;
   border-top: 1px solid rgba(148, 163, 184, 0.18);
 }
 
@@ -268,6 +357,12 @@ onBeforeUnmount(() => {
 
 .task-filter-apply-btn:hover {
   background: var(--color-primary-700);
+}
+
+@media (max-width: 375px) {
+  .task-filter-basics { grid-template-columns: minmax(0, 1fr); }
+  .task-filter-field { flex-direction: row; align-items: center; gap: 10px; }
+  .task-filter-select { flex: 1; }
 }
 
 .task-filter-pop-enter-active,

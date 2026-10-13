@@ -185,6 +185,7 @@ def list_tasks(
     requirement_id: str | None = Query(default=None),
     independent: bool = Query(default=False),
     following: bool = Query(default=False),
+    search: str | None = Query(default=None, max_length=200),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -204,6 +205,7 @@ def list_tasks(
         requirement_id=requirement_id,
         independent=independent,
         following=following,
+        search=search,
         with_total=False,
         limit=page_size + 1,
     )

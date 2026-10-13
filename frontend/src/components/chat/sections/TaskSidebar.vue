@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, shallowRef, useId, useTemplateRef } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Plus, SlidersHorizontal, Loader2 } from '@/components/icons'
-import BaseSelect from '@/components/BaseSelect.vue'
+import { Plus, Search, Funnel, Loader2, X } from '@/components/icons'
 import TaskAdvancedFilterDrawer from '@/components/chat/TaskAdvancedFilterDrawer.vue'
 import ChatTaskListItem from '@/components/chat/ChatTaskListItem.vue'
 import type { Ref } from 'vue'
@@ -18,7 +17,15 @@ const props = defineProps<{
 }>()
 
 const { t } = useI18n()
-const advancedFilterOpen = ref(false)
+const advancedFilterOpen = shallowRef(false)
+const filterButton = useTemplateRef<HTMLButtonElement>('filterButton')
+const filterId = `task-filters-${useId()}`
+const activeFilterCount = computed(() => props.vm.taskRelationFilter.length
+  + Number(props.vm.taskStatusFilter !== 'ALL')
+  + Number(props.vm.taskTypeFilter !== 'ALL'))
+const filterLabel = computed(() => activeFilterCount.value
+  ? t('chat.task_filter_count', { count: activeFilterCount.value })
+  : t('chat.task_advanced_filter'))
 </script>
 
 <template>
@@ -26,60 +33,48 @@ const advancedFilterOpen = ref(false)
     <div class="sidebar-header">
       <div class="sidebar-title-row">
         <h3 :title="props.vm.taskViewLabel">{{ props.vm.taskViewLabel }}</h3>
-        <div class="sidebar-title-actions">
-          <span class="advanced-filter-anchor">
-            <button
-              class="advanced-filter-btn"
-              :class="{ active: props.vm.taskRelationFilter.length > 0 }"
-              type="button"
-              :title="t('chat.task_advanced_filter')"
-              :aria-label="t('chat.task_advanced_filter')"
-              @click="advancedFilterOpen = true"
-            >
-              <SlidersHorizontal class="w-4 h-4" />
-              <span v-if="props.vm.taskRelationFilter.length > 0" class="advanced-filter-badge">{{ props.vm.taskRelationFilter.length }}</span>
-            </button>
-            <TaskAdvancedFilterDrawer
-              v-model="advancedFilterOpen"
-              :relations="props.vm.taskRelationFilter"
-              @apply="props.vm.applyTaskRelationFilter"
-              @reset="props.vm.resetTaskRelationFilter"
-            />
-          </span>
-          <button class="new-session-btn" :disabled="!props.vm.canCreateTask" @click="props.vm.openNewTaskModal" :title="t('dashboard.new_task')">
-            <Plus class="w-4 h-4" />
-          </button>
-        </div>
+        <button type="button" class="new-session-btn" :disabled="!props.vm.canCreateTask" @click="props.vm.openNewTaskModal" :title="t('dashboard.new_task')" :aria-label="t('dashboard.new_task')">
+          <Plus class="w-4 h-4" />
+        </button>
       </div>
-      <div class="sidebar-filter-row">
-        <div class="sidebar-filter-item">
-          <span class="sidebar-filter-label">{{ t('chat.session_filter_label') }}</span>
-          <BaseSelect
-            v-model="props.vm.taskStatusFilter"
-            :options="[
-              { label: t('chat.session_filter_all'), value: 'ALL' },
-              { label: t('chat.session_filter_success'), value: 'DONE' },
-              { label: t('chat.session_filter_failed'), value: 'FAILED' },
-            ]"
-            size="sm"
-            class="task-filter-select"
-            @update:modelValue="props.vm.applyTaskStatusFilter"
-          />
-        </div>
-        <div class="sidebar-filter-item">
-          <span class="sidebar-filter-label">{{ t('chat.session_type_label') }}</span>
-          <BaseSelect
-            v-model="props.vm.taskTypeFilter"
-            :options="[
-              { label: t('chat.session_type_all'), value: 'ALL' },
-              { label: t('task_types.development'), value: 'DEVELOPMENT' },
-              { label: t('task_types.diagnosis'), value: 'DIAGNOSIS' },
-            ]"
-            size="sm"
-            class="task-filter-select"
-            @update:modelValue="props.vm.applyTaskTypeFilter"
-          />
-        </div>
+      <div class="sidebar-search">
+        <Search class="sidebar-search-icon" aria-hidden="true" />
+        <input
+          v-model="props.vm.taskSearchQuery"
+          type="search"
+          class="sidebar-search-input"
+          :placeholder="t('chat.task_search_placeholder')"
+          :aria-label="t('chat.task_search_label')"
+          maxlength="200"
+        />
+        <button v-if="props.vm.taskSearchQuery" type="button" class="search-clear-btn" :aria-label="t('chat.task_search_clear')" @click="props.vm.taskSearchQuery = ''">
+          <X class="w-3 h-3" />
+        </button>
+        <button
+          ref="filterButton"
+          class="advanced-filter-btn"
+          :class="{ active: activeFilterCount > 0 || advancedFilterOpen }"
+          type="button"
+          :title="filterLabel"
+          :aria-label="filterLabel"
+          :aria-expanded="advancedFilterOpen"
+          :aria-controls="filterId"
+          aria-haspopup="dialog"
+          @click="advancedFilterOpen = !advancedFilterOpen"
+        >
+          <Funnel class="w-4 h-4" />
+          <span v-if="activeFilterCount" class="advanced-filter-badge" aria-hidden="true">{{ activeFilterCount }}</span>
+        </button>
+        <TaskAdvancedFilterDrawer
+          :id="filterId"
+          v-model="advancedFilterOpen"
+          :trigger="filterButton"
+          :status="props.vm.taskStatusFilter"
+          :task-type="props.vm.taskTypeFilter"
+          :relations="props.vm.taskRelationFilter"
+          @apply="props.vm.applyTaskFilters"
+          @reset="props.vm.resetTaskFilters"
+        />
       </div>
     </div>
     <div class="task-list" :ref="props.listContainerRef" @scroll="props.vm.handleTaskListScroll">
@@ -98,7 +93,7 @@ const advancedFilterOpen = ref(false)
       </div>
       <button v-else-if="props.vm.taskListError" type="button" class="empty-hint retry-list" @click="props.vm.retryTaskList">{{ t('task_rail.retry') }}</button>
       <div v-else-if="props.vm.tasks.length === 0" class="empty-hint">
-        {{ t('task_rail.empty_tasks', { view: props.vm.taskViewLabel }) }}
+        {{ props.vm.taskSearchQuery.trim() || activeFilterCount ? t('chat.task_search_empty') : t('task_rail.empty_tasks', { view: props.vm.taskViewLabel }) }}
       </div>
       <div v-if="props.vm.taskListLoadingMore" class="task-list-footer">
         <Loader2 class="w-4 h-4 spin" />
@@ -113,10 +108,10 @@ const advancedFilterOpen = ref(false)
 
 <style scoped>
 .sidebar-title-row h3 { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.9rem; }
-.sidebar-title-actions { flex-shrink:0; }
 .retry-list { border:0; background:transparent; cursor:pointer; }
 .task-sidebar {
   width: 280px;
+  max-width: 100%;
   border-radius: 0;
   border: none;
   border-right: 1px solid rgba(0,0,0,0.05);
@@ -139,7 +134,7 @@ const advancedFilterOpen = ref(false)
 }
 
 .sidebar-header {
-  padding: var(--space-4);
+  padding: 16px 10px 12px;
   border-bottom: 1px solid rgba(0,0,0,0.05);
   display: flex;
   flex-direction: column;
@@ -150,47 +145,70 @@ const advancedFilterOpen = ref(false)
   display: flex;
   justify-content: space-between;
   align-items: center;
-}
-.sidebar-title-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  gap: 12px;
 }
 .sidebar-header h3 {
   margin: 0;
   font-weight: 600;
   color: var(--color-primary-900);
 }
-.sidebar-filter-row {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-}
-.sidebar-filter-item {
+.sidebar-search {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
+  gap: 6px;
+  height: 32px;
+  padding: 0 4px 0 8px;
+  border: 1px solid #dce5ef;
+  border-radius: 8px;
+  background: var(--color-bg-base);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
-.sidebar-filter-label {
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
-  white-space: nowrap;
+.sidebar-search:focus-within {
+  border-color: var(--color-primary-500);
+  box-shadow: 0 0 0 2px var(--color-primary-100);
+}
+.sidebar-search-icon {
+  width: 14px;
+  height: 14px;
   flex-shrink: 0;
+  color: #94a3b8;
 }
-.task-filter-select {
+.sidebar-search-input {
   flex: 1;
   min-width: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--color-text-body);
+  font: inherit;
+  font-size: 0.75rem;
 }
-.task-filter-select:deep(.select-trigger) {
-  height: 32px;
-  border-radius: 8px;
-  padding: 0 8px;
-  border-color: rgba(148, 163, 184, 0.35);
+.sidebar-search-input::placeholder { color: #94a3b8; }
+.sidebar-search-input::-webkit-search-cancel-button { display: none; }
+.search-clear-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
 }
-.task-filter-select:deep(.selected-text) {
-  font-size: 0.8rem;
+.search-clear-btn:hover { background: var(--color-primary-100); }
+.new-session-btn:focus-visible,
+.advanced-filter-btn:focus-visible,
+.search-clear-btn:focus-visible {
+  outline: 2px solid var(--color-primary-500);
+  outline-offset: 2px;
 }
 
 .task-list { flex: 1; overflow-y: auto; padding: var(--space-2); }
@@ -217,23 +235,19 @@ const advancedFilterOpen = ref(false)
   background: rgba(37, 99, 235, 0.06);
 }
 
-.advanced-filter-anchor {
-  position: relative;
-  display: inline-flex;
-}
-
 .advanced-filter-btn {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  flex-shrink: 0;
+  width: 28px;
+  height: 24px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 8px;
-  color: var(--color-text-muted);
-  background: transparent;
+  border-radius: 5px;
+  color: var(--color-primary-600);
+  background: var(--color-primary-50);
   cursor: pointer;
   transition: color var(--transition-fast), background-color var(--transition-fast), border-color var(--transition-fast);
 }
@@ -247,8 +261,8 @@ const advancedFilterOpen = ref(false)
 
 .advanced-filter-badge {
   position: absolute;
-  top: -3px;
-  right: -3px;
+  top: -4px;
+  right: -4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -266,6 +280,7 @@ const advancedFilterOpen = ref(false)
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   width: 32px;
   height: 32px;
   background: linear-gradient(135deg, var(--color-primary-500) 0%, var(--color-primary-700) 100%);
