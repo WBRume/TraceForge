@@ -14,7 +14,7 @@ from app.core.feature_settings import feature_settings as settings
 from app.core.offload import run_db_txn
 from app.domains.search.embedding import embed, encrypt_key
 from app.domains.search.embedding_protocols import profile_fingerprint
-from app.domains.search.es import create_client, index_mapping
+from app.domains.search.es import create_client, ensure_indices, indices_exist
 from app.domains.search.models import (
     SearchBackfillRun,
     SearchDocumentState,
@@ -24,6 +24,7 @@ from app.domains.search.models import (
     SearchOutbox,
 )
 from app.domains.search.projection import digest
+from app.domains.search.storage import SCHEMA_VERSION, physical_indices, semantic_enabled, write_index
 from app.domains.search.worker import current_document, dto
 
 
@@ -83,11 +84,12 @@ async def create_index(es, name, profile_id=None):
     if existing:
         return {"target_id": existing["target_id"], "existing": True}
     dimension = profile["dimension"] if profile else None
-    await es.indices.create(index=name, body=index_mapping(dimension))
+    await ensure_indices(es, {"physical_index": name, "schema_version": SCHEMA_VERSION}, dimension)
 
     def save(db):
         t = SearchIndexTarget(
             physical_index=name,
+            schema_version=SCHEMA_VERSION,
             embedding_profile_id=profile_id,
             dimension=dimension,
             connection_fingerprint=digest(settings.SEARCH_ES_URL),
@@ -188,6 +190,7 @@ async def backfill(name=None, run_id=None, batch_size=100):
 
 async def verify(es, name):
     target = await run_db_txn(lambda db: get_target(db, name))
+    partitions_ready = await indices_exist(es, target)
     cursor, checked, missing, semantic_missing = "", 0, 0, 0
     while True:
 
@@ -205,7 +208,8 @@ async def verify(es, name):
         if not docs:
             break
         found = await es.mget(
-            index=name, ids=[d["entity_key"] for d in docs], source_excludes=["semantic_passages.vector"]
+            docs=[{"_index": write_index(target, d["kind"]), "_id": d["entity_key"]} for d in docs],
+            source_excludes=["semantic_passages.vector"],
         )
         for expected, result in zip(docs, found["docs"], strict=True):
             checked += 1
@@ -216,7 +220,7 @@ async def verify(es, name):
             missing += int(not valid)
             if expected["deleted"]:
                 missing += int(any(k in actual for k in ("content_text", "title", "symbols", "semantic_passages")))
-            elif target["embedding_profile_id"]:
+            elif target["embedding_profile_id"] and semantic_enabled(target, expected["kind"]):
                 semantic_missing += int(
                     not actual.get("semantic_ready")
                     or actual.get("embedding_profile_id") != target["embedding_profile_id"]
@@ -237,7 +241,7 @@ async def verify(es, name):
         completed = (
             db.query(SearchBackfillRun.id).filter_by(target_id=target["target_id"], status="done").first() is not None
         )
-        valid = not (missing or semantic_missing or pending or jobs) and completed
+        valid = partitions_ready and not (missing or semantic_missing or pending or jobs) and completed
         db.get(SearchIndexTarget, target["target_id"]).verified = valid
         return {
             "checked": checked,
@@ -247,6 +251,7 @@ async def verify(es, name):
             "embedding_pending": jobs,
             "backfill_completed": completed,
             "verified": valid,
+            "partitions_ready": partitions_ready,
         }
 
     return await run_db_txn(save)
@@ -280,7 +285,7 @@ async def activate(es, name):
     except NotFoundError:
         aliases = {}
     actions = [{"remove": {"index": old, "alias": settings.SEARCH_READ_ALIAS}} for old in aliases]
-    actions.append({"add": {"index": name, "alias": settings.SEARCH_READ_ALIAS}})
+    actions.extend({"add": {"index": index, "alias": settings.SEARCH_READ_ALIAS}} for index in physical_indices(target))
     await es.indices.update_aliases(actions=actions)
 
     def alias_applied(db):

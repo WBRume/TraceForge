@@ -4,6 +4,7 @@ export interface SearchCapabilities {
   ready: boolean
   hybrid_available: boolean
   hybrid_unavailable_reason?: string | null
+  semantic_types?: string[]
 }
 export interface SearchItem {
   entity_key: string

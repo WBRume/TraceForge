@@ -116,7 +116,7 @@ async def probe_search(values, app, draft):
 
     if not values["enabled"]:
         return result("search", "DISABLED", "off", "全局搜索已停用")
-    local_ready = await asyncio.to_thread(sqlite_index.ready)
+    local_ready = await asyncio.to_thread(sqlite_index.ready) if values["backend"] != "elasticsearch" else False
     if values["backend"] == "sqlite" or (values["backend"] == "auto" and not values["es_url"]):
         online = await search_worker_health(values, app)
         return result(
@@ -140,9 +140,12 @@ async def probe_search(values, app, draft):
             if health.get("status") == "red":
                 raise ValueError("cluster unhealthy")
             target, profile = await run_db_txn(configuration)
-            remote_ready = bool(target and await es.indices.exists(index=target["physical_index"]))
+            from app.domains.search.es import indices_exist
+            from app.domains.search.storage import physical_indices
+
+            remote_ready = bool(target and await indices_exist(es, target))
             if remote_ready:
-                await es.count(index=target["physical_index"])
+                await es.count(index=physical_indices(target))
     except Exception:
         return result(
             "search",

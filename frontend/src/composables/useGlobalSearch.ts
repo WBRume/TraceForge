@@ -2,7 +2,7 @@ import { shallowRef, watch, onScopeDispose, type Ref } from 'vue'
 import { searchApi } from '@/services/searchApi'
 import type { Retrieval, SearchItem, SearchResponse } from '@/types/search'
 
-export function useGlobalSearch(open: Ref<boolean>) {
+export function useGlobalSearch(open: Ref<boolean>, workspaceId: Ref<string | undefined> = shallowRef()) {
   const query = shallowRef('')
   const retrieval = shallowRef<Retrieval>('hybrid')
   const kind = shallowRef('all')
@@ -35,6 +35,7 @@ export function useGlobalSearch(open: Ref<boolean>) {
     error.value = ''
     try {
       const result = await searchApi.query({ q: text, retrieval: retrieval.value, type: kind.value,
+        ...(workspaceId.value ? { workspace_id: workspaceId.value } : {}),
         ...(more ? { cursor: response.value!.next_cursor! } : {}) }, controller.signal)
       if (token !== generation || !open.value) { release(result.session_cursor); return }
       items.value = more ? [...items.value, ...result.items] : result.items
@@ -47,7 +48,7 @@ export function useGlobalSearch(open: Ref<boolean>) {
       }
     } finally { if (token === generation) loading.value = false }
   }
-  watch([query, retrieval, kind, composing, open], () => {
+  watch([query, retrieval, kind, composing, open, workspaceId], () => {
     reset()
     if (open.value && !composing.value) timer = setTimeout(() => void execute(), 300)
   })

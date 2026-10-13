@@ -42,6 +42,47 @@ def test_bm25_chinese_scope_updates_and_tombstones():
     assert sqlite_index.search('" OR * -', ["w"]) == []
 
 
+def test_physical_partitions_store_tokens_once_and_merge_rankings():
+    message = doc("message:1", "重复连接池日志 " * 1000) | {"kind": "message", "message_id": "1"}
+    case = doc("case:1", "连接池解决方案") | {"kind": "case"}
+    sqlite_index.write([message, case, *[doc(f"task:{i}", "连接池故障") for i in range(205)]])
+    for corpus, expected_kinds in (("history", {"task", "message"}), ("knowledge", {"case"})):
+        assert sqlite_index.index_path(corpus).is_file()
+        with sqlite_index.connection(corpus) as db:
+            assert {r[0] for r in db.execute("SELECT DISTINCT kind FROM documents")} == expected_kinds
+            assert "body" not in {r[1] for r in db.execute("PRAGMA table_info(documents)")}
+            assert not db.execute("SELECT name FROM sqlite_master WHERE name='terms_content'").fetchone()
+            db.execute("INSERT INTO terms(terms,rank) VALUES('integrity-check',1)")
+    with sqlite_index.connection("history") as db:
+        text = db.execute("SELECT content FROM documents WHERE entity_key='message:1'").fetchone()[0]
+        assert len(text) < 100
+    hits = sqlite_index.search("连接池", ["w"])
+    assert "case:1" in [h["_id"] for h in hits[:2]]
+    assert len(hits) == 200
+    assert [h["_id"] for h in sqlite_index.search("连接池", ["w"], kind="case")] == ["case:1"]
+    assert all(h["_score"] > 0 for h in hits)
+
+
+def test_partition_updates_delete_old_tokens_and_readiness_requires_both_partitions():
+    case = doc("case:1", "old_unique_term") | {"kind": "case"}
+    sqlite_index.write(
+        [case, case | {"source_version": 2, "title": "new_unique_term", "content_text": "new_unique_term"}]
+    )
+    assert not sqlite_index.search("old_unique_term", ["w"])
+    assert sqlite_index.search("new_unique_term", ["w"])
+    sqlite_index.write([case | {"source_version": 3, "deleted": True}, case])
+    assert not sqlite_index.search("new_unique_term", ["w"])
+    with sqlite_index.connection("knowledge") as db:
+        db.execute("INSERT INTO terms(terms,rank) VALUES('integrity-check',1)")
+    for kind in ("task", "message", "case"):
+        sqlite_index.checkpoint(kind, "__done__")
+    assert not sqlite_index.ready()
+    sqlite_index.checkpoint("playbook", "__done__")
+    assert sqlite_index.ready()
+    sqlite_index.invalidate_checkpoints()
+    assert not sqlite_index.ready()
+
+
 def test_local_results_still_recheck_source_authorization_and_version(db_session):
     db = db_session
     task = _seed_task(db)

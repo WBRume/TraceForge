@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, shallowRef, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, ref, shallowRef, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { Search, X, Loader2, Sparkles, AlertTriangle } from '@/components/icons'
 import { useGlobalSearch } from '@/composables/useGlobalSearch'
 import BaseSelect from '@/components/BaseSelect.vue'
@@ -11,8 +11,18 @@ const open = defineModel<boolean>({ required: true })
 const props = defineProps<{ capabilities: SearchCapabilities }>()
 
 const router = useRouter()
-const state = useGlobalSearch(open)
+const route = useRoute()
+const currentWorkspaceId = computed(() => typeof route.params.wsId === 'string' ? route.params.wsId : undefined)
+const scope = ref<'all' | 'workspace'>('all')
+const workspaceId = computed(() => scope.value === 'workspace' ? currentWorkspaceId.value : undefined)
+const scopeOptions = [
+  { value: 'all', label: '所有工作区' },
+  { value: 'workspace', label: '当前工作区' },
+]
+watch(currentWorkspaceId, () => { scope.value = 'all' })
+const state = useGlobalSearch(open, workspaceId)
 const { query, retrieval, kind, composing, loading, error, items, response } = state
+const knowledgeSemanticOnly = computed(() => props.capabilities.semantic_types?.includes('case') && !props.capabilities.semantic_types.includes('message'))
 watch(() => props.capabilities.hybrid_available, available => { if (!available) retrieval.value = 'lexical' }, { immediate: true })
 
 const active = shallowRef(0)
@@ -115,7 +125,7 @@ onBeforeUnmount(() => {
           <header class="modal-header">
             <div class="header-title-group">
               <h3 class="header-title">搜索任务与历史消息</h3>
-              <span class="header-subtitle">快速穿梭跨工作区的任务、会话与交流记录</span>
+              <span class="header-subtitle">{{ workspaceId ? '仅搜索当前工作区的任务、消息、案例与诊断规程' : '搜索你有权访问的工作区中的任务、消息、案例与诊断规程' }}</span>
             </div>
 
             <div class="header-controls">
@@ -166,6 +176,14 @@ onBeforeUnmount(() => {
           <div class="search-filters-bar">
             <div class="filters-select-group">
               <BaseSelect
+                v-if="currentWorkspaceId"
+                v-model="scope"
+                :options="scopeOptions"
+                size="sm"
+                class="filter-select"
+                aria-label="搜索范围"
+              />
+              <BaseSelect
                 v-model="retrieval"
                 :options="retrievalOptions"
                 size="sm"
@@ -194,6 +212,9 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- 系统状态与降级提醒 -->
+          <p v-if="capabilities.hybrid_available && knowledgeSemanticOnly" class="retrieval-scope-hint">
+            任务与消息按关键词搜索；案例与诊断规程可使用语义检索。
+          </p>
           <div v-if="!capabilities.ready" class="status-banner info" role="status">
             <Sparkles class="w-4 h-4 flex-shrink-0 text-sky-500" />
             <span>历史索引正在准备，搜索暂不可用。</span>
@@ -209,7 +230,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="response?.degraded_reason" class="status-banner warning" role="status">
             <AlertTriangle class="w-4 h-4 flex-shrink-0 text-amber-500" />
-            <span>{{ response.degraded_reason?.includes('sqlite_bm25') ? '当前使用关键词检索。' : '语义服务暂不可用，本次已自动使用关键词检索。' }}</span>
+            <span>{{ response.degraded_reason === 'history_lexical_only' ? '任务与消息使用关键词检索；案例和诊断规程支持混合检索。' : response.degraded_reason?.includes('sqlite_bm25') ? '当前使用关键词检索。' : '语义服务暂不可用，本次已自动使用关键词检索。' }}</span>
           </div>
           <div v-if="response?.indexing_state === 'partial'" class="status-banner info" role="status">
             <Sparkles class="w-4 h-4 flex-shrink-0 text-sky-500" />
@@ -448,12 +469,20 @@ onBeforeUnmount(() => {
 
 .filters-select-group {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   align-items: center;
   gap: 10px;
 }
 
 .filter-select {
   width: 120px;
+}
+
+.retrieval-scope-hint {
+  margin: 0 0 12px;
+  color: #64748b;
+  font-size: 12px;
 }
 
 .shortcuts-hint {

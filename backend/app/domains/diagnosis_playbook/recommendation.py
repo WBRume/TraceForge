@@ -9,10 +9,10 @@ from app.core.feature_settings import feature_settings as settings
 from app.core.offload import run_db_txn
 from app.domains.search import sqlite_index
 from app.domains.search.embedding import EmbeddingError, embed
-from app.domains.search.es import scope_filters, search_body
+from app.domains.search.es import scope_filters
 from app.domains.search.models import SearchDocumentState
 from app.domains.search.projection import build_search_projection
-from app.domains.search.rrf import checked_hits, hybrid_search
+from app.domains.search.rrf import search_target
 from app.domains.search.service import configuration
 
 from .models import PlaybookSpec
@@ -116,12 +116,16 @@ async def recommend(es, http, ws_id, text, keyword=""):
                     vector = (await embed(http, profile, [query], query=True))[0]
                 except EmbeddingError:
                     pass
-            if vector:
-                hits = await hybrid_search(es, target["physical_index"], query, filters, vector, profile["id"])
-                mode = "hybrid"
-            else:
-                hits = checked_hits(await es.search(index=target["physical_index"], body=search_body(query, filters)))
-                mode = "bm25"
+            hits = await search_target(
+                es,
+                target,
+                query,
+                filters,
+                kind="playbook",
+                vector=vector,
+                profile_id=profile["id"] if profile else None,
+            )
+            mode = "hybrid" if vector else "bm25"
         except Exception as exc:
             if settings.SEARCH_BACKEND == "elasticsearch":
                 raise HTTPException(status_code=503, detail={"code": "SEARCH_UNAVAILABLE"}) from exc

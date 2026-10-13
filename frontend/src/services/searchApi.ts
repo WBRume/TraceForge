@@ -3,7 +3,7 @@ import type { SearchCapabilities, SearchResponse, Retrieval, MessageContext } fr
 
 export const searchApi = {
   capabilities: (signal?: AbortSignal) => api.get<SearchCapabilities>('/search/capabilities', { signal }).then(r => r.data),
-  query: (params: { q: string; retrieval: Retrieval; type: string; cursor?: string }, signal: AbortSignal) =>
+  query: (params: { q: string; retrieval: Retrieval; type: string; workspace_id?: string; cursor?: string }, signal: AbortSignal) =>
     api.get<SearchResponse>('/search', { params, signal }).then(r => r.data),
   close: (cursor: string) => api.post('/search/sessions/close', { cursor }),
   context: (ws: string, task: string, message: string, signal: AbortSignal) =>

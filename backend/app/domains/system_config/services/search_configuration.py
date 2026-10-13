@@ -7,6 +7,7 @@ from app.domains.search.embedding import embed, encrypt_key
 from app.domains.search.embedding_protocols import profile_fingerprint
 from app.domains.search.models import SearchBackfillRun, SearchEmbeddingJob, SearchEmbeddingProfile, SearchIndexTarget
 from app.domains.search.projection import digest
+from app.domains.search.storage import SCHEMA_VERSION
 from app.domains.search.worker import dto
 
 
@@ -17,7 +18,7 @@ def bind_existing_targets(db, url):
 
 
 async def prepare_search(app, values):
-    from app.domains.search.es import index_mapping
+    from app.domains.search.es import ensure_indices
 
     if not values["enabled"] or values["backend"] == "sqlite" or not values["es_url"]:
         return None
@@ -66,19 +67,20 @@ async def prepare_search(app, values):
     else:
         profile = None
     # Include the server binding: an index on another cluster is a different target.
-    identity = digest([values["es_url"], profile["fingerprint"] if profile else "lexical"])
+    identity = digest([SCHEMA_VERSION, values["es_url"], profile["fingerprint"] if profile else "lexical"])
     name = "traceforge-search-runtime-" + identity[:32]
-    exists = bool(await app.state.search_es.indices.exists(index=name))
-    if not exists:
-        await app.state.search_es.indices.create(
-            index=name, body=index_mapping(profile["dimension"] if profile else None)
-        )
+    exists = await ensure_indices(
+        app.state.search_es,
+        {"physical_index": name, "schema_version": SCHEMA_VERSION},
+        profile["dimension"] if profile else None,
+    )
 
     def enqueue(db):
         target = db.query(SearchIndexTarget).filter_by(physical_index=name).first()
         if not target:
             target = SearchIndexTarget(
                 physical_index=name,
+                schema_version=SCHEMA_VERSION,
                 connection_fingerprint=digest(values["es_url"]),
                 embedding_profile_id=profile_id,
                 dimension=profile["dimension"] if profile else None,

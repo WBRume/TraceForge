@@ -76,6 +76,8 @@ codebuddy-sdk-doc.txt
 /examples/
 # Rebuildable local BM25 index and isolated promotion CLI working directories.
 /backend/data/search-bm25.sqlite3*
+/backend/data/search-bm25-v*-history.sqlite3*
+/backend/data/search-bm25-v*-knowledge.sqlite3*
 /backend/data/playbook-promotion/
 /data/search-bm25.sqlite3
 /data/

@@ -4,6 +4,7 @@ from copy import deepcopy
 
 from app.core.feature_settings import feature_settings as settings
 from app.domains.search.projection import es_version
+from app.domains.search.storage import physical_indices, write_index
 
 
 def create_client():
@@ -18,7 +19,7 @@ def create_client():
     )
 
 
-def index_mapping(dimension=None):
+def index_mapping(dimension=None, *, compact=False):
     props = {
         k: {"type": "keyword"}
         for k in (
@@ -46,12 +47,14 @@ def index_mapping(dimension=None):
         }
     )
     for field in ("title", "content_text"):
-        props[field] = {"type": "text", "analyzer": "tf_text", "index_options": "offsets"}
+        props[field] = {"type": "text", "analyzer": "tf_text", "index_options": "freqs" if compact else "offsets"}
     props["symbols"] = {
         "type": "keyword",
         "normalizer": "tf_lower",
         "fields": {"parts": {"type": "text", "analyzer": "tf_symbol_index", "search_analyzer": "tf_symbol_search"}},
     }
+    if compact:
+        props["symbols"]["fields"]["parts"]["index_options"] = "freqs"
     if dimension:
         props["semantic_passages"] = {
             "type": "nested",
@@ -93,8 +96,29 @@ def index_mapping(dimension=None):
                 "normalizer": {"tf_lower": {"type": "custom", "filter": ["lowercase"]}},
             },
         },
-        "mappings": {"dynamic": "strict", "properties": props},
+        "mappings": {
+            "dynamic": "strict",
+            "properties": props,
+            **({"_source": {"excludes": ["title", "content_text", "symbols"]}} if compact else {}),
+        },
     }
+
+
+async def ensure_indices(client, target, dimension=None):
+    """Resume partial creation of an immutable partitioned target."""
+    existed = True
+    for name in physical_indices(target):
+        if not await client.indices.exists(index=name):
+            existed = False
+            await client.indices.create(index=name, body=index_mapping(dimension, compact=True))
+    return existed
+
+
+async def indices_exist(client, target):
+    for name in physical_indices(target):
+        if not await client.indices.exists(index=name):
+            return False
+    return True
 
 
 def scope_filters(workspaces, *, kind="all", task_id=None, role=None, date_from=None, date_to=None):
@@ -118,13 +142,20 @@ def scope_filters(workspaces, *, kind="all", task_id=None, role=None, date_from=
     return filters
 
 
-def search_body(query, filters, vector=None, profile_id=None):
+def search_body(query, filters, vector=None, profile_id=None, *, highlight=True):
     bm25 = {
         "bool": {
             "filter": deepcopy(filters),
             "minimum_should_match": 1,
             "should": [
-                {"multi_match": {"query": query, "fields": ["title^4", "content_text", "symbols.parts^2"]}},
+                {
+                    "multi_match": {
+                        "query": query,
+                        "fields": ["title^4", "content_text", "symbols.parts^2"],
+                        # Symbol graphs must not generate phrase queries against positionless indexes.
+                        **({"auto_generate_synonyms_phrase_query": False} if not highlight else {}),
+                    }
+                },
                 {"term": {"symbols": {"value": query.lower(), "boost": 6}}},
             ],
         }
@@ -136,16 +167,17 @@ def search_body(query, filters, vector=None, profile_id=None):
     }
     if vector is None:
         body["query"] = bm25
-        body["highlight"] = {
-            "type": "unified",
-            "encoder": "html",
-            "pre_tags": ["\ue000"],
-            "post_tags": ["\ue001"],
-            "fields": {
-                "title": {"number_of_fragments": 1, "fragment_size": 160},
-                "content_text": {"number_of_fragments": 1, "fragment_size": 240},
-            },
-        }
+        if highlight:
+            body["highlight"] = {
+                "type": "unified",
+                "encoder": "html",
+                "pre_tags": ["\ue000"],
+                "post_tags": ["\ue001"],
+                "fields": {
+                    "title": {"number_of_fragments": 1, "fragment_size": 160},
+                    "content_text": {"number_of_fragments": 1, "fragment_size": 240},
+                },
+            }
     else:
         body["knn"] = {
             "field": "semantic_passages.vector",
@@ -177,7 +209,7 @@ async def bulk_write(client, target, documents):
             [
                 {
                     "index": {
-                        "_index": target,
+                        "_index": write_index(target, doc["kind"]) if isinstance(target, dict) else target,
                         "_id": doc["entity_key"],
                         "version": es_version(doc["source_version"], phase),
                         "version_type": "external",
@@ -193,7 +225,8 @@ async def bulk_write(client, target, documents):
     for doc, item in zip(documents, response["items"], strict=True):
         status = item["index"]["status"]
         if status == 409:
-            current = await client.get(index=target, id=doc["entity_key"], source_excludes=["semantic_passages.vector"])
+            index = write_index(target, doc["kind"]) if isinstance(target, dict) else target
+            current = await client.get(index=index, id=doc["entity_key"], source_excludes=["semantic_passages.vector"])
             actual = current["_source"]
             expected = es_version(doc["source_version"], int(bool(doc.get("deleted") or doc.get("semantic_ready"))))
             ok = current["_version"] > expected
