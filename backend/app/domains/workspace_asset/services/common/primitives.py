@@ -128,11 +128,19 @@ def coverage_status(requirement_count: int, evidence_items: Iterable[Any]) -> st
     """基于关联任务数与证据集合的 coverage 状态推导。"""
     if requirement_count <= 0:
         return "not_available"
-
     evidence_list = list(evidence_items)
     confirmed = [item for item in evidence_list if enum_value(item.status) == EvidenceStatus.CONFIRMED.value]
-    if not confirmed:
+    return coverage_status_from_counts(
+        requirement_count, len(confirmed), sum(is_human_confirmation(item) for item in confirmed)
+    )
+
+
+def coverage_status_from_counts(requirement_count: int, confirmed_count: int, human_confirmation_count: int) -> str:
+    """Apply the same coverage rules to SQL aggregates and loaded evidence."""
+    if requirement_count <= 0:
+        return "not_available"
+    if not confirmed_count:
         return "waiting_evidence"
-    if not any(is_human_confirmation(item) for item in confirmed):
+    if not human_confirmation_count:
         return "waiting_human_confirmation"
     return "verified"

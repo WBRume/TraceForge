@@ -70,7 +70,12 @@ def list_notifications(
     if unread_only:
         query = query.filter(SddUserNotification.read_at.is_(None))
     total = query.count()
-    rows = query.order_by(SddUserNotification.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    rows = (
+        query.order_by(SddUserNotification.created_at.desc(), SddUserNotification.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
     return [_serialize(row) for row in rows], total
 
 
@@ -137,11 +142,11 @@ def delete_notification(db: Session, user_id: str, notification_id: str) -> bool
 
 def delete_all_notifications(db: Session, user_id: str) -> tuple[int, int]:
     """清空用户全部通知。返回 (删除总数, 其中未读条数)。"""
-    rows = db.query(SddUserNotification).filter(SddUserNotification.recipient_user_id == user_id).all()
-    total = len(rows)
-    unread = sum(1 for row in rows if row.read_at is None)
-    if total:
-        for row in rows:
-            db.delete(row)
-        db.commit()
-    return total, unread
+    # Two set-based deletes avoid materialising every notification body/JSON.
+    # Count unread rows from DELETE rowcount so concurrent inserts cannot make
+    # a separate COUNT disagree with the rows actually consumed.
+    query = db.query(SddUserNotification).filter(SddUserNotification.recipient_user_id == user_id)
+    unread = query.filter(SddUserNotification.read_at.is_(None)).delete(synchronize_session=False)
+    read = query.filter(SddUserNotification.read_at.isnot(None)).delete(synchronize_session=False)
+    db.commit()
+    return unread + read, unread

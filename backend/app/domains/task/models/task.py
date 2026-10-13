@@ -13,6 +13,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -56,7 +57,10 @@ class PlanNodeStatus(str, PyEnum):
 
 class SddTask(Base):
     __tablename__ = "sdd_tasks"
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        Index("ix_sdd_tasks_workspace_created", "workspace_id", "created_at", "id"),
+        {"extend_existing": True},
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)

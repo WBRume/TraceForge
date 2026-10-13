@@ -4,7 +4,7 @@ from sqlalchemy import exists, or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.domains.task.models.chat import ChatMessage, MessageRole
-from app.domains.task.models.pre_input import SddTaskPreInput
+from app.domains.task.models.pre_input import SddTaskPreInput, SddTaskPreInputMention
 from app.domains.task.models.task import SddTask, SddTaskFollower, TaskStatus
 from app.domains.workspace_asset.models.workspace_asset import SddTaskRequirement
 
@@ -85,29 +85,26 @@ def list_tasks(
                 )
             )
         if "mentioned_me" in normalized_relations:
-            # Mentions currently originate from the collaboration pre-input JSON.
-            # Keep the compatibility read here while the mention relation remains
-            # unnormalised in existing databases.
-            mentioned_task_ids = {
-                str(task_id)
-                for task_id, mentioned_user_ids in db.query(
-                    SddTaskPreInput.task_id,
-                    SddTaskPreInput.mentioned_user_ids,
-                )
-                .filter(
+            relation_filters.append(
+                exists().where(
+                    SddTaskPreInput.task_id == SddTask.id,
                     SddTaskPreInput.workspace_id == workspace_id,
+                    SddTaskPreInputMention.pre_input_id == SddTaskPreInput.id,
+                    SddTaskPreInputMention.user_id == actor_id,
                 )
-                .all()
-                if actor_id in {str(value) for value in (mentioned_user_ids or [])}
-            }
-            relation_filters.append(SddTask.id.in_(mentioned_task_ids))
+            )
         if relation_filters:
             query = query.filter(or_(*relation_filters))
 
     # 列表分页只需要「是否还有下一页」，不必为展示计数额外执行 COUNT。
     total = query.count() if with_total else 0
     fetch_limit = page_size if limit is None else limit
-    items = query.order_by(SddTask.created_at.desc()).offset((page - 1) * page_size).limit(fetch_limit).all()
+    items = (
+        query.order_by(SddTask.created_at.desc(), SddTask.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(fetch_limit)
+        .all()
+    )
     return items, total
 
 

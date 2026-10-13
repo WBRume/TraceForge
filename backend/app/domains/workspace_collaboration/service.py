@@ -19,7 +19,7 @@ from app.domains.task.models.session_turn import TaskSessionTurn
 from app.domains.task.models.task import SddTask, TaskType
 from app.domains.task.models.task_repository import SddTaskRepository
 
-from . import content
+from . import content, manifest_store
 from .models import CollaborationHandoff, CollaborationOperation, CollaborationSnapshot, CollaborationState
 from .schemas import DeliveryReceipt, EnableRequest, Fence, HandoffRequest, LeaseRequest
 
@@ -199,7 +199,7 @@ def get_snapshot(db: Session, task_id: str, snapshot_id: str) -> dict:
     row = db.query(CollaborationSnapshot).filter_by(task_id=task_id, id=snapshot_id).first()
     if not row:
         raise CollaborationError("SNAPSHOT_NOT_FOUND", "Collaboration snapshot not found", 404)
-    return row.manifest_json
+    return manifest_store.read_manifest(db, row)
 
 
 def _operation(db: Session, task_id: str, operation_id: str, kind: str, payload: dict) -> dict | None:
@@ -315,12 +315,13 @@ def _snapshot(db: Session, task: SddTask, state: CollaborationState, source: str
             if message and message.task_id == task.id:
                 title = " ".join(message.content.split())
                 manifest["turn_title"] = title[:160] + ("…" if len(title) > 160 else "")
+    inventory_digest = manifest_store.store_repositories(db, task.id, repositories)
     db.add(
         CollaborationSnapshot(
             id=snapshot_id,
             task_id=task.id,
-            manifest_json=manifest,
-            content_digest=content.digest(repositories),
+            manifest_json={key: value for key, value in manifest.items() if key != "repositories"},
+            content_digest=inventory_digest,
             source=source,
         )
     )
@@ -873,7 +874,8 @@ def finish_execution(db: Session, task: SddTask, job_id: str, *, confirmed_stopp
     _renew_reserved_lease(state, reserved_lease)
     state.final_progress_seq = state.progress_seq
     manifest["final_progress_seq"] = state.final_progress_seq
-    db.get(CollaborationSnapshot, manifest["snapshot_id"]).manifest_json = dict(manifest)
+    snapshot = db.get(CollaborationSnapshot, manifest["snapshot_id"])
+    snapshot.manifest_json = {**snapshot.manifest_json, "final_progress_seq": state.final_progress_seq}
     _publish(state, manifest)
     state.sync_phase = "DELIVERY_PENDING"
     state.conflicts_json = []

@@ -1,6 +1,20 @@
 """Durable collaboration state, immutable manifests and idempotent operations."""
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.mysql import LONGBLOB
 
 from app.database import Base
 
@@ -42,12 +56,31 @@ class CollaborationState(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
+class CollaborationManifest(Base):
+    """One compressed repository inventory per task and content digest."""
+
+    __tablename__ = "task_collaboration_manifests"
+
+    task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), primary_key=True)
+    content_digest = Column(String(64), primary_key=True)
+    repositories_zstd = Column(LargeBinary().with_variant(LONGBLOB(), "mysql"), nullable=False)
+
+
 class CollaborationSnapshot(Base):
     __tablename__ = "task_collaboration_snapshots"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["task_id", "content_digest"],
+            ["task_collaboration_manifests.task_id", "task_collaboration_manifests.content_digest"],
+            name="fk_collaboration_snapshot_manifest",
+            ondelete="CASCADE",
+        ),
+        Index("ix_collaboration_snapshot_lookup", "task_id", "content_digest", "source", "created_at", "id"),
+    )
 
     id = Column(String(36), primary_key=True)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
-    manifest_json = Column(JSON, nullable=False)
+    manifest_json = Column(JSON, nullable=False)  # Snapshot metadata; inventory lives in CollaborationManifest.
     content_digest = Column(String(64), nullable=False)
     source = Column(String(32), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
@@ -69,7 +102,10 @@ class CollaborationOperation(Base):
 
 class CollaborationHandoff(Base):
     __tablename__ = "task_collaboration_handoffs"
-    __table_args__ = (UniqueConstraint("task_id", "operation_id", name="uq_collaboration_handoff"),)
+    __table_args__ = (
+        UniqueConstraint("task_id", "operation_id", name="uq_collaboration_handoff"),
+        Index("ix_collaboration_handoff_history", "task_id", "created_at", "id"),
+    )
 
     id = Column(String(36), primary_key=True)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)

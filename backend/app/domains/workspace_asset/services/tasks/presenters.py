@@ -22,6 +22,7 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
 from app.domains.workspace_asset.services.common.primitives import (
     count_rows,
     coverage_status,
+    coverage_status_from_counts,
     enum_value,
     json_text,
     short_text,
@@ -98,11 +99,27 @@ def task_summary(
 ) -> TaskSummary:
     """构建 TaskSummary。
 
-    counts 由列表查询用 2 条 GROUP BY 批量预算（消除逐任务 count 的 N+1）；
-    单任务详情路径不传 counts，仍走逐条 count。
+    列表只传 SQL 聚合计数，避免加载作业正文和全部过程资产；详情仍可使用已加载的关联。
     """
-    evidence_items = list(task.evidence_items or [])
-    requirement_count = len(task.requirement_links or [])
+    if counts is not None and "requirement_count" in counts:
+        related_counts = counts
+        coverage = coverage_status_from_counts(
+            counts["requirement_count"],
+            counts["confirmed_evidence_count"],
+            counts["human_confirmation_count"],
+        )
+    else:
+        evidence_items = list(task.evidence_items or [])
+        related_counts = {
+            "requirement_count": len(task.requirement_links or []),
+            "ai_run_count": len(task.ai_jobs or []),
+            "human_review_count": len(task.human_reviews or []),
+            "human_delta_count": len(task.human_deltas or []),
+            "evidence_count": len(evidence_items),
+            "decision_count": len(task.decisions or []),
+            "clarification_count": len(task.clarifications or []),
+        }
+        coverage = coverage_status(related_counts["requirement_count"], evidence_items)
     if counts is not None and "spec_count" in counts:
         spec_count = int(counts.get("spec_count") or 0)
         plan_asset_count = int(counts.get("plan_asset_count") or 0)
@@ -120,16 +137,16 @@ def task_summary(
         description=task.description,
         status=enum_value(task.status),
         current_phase=task.current_phase,
-        requirement_count=requirement_count,
+        requirement_count=related_counts["requirement_count"],
         spec_count=spec_count,
         plan_count=plan_asset_count + plan_node_count,
-        ai_run_count=len(task.ai_jobs or []),
-        human_review_count=len(task.human_reviews or []),
-        human_delta_count=len(task.human_deltas or []),
-        evidence_count=len(evidence_items),
-        decision_count=len(task.decisions or []),
-        clarification_count=len(task.clarifications or []),
-        coverage_status=coverage_status(requirement_count, evidence_items),
+        ai_run_count=related_counts["ai_run_count"],
+        human_review_count=related_counts["human_review_count"],
+        human_delta_count=related_counts["human_delta_count"],
+        evidence_count=related_counts["evidence_count"],
+        decision_count=related_counts["decision_count"],
+        clarification_count=related_counts["clarification_count"],
+        coverage_status=coverage,
         baseline_version=int(task.baseline_version or 0),
         baselined_at=task.baselined_at,
         baselined_by_id=task.baselined_by_id,

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from . import content, service
+from . import content, manifest_store, service
 from .models import CollaborationSnapshot
 
 
@@ -90,14 +90,14 @@ def latest_snapshot(db, task, _user_id, _request):
     previous = (
         db.query(CollaborationSnapshot)
         .filter_by(task_id=task.id, content_digest=digest, source="DOWNLOAD")
-        .order_by(CollaborationSnapshot.created_at.desc())
+        .order_by(CollaborationSnapshot.created_at.desc(), CollaborationSnapshot.id.desc())
         .first()
     )
     if previous and (previous.manifest_json["session_generation"], previous.manifest_json["session_revision"]) == (
         task.session_generation,
         task.session_revision,
     ):
-        return previous.manifest_json
+        return manifest_store.read_manifest(db, previous)
     # Transient metadata only: no driver or collaboration state is created.
     from .models import CollaborationState
 
