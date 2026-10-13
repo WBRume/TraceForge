@@ -102,7 +102,10 @@ export type DesktopOAuthTicketListener = (payload: DesktopOAuthStartResult) => v
 import type { OAuthClientType, OAuthIntent } from './oauth'
 
 export type SddDesktopApi = {
-  collaboration?: { execute: (request: { kind: string; payload: Record<string, unknown> }) => Promise<any> }
+  collaboration?: {
+    execute: (request: { kind: string; payload: Record<string, unknown> }) => Promise<any>
+    onChanged?: (listener: (event: { task_id: string }) => void) => () => void
+  }
   speech?: import('./offlineSpeech').OfflineSpeechApi
   attention?: { set: (payload: { flash: boolean; hitlCount: number }) => Promise<{ ok: boolean }> }
   webhooks?: { send: (payload: import('./taskAwareness').WebhookRequest) => Promise<{ ok: boolean; error?: string }> }

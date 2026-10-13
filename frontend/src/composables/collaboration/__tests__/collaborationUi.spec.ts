@@ -11,6 +11,7 @@ import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborati
 import CollaborationInputStatus from '@/components/collaboration/CollaborationInputStatus.vue'
 import CollaborationEntry from '@/components/collaboration/CollaborationEntry.vue'
 import CollaborationHeader from '@/components/collaboration/CollaborationHeader.vue'
+import CollaborationActions from '@/components/collaboration/CollaborationActions.vue'
 import CollaborationHistory from '@/components/collaboration/CollaborationHistory.vue'
 vi.mock('@/components/collaboration/CodeComparison.vue', () => ({ default: { props: ['leftLabel', 'rightLabel'], template: '<section class="diff-stub">{{leftLabel}} / {{rightLabel}}</section>' } }))
 
@@ -26,7 +27,7 @@ function fixture() {
     conflicts: computed(() => local.value.conflicts || []), error: ref(''), busy: ref(false), blocked: ref(false), loading: ref(false), preparationRequired: ref(false), mappingChecks: ref([]), mappings: ref({}),
     activity: ref({ direction: '', done: 0, total: 0, bytes: 0, totalBytes: 0 }), progressive: ref(false), operationStage: ref(''), operationSeconds: ref(0),
     view: ref({ page: 'files', tab: 'all', pair: 'auto', selected: '', selectedConflicts: [] as string[], conflictSetId: '' }),
-    restore: vi.fn(), recover: vi.fn(), cancelPreparation: vi.fn(), claimDriver: vi.fn(), listBackups: vi.fn().mockResolvedValue({ backups: [] }), checkMappings: vi.fn(), selectMapping: vi.fn(), readText: vi.fn().mockResolvedValue('text'),
+    restore: vi.fn(), recover: vi.fn(), cancelPreparation: vi.fn(), claimDriver: vi.fn(), listBackups: vi.fn().mockResolvedValue({ backups: [] }), checkMappings: vi.fn(), selectMapping: vi.fn(), readText: vi.fn().mockResolvedValue('text'), setProgressive: vi.fn(), refresh: vi.fn(),
   }
   const controller = model as unknown as LocalCollaboration
   return { controller, model, state, local, input, cloud }
@@ -34,6 +35,23 @@ function fixture() {
 const global = () => ({ plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })], stubs: { CodeComparison: { props: ['leftLabel', 'rightLabel'], template: '<section class="diff-stub">{{leftLabel}} / {{rightLabel}}</section>' } } })
 
 describe('local collaboration presentation and review', () => {
+  it('keeps auto-receive beside refresh as an accessible switch only on the participating desktop', async () => {
+    const { controller, model } = fixture()
+    const actions = mount(CollaborationActions, { props: { controller }, global: global() })
+    const toggle = actions.get('input[role="switch"]')
+    expect(toggle.attributes('aria-label')).toBe('执行中自动接收修改')
+    await toggle.setValue(true)
+    expect(model.setProgressive).toHaveBeenCalledWith(true)
+    await actions.get('button').trigger('click')
+    expect(model.refresh).toHaveBeenCalledOnce()
+    model.busy.value = true; await nextTick()
+    expect(toggle.attributes('disabled')).toBeDefined()
+    model.busy.value = false; model.driver.value = false; await nextTick()
+    expect(actions.find('[role="switch"]').exists()).toBe(false)
+    model.driver.value = true; model.participating.value = false; await nextTick()
+    expect(actions.find('[role="switch"]').exists()).toBe(false)
+    actions.unmount()
+  })
   it('switches history inside the panel while keeping every navigation tab and the current file selection', async () => {
     const { controller } = fixture()
     const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: {

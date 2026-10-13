@@ -6,9 +6,9 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import zh from '@/locales/zh.json'
 import type { CollaborationManifest, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
 
-const mocks = vi.hoisted(() => ({ desktop: true, api: { state: vi.fn(), post: vi.fn(), snapshot: vi.fn(), object: vi.fn(), upload: vi.fn() }, native: vi.fn(), mapping: vi.fn(), setMapping: vi.fn(), directory: vi.fn(), validate: vi.fn(), remotes: vi.fn(), open: vi.fn(), auth: { user: null as { id: string } | null } }))
+const mocks = vi.hoisted(() => ({ desktop: true, changed: vi.fn(), unsubscribe: vi.fn(), api: { state: vi.fn(), post: vi.fn(), snapshot: vi.fn(), object: vi.fn(), upload: vi.fn() }, native: vi.fn(), mapping: vi.fn(), setMapping: vi.fn(), directory: vi.fn(), validate: vi.fn(), remotes: vi.fn(), open: vi.fn(), auth: { user: null as { id: string } | null } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => mocks.auth }))
-vi.mock('@/utils/runtime', () => ({ getSddDesktop: () => mocks.desktop ? ({ collaboration: { execute: mocks.native }, config: { getRepoMapping: mocks.mapping, setRepoMapping: mocks.setMapping }, git: { selectDirectory: mocks.directory, validateGitRepo: mocks.validate, getFetchRemotes: mocks.remotes }, system: { openPath: mocks.open } }) : null }))
+vi.mock('@/utils/runtime', () => ({ getSddDesktop: () => mocks.desktop ? ({ collaboration: { execute: mocks.native, onChanged: mocks.changed }, config: { getRepoMapping: mocks.mapping, setRepoMapping: mocks.setMapping }, git: { selectDirectory: mocks.directory, validateGitRepo: mocks.validate, getFetchRemotes: mocks.remotes }, system: { openPath: mocks.open } }) : null }))
 vi.mock('@/services/collaborationApi', () => ({ collaborationApi: () => mocks.api, base64Bytes: () => new Uint8Array([1]), bytesBase64: () => 'AQ==' }))
 vi.mock('@/components/collaboration/CodeComparison.vue', () => ({ default: { template: '<div />' } }))
 import { useLocalCollaboration, type LocalCollaboration } from '../useLocalCollaboration'
@@ -27,6 +27,7 @@ function setup(task: () => Record<string, any> = () => ({ id: manifest.task_id, 
 beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks()
   mocks.desktop = true
+  mocks.changed.mockReturnValue(mocks.unsubscribe)
   mocks.auth = reactive({ user: { id: crypto.randomUUID() } })
   const repo = { task_repository_id: 'repo1', repository_id: 'r1', repo_url: 'https://example.test/api', repo_slug: 'api', rel_path: 'api', branch_name: 'release/2.x', base_commit_sha: 'commit', files: [{ path: 'auth.py', sha256: 'a'.repeat(64), size: 1, mode: '100644' as const }] }
   manifest = { protocol_version: 1, task_id: crypto.randomUUID(), snapshot_id: 'snapshot1', workspace_revision: 1, session_generation: 1, session_revision: 1, repository_set_digest: 'digest', source: 'INITIAL', repositories: [repo] }
@@ -65,6 +66,100 @@ afterEach(async () => {
 })
 
 describe('local collaboration coordinator', () => {
+  it('performs no periodic state, file, or backup reads while connected, retaining only lease renewal', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    mocks.api.state.mockClear(); mocks.native.mockClear(); mocks.api.post.mockClear()
+    await vi.advanceTimersByTimeAsync(65000)
+    expect(mocks.api.state).not.toHaveBeenCalled()
+    expect(mocks.native).not.toHaveBeenCalled()
+    expect(mocks.api.post.mock.calls.length).toBeGreaterThan(0)
+    expect(mocks.api.post.mock.calls.every(([action]) => action === 'lease')).toBe(true)
+  })
+  it('catches up once on the current task socket becoming ready, without a polling fallback', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    mocks.api.state.mockClear()
+    state = { ...state, state_version: state.state_version + 1, sync_phase: 'RUNNING' }
+    controller.onConnectionReady('another-task'); await flushPromises()
+    expect(mocks.api.state).not.toHaveBeenCalled()
+    controller.onConnectionReady(manifest.task_id); await flushPromises()
+    expect(mocks.api.state).toHaveBeenCalledTimes(1)
+    expect(controller.phase.value).toBe('RUNNING')
+    await vi.advanceTimersByTimeAsync(30000)
+    expect(mocks.api.state).toHaveBeenCalledTimes(1)
+  })
+  it('coalesces duplicate socket events and ignores old events without reloading files', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    mocks.api.state.mockClear()
+    state = { ...state, state_version: state.state_version + 1, sync_phase: 'RUNNING' }
+    const event = { task_id: manifest.task_id, state_version: state.state_version }
+    controller.onEvent(event); controller.onEvent(event); controller.onEvent(event)
+    await flushPromises()
+    expect(mocks.api.state).toHaveBeenCalledTimes(1)
+    mocks.native.mockClear()
+    controller.onEvent(event); controller.onEvent({ ...event, task_id: 'other' })
+    controller.onEvent({ ...event, state_version: event.state_version - 1 })
+    await flushPromises()
+    expect(mocks.api.state).toHaveBeenCalledTimes(1)
+    expect(mocks.native).not.toHaveBeenCalled()
+  })
+  it('updates local differences on a native change without contacting the server and unsubscribes on exit', async () => {
+    const wrapper = setup(); await flushPromises(); await controller.enable()
+    const notify = mocks.changed.mock.calls[0][0]
+    mocks.api.state.mockClear(); mocks.api.post.mockClear(); mocks.native.mockClear()
+    notify({ task_id: 'other' }); await flushPromises()
+    expect(mocks.native).not.toHaveBeenCalled()
+    local = { ...local, local_changes: [{ task_repository_id: 'repo1', path: 'auth.py', base: null, local: manifest.repositories[0]!.files[0]! }] }
+    notify({ task_id: manifest.task_id }); await flushPromises()
+    expect(controller.local.value?.local_changes).toHaveLength(1)
+    expect(mocks.api.state).not.toHaveBeenCalled()
+    expect(mocks.api.post).not.toHaveBeenCalled()
+    expect(mocks.api.upload).not.toHaveBeenCalled()
+    expect(mocks.native.mock.calls.map(([request]) => request.kind)).toEqual(['status'])
+    wrapper.unmount(); await flushPromises()
+    expect(mocks.unsubscribe).toHaveBeenCalledOnce()
+    mocks.native.mockClear(); notify({ task_id: manifest.task_id }); await flushPromises()
+    expect(mocks.native).not.toHaveBeenCalled()
+  })
+  it('processes the event after a command response so its input snapshot is not left waiting for a poll', async () => {
+    setup(); await flushPromises()
+    const post = mocks.api.post.getMockImplementation()!
+    mocks.api.post.mockImplementation(async (action, body) => {
+      const result = await post(action, body)
+      if (action === 'enable' || action === 'receipt') state = { ...result, state_version: result.state_version + 1 }
+      return { ...state }
+    })
+    await controller.enable()
+    expect(controller.input.value).toBeNull()
+    mocks.api.state.mockClear()
+    controller.onEvent({ task_id: manifest.task_id, state_version: state.state_version })
+    await flushPromises()
+    expect(controller.input.value?.snapshot_id).toBe(manifest.snapshot_id)
+    expect(mocks.api.state).toHaveBeenCalledTimes(1)
+  })
+  it('fetches a newer notification received during an older in-flight snapshot', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    const older = { ...state, state_version: 2 }
+    let resolve!: (value: CollaborationState) => void
+    mocks.api.state.mockClear().mockImplementationOnce(() => new Promise<CollaborationState>(done => { resolve = done }))
+    const refresh = controller.refresh(); await flushPromises()
+    state = { ...state, state_version: 3, sync_phase: 'RUNNING' }
+    controller.onEvent({ task_id: manifest.task_id, state_version: 3 })
+    resolve(older); await refresh
+    expect(controller.state.value?.state_version).toBe(3)
+    expect(controller.phase.value).toBe('RUNNING')
+    expect(mocks.api.state).toHaveBeenCalledTimes(2)
+  })
+  it('applies the current cloud candidate immediately when auto-receive is enabled and previews after disabling', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    manifest = { ...manifest, snapshot_id: 'progress1', source: 'PROGRESS' }
+    state = { ...state, sync_phase: 'RUNNING', progress_snapshot_id: manifest.snapshot_id, state_version: state.state_version + 1 }
+    controller.onEvent({ task_id: manifest.task_id, state_version: state.state_version }); await flushPromises()
+    for (const enabled of [true, false]) {
+      mocks.native.mockClear(); controller.setProgressive(enabled); await flushPromises()
+      expect(mocks.native).toHaveBeenCalledWith(expect.objectContaining({ kind: 'reconcile', payload: expect.objectContaining({ preview: true, progressive: enabled }) }))
+      expect(controller.progressive.value).toBe(enabled)
+    }
+  })
   it.each(['SERVER', 'LOCAL'])('does not initialize, poll or block diagnosis tasks on %s', async execution_location => {
     setup(() => ({ id: manifest.task_id, task_type: 'DIAGNOSIS', execution_location }))
     await flushPromises()

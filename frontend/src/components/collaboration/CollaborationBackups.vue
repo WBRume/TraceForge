@@ -8,7 +8,12 @@ const props = defineProps<{ controller: LocalCollaboration }>()
 const emit = defineEmits<{ select: [backup: CollaborationBackup] }>()
 const { t, locale } = useI18n()
 const entries = shallowRef<CollaborationBackup[]>([]), error = shallowRef(''), busy = shallowRef(false)
-watch(() => [props.controller, props.controller.state.value?.binding_id, props.controller.local.value?.task_id], async (_, __, onCleanup) => {
+// Polling replaces state objects; reload only when the actual backup context changes.
+watch([
+  () => props.controller,
+  () => props.controller.state.value?.binding_id,
+  () => props.controller.local.value?.task_id,
+], async (_, __, onCleanup) => {
   let current = true
   onCleanup(() => { current = false })
   entries.value = []

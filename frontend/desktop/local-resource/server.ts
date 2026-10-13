@@ -6,7 +6,7 @@ import { Database } from 'bun:sqlite'
 import { hash, readJson, writeJson } from './filesystem'
 import type { Config } from './runtime'
 
-export async function startServer(config: Config, options: { workerUrl?: string } = {}) {
+export async function startServer(config: Config, options: { workerUrl?: string; onCollaborationChanged?: (event: { task_id: string }) => void } = {}) {
   if (!config.token || config.token.length < 32 || !Array.isArray(config.allowed_roots)
     || !path.isAbsolute(config.state_root) || config.allowed_roots.some(root => !path.isAbsolute(root))) {
     throw new Error('Config requires absolute state_root / allowed_roots and a token of at least 32 characters')
@@ -27,6 +27,7 @@ export async function startServer(config: Config, options: { workerUrl?: string 
     pending.clear()
   }
   worker.onmessage = event => {
+    if (event.data.event === 'collaboration_changed') { if (!stopped) options.onCollaborationChanged?.({ task_id: event.data.task_id }); return }
     const item = pending.get(event.data.id)
     pending.delete(event.data.id)
     if (event.data.error) item?.reject(new Error(event.data.error))

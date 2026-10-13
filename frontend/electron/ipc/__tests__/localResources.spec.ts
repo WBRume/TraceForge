@@ -4,10 +4,12 @@ const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: any[]) => any>(),
   startResource: vi.fn(), closeResource: vi.fn(), isRunning: vi.fn(),
   spawn: vi.fn(), fetch: vi.fn(), createServer: vi.fn(),
+  send: vi.fn(),
 }))
 vi.mock('../../../desktop/native', () => ({
   app: { getPath: () => '/state' },
   ipcMain: { handle: (name: string, handler: (...args: any[]) => any) => mocks.handlers.set(name, handler) },
+  BrowserWindow: { getAllWindows: () => [{ isDestroyed: () => false, webContents: { send: mocks.send } }] },
   startLocalResourceService: mocks.startResource,
 }))
 vi.mock('cross-spawn', () => ({ default: mocks.spawn }))
@@ -59,9 +61,14 @@ describe('Embedded local resource lifecycle', () => {
     expect(mocks.startResource).toHaveBeenCalledOnce()
     expect(mocks.startResource).toHaveBeenCalledWith(expect.objectContaining({
       token: 'host-test', port: 4098, roots_config_path: expect.stringContaining('host.json'),
-    }))
+    }), expect.objectContaining({ onCollaborationChanged: expect.any(Function) }))
     expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/api/info'))).toBe(true)
     expect(mocks.spawn).not.toHaveBeenCalled()
+  })
+  it('forwards local change invalidations through the existing desktop event bridge', async () => {
+    await ensure()
+    mocks.startResource.mock.calls[0][1].onCollaborationChanged({ task_id: 'task-1' })
+    expect(mocks.send).toHaveBeenCalledWith('sdd:collaboration:changed', { task_id: 'task-1' })
   })
 
   it('shares concurrent startup requests for the same engine', async () => {

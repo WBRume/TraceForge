@@ -12,11 +12,24 @@ const controls = (repo: LocalRepository, index: RepositoryIndex) => [path.join(r
 
 /** Git owns the index; watcher paths supplement its stat check for restored mtimes. */
 export class CollaborationIndex {
+  onChanged?: (taskId: string) => void
+  private readonly notifications = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly indexes = new Map<string, RepositoryIndex>()
   private scans: (GitScanMetrics & { task_repository_id: string })[] = []
   private flushed = new Set<string>()
   beginOperation() { this.scans = [] }
   measurements() { return this.scans }
+  private notify(taskId: string) {
+    if (!this.onChanged || this.notifications.has(taskId)) return
+    // Coalesce native file bursts without delaying a continuously editing user.
+    this.notifications.set(taskId, setTimeout(() => {
+      this.notifications.delete(taskId)
+      this.onChanged?.(taskId)
+    }, 150))
+  }
+  private cancelNotification(taskId: string) {
+    clearTimeout(this.notifications.get(taskId)); this.notifications.delete(taskId)
+  }
   /** A witnessed marker drains queued native events before the immutable cut. */
   async flush(taskId?: string) {
     this.flushed.clear()
@@ -52,8 +65,9 @@ export class CollaborationIndex {
           watched.dirty = true
           if (!name || name.toString().split(/[\\/]/).some(part => ['.git', '.gitignore'].includes(part))) watched.gap = true
           if (name) watched.changedPaths.add(name.toString().replaceAll('\\', '/'))
+          this.notify(watched.taskId)
         })
-        index.watcher.on('error', () => { watched.dirty = true; watched.gap = true; watched.watcher?.close(); watched.watcher = undefined })
+        index.watcher.on('error', () => { watched.dirty = true; watched.gap = true; watched.watcher?.close(); watched.watcher = undefined; this.notify(watched.taskId) })
       } catch { /* Unsupported watchers always fall back to stable scans. */ }
     }
     const currentStamp = stamp(index.indexPath)
@@ -91,6 +105,7 @@ export class CollaborationIndex {
     return snapshot
   }
   suspend(taskId: string) {
+    this.cancelNotification(taskId)
     for (const index of this.indexes.values()) if (index.taskId === taskId) {
       index.watcher?.close(); index.watcher = undefined; index.barrier?.done(); index.suspended = true; index.gap = true
     }
@@ -106,6 +121,7 @@ export class CollaborationIndex {
     }
   }
   close(taskId?: string) {
+    for (const task of this.notifications.keys()) if (!taskId || taskId === task) this.cancelNotification(task)
     for (const [key, index] of this.indexes) if (!taskId || index.taskId === taskId) {
       index.watcher?.close(); index.barrier?.done(); this.indexes.delete(key)
     }

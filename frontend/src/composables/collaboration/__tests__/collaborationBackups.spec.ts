@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import zh from '@/locales/zh.json'
@@ -13,6 +13,80 @@ const backup = (round: number, repo: string, operation = `restore-${round}`): Co
     session_generation: 1, session_revision: round + 5, session_turn_id: `turn-${round}`, turn_index: round, turn_title: `用户的第 ${round} 次请求`, turn_created_at: `2026-10-13T0${round}:00:00Z`, source: 'AGENT_OUTPUT', kind: 'restore', repo_slug: repo, branch_name: `branch-${round}` },
 })
 const plugins = () => [createI18n({ legacy: false, locale: 'zh', messages: { zh } })]
+function pollingContext() {
+  const state = ref({ binding_id: 'binding', state_version: 1, repositories: [] })
+  const local = ref({ task_id: 'task' })
+  const listBackups = vi.fn().mockResolvedValue({ backups: [backup(1, 'api')] })
+  const controller = { state, local, listBackups } as unknown as LocalCollaboration
+  const open = () => mount(CollaborationBackups, { props: { controller }, global: { plugins: plugins() } })
+  const poll = async () => {
+    state.value = { ...state.value, state_version: state.value.state_version + 1, repositories: [] }
+    local.value = { ...local.value }
+    await nextTick()
+  }
+  return { state, local, listBackups, open, poll }
+}
+
+it('keeps the loaded list mounted without reading backups again on collaboration polls', async () => {
+  const { open, poll, listBackups } = pollingContext()
+  const wrapper = open()
+  await flushPromises()
+  const list = wrapper.get('.backup-list').element
+  for (let round = 0; round < 5; round++) {
+    await poll()
+    expect(wrapper.find('.state-msg').exists()).toBe(false)
+    expect(wrapper.get('.backup-list').element).toBe(list)
+  }
+  expect(listBackups).toHaveBeenCalledOnce()
+  wrapper.unmount()
+})
+
+it('does not restart an in-flight backup read when unchanged binding data is polled', async () => {
+  const { open, poll, listBackups } = pollingContext()
+  let complete!: (value: { backups: CollaborationBackup[] }) => void
+  listBackups.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+  const wrapper = open()
+  await poll(); await poll()
+  expect(listBackups).toHaveBeenCalledOnce()
+  complete({ backups: [backup(1, 'api')] })
+  await flushPromises()
+  expect(wrapper.find('.state-msg').exists()).toBe(false)
+  expect(wrapper.findAll('.backup-card')).toHaveLength(1)
+  wrapper.unmount()
+})
+
+it('reloads for a different task and binding and ignores the previous late response', async () => {
+  const { open, state, local, listBackups } = pollingContext()
+  let completeOld!: (value: { backups: CollaborationBackup[] }) => void
+  listBackups.mockImplementationOnce(() => new Promise(resolve => { completeOld = resolve }))
+  listBackups.mockResolvedValueOnce({ backups: [backup(2, 'web')] })
+  const wrapper = open()
+  state.value = { ...state.value, binding_id: 'new-binding' }
+  local.value = { task_id: 'new-task' }
+  await flushPromises()
+  expect(listBackups).toHaveBeenCalledTimes(2)
+  expect(wrapper.get('h3').text()).toBe('用户的第 2 次请求')
+  completeOld({ backups: [backup(1, 'api')] })
+  await flushPromises()
+  expect(wrapper.get('h3').text()).toBe('用户的第 2 次请求')
+  wrapper.unmount()
+})
+
+it('loads fresh backups on reopening and performs no hidden reads after leaving', async () => {
+  const { open, poll, listBackups } = pollingContext()
+  const first = open()
+  await flushPromises()
+  first.unmount()
+  await poll()
+  expect(listBackups).toHaveBeenCalledOnce()
+  listBackups.mockResolvedValueOnce({ backups: [backup(2, 'web')] })
+  const reopened = open()
+  await flushPromises()
+  expect(listBackups).toHaveBeenCalledTimes(2)
+  expect(reopened.get('h3').text()).toBe('用户的第 2 次请求')
+  reopened.unmount()
+})
+
 it('shows the conversation and time, merges batches and retains each historical file for viewing and export', async () => {
   const entries = [backup(1, 'api'), backup(2, 'api'), backup(1, 'web'), backup(2, 'web', 'restore-again'), { ...backup(1, 'legacy'), operation_id: 'old', context: undefined, created_at: undefined }, { ...backup(2, 'api', 'restore-later'), sha256: 'later', created_at: '2026-10-13T02:30:00Z' }]
   const exportBackup = vi.fn()

@@ -90,6 +90,16 @@ const createDeps = () => {
 }
 
 describe('createTaskWsEventRouter', () => {
+  it('forwards collaboration notifications from the task socket without touching the conversation', () => {
+    const { deps, calls } = createDeps()
+    const collaborationUpdate = vi.fn()
+    const { handleWsMessage } = createTaskWsEventRouter({ ...deps, collaborationUpdate })
+    const payload = { task_id: 't1', state_version: 4, session_generation: 2, sync_phase: 'DELIVERY_PENDING' }
+    handleWsMessage({ type: 'workspace_collaboration_update', payload })
+    expect(collaborationUpdate).toHaveBeenCalledWith(payload)
+    expect(calls.upserts).toHaveLength(0)
+    expect(calls.scroll).toHaveLength(0)
+  })
   it('retains historical messages without rolling the current generation backward', () => {
     const { deps, calls } = createDeps()
     const { handleWsMessage } = createTaskWsEventRouter(deps)
