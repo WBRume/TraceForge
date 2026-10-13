@@ -51,9 +51,13 @@ SQLite 数据库、每进程 HTTP/SSE/所有权轨迹、终态快照、控制台
 python -m tests.live_opencode.verify_http_recovery --run-live --restart-http
 ```
 
-这个入口会重启当前 HTTP 服务，访问当前 `.env` 配置的真实 MySQL、Redis 和 OpenCode。
-开始前检查没有 PENDING/RUNNING/WAITING_HITL/TERMINATING 作业；保留既有 ORPHANED 记录，由正常服务管理。
-脚本记录原服务的启动命令和工作目录，在内存中保留进程环境；退出时按原配置重新启动并检查
+这个入口会重启当前 HTTP 服务，访问真实 MySQL、Redis 和 OpenCode。基础设施读取 `.env`；
+OpenCode 连接同时加载系统配置中保存的覆盖值，包括加密凭据，与完整应用的生效配置一致。
+开始前验证 OpenCode 认证、Redis 连通性及 Redis 锁配置，并检查没有
+PENDING/RUNNING/WAITING_HITL/TERMINATING AI 作业或 PENDING/RUNNING 资源创建作业；
+保留既有 ORPHANED 记录，由正常服务管理。
+脚本记录原服务的启动命令和工作目录，在内存中保留进程环境。测试后端沿用原服务的 Python
+解释器，支持 `python -m app.main` 和 uvicorn 启动方式；启动失败立即报告。退出时按原配置重新启动并检查
 `/health/ready`。原先由 IDE 启动的服务会变为后台运行，IDE 不再持有新进程。
 
 仅在实际 MySQL 中创建独立测试用户、工作区和任务记录，随后通过真实 `/api/auth/login`、
@@ -76,7 +80,7 @@ python -m tests.live_opencode.verify_http_recovery --run-live --restart-http
 SUCCESS 与 SUCCEEDED 回执同时收敛、一条最终回复、一次工具执行和零 interrupt。
 运行中恢复的两项还核对两个重连客户端均收到 `chat_job_done`；离线完成项由 HTTP 快照补齐终态。
 
-证据位于 `backend/tmp/opencode-http-live/<timestamp>/`，包含 MySQL 检查点快照、HTTP/SSE 轨迹、
+证据位于 `backend/tmp/opencode-http-live/<timestamp>/`，包含基础设施版本、MySQL 检查点快照、HTTP/SSE 轨迹、
 客户端事件、真实工具记录及服务恢复/数据清理记录。脚本删除自己创建的 provider sessions，
 通过正常删除 API 清理自身任务和工作区，删除两名专用测试用户；保留本地证据文件。
 不创建 Webhook 端点、不更改 `.env`，普通 pytest 不会收集这些显式入口。
