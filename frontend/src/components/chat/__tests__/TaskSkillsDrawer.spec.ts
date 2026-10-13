@@ -13,22 +13,6 @@ vi.mock('@guolao/vue-monaco-editor', () => ({
   },
 }))
 
-vi.mock('@/components/AppSideDrawer.vue', () => ({
-  default: {
-    name: 'AppSideDrawer',
-    props: ['show', 'title'],
-    template: '<section v-if="show"><slot name="icon" /><slot name="actions" /><slot /></section>',
-  },
-}))
-
-vi.mock('@/components/chat/SkillRuntimeTracePanel.vue', () => ({
-  default: {
-    name: 'SkillRuntimeTracePanel',
-    props: ['skills', 'selectedSkillId', 'events', 'loading'],
-    template: '<div data-test="runtime-trace-panel"></div>',
-  },
-}))
-
 const mountDrawer = () => mount(TaskSkillsDrawer, {
   props: {
     show: true,
@@ -81,16 +65,37 @@ describe('TaskSkillsDrawer', () => {
     expect(fileBrowserPanel.text()).toContain('SKILL.md')
     expect(wrapper.text()).toContain('common.save')
     expect(wrapper.find('[data-test="monaco-editor"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="runtime-trace-panel"]').exists()).toBe(false)
+    expect(wrapper.find('.trace-panel').exists()).toBe(false)
     expect(wrapper.text()).toContain('used 1')
 
     await wrapper.find('.trace-trigger').trigger('click')
 
     expect(wrapper.find('.trace-inspector').exists()).toBe(true)
-    expect(wrapper.find('.trace-inspector [data-test="runtime-trace-panel"]').exists()).toBe(true)
+    expect(wrapper.find('.trace-inspector .trace-panel').exists()).toBe(true)
+    expect(wrapper.find('.trace-inspector').text().match(/使用证据链/g)).toHaveLength(1)
+    expect(wrapper.text()).not.toContain('Runtime Evidence Trace')
+    expect(wrapper.find('.trace-boundary').exists()).toBe(false)
 
-    await wrapper.find('.trace-inspector .icon-btn').trigger('click')
+    await wrapper.find('.trace-refresh').trigger('click')
+    expect(wrapper.emitted('refreshTrace')).toHaveLength(1)
 
-    expect(wrapper.find('[data-test="runtime-trace-panel"]').exists()).toBe(false)
+    await wrapper.find('.trace-inspector [aria-label="common.close"]').trigger('click')
+
+    expect(wrapper.find('.trace-panel').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('uses the shared three-stage expand, collapse, and close controls', async () => {
+    const wrapper = mountDrawer()
+    expect(wrapper.find('.side-drawer-panel').classes()).toContain('level-2')
+    await wrapper.find('.expand-btn').trigger('click')
+    expect(wrapper.find('.side-drawer-panel').classes()).toContain('level-3')
+    expect(wrapper.find('.expand-btn').attributes('disabled')).toBeDefined()
+    await wrapper.find('.collapse-btn').trigger('click')
+    await wrapper.find('.collapse-btn').trigger('click')
+    expect(wrapper.find('.side-drawer-panel').classes()).toContain('level-1')
+    await wrapper.find('.collapse-btn').trigger('click')
+    expect(wrapper.emitted('close')).toHaveLength(1)
+    wrapper.unmount()
   })
 })

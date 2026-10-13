@@ -1,6 +1,7 @@
 import os
 import unittest
 
+from app.agents.adapters.opencode.event_mapper import map_opencode_event
 from app.domains.skill.services.skill_runtime_trace_service import RuntimeSkillIndexItem, detect_tool_use_events
 
 
@@ -96,6 +97,36 @@ class SkillRuntimeTraceMatcherTest(unittest.TestCase):
     def test_searching_skills_root_without_materialized_dir_is_ignored(self):
         events = self._events("Grep", {"path": ".claude/skills", "pattern": "SKILL.md"})
         self.assertEqual(events, [])
+
+    def test_opencode_skill_call_id_is_attributed_after_event_mapping(self):
+        for skill_ref in ("frontend-api-87654321", "frontend-api", "unrelated-skill"):
+            with self.subTest(skill_ref=skill_ref):
+                mapped = map_opencode_event(
+                    {
+                        "type": "session.tool.called",
+                        "data": {
+                            "sessionID": "ses_test",
+                            "callID": "call_skill",
+                            "tool": "skill",
+                            "input": {"id": skill_ref},
+                        },
+                    }
+                )
+                events = detect_tool_use_events(
+                    workspace_id="ws-1",
+                    task_id="task-1",
+                    ai_job_id="job-1",
+                    runtime_index=[_opencode_index_item()],
+                    **mapped[0].payload,
+                )
+                if skill_ref == "unrelated-skill":
+                    self.assertEqual(events, [])
+                    continue
+                self.assertEqual(len(events), 1)
+                self.assertEqual(events[0]["event_type"].value, "USAGE_CONFIRMED")
+                self.assertEqual(events[0]["skill_id"], "skill-2")
+                self.assertEqual(events[0]["tool_use_id"], "call_skill")
+                self.assertEqual(events[0]["matched_path"], ".agents/skills/frontend-api-87654321")
 
 
 if __name__ == "__main__":

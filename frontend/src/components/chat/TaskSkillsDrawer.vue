@@ -76,6 +76,7 @@ const selectedSkill = computed(() => (
 ))
 
 const showTraceInspector = shallowRef(false)
+const drawerLevel = shallowRef(2)
 const traceEventCount = computed(() => props.traceEvents.length)
 
 ensureMonacoViteSetup()
@@ -131,7 +132,9 @@ const closeTraceInspector = () => {
   <AppSideDrawer
     :show="show"
     :title="$t('chat.task_skills_drawer_title')"
-    width="min(1180px, 94vw)"
+    v-model:level="drawerLevel"
+    resizable
+    class="task-skills-drawer"
     @close="emit('close')"
   >
     <template #icon>
@@ -142,11 +145,11 @@ const closeTraceInspector = () => {
         type="button"
         class="trace-trigger"
         :class="{ active: showTraceInspector }"
-        :title="'使用证据链 / Runtime Evidence Trace'"
+        title="使用证据链"
         @click="openTraceInspector"
       >
         <Activity class="w-4 h-4" />
-        <span>Trace</span>
+        <span>使用证据链</span>
         <span v-if="traceEventCount > 0" class="trace-count">{{ traceEventCount }}</span>
       </button>
       <button type="button" class="icon-btn" :disabled="loading" @click="emit('refreshSkills')">
@@ -252,16 +255,27 @@ const closeTraceInspector = () => {
 
       <Transition name="trace-inspector-motion">
         <div v-if="showTraceInspector" class="trace-inspector-layer" @click.self="closeTraceInspector">
-          <aside class="trace-inspector" aria-label="Runtime Evidence Trace">
+          <aside class="trace-inspector" aria-label="使用证据链" @keydown.esc.stop.prevent="closeTraceInspector">
             <header class="trace-inspector-header">
               <div class="trace-inspector-title">
                 <Activity class="w-4 h-4" />
-                <span>使用证据链 / Runtime Evidence Trace</span>
+                <span>使用证据链</span>
               </div>
+              <button
+                type="button"
+                class="icon-btn trace-refresh"
+                :disabled="traceLoading"
+                title="刷新使用证据链"
+                aria-label="刷新使用证据链"
+                @click="emit('refreshTrace')"
+              >
+                <RefreshCw class="w-4 h-4" />
+              </button>
               <button
                 type="button"
                 class="icon-btn"
                 :title="$t('common.close')"
+                :aria-label="$t('common.close')"
                 @click="closeTraceInspector"
               >
                 <X class="w-4 h-4" />
@@ -273,7 +287,6 @@ const closeTraceInspector = () => {
               :selected-skill-id="selectedSkillId"
               :events="traceEvents"
               :loading="traceLoading"
-              @refresh="emit('refreshTrace')"
             />
           </aside>
         </div>
@@ -283,6 +296,10 @@ const closeTraceInspector = () => {
 </template>
 
 <style scoped>
+.task-skills-drawer :deep(.side-drawer-body) {
+  container-type: inline-size;
+}
+
 .w-3 {
   width: 12px;
   height: 12px;
@@ -615,6 +632,7 @@ const closeTraceInspector = () => {
 }
 
 .trace-inspector-title {
+  flex: 1;
   min-width: 0;
   display: inline-flex;
   align-items: center;
@@ -666,13 +684,13 @@ const closeTraceInspector = () => {
   transform: translateX(24px);
 }
 
-@media (max-width: 1200px) {
+@container (max-width: 1000px) {
   .drawer-body {
     grid-template-columns: minmax(200px, 240px) minmax(200px, 250px) minmax(0, 1fr);
   }
 }
 
-@media (max-width: 920px) {
+@container (max-width: 760px) {
   .drawer-body {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(120px, 24%) minmax(160px, 28%) minmax(0, 1fr);
