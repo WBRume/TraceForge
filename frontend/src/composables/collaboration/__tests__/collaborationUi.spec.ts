@@ -23,6 +23,7 @@ function fixture() {
   const local = ref<LocalCollaborationStatus>({ task_id: 'task', directory_mode: 'MAPPED', baseline: cloud, received: cloud, manifest: cloud, state: 'READY', conflicts: [], local_changes: [], repositories: repositories.map(repo => ({ ...repo, mapped_repo_root: `G:/${repo.repo_slug}`, local_worktree_path: `G:/${repo.repo_slug}` })) })
   const state = ref<CollaborationState>({ ...cloud, enabled: true, sync_phase: 'READY', state_version: 1, lease_epoch: 1, binding_id: 'binding', input_snapshot_id: 'start', progress_snapshot_id: null, driver_connected: true, conflicts: [] })
   const model = {
+    loadReview: vi.fn(), reviewRunning: ref(false), reviewLoading: ref(false), reviewError: ref(''),
     participating: ref(true), leaving: ref(false), receivedOnce: ref(false), leave: vi.fn(), receiveOnce: vi.fn(), enable: vi.fn(), state, local, input: ref(input), cloud: ref<CollaborationManifest | null>(cloud), available: true, supported: ref(true), enabled: ref(true), driver: ref(true), remoteSender: ref(false), phase: computed(() => state.value.sync_phase),
     conflicts: computed(() => local.value.conflicts || []), error: ref(''), busy: ref(false), blocked: ref(false), loading: ref(false), preparationRequired: ref(false), mappingChecks: ref([]), mappings: ref({}),
     activity: ref({ direction: '', done: 0, total: 0, bytes: 0, totalBytes: 0 }), progressive: ref(false), operationStage: ref(''), operationSeconds: ref(0),
@@ -35,10 +36,101 @@ function fixture() {
 const global = () => ({ plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })], stubs: { CodeComparison: { props: ['leftLabel', 'rightLabel'], template: '<section class="diff-stub">{{leftLabel}} / {{rightLabel}}</section>' } } })
 
 describe('local collaboration presentation and review', () => {
+  it('shows both repositories and diffs before connecting, without showing another device conflicts', async () => {
+    const { controller, model, state } = fixture()
+    model.participating.value = false; model.enabled.value = false; model.driver.value = false
+    state.value.conflicts = [{ task_repository_id: 'dsh', path: 'shared.txt' } as any]
+    expect(collaborationPresentation(proxyRefs(controller))).toMatchObject({ setup: false, localAvailable: false })
+    expect(collaborationReview(proxyRefs(controller), false).files.every(file => file.kind === 'cloud')).toBe(true)
+    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: global() })
+    expect(panel.findAll('.file')).toHaveLength(2)
+    expect(panel.findAll('.file-row button')).toHaveLength(2)
+    expect(panel.find('.diff-stub').exists()).toBe(true)
+    expect(panel.find('.repository-settings').exists()).toBe(false)
+    expect(model.enable).not.toHaveBeenCalled()
+    panel.unmount()
+  })
+  it('keeps one pair of session actions above every tab and routes missing mappings to settings', async () => {
+    const { controller, model } = fixture()
+    model.participating.value = false; model.enabled.value = false
+    const host = mount(defineComponent({
+      components: { CollaborationHeader, CollaborationActions, LocalCollaborationPanel },
+      setup: () => ({ controller }),
+      template: '<header><CollaborationHeader :controller="controller"/><CollaborationActions :controller="controller"/></header><LocalCollaborationPanel :controller="controller" workspace-id="ws" task-id="task"/>',
+    }), { global: global() })
+    const receive = () => host.findAll('button').filter(button => button.text() === '接收最新代码')
+    const connect = () => host.findAll('input[role="switch"][aria-label="本地协同"]')
+    expect(receive()).toHaveLength(1); expect(connect()).toHaveLength(1)
+    await receive()[0]!.trigger('click')
+    expect(controller.view.value.page).toBe('settings')
+    expect(model.receiveOnce).not.toHaveBeenCalled()
+    expect(receive()).toHaveLength(1); expect(connect()).toHaveLength(1)
+    expect(host.find('.repository-settings .btn-primary').exists()).toBe(false)
+    model.mappings.value = { dsh: { local_path: 'G:/dsh' }, repo: { local_path: 'G:/repo' } }
+    await connect()[0]!.setValue(true)
+    expect(model.enable).toHaveBeenCalledOnce()
+    expect((connect()[0]!.element as HTMLInputElement).checked).toBe(false)
+    await receive()[0]!.trigger('click')
+    expect(model.receiveOnce).toHaveBeenCalledOnce()
+    model.enabled.value = true; await nextTick()
+    expect(connect()[0]!.attributes('disabled')).toBeDefined()
+    host.unmount()
+  })
+  it('keeps the collaboration switch on until disconnect succeeds and preserves the current tab', async () => {
+    const { controller, model } = fixture()
+    model.view.value.page = 'settings'
+    const actions = mount(CollaborationActions, { props: { controller }, global: global(), attachTo: document.body })
+    const toggle = actions.get('input[aria-label="本地协同"]')
+    const checked = () => (toggle.element as HTMLInputElement).checked
+    const modalButton = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('.modal-overlay .modal button')].find(button => button.textContent?.trim() === text)!
+    await toggle.setValue(false); await flushPromises()
+    expect(checked()).toBe(true)
+    expect(model.leave).not.toHaveBeenCalled()
+    modalButton('取消').click(); await flushPromises()
+    expect(checked()).toBe(true)
+    expect(model.view.value.page).toBe('settings')
+    await toggle.setValue(false); await flushPromises()
+    model.leave.mockResolvedValueOnce(false)
+    modalButton('断开本地协同').click(); await flushPromises()
+    expect(checked()).toBe(true)
+    expect(document.querySelector('.modal-overlay .modal')).not.toBeNull()
+    model.leave.mockImplementationOnce(async () => { model.participating.value = false; return true })
+    modalButton('断开本地协同').click(); await flushPromises()
+    expect(checked()).toBe(false)
+    expect(model.leave).toHaveBeenCalledTimes(2)
+    expect(model.view.value.page).toBe('settings')
+    actions.unmount()
+  })
+  it('keeps errors in the header across tabs and exposes full details on demand', async () => {
+    const { controller, model } = fixture()
+    model.error.value = '本地仓库未通过启用检查，请处理仓库问题后重试。'
+    const header = mount(CollaborationHeader, { props: { controller }, global: global(), attachTo: document.body })
+    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: global() })
+    expect(header.get('[role="status"]').text()).toContain(model.error.value)
+    expect(panel.text()).not.toContain(model.error.value)
+    await header.get('button[aria-label="查看错误详情"]').trigger('click'); await flushPromises()
+    expect(document.querySelector('.header-errors')?.textContent).toContain(model.error.value)
+    controller.view.value.page = 'settings'; await nextTick()
+    expect(header.get('[role="status"]').text()).toContain(model.error.value)
+    expect(panel.find('.error-details').exists()).toBe(false)
+    model.error.value = ''; await header.setProps({ error: '无法启动 IDE' })
+    expect(header.get('[role="status"]').text()).toContain('无法启动 IDE')
+    header.unmount(); panel.unmount()
+  })
+  it('recovers a participating session from the header without creating another binding', async () => {
+    const { controller, model } = fixture()
+    model.error.value = 'delivery failed'
+    model.mappings.value = { dsh: { local_path: 'G:/dsh' }, repo: { local_path: 'G:/repo' } }
+    const actions = mount(CollaborationActions, { props: { controller }, global: global() })
+    await actions.get('.session-button').trigger('click')
+    expect(model.recover).toHaveBeenCalledOnce()
+    expect(model.enable).not.toHaveBeenCalled()
+    actions.unmount()
+  })
   it('keeps auto-receive beside refresh as an accessible switch only on the participating desktop', async () => {
     const { controller, model } = fixture()
     const actions = mount(CollaborationActions, { props: { controller }, global: global() })
-    const toggle = actions.get('input[role="switch"]')
+    const toggle = actions.get('input[role="switch"][aria-label="执行中自动接收修改"]')
     expect(toggle.attributes('aria-label')).toBe('执行中自动接收修改')
     await toggle.setValue(true)
     expect(model.setProgressive).toHaveBeenCalledWith(true)
@@ -47,9 +139,9 @@ describe('local collaboration presentation and review', () => {
     model.busy.value = true; await nextTick()
     expect(toggle.attributes('disabled')).toBeDefined()
     model.busy.value = false; model.driver.value = false; await nextTick()
-    expect(actions.find('[role="switch"]').exists()).toBe(false)
+    expect(actions.find('[role="switch"][aria-label="执行中自动接收修改"]').exists()).toBe(false)
     model.driver.value = true; model.participating.value = false; await nextTick()
-    expect(actions.find('[role="switch"]').exists()).toBe(false)
+    expect(actions.find('[role="switch"][aria-label="执行中自动接收修改"]').exists()).toBe(false)
     actions.unmount()
   })
   it('switches history inside the panel while keeping every navigation tab and the current file selection', async () => {
@@ -87,7 +179,7 @@ describe('local collaboration presentation and review', () => {
     expect(header.classes()).toContain('warning')
     expect(header.classes()).not.toContain('is-active')
     state.value.driver_connected = true; model.error.value = 'failed'; await nextTick()
-    expect(header.get('[role="status"]').text()).toBe('代码接收失败')
+    expect(header.get('[role="status"]').text()).toContain('failed')
     expect(header.classes()).not.toContain('is-active')
     model.error.value = ''; model.participating.value = false; model.enabled.value = false; state.value.repositories = []; await nextTick()
     expect(header.get('[role="status"]').text()).toBe('未启用本地协同')

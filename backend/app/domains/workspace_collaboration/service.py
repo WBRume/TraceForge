@@ -251,7 +251,12 @@ def _ensure_store(db: Session, task: SddTask) -> content.ObjectStore:
         metadata["initial_workspace_checkpoint"] = initial
         task.task_meta_json = metadata
         db.flush()
-    store = content.ObjectStore(task.id)
+    store = content.ObjectStore(task)
+    if store.root.resolve().is_relative_to(Path(task.project_path).resolve()):
+        raise ValueError("Collaboration snapshot storage must be outside the task worktree")
+    if not metadata.get("collaboration_store_path"):
+        task.task_meta_json = {**metadata, "collaboration_store_path": str(store.root.resolve())}
+        db.flush()
     store.bind(initial, task.project_path)
     return store
 
@@ -259,15 +264,20 @@ def _ensure_store(db: Session, task: SddTask) -> content.ObjectStore:
 def _capture(db: Session, task: SddTask, state: CollaborationState, source: str, *, stable: bool) -> dict:
     repositories = _check_repositories(db, state, task)
     _ensure_store(db, task)
-    captured = _inventory(task.id, task.project_path, repositories, stable=stable)
+    captured = _inventory(task, task.project_path, repositories, stable=stable)
     return _snapshot(db, task, state, source, captured)
 
 
-def _inventory(task_id: str, project_path: str, repositories: list[dict], *, stable: bool) -> list[dict]:
+def _inventory(
+    task_id, project_path: str, repositories: list[dict], *, stable: bool, store_root: str | None = None
+) -> list[dict]:
     if not project_path:
         _fail("WORKSPACE_UNAVAILABLE", "Task execution directory is unavailable")
     return content.capture_task(
-        Path(project_path).resolve(strict=True), content.ObjectStore(task_id), repositories, stable=stable
+        Path(project_path).resolve(strict=True),
+        content.ObjectStore(task_id, root=store_root),
+        repositories,
+        stable=stable,
     )
 
 
@@ -278,7 +288,7 @@ def _snapshot(db: Session, task: SddTask, state: CollaborationState, source: str
 
         from app.domains.task.services import task_snapshot_store
 
-        private_root = content.ObjectStore(task.id).root
+        private_root = content.ObjectStore(task).root
         capture_path = private_root / "captures" / (content.digest(repositories) + ".json")
         if capture_path.exists():
             # Bind the full private checkpoint to this exact public snapshot.
@@ -582,7 +592,7 @@ def input_worktree_checkpoint(db: Session, task: SddTask, submission_id: str) ->
     if state.input_submission_id != submission_id or state.pending_submission_id != submission_id:
         _fail("INPUT_REQUIRED", "The checkpoint must belong to this message's fixed input")
     get_snapshot(db, task.id, state.input_snapshot_id)
-    path = content.ObjectStore(task.id).root / "snapshots" / (state.input_snapshot_id + ".json")
+    path = content.ObjectStore(task).root / "snapshots" / (state.input_snapshot_id + ".json")
     if not path.exists():
         return None  # Legacy SHA256-only input still uses a fresh full checkpoint.
     payload = json.loads(path.read_text(encoding="utf-8"))["worktree"]
@@ -612,7 +622,7 @@ def _validate_manifest(
         _fail(
             "REPOSITORY_SET_CHANGED", "Input must contain every task repository with its original branch and baseline"
         )
-    store = store or content.ObjectStore(task.id)
+    store = store or content.ObjectStore(task)
     old_repositories = {
         repo["task_repository_id"]: repo for repo in get_snapshot(db, task.id, state.snapshot_id)["repositories"]
     }
@@ -692,7 +702,7 @@ def handoff(db: Session, task: SddTask, user_id: str, request: HandoffRequest) -
     _assert_no_writer(db, task.id)
     baseline = get_snapshot(db, task.id, state.snapshot_id)
     manifest = delta.expand(baseline, request.manifest.model_dump())
-    store = content.ObjectStore(task.id)
+    store = content.ObjectStore(task)
     repositories = _validate_manifest(db, task, state, manifest, store)
     target = {
         **manifest,
@@ -814,6 +824,7 @@ def stage_progress(db: Session, task: SddTask, job_id: str, *, expected_run_toke
     return {
         "task_id": task.id,
         "project_path": task.project_path,
+        "store_root": str(content.ObjectStore(task).root),
         "repositories": _check_repositories(db, state, task),
         "session_generation": state.session_generation,
         "session_revision": state.session_revision,
@@ -824,7 +835,13 @@ def stage_progress(db: Session, task: SddTask, job_id: str, *, expected_run_toke
 
 def collect_progress(staged: dict) -> dict:
     """Filesystem work outside a database transaction; candidates are provisional."""
-    repositories = _inventory(staged["task_id"], staged["project_path"], staged["repositories"], stable=False)
+    repositories = _inventory(
+        staged["task_id"],
+        staged["project_path"],
+        staged["repositories"],
+        stable=False,
+        store_root=staged.get("store_root"),
+    )
     return {"repositories": repositories, "content_digest": content.digest(repositories)}
 
 
@@ -1007,7 +1024,7 @@ def abandon_input(db: Session, task_id: str, submission_id: str) -> None:
     if state.sync_phase != "PREPARING":
         return
     if state.input_submission_id != submission_id:
-        for journal in content.ObjectStore(task_id).input_journals(submission_id):
+        for journal in content.ObjectStore(db.get(SddTask, task_id)).input_journals(submission_id):
             operation_id = journal.get("operation_id")
             if (
                 operation_id
@@ -1084,7 +1101,7 @@ def recover_input(db: Session, task: SddTask, user_id: str, request: Fence, oper
     if state.sync_phase != "RECOVERY_REQUIRED" or state.recovery_kind != "SERVER_INPUT":
         _fail("RECOVERY_NOT_PENDING", "No server input installation is awaiting recovery")
     _assert_no_writer(db, task.id)
-    store = content.ObjectStore(task.id)
+    store = content.ObjectStore(task)
     journal = store.read_journal(operation_id)
     if not journal or not journal.get("target"):
         # A failed preflight has not changed any server files. It is safe to

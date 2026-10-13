@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, onScopeDispose, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import IdeOpenButton from './IdeOpenButton.vue'
 import MonacoDiffViewer from '@/components/diff/MonacoDiffViewer.vue'
 import { Laptop, UploadCloud } from '@/components/icons'
 
 const props = defineProps<{
   leftHash?: string; rightHash?: string; leftLabel: string; rightLabel: string
   readText: (hash: string) => Promise<string>; path: string
-  wordWrap?: boolean
+  wordWrap?: boolean; openInIde?: boolean; ideTitle?: string
 }>()
+const emit = defineEmits<{ 'open-in-ide': [position: { line: number; column: number }]; 'ide-error': [message: string] }>()
 const { t } = useI18n()
 const media = window.matchMedia('(max-width: 720px)')
 const compact = shallowRef(media.matches), preferredLayout = shallowRef<'split' | 'unified' | null>(null)
@@ -40,11 +42,12 @@ const pathParts = computed(() => {
   <section class="code-comparison">
     <!-- 顶部工具条 -->
     <div class="comparison-toolbar">
-      <div class="breadcrumb-box">
+      <div class="breadcrumb-box" :title="path">
         <span v-if="pathParts.dir" class="dir-path">{{ pathParts.dir }} /</span>
         <strong class="file-path">{{ pathParts.file }}</strong>
       </div>
       <div class="comparison-tools">
+        <IdeOpenButton v-if="openInIde" :title="ideTitle" @open="emit('open-in-ide', { line: 1, column: 1 })" @error="emit('ide-error', $event)" />
         <slot name="tools" />
         <div class="view-mode-toggle" role="group" :aria-label="t('collaboration.ui.diffLayout')">
           <button type="button" class="mode-btn" :class="{ active: layout === 'split' }" @click="layout = 'split'">
@@ -78,7 +81,7 @@ const pathParts = computed(() => {
     <p v-if="error" role="alert" class="state-message error">{{ error }}</p>
     <p v-else-if="loading" role="status" class="state-message loading">{{ t('common.loading') }}</p>
     <div v-else class="monaco-wrapper">
-      <MonacoDiffViewer :original="original" :modified="modified" :render-side-by-side="layout === 'split'" :word-wrap="wordWrap ? 'on' : 'off'" theme="vs" height="100%" />
+      <MonacoDiffViewer :open-in-ide="openInIde" :ide-title="ideTitle" @open-in-ide="emit('open-in-ide', $event)" :original="original" :modified="modified" :render-side-by-side="layout === 'split'" :word-wrap="wordWrap ? 'on' : 'off'" theme="vs" height="100%" />
     </div>
   </section>
 </template>
@@ -95,11 +98,10 @@ const pathParts = computed(() => {
 }
 
 .comparison-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
+  --comparison-control-height: 30px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
   padding: 8px 16px;
   background: #f8fafc;
   border-bottom: 1px solid #e2e8f0;
@@ -108,15 +110,24 @@ const pathParts = computed(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-width: 140px;
-  flex: 1;
+  min-width: 0;
+  overflow: hidden;
   font-size: 12px;
 }
 .dir-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
   color: #64748b;
   font-family: var(--font-mono, monospace);
 }
 .file-path {
+  flex-shrink: 0;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-mono, monospace);
   font-size: 12.5px;
   font-weight: 600;
@@ -125,6 +136,8 @@ const pathParts = computed(() => {
 
 .comparison-tools {
   display: flex;
+  width: 100%;
+  min-width: 0;
   gap: 8px;
   flex-wrap: wrap;
   align-items: center;
@@ -134,10 +147,17 @@ const pathParts = computed(() => {
   width: 140px;
   min-width: 140px;
 }
+.comparison-toolbar :deep(.select-trigger) { height: var(--comparison-control-height); border-radius: 6px; padding: 0 10px; }
+.comparison-toolbar :deep(.selected-text) { font-size: 12px; }
+.comparison-toolbar :deep(.select-arrow) { width: 14px; height: 14px; }
 
 /* 视图模式切换胶囊 */
 .view-mode-toggle {
   display: inline-flex;
+  flex: none;
+  margin-left: auto;
+  height: var(--comparison-control-height);
+  box-sizing: border-box;
   align-items: center;
   background: #f1f5f9;
   border: 1px solid #cbd5e1;
@@ -146,7 +166,9 @@ const pathParts = computed(() => {
   gap: 2px;
 }
 .mode-btn {
-  padding: 3px 8px;
+  height: 100%;
+  padding: 0 8px;
+  line-height: 20px;
   font-size: 11px;
   font-weight: 500;
   border: 0;
@@ -229,7 +251,6 @@ const pathParts = computed(() => {
 }
 
 @media (max-width: 600px) {
-  .comparison-toolbar { flex-wrap: wrap; }
   .diff-version-headers { grid-template-columns: 1fr; }
   .version-header-pane.left { border-right: 0; border-bottom: 1px solid #e2e8f0; }
 }

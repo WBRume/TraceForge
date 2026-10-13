@@ -69,13 +69,25 @@ def safe_path(root: Path, relative: str, *, resolved_root: Path | None = None) -
 
 
 class ObjectStore:
-    def __init__(self, task_id: str):
+    def __init__(self, task_id, *, root: str | None = None):
         from .git_objects import GitObjects
 
+        metadata = {} if isinstance(task_id, str) else task_id.task_meta_json or {}
+        task_id = task_id if isinstance(task_id, str) else task_id.id
         if not SAFE_ID.fullmatch(task_id):
             raise ValueError("Invalid task identity")
         self.task_id = task_id
-        self.root = Path(settings.TASK_SESSION_SNAPSHOT_ROOT) / "collaboration" / task_id
+        legacy = Path(settings.TASK_SESSION_SNAPSHOT_ROOT) / "collaboration" / task_id
+        configured = Path(settings.COLLABORATION_SNAPSHOT_ROOT or legacy.parent) / task_id
+        # Prefer existing data over a new configuration, then pin this decision
+        # in _ensure_store. Never move or recreate an existing task's objects.
+        self.root = (
+            Path(metadata["collaboration_store_path"])
+            if metadata.get("collaboration_store_path")
+            else (legacy if legacy.exists() else configured)
+        )
+        if root is not None:
+            self.root = Path(root)
         self.git_objects = GitObjects(self.root)
         self._verified_input: dict[str, bytes] = {}
 

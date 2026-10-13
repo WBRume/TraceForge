@@ -54,6 +54,8 @@ const applyEvents = ref<ApplyPatchProgress[]>([])
 const generationAttempted = ref(false)
 const generationError = ref('')
 const drawerLevel = ref(1)
+const collaborationError = ref('')
+watch(() => [props.task?.id, props.show], () => { collaborationError.value = '' })
 const selectedFilePath = ref<string | null>(null)
 
 const agentTask = computed<AgentTask | null>(() => {
@@ -324,7 +326,7 @@ watch(
       <GitPullRequest v-if="!isCollaboration" class="w-4 h-4" />
     </template>
     <template #title>
-      <CollaborationHeader v-if="isCollaboration && collaboration" :controller="collaboration" />
+      <CollaborationHeader v-if="isCollaboration && collaboration" :controller="collaboration" :error="collaborationError" />
       <span v-else>{{ $t('chat.change_apply_drawer_title') }}</span>
     </template>
     <template #actions>
@@ -336,7 +338,7 @@ watch(
       </button>
     </template>
 
-    <LocalCollaborationPanel v-if="isCollaboration && collaboration && task" :controller="collaboration" :workspace-id="workspaceId" :task-id="String(task.id)" />
+    <LocalCollaborationPanel v-if="isCollaboration && collaboration && task" :controller="collaboration" :workspace-id="workspaceId" :task-id="String(task.id)" @error="collaborationError = $event" />
     <section v-else class="apply-patch-drawer">
       <OwnResourceApply v-if="proposal && !isCollaboration" :workspace-id="workspaceId" :proposal-id="proposal.id" />
       <!-- Top Bar: Task & Status Context -->
@@ -553,6 +555,14 @@ watch(
   padding: 12px 18px;
   background: #ffffff;
   border-bottom: 1px solid #e2e8f0;
+}
+.collaboration-drawer :deep(.side-drawer-title) { flex: 1; }
+.collaboration-drawer :deep(.side-drawer-panel) { container-type: inline-size; }
+@container (max-width: 650px) {
+  .collaboration-drawer :deep(.side-drawer-header) { flex-wrap: wrap; gap: 10px; }
+  .collaboration-drawer :deep(.side-drawer-title) { flex-basis: 100%; padding-right: 34px; }
+  .collaboration-drawer :deep(.side-drawer-actions) { flex: 1; }
+  .collaboration-drawer :deep(.side-drawer-close) { position: absolute; top: 12px; right: 18px; }
 }
 .apply-patch-drawer {
   flex: 1;

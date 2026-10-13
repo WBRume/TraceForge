@@ -27,6 +27,7 @@ export type DesktopPatchApplyResult = DesktopGitCommandResult & {
 }
 
 export type DesktopConfig = {
+  ide?: { editor: 'vscode' | 'idea' | 'pycharm'; executable?: string; launchers?: { idea?: string; pycharm?: string } }
   serverUrl: string
   token: string | null
   onboardingCompleted: boolean
@@ -141,12 +142,13 @@ export type SddDesktopApi = {
   }
   config: {
     getConfig: () => Promise<DesktopConfig>
-    setConfig: (payload: Partial<Pick<DesktopConfig, 'serverUrl' | 'token' | 'onboardingCompleted'>>) => Promise<DesktopConfig>
+    setConfig: (payload: Partial<Pick<DesktopConfig, 'serverUrl' | 'token' | 'onboardingCompleted' | 'ide'>>) => Promise<DesktopConfig>
     getRepoMapping: (payload: { workspaceId: string; remoteUrl: string }) => Promise<DesktopRepoMapping | null>
     setRepoMapping: (payload: Omit<DesktopRepoMapping, 'updatedAt'>) => Promise<DesktopRepoMapping>
     removeRepoMapping: (payload: { workspaceId: string; remoteUrl: string }) => Promise<{ removed: boolean }>
   }
   system: {
+    openInIde: (payload: { workspaceId: string; remoteUrl: string; path: string; line?: number; column?: number }) => Promise<{ ok: boolean }>
     openExternal: (url: string) => Promise<{ ok: boolean }>
     openPath: (path: string) => Promise<{ ok: boolean }>
   }

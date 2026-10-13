@@ -271,6 +271,9 @@ class Settings(BaseSettings):
     # successful operation.  Keeping this configurable also makes live tests
     # able to assert that no secret-bearing temporary file remains.
     TASK_SESSION_SNAPSHOT_ROOT: str = "tmp/task_session_snapshots"
+    # Empty inherits TASK_SESSION_SNAPSHOT_ROOT/collaboration. Existing tasks
+    # retain their pinned store when this setting changes.
+    COLLABORATION_SNAPSHOT_ROOT: str = ""
     # Directory names pruned at any depth. Tracked files always remain protected.
     # JSON array in environment; an empty array disables directory exclusions.
     TASK_SESSION_SNAPSHOT_EXCLUDED_DIRS: list[str] = [
@@ -457,6 +460,10 @@ class Settings(BaseSettings):
             self.TASK_SESSION_SNAPSHOT_ROOT,
             fallback="tmp/task_session_snapshots",
         )
+        if self.COLLABORATION_SNAPSHOT_ROOT.strip():
+            self.COLLABORATION_SNAPSHOT_ROOT = _resolve_backend_path(
+                self.COLLABORATION_SNAPSHOT_ROOT, fallback="tmp/task_session_snapshots/collaboration"
+            )
         if str(self.WORKSPACE_ROOT_DIR or "").strip():
             # 相对路径按 backend 根目录解析为绝对路径，避免受进程 CWD 影响
             self.WORKSPACE_ROOT_DIR = _resolve_backend_path(

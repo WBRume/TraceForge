@@ -9,6 +9,7 @@ import CollaborationBackups from './CollaborationBackups.vue'
 import CollaborationRepositories from './CollaborationRepositories.vue'
 import CollaborationFiles from './CollaborationFiles.vue'
 import CollaborationHistory from './CollaborationHistory.vue'
+import { useOpenInIde } from '@/composables/collaboration/useOpenInIde'
 import { collaborationFileKey } from '@/composables/collaboration/compare'
 import { collaborationReview } from '@/composables/collaboration/review'
 import { useCollaborationPresentation } from '@/composables/collaboration/useCollaborationPresentation'
@@ -16,8 +17,12 @@ import type { LocalCollaboration } from '@/composables/collaboration/useLocalCol
 import type { CollaborationBackup, CollaborationConflict } from '@/types/collaboration'
 
 const props = defineProps<{ controller: LocalCollaboration; workspaceId: string; taskId: string }>()
+const emit = defineEmits<{ error: [message: string] }>()
 const { t } = useI18n()
 const c = computed(() => proxyRefs(props.controller))
+const ide = useOpenInIde(() => c.value, () => props.workspaceId)
+watch(() => props.controller, controller => { void controller.loadReview() }, { immediate: true })
+watch(ide.error, message => emit('error', message))
 const ui = useCollaborationPresentation(() => props.controller)
 const downloadOnly = computed(() => c.value.receivedOnce && !c.value.participating)
 const tab = computed({ get: () => c.value.view.tab, set: value => { c.value.view.tab = value } })
@@ -53,8 +58,6 @@ const comparison = computed(() => {
   const rightSource = pair.value === 'auto' && file?.kind === 'local' ? 'localSource' : downloadOnly.value ? 'session.publishedSource' : ui.value?.running ? 'candidateSource' : 'finalSource'
   return { left, right, leftLabel: t(`collaboration.${leftSource}`), rightLabel: t(`collaboration.${rightSource}`) }
 })
-const errors = computed(() => [...new Set([c.value.error, ...c.value.local?.errors || [], c.value.state?.recovery_message].filter((value): value is string => Boolean(value)
-  && !(ui.value?.setup && [t('collaboration.preparationRequired'), t('collaboration.mappingCheckFailed')].includes(value!))))])
 const restoreDescription = computed(() => pendingRestore.value?.conflicts.map(row => {
   const repo = c.value.state?.repositories.find(item => item.task_repository_id === row.task_repository_id)
   return `${repo?.repo_slug || row.task_repository_id}/${row.path}${!row.cloud ? ` · ${t('collaboration.delete')}` : ''}`
@@ -100,11 +103,6 @@ async function confirmRestore() {
   await c.value.restore(confirmation.conflicts, confirmation.id)
   pendingRestore.value = null
 }
-async function primaryAction() {
-  if (ui.value?.action === 'device') c.value.view.page = 'settings'
-  else if (ui.value?.action === 'reconnect') await c.value.claimDriver()
-  else if (ui.value?.action === 'recover') await c.value.recover()
-}
 </script>
 
 <template>
@@ -131,7 +129,7 @@ async function primaryAction() {
 
     <ConfirmActionModal :show="c.view.page === 'disconnect'" tone="primary" :title="t('collaboration.session.disconnect')" :message="t('collaboration.session.leaveHint')" :cancel-text="t('common.cancel')" :confirm-text="t('collaboration.session.disconnect')" :loading="c.busy || c.leaving" @cancel="c.view.page = 'files'" @confirm="async () => { if (await c.leave()) c.view.page = 'files' }" />
     <template v-if="c.view.page === 'settings'">
-      <CollaborationRepositories :controller="controller" :setup="false" @device="deviceConfirmation = true" />
+      <CollaborationRepositories :controller="controller" :setup="!c.participating || ui.setup" @device="deviceConfirmation = true" />
     </template>
     <template v-else-if="c.view.page === 'backups'">
       <template v-if="backup"><button class="back-button" type="button" @click="backup = null">{{ t('collaboration.ui.backToBackups') }}</button><CodeComparison :path="backup.path" :left-hash="backup.sha256 || undefined" :right-hash="review.local.get(collaborationFileKey(backup.task_repository_id, backup.path))?.sha256" :left-label="t('collaboration.backupSource')" :right-label="t('collaboration.localSource')" :read-text="c.readText" /></template>
@@ -139,12 +137,6 @@ async function primaryAction() {
     </template>
     <CollaborationHistory v-else-if="c.view.page === 'history'" :workspace-id="workspaceId" :task-id="taskId" />
     <template v-else>
-      <details v-if="errors.length" class="error-details" :open="ui.setup"><summary>{{ t('collaboration.ui.errorDetails') }}</summary><p v-for="problem in errors" :key="problem" role="alert">{{ problem }}</p></details>
-      <div v-if="!c.participating && c.available && !ui.setup" class="session-actions">
-        <button class="btn-secondary" type="button" :disabled="c.busy" @click="c.receiveOnce()">{{ t('collaboration.session.receive') }}</button>
-        <button class="btn-primary" type="button" :disabled="c.busy || c.enabled && !c.canReconnect" @click="c.enable()">{{ t('collaboration.session.connect') }}</button>
-      </div>
-
       <CollaborationRepositories v-if="ui.setup" :controller="controller" :setup="true" />
       <template v-else>
         <!-- 分段筛选条与搜索过滤 -->
@@ -156,7 +148,6 @@ async function primaryAction() {
             </button>
           </nav>
           <div class="filter-right-tools">
-            <button v-if="ui.action !== 'none' && ui.action !== 'connect' && !c.busy" type="button" class="btn-secondary btn-sm" @click="primaryAction">{{ ui.actionLabel }}</button>
             <div class="file-search-box">
               <Search :size="13" class="search-icon" />
               <input v-model="searchQuery" type="text" placeholder="过滤文件路径..." class="filter-search-input" />
@@ -169,7 +160,7 @@ async function primaryAction() {
         <div v-if="filteredFiles.length" class="file-comparison">
           <CollaborationFiles :files="filteredFiles" :repositories="c.state?.repositories || []" :selected="selected" :checked="checked" :can-restore="ui.canRestore" :local-available="ui.localAvailable" :running="ui.running" @select="selected = $event; pair = 'auto'" @check="checkFile" />
           <div v-if="active" class="diff-workspace">
-            <CodeComparison :path="`${active.repo_slug}/${active.path}`" :left-hash="comparison.left?.sha256" :right-hash="comparison.right?.sha256" :left-label="comparison.leftLabel" :right-label="comparison.rightLabel" :read-text="c.readText">
+            <CodeComparison :path="`${active.repo_slug}/${active.path}`" :left-hash="comparison.left?.sha256" :right-hash="comparison.right?.sha256" :left-label="comparison.leftLabel" :right-label="comparison.rightLabel" :read-text="c.readText" :open-in-ide="ide.available" :ide-title="ide.hint(active.task_repository_id)" @ide-error="ide.error.value = $event" @open-in-ide="position => ide.open(active!.task_repository_id, active!.path, position.line, position.column)">
               <template #tools><BaseSelect v-model="pair" size="sm" :aria-label="t('collaboration.ui.compareVersions')" :options="[{ value: 'auto', label: t('collaboration.ui.defaultComparison') }, { value: 'local-cloud', label: t('collaboration.localCloud'), disabled: !ui.localAvailable }, { value: 'input-cloud', label: t('collaboration.inputCloud') }]" /></template>
             </CodeComparison>
             <div class="diff-note-bar" :class="{ 'is-decision-bar': active.kind === 'conflicts' && ui.canRestore }">
@@ -193,7 +184,7 @@ async function primaryAction() {
               <Check v-if="!review.files.length && !downloadOnly" :size="24" />
               <GitPullRequest v-else :size="24" />
             </div>
-            <strong>{{ t(!review.cloudKnown && tab !== 'local' ? 'collaboration.ui.loadingFiles' : tab === 'local' ? 'collaboration.ui.noLocalChanges' : downloadOnly ? 'collaboration.session.noChanges' : 'collaboration.ui.noAgentChanges') }}</strong>
+            <strong>{{ t(!review.cloudKnown && !c.reviewError && tab !== 'local' ? 'collaboration.ui.loadingFiles' : tab === 'local' ? 'collaboration.ui.noLocalChanges' : downloadOnly ? 'collaboration.session.noChanges' : 'collaboration.ui.noAgentChanges') }}</strong>
             <p>{{ t(tab === 'local' ? 'collaboration.ui.noLocalHint' : downloadOnly ? 'collaboration.session.noChangesHint' : 'collaboration.ui.noAgentHint') }}</p>
             <div v-if="!review.files.length" class="empty-actions">
               <button class="btn-secondary btn-sm" type="button" @click="c.view.page = 'settings'">查看仓库映射</button>
@@ -277,23 +268,6 @@ async function primaryAction() {
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
   font-weight: 600;
 }
-
-.session-actions { display: flex; gap: 12px; padding: 14px 20px; flex-shrink: 0; font-size: 12px; }
-
-.error-details {
-  margin: 0 18px 10px;
-  padding: 10px 14px;
-  border-radius: 8px;
-  background: #fff7ed;
-  border: 1px solid #fed7aa;
-  color: #9a3412;
-  font-size: 12px;
-  max-height: 130px;
-  overflow: auto;
-  flex-shrink: 0;
-}
-.error-details summary { cursor: pointer; font-weight: 500; }
-.error-details p { margin: 6px 0; overflow-wrap: anywhere; }
 
 /* 筛选与搜索工具条 */
 .filter-bar-wrapper {

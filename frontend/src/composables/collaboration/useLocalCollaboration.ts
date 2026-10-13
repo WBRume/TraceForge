@@ -23,6 +23,8 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const desktop = getSddDesktop()
   const state = shallowRef<CollaborationState | null>(null), local = shallowRef<LocalCollaborationStatus | null>(null)
   const input = shallowRef<CollaborationManifest | null>(null), cloud = shallowRef<CollaborationManifest | null>(null)
+  const reviewRunning = shallowRef(false), reviewLoading = shallowRef(false), reviewError = shallowRef('')
+  let reviewRequested = false
   const previewConflicts = shallowRef<CollaborationConflict[]>([])
   const error = shallowRef(''), busy = shallowRef(false), loading = shallowRef(true)
   const preparationRequired = shallowRef(false)
@@ -290,6 +292,21 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     } finally { if (token === generation) busy.value = false }
   }
 
+  async function fetchReview() {
+    if (!reviewRequested || participating.value || receivedOnce.value) return
+    const token = generation
+    reviewLoading.value = true; reviewError.value = ''
+    try {
+      const result = await remote().review(); check(token)
+      if (!participating.value && !receivedOnce.value) {
+        input.value = result.input; cloud.value = result.cloud; reviewRunning.value = result.running
+      }
+    } catch (reason) { if (token === generation) reviewError.value = formatApiError(reason, t('collaboration.failed')) }
+    finally { if (token === generation) reviewLoading.value = false }
+  }
+  async function loadReview() { reviewRequested = true; await refresh() }
+  function refreshResults() { if (reviewRequested) void refresh() }
+
   async function refreshOnce() {
     const token = generation
     try {
@@ -297,10 +314,11 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       state.value = next; observedVersion = next.state_version
       if (mappingsDirty || (available && !nativeIdentityReady) || preparationRequired.value) await loadMappings()
       check(token); loading.value = false
-      if (!next.enabled) { preparationRequired.value = false; deliveryRetryRequired.value = false; await loadMappings(); return }
+      if (!next.enabled) { preparationRequired.value = false; deliveryRetryRequired.value = false; await fetchReview(); return }
       if (!available || !driver.value || !participating.value || leaving.value) {
         // Keep a one-time receipt and its comparison pinned to the version actually downloaded.
         if (receivedOnce.value && !participating.value) return
+        if (reviewRequested) { await fetchReview(); return }
         const target = ['RUNNING', 'WAITING_HITL'].includes(next.sync_phase) ? next.progress_snapshot_id || next.snapshot_id : next.snapshot_id
         if (target && cloud.value?.snapshot_id !== target) { const manifest = await snapshot(target); check(token); cloud.value = manifest }
         if (next.input_snapshot_id && input.value?.snapshot_id !== next.input_snapshot_id) { const manifest = await snapshot(next.input_snapshot_id); check(token); input.value = manifest }
@@ -423,6 +441,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }
   async function refreshComparison() {
     if (busy.value) return
+    if (!participating.value && !receivedOnce.value) { mappingsDirty = true; await loadReview(); return }
     const token = generation
     try {
       if (mappingsDirty || preparationRequired.value || !participating.value) await loadMappings()
@@ -595,7 +614,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     void refresh()
   }, { immediate: true })
   onScopeDispose(() => { disposed = true; generation++; clearInterval(heartbeat); clearInterval(stageClock); stopMappingUpdates(); stopLocalUpdates?.() })
-  return { participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, cancelPreparation, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, onConnectionReady, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
+  return { reviewRunning, reviewLoading, reviewError, loadReview, refreshResults, participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, cancelPreparation, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, onConnectionReady, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
 }
 type Controller = ReturnType<typeof createController>
 const controllers = new Map<string, { scope: EffectScope; controller: Controller; users: number }>()
@@ -633,6 +652,11 @@ export function useLocalCollaboration(options: { workspaceId: () => string; task
     onCleanup(retained.release)
   }, { immediate: true })
   return {
+    reviewRunning: computed(() => active.value?.reviewRunning.value || false),
+    reviewLoading: computed(() => active.value?.reviewLoading.value || false),
+    reviewError: computed(() => active.value?.reviewError.value || ''),
+    loadReview: async () => { await active.value?.loadReview() },
+    refreshResults: () => active.value?.refreshResults(),
     participating: computed(() => active.value?.participating.value || false), leaving: computed(() => active.value?.leaving.value || false),
     receivedOnce: computed(() => active.value?.receivedOnce.value || false),
     leave: async () => active.value ? active.value.leave() : true, receiveOnce: async () => { await active.value?.receiveOnce() },
