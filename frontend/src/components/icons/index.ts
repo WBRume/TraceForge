@@ -68,6 +68,7 @@ import {
   FolderIcon as RawFolderIcon,
   FolderOpenIcon as RawFolderOpenIcon,
   FolderPlusIcon as RawFolderPlusIcon,
+  FunnelIcon as RawFunnelIcon,
   GlobeAltIcon as RawGlobeAltIcon,
   HashtagIcon as RawHashtagIcon,
   HeartIcon as RawHeartIcon,
@@ -230,6 +231,7 @@ export const EyeSlashIcon = wrapIcon(RawEyeSlashIcon, 'EyeSlashIcon')
 export const FolderIcon = wrapIcon(RawFolderIcon, 'FolderIcon')
 export const FolderOpenIcon = wrapIcon(RawFolderOpenIcon, 'FolderOpenIcon')
 export const FolderPlusIcon = wrapIcon(RawFolderPlusIcon, 'FolderPlusIcon')
+export const Funnel = wrapIcon(RawFunnelIcon, 'FunnelIcon')
 export const GlobeAltIcon = wrapIcon(RawGlobeAltIcon, 'GlobeAltIcon')
 export const HashtagIcon = wrapIcon(RawHashtagIcon, 'HashtagIcon')
 export const HeartIcon = wrapIcon(RawHeartIcon, 'HeartIcon')

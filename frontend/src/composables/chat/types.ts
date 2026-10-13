@@ -42,6 +42,11 @@ export type SpecDrawerTab = 'spec_doc' | 'plan_docs' | 'diag_docs' | 'diag_code'
 export type TaskSessionFilter = 'ALL' | 'DONE' | 'FAILED'
 export type TaskRelationFilter = 'created_by_me' | 'mentioned_me' | 'messaged_by_me' | 'followed_by_me'
 export type TaskTypeFilterValue = 'ALL' | 'DEVELOPMENT' | 'DIAGNOSIS'
+export type TaskListFilters = {
+  status: TaskSessionFilter
+  taskType: TaskTypeFilterValue
+  relations: TaskRelationFilter[]
+}
 
 export type RuntimeSkillUsage = {
   is_used: boolean

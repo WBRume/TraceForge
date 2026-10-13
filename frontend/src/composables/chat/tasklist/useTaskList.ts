@@ -1,8 +1,8 @@
-import { ref } from 'vue'
+import { ref, shallowRef, watch } from 'vue'
 import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
-import type { TaskRelationFilter, TaskSessionFilter, TaskTypeFilterValue } from '../types'
+import type { TaskListFilters, TaskRelationFilter, TaskSessionFilter, TaskTypeFilterValue } from '../types'
 import type { TaskRailView } from '@/types/taskRail'
 
 /**
@@ -24,6 +24,7 @@ export function useTaskList(options: {
   const taskStatusFilter = ref<TaskSessionFilter>('ALL')
   const taskRelationFilter = ref<TaskRelationFilter[]>([])
   const taskTypeFilter = ref<TaskTypeFilterValue>('ALL')
+  const taskSearchQuery = shallowRef('')
   const taskListPage = ref(1)
   const taskListHasMore = ref(false)
   const taskListLoading = ref(false)
@@ -32,6 +33,7 @@ export function useTaskList(options: {
   const taskListError = ref(false)
   let requestGeneration = 0
   let requestController: AbortController | undefined
+  let searchTimer: ReturnType<typeof setTimeout> | undefined
 
   const resolveTaskStatusQuery = (): 'DONE' | 'FAILED' | undefined => {
     if (taskStatusFilter.value === 'DONE') return 'DONE'
@@ -44,6 +46,7 @@ export function useTaskList(options: {
     !resolveTaskStatusQuery()
     && taskRelationFilter.value.length === 0
     && taskTypeFilter.value === 'ALL'
+    && !taskSearchQuery.value.trim()
     && (!options.getRailFilter || options.getRailFilter().view === 'all')
   )
 
@@ -52,6 +55,7 @@ export function useTaskList(options: {
     const trySelectRouteTask = loadOptions?.trySelectRouteTask ?? reset
     const shouldClear = loadOptions?.clear ?? (tasks.value.length === 0)
     if (reset) {
+      clearTimeout(searchTimer)
       requestGeneration++
       requestController?.abort()
       taskListLoading.value = true
@@ -82,6 +86,9 @@ export function useTaskList(options: {
       }
       if (statusQuery) {
         params.status = statusQuery
+      }
+      if (taskSearchQuery.value.trim()) {
+        params.search = taskSearchQuery.value.trim()
       }
       if (taskTypeFilter.value !== 'ALL') {
         params.task_type = taskTypeFilter.value
@@ -127,22 +134,28 @@ export function useTaskList(options: {
     await loadTasks({ reset: false, trySelectRouteTask: false })
   }
 
-  const applyTaskStatusFilter = async () => {
+  const applyTaskFilters = async (filters: TaskListFilters) => {
+    taskStatusFilter.value = filters.status
+    taskTypeFilter.value = filters.taskType
+    taskRelationFilter.value = [...new Set(filters.relations)]
     await loadTasks({ reset: true, trySelectRouteTask: false })
   }
 
-  const applyTaskTypeFilter = async () => {
-    await loadTasks({ reset: true, trySelectRouteTask: false })
+  const resetTaskFilters = async () => {
+    await applyTaskFilters({ status: 'ALL', taskType: 'ALL', relations: [] })
   }
 
-  const applyTaskRelationFilter = async (relations: TaskRelationFilter[]) => {
-    taskRelationFilter.value = [...new Set(relations)]
-    await loadTasks({ reset: true, trySelectRouteTask: false })
-  }
-
-  const resetTaskRelationFilter = async () => {
-    await applyTaskRelationFilter([])
-  }
+  const stopSearchWatch = watch(taskSearchQuery, (query, previousQuery) => {
+    if (query.trim() === previousQuery.trim()) return
+    clearTimeout(searchTimer)
+    requestGeneration++
+    requestController?.abort()
+    taskListLoading.value = true
+    taskListLoadingMore.value = false
+    searchTimer = setTimeout(() => {
+      void loadTasks({ reset: true, trySelectRouteTask: false })
+    }, 250)
+  }, { flush: 'sync' })
 
   const handleTaskListScroll = () => {
     const container = taskListContainer.value
@@ -219,22 +232,26 @@ export function useTaskList(options: {
 
   return {
     taskListError,
-    dispose: () => { requestGeneration++; requestController?.abort() },
+    dispose: () => {
+      stopSearchWatch()
+      clearTimeout(searchTimer)
+      requestGeneration++
+      requestController?.abort()
+    },
     tasks,
     taskListContainer,
     taskStatusFilter,
     taskRelationFilter,
     taskTypeFilter,
+    taskSearchQuery,
     taskListHasMore,
     taskListLoading,
     taskListLoadingMore,
     showTaskModal,
     loadTasks,
     loadMoreTasks,
-    applyTaskStatusFilter,
-    applyTaskTypeFilter,
-    applyTaskRelationFilter,
-    resetTaskRelationFilter,
+    applyTaskFilters,
+    resetTaskFilters,
     handleTaskListScroll,
     toggleTaskFollow,
     findTask,
