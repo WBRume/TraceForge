@@ -7,7 +7,7 @@ export type CollaborationAction = 'none' | 'connect' | 'recover' | 'reconnect' |
 
 /** One presentation contract for the entry, drawer and composer; never changes execution permissions. */
 export function collaborationPresentation(c: CollaborationContext) {
-  const running = Boolean(c.participating && ['RUNNING', 'WAITING_HITL'].includes(c.phase))
+  const running = Boolean(c.reviewRunning || c.participating && ['RUNNING', 'WAITING_HITL'].includes(c.phase))
   const conflicts = c.conflicts.length || (c.participating ? c.state?.conflicts?.length : 0) || 0
   const localCount = c.local?.local_changes?.filter(file => !c.conflicts.some(conflict =>
     conflict.task_repository_id === file.task_repository_id && conflict.path === file.path)).length || 0
@@ -16,7 +16,7 @@ export function collaborationPresentation(c: CollaborationContext) {
   let key = 'ready', action: CollaborationAction = 'none', tone = 'neutral', count = localCount
   if (c.loading) key = 'loading'
   else if (c.leaving) key = 'leaving'
-  else if (!c.participating && c.available) {
+  else if (!c.participating && !c.remoteSender) {
     key = c.busy ? 'transferring' : c.error ? 'error' : c.receivedOnce ? conflicts ? 'receivedConflict' : 'received' : 'browse'
     if (c.error || conflicts) tone = 'warning'
   }
@@ -32,7 +32,7 @@ export function collaborationPresentation(c: CollaborationContext) {
   else if (['SETTLING', 'STOPPING', 'DELIVERY_PENDING'].includes(c.phase)) key = 'transferring'
   else if (localCount) key = 'local'
   else if (c.blocked) { key = 'unavailable'; action = 'recover'; tone = 'warning' }
-  const setup = !c.participating && c.available ? !c.receivedOnce : !c.enabled || (c.driver && (c.preparationRequired || !c.local?.baseline))
+  const setup = Boolean(c.participating && c.driver && (c.preparationRequired || !c.local?.baseline))
   const canRestore = localAvailable && !c.busy && !c.error && (c.receivedOnce && !c.participating || c.phase === 'CONFLICT_PENDING')
   const inputKey = !c.enabled || (!c.participating && !c.remoteSender) ? '' : c.blocked ? key : localCount && localAvailable ? 'local' : ''
   return { key, action, tone, count, conflicts, localCount, localAvailable, setup, running, canRestore, inputKey }

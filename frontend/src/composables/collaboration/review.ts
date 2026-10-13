@@ -10,7 +10,7 @@ export function collaborationReview(c: CollaborationContext, localAvailable: boo
   const cloudChanges = cloudManifest && inputManifest ? changedFiles(input, cloud) : []
   const localChanges = localAvailable ? changedFiles(received, local) : []
   const cloudKeys = new Set(cloudChanges.map(file => file.key)), localKeys = new Set(localChanges.map(file => file.key))
-  const conflicts = localAvailable ? c.conflicts : c.state?.conflicts || []
+  const conflicts = localAvailable ? c.conflicts : []
   const conflictKeys = new Set(conflicts.map(file => collaborationFileKey(file.task_repository_id, file.path)))
   const all = new Map([...cloudChanges, ...localChanges].map(file => [file.key, file]))
   for (const file of conflicts) {

@@ -48,6 +48,7 @@ export const shell = {
   openExternal: (url: string) => nativeRequest('open-external', { url }),
   openPath: async (path: string) => { await nativeRequest('open-path', { path }); return '' },
 }
+export const openIdeUrl = (url: string) => nativeRequest('open-ide-url', { url })
 export const dialog = {
   showOpenDialog: (options: unknown) => nativeRequest('select-directory', options),
   showSaveDialog: (...args: unknown[]) => nativeRequest('save-file', args.at(-1)),

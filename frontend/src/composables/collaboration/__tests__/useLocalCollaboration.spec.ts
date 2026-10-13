@@ -6,13 +6,14 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import zh from '@/locales/zh.json'
 import type { CollaborationManifest, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
 
-const mocks = vi.hoisted(() => ({ desktop: true, changed: vi.fn(), unsubscribe: vi.fn(), api: { state: vi.fn(), post: vi.fn(), snapshot: vi.fn(), object: vi.fn(), upload: vi.fn() }, native: vi.fn(), mapping: vi.fn(), setMapping: vi.fn(), directory: vi.fn(), validate: vi.fn(), remotes: vi.fn(), open: vi.fn(), auth: { user: null as { id: string } | null } }))
+const mocks = vi.hoisted(() => ({ desktop: true, changed: vi.fn(), unsubscribe: vi.fn(), api: { review: vi.fn(), state: vi.fn(), post: vi.fn(), snapshot: vi.fn(), object: vi.fn(), upload: vi.fn() }, native: vi.fn(), mapping: vi.fn(), setMapping: vi.fn(), directory: vi.fn(), validate: vi.fn(), remotes: vi.fn(), open: vi.fn(), auth: { user: null as { id: string } | null } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => mocks.auth }))
 vi.mock('@/utils/runtime', () => ({ getSddDesktop: () => mocks.desktop ? ({ collaboration: { execute: mocks.native, onChanged: mocks.changed }, config: { getRepoMapping: mocks.mapping, setRepoMapping: mocks.setMapping }, git: { selectDirectory: mocks.directory, validateGitRepo: mocks.validate, getFetchRemotes: mocks.remotes }, system: { openPath: mocks.open } }) : null }))
 vi.mock('@/services/collaborationApi', () => ({ collaborationApi: () => mocks.api, base64Bytes: () => new Uint8Array([1]), bytesBase64: () => 'AQ==' }))
 vi.mock('@/components/collaboration/CodeComparison.vue', () => ({ default: { template: '<div />' } }))
 import { useLocalCollaboration, type LocalCollaboration } from '../useLocalCollaboration'
 import { readRepoPreferences, saveRepoPreferences } from '@/composables/localRepoPreferences'
+import CollaborationActions from '@/components/collaboration/CollaborationActions.vue'
 import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
 import { manifestDelta } from '../../../../shared/collaboration-delta'
 
@@ -33,6 +34,7 @@ beforeEach(() => {
   manifest = { protocol_version: 1, task_id: crypto.randomUUID(), snapshot_id: 'snapshot1', workspace_revision: 1, session_generation: 1, session_revision: 1, repository_set_digest: 'digest', source: 'INITIAL', repositories: [repo] }
   state = { ...manifest, enabled: false, sync_phase: 'OFF', state_version: 1, input_snapshot_id: null, progress_snapshot_id: null, lease_epoch: 1, binding_id: 'binding', conflicts: [] }
   local = { directory_mode: 'MAPPED', task_id: manifest.task_id, binding_id: 'binding', task_root: 'G:/private/task', manifest, baseline: manifest, target: manifest, repositories: [{ ...repo, local_worktree_path: 'G:/private/task/api', mapped_repo_root: 'G:/api' }], state: 'READY', conflicts: [], local_changes: [] }
+  mocks.api.review.mockImplementation(async () => ({ input: { ...manifest, snapshot_id: 'before', repositories: manifest.repositories.map(repo => ({ ...repo, files: [] })) }, cloud: manifest, running: false }))
   mocks.api.state.mockImplementation(async () => ({ ...state }))
   mocks.api.snapshot.mockImplementation(async () => manifest)
   mocks.api.post.mockImplementation(async (action, body) => {
@@ -66,6 +68,29 @@ afterEach(async () => {
 })
 
 describe('local collaboration coordinator', () => {
+  it('loads cloud results lazily with no mapping, connection, file scan or polling', async () => {
+    mocks.mapping.mockResolvedValue(null)
+    setup(); await flushPromises()
+    expect(mocks.api.review).not.toHaveBeenCalled()
+    mocks.native.mockClear(); mocks.api.post.mockClear()
+    await controller.loadReview(); await flushPromises()
+    expect(controller.input.value?.snapshot_id).toBe('before')
+    expect(controller.cloud.value?.snapshot_id).toBe(manifest.snapshot_id)
+    expect(controller.participating.value).toBe(false)
+    expect(controller.blocked.value).toBe(false)
+    expect(mocks.api.post).not.toHaveBeenCalled()
+    expect(mocks.native).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(65000)
+    expect(mocks.api.review).toHaveBeenCalledTimes(1)
+    controller.refreshResults(); await flushPromises()
+    expect(mocks.api.review).toHaveBeenCalledTimes(2)
+  })
+  it('loads cloud results in a browser without desktop APIs', async () => {
+    mocks.desktop = false
+    setup(); await flushPromises(); await controller.loadReview(); await flushPromises()
+    expect(controller.cloud.value?.snapshot_id).toBe(manifest.snapshot_id)
+    expect(controller.reviewError.value).toBe('')
+  })
   it('performs no periodic state, file, or backup reads while connected, retaining only lease renewal', async () => {
     setup(); await flushPromises(); await controller.enable()
     mocks.api.state.mockClear(); mocks.native.mockClear(); mocks.api.post.mockClear()
@@ -529,18 +554,21 @@ describe('local collaboration coordinator', () => {
     expect(controller.mappings.value).toEqual({ repo1: { local_path: 'G:/api', configured_git_url: 'https://fork.test/api' }, repo2: { local_path: 'G:/web', configured_git_url: second.repo_url } })
     const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } }), createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] })], stubs: { CodeComparison: true, CollaborationBackups: true } } })
     wrappers.push(panel)
+    await panel.findAll('button').find(button => button.text() === '仓库映射')!.trigger('click')
     expect(panel.text()).toContain('G:/api')
     expect(panel.text()).toContain('G:/web')
     expect(panel.text()).not.toContain(zh.collaboration.mappingMissing)
     expect(panel.text()).not.toContain('ENOENT')
     await flushPromises()
-    const retry = panel.findAll('button').find(button => button.text() === '开启本地协同')!
-    expect(retry.element.disabled).toBe(false)
+    const actions = mount(CollaborationActions, { props: { controller }, global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })] } })
+    wrappers.push(actions)
+    const retry = actions.get('input[role="switch"][aria-label="本地协同"]')
+    expect(retry.attributes('disabled')).toBeUndefined()
     await vi.advanceTimersByTimeAsync(5000)
     expect(mocks.native.mock.calls.filter(([request]) => request.kind === 'describe')).toHaveLength(2)
     expect(mocks.native.mock.calls.some(([request]) => request.kind === 'prepare')).toBe(false)
     expect(mocks.api.post.mock.calls.some(([action]) => action === 'objects/missing' || action === 'handoff')).toBe(false)
-    await retry.trigger('click'); await flushPromises()
+    await retry.setValue(true); await flushPromises()
     const prepared = mocks.native.mock.calls.find(([request]) => request.kind === 'prepare')![0].payload
     expect(prepared.repositories.map((repo: any) => [repo.task_repository_id, repo.local_path, repo.branch_name, repo.base_commit_sha])).toEqual([['repo1', 'G:/api', 'release/2.x', 'commit'], ['repo2', 'G:/web', 'main', 'other-commit']])
     expect(mocks.api.post.mock.calls.some(([action]) => action === 'enable')).toBe(false)

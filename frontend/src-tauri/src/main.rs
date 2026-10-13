@@ -156,6 +156,14 @@ fn native_request(app: &tauri::AppHandle, method: &str, payload: &Value) -> Repl
                 .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
+        "open-ide-url" => {
+            let url = payload["url"].as_str().ok_or("URL is required")?;
+            if !url.starts_with("vscode://file/") {
+                return Err("Invalid IDE URL".into());
+            }
+            app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
         "open-path" => {
             let path = payload["path"].as_str().ok_or("Path is required")?;
             app.opener()

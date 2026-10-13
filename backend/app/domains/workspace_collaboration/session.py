@@ -85,7 +85,7 @@ def latest_snapshot(db, task, _user_id, _request):
     service._assert_no_writer(db, task.id)
     repositories = service.repository_metadata(db, task)
     service._ensure_store(db, task)
-    captured = service._inventory(task.id, task.project_path, repositories, stable=True)
+    captured = service._inventory(task, task.project_path, repositories, stable=True)
     digest = content.digest(captured)
     previous = (
         db.query(CollaborationSnapshot)

@@ -20,10 +20,6 @@ const problemText = (code: string) => t(code === 'HEAD_MISMATCH' ? 'collaboratio
 watch(() => props.setup && allMapped.value && canPrepare.value && !c.value.loading, ready => {
   if (ready && !c.value.busy && !c.value.mappingChecks.length) void c.value.checkMappings()
 }, { immediate: true })
-async function connect() {
-  if (c.value.participating) await c.value.recover()
-  else await c.value.enable()
-}
 </script>
 
 <template>
@@ -57,14 +53,8 @@ async function connect() {
         <p v-for="problem in setup ? repo.check?.errors || [] : []" :key="problem" class="repo-error" role="alert">{{ problemText(problem) }}</p>
       </article>
     </div>
-    <div v-if="setup" class="setup-actions">
-      <small>{{ t(c.available ? 'collaboration.session.choiceHint' : 'collaboration.desktopRequired') }}</small>
-      <div class="setup-buttons">
-        <button v-if="canPrepare && !c.participating" class="btn-secondary" type="button" :disabled="c.busy || c.loading || !allMapped" @click="c.receiveOnce()">{{ t('collaboration.session.receive') }}</button>
-        <button v-if="canPrepare" class="btn-primary" type="button" :disabled="c.busy || c.loading || !allMapped || c.enabled && !c.participating && !c.canReconnect" @click="connect">{{ t(c.participating ? 'collaboration.ui.actions.recover' : 'collaboration.session.connect') }}</button>
-      </div>
-    </div>
-    <template v-else>
+    <p v-if="setup && !c.available" class="intro">{{ t('collaboration.desktopRequired') }}</p>
+    <template v-if="!setup">
       <div class="setting"><span>{{ t('collaboration.ui.device') }}<small>{{ t(c.state?.driver_connected === false ? 'collaboration.ui.deviceOffline' : c.driver ? 'collaboration.ui.thisDevice' : 'collaboration.ui.otherDevice') }}</small></span><button v-if="c.available && !c.driver" class="text-action" type="button" @click="emit('device')">{{ t('collaboration.ui.deviceDetails') }}</button></div>
       <p v-if="c.state?.driver_connected === false && !c.canReconnect" class="intro">{{ t('collaboration.ui.reconnectElsewhereHint') }}</p>
     </template>
@@ -154,18 +144,6 @@ async function connect() {
 .check-details pre { max-height: 120px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #f1f5f9; padding: 6px 10px; border-radius: 4px; }
 .repo-error { color: #dc2626; font-size: 11.5px; margin: 6px 0 0; }
 
-.setup-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid #e2e8f0;
-}
-.setup-actions small { color: var(--color-text-muted, #64748b); font-size: 11px; }
-.setup-buttons { display: flex; gap: 10px; flex-shrink: 0; }
-
 .setting {
   display: flex;
   gap: 20px;
@@ -180,7 +158,6 @@ async function connect() {
 
 @media(max-width:600px) {
   .repository-settings { padding: 16px; }
-  .setup-actions { flex-wrap: wrap; }
   .repo-path { flex-wrap: wrap; }
   .repo-path > span { flex-basis: 100%; }
 }

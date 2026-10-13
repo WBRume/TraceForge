@@ -51,6 +51,7 @@ export function createTaskWsEventRouter(deps: {
   applyTaskSessionPayload: (payload: any) => void
   specBootstrapApplyUpdate: (payload: any) => void
   shareSuggestionNudge: (payload: any) => void
+  cloudResultsUpdate?: () => void
   collaborationUpdate?: (payload: Record<string, unknown>) => void
   playbookEvent?: (type: string, payload: any) => void
   preinputHandleEvent: (type: string, payload: any) => void
@@ -249,6 +250,7 @@ export function createTaskWsEventRouter(deps: {
 
       case 'chat_job_done':
       case 'chat_job_failed': {
+        deps.cloudResultsUpdate?.()
         const job = payload?.job as ChatAiJob | undefined
         if (job?.id) {
           deps.ingestJob(job)

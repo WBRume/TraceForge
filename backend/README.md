@@ -83,6 +83,7 @@ LOCAL_RESOURCES_ALLOWED_NETWORKS=<允许访问的客户端网段>
 
 - **完整变量**：以 [`.env.example`](.env.example) 和 [`app/config.py`](app/config.py) 为准。配置文件固定读取 `backend/.env`，进程环境变量可覆盖它。
 - **持久化目录**：Skills、CLI 状态、上传文件、任务快照和工作区目录需要保留。主要存储路径的相对值以 `backend/` 为基准解析，部署时建议使用明确的绝对路径或持久化卷。
+- **协同快照**：在 `.env` 设置 `COLLABORATION_SNAPSHOT_ROOT=G:/TraceForgeData/collaboration`，重启后端后，新建存储使用该目录；留空则使用 `TASK_SESSION_SNAPSHOT_ROOT/collaboration`。已有任务会保留原存储位置，配置修改不搬迁或删除旧数据。Git 文件内容复用 `TASK_SESSION_SNAPSHOT_ROOT` 下的会话快照，备份时需要同时保留两个目录与数据库。
 - **配置密钥**：`FEATURE_CONFIG_MASTER_KEY` 用于保存功能配置中的密钥；未单独设置时从 JWT 密钥派生。与数据库一起备份相关密钥，避免换密钥后无法解密既有配置。
 - **计划文档**：在“设置 → 工作区设置 → 计划文档目录”配置相对任务根目录的路径。未配置时不扫描；历史任务缺少初始快照时会提示，不展示全部存量文档。
 - **可选能力**：[搜索与向量检索](../deploy/search/README.md)、[语音输入](../frontend/README.md#语音输入构建时选择-api--离线--关闭)、[诊断规程与实验环境](app/domains/diagnosis_playbook/README.md)分别配置。

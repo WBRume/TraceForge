@@ -59,6 +59,7 @@ export function createDesktopApi(bridge: DesktopBridge): SddDesktopApi {
       removeRepoMapping: payload => invoke('config:remove-repo-mapping', payload),
     },
     system: {
+      openInIde: payload => invoke('system:open-in-ide', payload),
       openExternal: url => invoke('system:open-external', { url }),
       openPath: path => invoke('system:open-path', { path }),
     },

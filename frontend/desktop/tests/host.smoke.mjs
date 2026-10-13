@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -37,6 +37,7 @@ test('compiled desktop host preserves config, Git, binary downloads, process eve
   })
   const pending = new Map()
   const events = []
+  const nativeMessages = []
   let sequence = 0
   let cancelDialog = false
   let stderr = ''
@@ -51,6 +52,7 @@ test('compiled desktop host preserves config, Git, binary downloads, process eve
       else reply?.resolve(message.result)
     } else if (message.kind === 'event') events.push(message)
     else if (message.kind === 'native') {
+      nativeMessages.push(message)
       const result = message.method === 'open-external' ? null : message.method === 'save-file'
         ? { canceled: cancelDialog, filePath: cancelDialog ? null : join(root, 'saved.bin') }
         : { canceled: cancelDialog, filePaths: cancelDialog ? [] : [repo] }
@@ -88,6 +90,18 @@ test('compiled desktop host preserves config, Git, binary downloads, process eve
     assert.equal((await invoke('git:select-directory')).canceled, true)
     await assert.rejects(invoke('unknown'), /Unknown desktop command/)
     await assert.rejects(invoke('system:open-external', { url: 'file:///tmp/file' }), /Only http/)
+    const launchers = { idea: 'G:/IDE/idea64.exe', pycharm: 'G:/IDE/pycharm64.exe' }
+    await invoke('config:set', { ide: { editor: 'vscode', launchers } })
+    const ideConfig = (await invoke('config:get')).ide
+    assert.equal(ideConfig.editor, 'vscode')
+    assert.deepEqual(ideConfig.launchers, launchers)
+    writeFileSync(join(repo, 'IDE 中文 #.txt'), 'first\nsecond\nthird\n')
+    await invoke('system:open-in-ide', { workspaceId: 'ws', remoteUrl: 'https://example.com/team/repo', path: 'IDE 中文 #.txt', line: 3, column: 2 })
+    const ideUrl = nativeMessages.find(message => message.method === 'open-ide-url').payload.url
+    assert.ok(ideUrl.startsWith('vscode://file/'))
+    assert.ok(ideUrl.endsWith('%23.txt:3:2'))
+    await assert.rejects(invoke('system:open-in-ide', { workspaceId: 'ws', remoteUrl: 'https://example.com/other', path: 'file.txt' }), /IDE_MAPPING_REQUIRED/)
+    await assert.rejects(invoke('system:open-in-ide', { workspaceId: 'ws', remoteUrl: mapping.remoteUrl, path: '../outside.txt' }), /IDE_PATH_INVALID/)
     await assert.rejects(invoke('process:run-command', { cwd: repo, command: 'git push' }), /not allowed/)
     const command = await invoke('process:run-command', { cwd: repo, command: 'git', args: ['--version'] })
     const deadline = Date.now() + 10000

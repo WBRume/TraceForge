@@ -560,6 +560,7 @@ export function useChatViewModel() {
     specBootstrapApplyUpdate: specBootstrap.applyUpdate,
     shareSuggestionNudge: (payload) => shareSuggestionNudgeHandler?.(payload),
     collaborationUpdate: collaboration.onEvent,
+    cloudResultsUpdate: collaboration.refreshResults,
     preinputHandleEvent: preinput.handleEvent,
     skillsMergeTraceEvent: skills.mergeRuntimeTraceEvent,
     skillsScheduleUsageRefresh: skills.scheduleRuntimeUsageRefresh,

@@ -4,7 +4,7 @@
  * 保留原生 checkbox 语义（role="switch" + 原生 change），
  * 轨道颜色通过 CSS 变量 --toggle-active 覆盖（默认主题蓝）。
  */
-defineProps<{
+const props = defineProps<{
   modelValue?: boolean
   disabled?: boolean
   ariaLabel?: string
@@ -14,7 +14,11 @@ defineProps<{
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
 
 const onChange = (event: Event) => {
-  emit('update:modelValue', (event.target as HTMLInputElement).checked)
+  const input = event.target as HTMLInputElement
+  const requested = input.checked
+  // Keep the displayed state controlled while an async action or confirmation is pending.
+  input.checked = !!props.modelValue
+  emit('update:modelValue', requested)
 }
 </script>
 

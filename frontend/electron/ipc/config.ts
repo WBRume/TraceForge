@@ -12,6 +12,7 @@ type RepoMapping = {
 }
 
 export type DesktopConfig = {
+  ide?: { editor: 'vscode' | 'idea' | 'pycharm'; executable?: string; launchers?: { idea?: string; pycharm?: string } }
   serverUrl: string
   token: string | null
   onboardingCompleted: boolean
@@ -44,7 +45,7 @@ const normalizeRemoteUrl = (value: unknown): string => {
   }
 }
 
-const repoMappingKey = (workspaceId: unknown, remoteUrl: unknown): string => {
+export const repoMappingKey = (workspaceId: unknown, remoteUrl: unknown): string => {
   const ws = String(workspaceId || '').trim()
   const remote = normalizeRemoteUrl(remoteUrl)
   if (!ws || !remote) {
@@ -54,6 +55,9 @@ const repoMappingKey = (workspaceId: unknown, remoteUrl: unknown): string => {
 }
 
 const normalizeConfig = (raw: Partial<DesktopConfig> | null | undefined): DesktopConfig => ({
+  ide: raw?.ide && ['vscode', 'idea', 'pycharm'].includes(raw.ide.editor)
+    ? { editor: raw.ide.editor, executable: String(raw.ide.executable || '').trim(),
+      launchers: { idea: String(raw.ide.launchers?.idea || '').trim(), pycharm: String(raw.ide.launchers?.pycharm || '').trim() } } : { editor: 'vscode' },
   serverUrl: String(raw?.serverUrl || DEFAULT_CONFIG.serverUrl).replace(/\/+$/, ''),
   token: raw?.token ? String(raw.token) : null,
   onboardingCompleted: Boolean(raw?.onboardingCompleted),

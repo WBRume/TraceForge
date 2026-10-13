@@ -58,14 +58,14 @@ def _invoke(db: Session, function, *args, **kwargs):
         raise HTTPException(409, {"code": "COLLABORATION_CONTENT_ERROR", "message": str(exc)}) from exc
 
 
-async def _locked(db: Session, ws_id: str, task_id: str, user: User, function, *args):
+async def _locked(db: Session, ws_id: str, task_id: str, user: User, function, *args, write: bool = True):
     user_id = user.id
     bind = db.get_bind()
     db.close()
 
     def execute():
         with Session(bind=bind) as transaction:
-            task = _task(transaction, ws_id, task_id, user_id, write=True)
+            task = _task(transaction, ws_id, task_id, user_id, write=write)
             return _invoke(transaction, function, task, user_id, *args)
 
     try:
@@ -85,6 +85,15 @@ async def enable(
     ws_id: str, task_id: str, data: EnableRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     return await _locked(db, ws_id, task_id, user, service.enable, data)
+
+
+@router.get("/review")
+async def review_changes(
+    ws_id: str, task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    from . import review
+
+    return await _locked(db, ws_id, task_id, user, review.changes, write=False)
 
 
 @router.post("/lease")
@@ -195,7 +204,7 @@ def missing(
     db: Session = Depends(get_db),
 ):
     _task(db, ws_id, task_id, user)
-    store = content.ObjectStore(task_id)
+    store = content.ObjectStore(db.get(SddTask, task_id))
     try:
         available = store.has_many(data.hashes)
         return {"missing": [value for value in data.hashes if value not in available]}
@@ -210,7 +219,7 @@ def _put_object(db: Session, ws_id: str, task_id: str, user: User, data: LeaseRe
         raise HTTPException(409, {"code": "COLLABORATION_DISABLED", "message": "Enable collaboration first"})
     try:
         service._check_driver(active, user.id, data)
-        result = content.ObjectStore(task_id).put(raw, sha256)
+        result = content.ObjectStore(db.get(SddTask, task_id)).put(raw, sha256)
         db.commit()
         return {"sha256": result, "size": len(raw)}
     except service.CollaborationError as exc:
@@ -248,7 +257,7 @@ def download_object(
 ):
     _task(db, ws_id, task_id, user)
     try:
-        raw = content.ObjectStore(task_id).read(sha256)
+        raw = content.ObjectStore(db.get(SddTask, task_id)).read(sha256)
     except FileNotFoundError as exc:
         raise HTTPException(404, "Collaboration object not found") from exc
     except ValueError as exc:
