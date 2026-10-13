@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Activity, Info, RefreshCw } from '@/components/icons'
 import type { SkillRuntimeEvent } from '@/types/runtimeSkillTrace'
 
 type RuntimeSkillItem = {
@@ -14,10 +13,6 @@ const props = defineProps<{
   selectedSkillId: string
   events: SkillRuntimeEvent[]
   loading: boolean
-}>()
-
-const emit = defineEmits<{
-  refresh: []
 }>()
 
 type TraceRow = {
@@ -69,16 +64,6 @@ const formatTime = (value?: string | null) => {
 
 <template>
   <div class="trace-panel">
-    <div class="trace-title">
-      <span><Activity class="w-3 h-3" /> 使用证据链 / Runtime Evidence Trace</span>
-      <button type="button" class="trace-refresh" :disabled="loading" @click="emit('refresh')">
-        <RefreshCw class="w-3 h-3" />
-      </button>
-    </div>
-    <div class="trace-boundary" title="这里只展示 AI 引擎工具调用中可观察到的 Skill 访问证据；脚本内部隐式访问不会被追踪。">
-      <Info class="w-3 h-3" />
-      <span>只展示 AI 引擎工具调用中可观察到的 Skill 访问证据；脚本内部隐式访问不会被追踪。</span>
-    </div>
     <div v-if="loading" class="trace-state">加载运行证据...</div>
     <div v-else-if="traceRows.length === 0" class="trace-state">暂无可观察到的工具访问证据。</div>
     <div v-else class="trace-timeline">
@@ -104,7 +89,7 @@ const formatTime = (value?: string | null) => {
             <span>{{ row.event.status }}</span>
           </div>
           <details v-if="row.event.tool_result_preview" class="trace-result">
-            <summary>tool_result_preview</summary>
+            <summary>工具返回结果</summary>
             <pre>{{ row.event.tool_result_preview }}</pre>
           </details>
         </div>
@@ -114,11 +99,6 @@ const formatTime = (value?: string | null) => {
 </template>
 
 <style scoped>
-.w-3 {
-  width: 12px;
-  height: 12px;
-}
-
 .trace-panel {
   display: flex;
   flex-direction: column;
@@ -129,42 +109,6 @@ const formatTime = (value?: string | null) => {
   background: #ffffff;
 }
 
-.trace-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  color: #334155;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.trace-title span,
-.trace-boundary {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.trace-refresh {
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  border-radius: 8px;
-  background: #fff;
-  color: #475569;
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
-.trace-refresh:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.trace-boundary,
 .trace-state {
   color: #64748b;
   font-size: 11px;

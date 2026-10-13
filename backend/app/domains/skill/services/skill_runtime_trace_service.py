@@ -245,7 +245,7 @@ def _event_type_for_tool(tool_name: str, relative_path: str) -> SkillRuntimeEven
 
 def _skill_tool_ref(tool_input: Any) -> str:
     if isinstance(tool_input, dict):
-        for key in ("skill", "name", "skill_name", "materialized_dir"):
+        for key in ("skill", "name", "skill_name", "materialized_dir", "id"):
             value = str(tool_input.get(key) or "").strip()
             if value:
                 return value
