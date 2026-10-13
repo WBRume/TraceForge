@@ -7,7 +7,7 @@
 
 from enum import Enum as PyEnum
 
-from sqlalchemy import JSON, Column, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Column, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -37,7 +37,6 @@ class SddTaskPreInput(Base):
     main_text = Column(Text, nullable=False)
     # 共享文档：按行归属 [{text, updated_by, updated_at}]；main_text 始终与其保持同步（纯文本视图）
     document_json = Column(JSON, nullable=True)
-    mentioned_user_ids = Column(JSON, nullable=False, default=list)
     edit_permission = Column(
         Enum(PreInputEditPermission, values_callable=lambda obj: [e.value for e in obj]),
         nullable=False,
@@ -60,12 +59,42 @@ class SddTaskPreInput(Base):
 
     task = relationship("SddTask", foreign_keys=[task_id])
     creator = relationship("User", foreign_keys=[creator_id])
+    mentions = relationship(
+        "SddTaskPreInputMention",
+        cascade="all, delete-orphan",
+        order_by="SddTaskPreInputMention.position",
+    )
+
+    @property
+    def mentioned_user_ids(self) -> list[str]:
+        return [mention.user_id for mention in self.mentions]
+
+    @mentioned_user_ids.setter
+    def mentioned_user_ids(self, values: list[str] | None) -> None:
+        existing = {mention.user_id: mention for mention in self.mentions}
+        mentions = []
+        for position, user_id in enumerate(dict.fromkeys(str(value) for value in (values or []))):
+            mention = existing.get(user_id) or SddTaskPreInputMention(user_id=user_id)
+            mention.position = position
+            mentions.append(mention)
+        self.mentions = mentions
+
     contributions = relationship(
         "SddTaskPreInputContribution",
         back_populates="pre_input",
         cascade="all, delete-orphan",
         order_by="SddTaskPreInputContribution.created_at.asc()",
     )
+
+
+class SddTaskPreInputMention(Base):
+    __tablename__ = "sdd_task_pre_input_mentions"
+    __table_args__ = (Index("ix_pre_input_mentions_user", "user_id", "pre_input_id"),)
+
+    pre_input_id = Column(String(36), ForeignKey("sdd_task_pre_inputs.id", ondelete="CASCADE"), primary_key=True)
+    # Keep historical mentions even if the original user no longer exists.
+    user_id = Column(String(36), primary_key=True)
+    position = Column(Integer, nullable=False)
 
 
 class SddTaskPreInputContribution(Base):

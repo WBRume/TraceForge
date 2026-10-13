@@ -5,7 +5,7 @@
 payload_json 携带跳转所需的 task_id / pre_input_id 等上下文。
 """
 
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -14,6 +14,10 @@ from app.domains.auth.models.user import generate_uuid
 
 class SddUserNotification(Base):
     __tablename__ = "sdd_user_notifications"
+    __table_args__ = (
+        Index("ix_notifications_recipient_created", "recipient_user_id", "created_at", "id"),
+        Index("ix_notifications_recipient_unread", "recipient_user_id", "read_at", "created_at", "id"),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)

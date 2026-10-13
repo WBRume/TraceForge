@@ -23,11 +23,13 @@ from app.database import Base
 for model_module in (
     "app.domains.diagnosis_playbook.models",
     "app.domains.notification.models.task_awareness",
+    "app.domains.rag.models",
     "app.domains.workspace_collaboration.models",
     "app.models.ai_job",
     "app.models.api_mock",
     "app.models.asset",
     "app.models.chat",
+    "app.models.context_token",
     "app.models.log",
     "app.models.management",
     "app.models.metric",

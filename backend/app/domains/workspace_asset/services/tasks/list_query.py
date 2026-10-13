@@ -1,16 +1,19 @@
 from typing import Any
 
-from sqlalchemy import exists, func, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import and_, case, exists, func, or_, select
+from sqlalchemy.orm import Session, raiseload
 
+from app.domains.ai.models.ai_job import SddAiJob
 from app.domains.asset.models.asset import AssetType, SddAsset
 from app.domains.task.models.chat import ChatMessage, MessageRole
-from app.domains.task.models.pre_input import SddTaskPreInput
+from app.domains.task.models.pre_input import SddTaskPreInput, SddTaskPreInputMention
 from app.domains.task.models.task import SddPlanNode, SddTask, SddTaskFollower
 from app.domains.workspace_asset.models.workspace_asset import (
+    EvidenceSourceType,
     EvidenceStatus,
     HumanReviewStatus,
     SddClarification,
+    SddDecision,
     SddEvidence,
     SddHumanDelta,
     SddHumanReview,
@@ -66,23 +69,56 @@ def _requirement_title_exists(pattern: str):
 
 
 def _load_page_items(db: Session, page_ids: list[str]) -> list[SddTask]:
-    """按当前页 id 加载完整实体（含列表卡片所需的全部关联）。"""
-    loaded = (
-        db.query(SddTask)
-        .options(
-            selectinload(SddTask.requirement_links),
-            selectinload(SddTask.ai_jobs),
-            selectinload(SddTask.human_reviews),
-            selectinload(SddTask.human_deltas).selectinload(SddHumanDelta.decisions),
-            selectinload(SddTask.evidence_items),
-            selectinload(SddTask.decisions),
-            selectinload(SddTask.clarifications),
-        )
-        .filter(SddTask.id.in_(page_ids))
-        .all()
-    )
+    """Load page entities only; all relationship counts are aggregated in SQL."""
+    loaded = db.query(SddTask).options(raiseload("*")).filter(SddTask.id.in_(page_ids)).all()
     by_id = {task.id: task for task in loaded}
     return [by_id[task_id] for task_id in page_ids if task_id in by_id]
+
+
+def _page_related_counts(db: Session, page_ids: list[str]) -> dict[str, dict[str, int]]:
+    models = {
+        "requirement_count": SddTaskRequirement,
+        "ai_run_count": SddAiJob,
+        "human_review_count": SddHumanReview,
+        "human_delta_count": SddHumanDelta,
+        "decision_count": SddDecision,
+        "clarification_count": SddClarification,
+    }
+    counts = {
+        task_id: dict.fromkeys([*models, "evidence_count", "confirmed_evidence_count", "human_confirmation_count"], 0)
+        for task_id in page_ids
+    }
+    if not page_ids:
+        return counts
+    for key, model in models.items():
+        for task_id, count in (
+            db.query(model.task_id, func.count(model.id)).filter(model.task_id.in_(page_ids)).group_by(model.task_id)
+        ):
+            counts[task_id][key] = count
+    confirmed = SddEvidence.status == EvidenceStatus.CONFIRMED
+    human = and_(
+        confirmed,
+        SddEvidence.source_type == EvidenceSourceType.HUMAN_CONFIRMATION,
+        SddEvidence.confirmed_by_id.isnot(None),
+        SddEvidence.confirmed_by_id != "",
+        SddEvidence.confirmed_at.isnot(None),
+    )
+    for task_id, total, confirmed_count, human_count in (
+        db.query(
+            SddEvidence.task_id,
+            func.count(SddEvidence.id),
+            func.sum(case((confirmed, 1), else_=0)),
+            func.sum(case((human, 1), else_=0)),
+        )
+        .filter(SddEvidence.task_id.in_(page_ids))
+        .group_by(SddEvidence.task_id)
+    ):
+        counts[task_id].update(
+            evidence_count=total,
+            confirmed_evidence_count=confirmed_count,
+            human_confirmation_count=human_count,
+        )
+    return counts
 
 
 def _page_asset_counts(
@@ -208,19 +244,14 @@ def list_tasks(
                 )
             )
         if "mentioned_me" in normalized_relations:
-            mentioned_task_ids = {
-                str(task_id)
-                for task_id, mentioned_user_ids in db.query(
-                    SddTaskPreInput.task_id,
-                    SddTaskPreInput.mentioned_user_ids,
-                )
-                .filter(
+            relation_filters.append(
+                exists().where(
+                    SddTaskPreInput.task_id == SddTask.id,
                     SddTaskPreInput.workspace_id == workspace_id,
+                    SddTaskPreInputMention.pre_input_id == SddTaskPreInput.id,
+                    SddTaskPreInputMention.user_id == actor_id,
                 )
-                .all()
-                if actor_id in {str(value) for value in (mentioned_user_ids or [])}
-            }
-            relation_filters.append(SddTask.id.in_(mentioned_task_ids))
+            )
         if relation_filters:
             query = query.filter(or_(*relation_filters))
 
@@ -311,6 +342,7 @@ def list_tasks(
         }
 
     spec_counts, plan_asset_counts, plan_node_counts = _page_asset_counts(db, workspace_id, page_ids)
+    related_counts = _page_related_counts(db, page_ids)
 
     return WorkspaceAssetsTasksResponse(
         workspace_id=workspace_id,
@@ -320,6 +352,7 @@ def list_tasks(
                 item,
                 is_following=item.id in following_ids,
                 counts={
+                    **related_counts[item.id],
                     "spec_count": spec_counts.get(item.id, 0),
                     "plan_asset_count": plan_asset_counts.get(item.id, 0),
                     "plan_node_count": plan_node_counts.get(item.id, 0),
