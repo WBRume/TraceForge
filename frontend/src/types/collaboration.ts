@@ -16,6 +16,7 @@ export type CollaborationManifest = {
   protocol_version: 1; snapshot_id: string; task_id: string; workspace_revision: number
   session_generation: number; session_revision: number; repository_set_digest: string
   source: string; repositories: CollaborationRepository[]
+  session_turn_id?: string; turn_index?: number; turn_title?: string; turn_created_at?: string
   delta?: { base_snapshot_id: string }
 }
 export type CollaborationConflict = {
@@ -55,7 +56,15 @@ export type LocalCollaborationStatus = {
 export type CollaborationCapture = {
   manifest: CollaborationManifest; objects: Array<{ sha256: string; content: string }>; status: LocalCollaborationStatus; input_cut_seq?: number
 }
-export type CollaborationBackup = { operation_id: string; task_repository_id: string; path: string; sha256: string | null; state: string; backup_path: string | null }
+export type CollaborationBackup = {
+  operation_id: string; task_repository_id: string; path: string; sha256: string | null; state: string; backup_path: string | null
+  created_at?: string
+  context?: {
+    task_id: string; snapshot_id: string; workspace_revision: number; session_generation: number; session_revision: number
+    session_turn_id?: string; turn_index?: number; turn_title?: string; turn_created_at?: string; source: string; kind: 'receive' | 'restore'
+    repo_slug: string; branch_name: string
+  }
+}
 export type CollaborationMappingCheck = {
   task_repository_id: string; local_path: string; expected_head: string; local_head?: string; local_branch?: string
   clean?: boolean; changes: string[]; errors: string[]

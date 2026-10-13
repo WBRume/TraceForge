@@ -3,7 +3,7 @@ import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { expandManifest, manifestDelta, statusDelta } from '../../shared/collaboration-delta'
 import { child, fail, git, hash, inside, inspectRepo, readJson, resolved } from './filesystem'
-import { applyFile } from './collaboration-write'
+import { applyFile, type BackupContext } from './collaboration-write'
 import { CollaborationIndex } from './collaboration-index'
 import { observeFile, updateObservation } from './collaboration-observation'
 import { prepareTaskWorktree } from './collaboration-prepare'
@@ -397,7 +397,7 @@ export class CollaborationRuntime {
         try {
           applyFile({ state: this.state, operation_id: payload.operation_id, task_repository_id: repo.task_repository_id,
             root: bound.local_worktree_path, expected: left, target: right, relative: name, objects: this.objects,
-            scratch_root: this.scratch(binding, bound) })
+            scratch_root: this.scratch(binding, bound), context: { ...this.metadata(target), kind: 'receive', repo_slug: repo.repo_slug, branch_name: repo.branch_name } })
           binding.applied[key] = right; this.save(binding)
           newlyApplied[key] = right
           updateObservation(local, repo.task_repository_id, name, right)
@@ -454,7 +454,7 @@ export class CollaborationRuntime {
       try {
         applyFile({ state: this.state, operation_id: payload.operation_id, task_repository_id: selected.task_repository_id,
           root: repo.local_worktree_path, expected: conflict.local, target: conflict.cloud, relative: selected.path, objects: this.objects,
-          scratch_root: this.scratch(binding, repo) })
+          scratch_root: this.scratch(binding, repo), context: { ...this.metadata(target), kind: 'restore', repo_slug: repo.repo_slug, branch_name: repo.branch_name } })
         binding.applied[fileKey(selected.task_repository_id, selected.path)] = conflict.cloud
         restored[fileKey(selected.task_repository_id, selected.path)] = conflict.cloud
         this.save(binding)
@@ -477,16 +477,18 @@ export class CollaborationRuntime {
   }
   private backups(binding: SyncBinding) {
     const directory = path.join(this.state, 'operations')
-    const entries: { operation_id: string; task_repository_id: string; path: string; sha256: string; state: string; backup_path: string }[] = []
+    const entries: { operation_id: string; task_repository_id: string; path: string; sha256: string; state: string; backup_path: string; created_at?: string; context?: BackupContext }[] = []
     if (fs.existsSync(directory)) for (const operation of fs.readdirSync(directory)) {
       const operationRoot = path.join(directory, operation)
       if (!fs.statSync(operationRoot).isDirectory()) continue
       for (const file of fs.readdirSync(operationRoot)) {
         if (!file.endsWith('.json')) continue
         const record = readJson(path.join(operationRoot, file))
+        if (record.context?.task_id && record.context.task_id !== binding.task_id) continue
         if (!binding.repositories.some(repo => repo.local_worktree_path === record.root && repo.task_repository_id === record.task_repository_id) || !record.expected) continue
         entries.push({ operation_id: operation, task_repository_id: record.task_repository_id, path: record.relative,
-          sha256: record.actual_backup_sha256 ?? record.expected.sha256, state: record.state, backup_path: record.displaced })
+          sha256: record.actual_backup_sha256 ?? record.expected.sha256, state: record.state, backup_path: record.displaced,
+          created_at: record.created_at, context: record.context })
       }
     }
     return { ...this.backupDirectories(binding), backups: entries }

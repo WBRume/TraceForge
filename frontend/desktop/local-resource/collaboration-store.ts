@@ -13,6 +13,7 @@ export interface SyncManifest {
   protocol_version: 1; snapshot_id: string; task_id: string; workspace_revision: number;
   session_generation: number; session_revision: number; repository_set_digest: string;
   source: string; repositories: SyncRepository[];
+  session_turn_id?: string; turn_index?: number; turn_title?: string; turn_created_at?: string;
 }
 export interface LocalRepository extends SyncRepository {
   local_path: string; configured_git_url: string; local_worktree_path: string;

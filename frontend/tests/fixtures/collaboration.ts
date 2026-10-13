@@ -24,7 +24,11 @@ let output: any = baseline
 let status: any = { directory_mode: 'MAPPED', task_id: baseline.task_id, task_root: 'G:/TraceForge/tasks/fixture-task', baseline, received: baseline, target: null, manifest: baseline, state: 'READY', repositories: repositories.map(repo => ({ ...repo, local_worktree_path: `G:/repos/${repo.repo_slug}`, mapped_repo_root: `G:/repos/${repo.repo_slug}` })), conflicts: [], local_changes: [] }
 const contents: Record<string, string> = { a: 'def authenticate(token):\n    return check(token)\n', b: 'export const timeout = 3000\n', c: 'def authenticate(token):\n    return check(token, retry=True)\n', d: 'def authenticate(token):\n    return check(token, audit=True)\n' }
 let sent = false
-let backups: any[] = []
+let backups: any[] = new URLSearchParams(location.search).has('backup-groups') ? [1, 2].flatMap(round => repositories.map(repo => ({
+  operation_id: `restore-round-${round}`, task_repository_id: repo.task_repository_id, path: repo.files[0]!.path, sha256: 'd'.repeat(64), state: 'SUCCEEDED', backup_path: null,
+  created_at: `2026-10-13T0${round}:15:00Z`, context: { task_id: baseline.task_id, snapshot_id: `result-round-${round}`, workspace_revision: round * 2,
+    session_generation: 1, session_revision: round, session_turn_id: `turn-${round}`, turn_index: round, turn_title: round === 1 ? '修复登录过期后的重试逻辑' : '为登录重试补充审计记录', turn_created_at: `2026-10-13T0${round}:00:00Z`, source: 'AGENT_OUTPUT', kind: 'restore', repo_slug: repo.repo_slug, branch_name: repo.branch_name },
+}))) : []
 let sceneSequence = 0
 const identity = { client_id: 'fixture-client', instance_id: 'fixture-instance' }
 const deliveryFailure = new URLSearchParams(location.search).has('delivery-failure')
@@ -86,6 +90,9 @@ api.defaults.adapter = async config => {
   else if (config.url?.endsWith('/handoff')) { output = { ...body.manifest, source: 'HUMAN_HANDOFF', snapshot_id: 'handoff1', workspace_revision: 3 }; state = { ...state, input_snapshot_id: 'handoff1', snapshot_id: 'handoff1', workspace_revision: 3 }; data = clone(state) }
   else if (config.url?.endsWith('/objects/missing')) data = { missing: [] }
   else if (config.url?.includes('/snapshots/')) data = clone(config.url.endsWith('/initial') ? baseline : output)
+  else if (config.url?.endsWith('/human-changes')) data = { items: [{ id: 'history-fixture', created_at: '2026-10-13T01:00:00', actor_name: 'Fixture', changed_files_count: 2, repository_count: 2 }], total: 1, page: 1, page_size: 20 }
+  else if (config.url?.includes('/human-changes/')) data = { id: 'history-fixture', base_snapshot_id: 'initial', input_snapshot_id: 'human', created_at: '2026-10-13T01:00:00', files: repositories.map(repo => ({ task_repository_id: repo.task_repository_id, repo_slug: repo.repo_slug, branch_name: repo.branch_name, path: repo.files[0]!.path, before: repo.files[0], after: { ...repo.files[0], sha256: 'd'.repeat(64) } })) }
+  else if (config.url?.includes('/objects/') && config.responseType === 'arraybuffer') data = new TextEncoder().encode(contents[config.url.split('/').pop()![0]!] || '// unchanged\n').buffer
   else if (config.url?.includes('/change-proposals')) data = null
   return { data, status: 200, statusText: 'OK', headers: {}, config }
 }

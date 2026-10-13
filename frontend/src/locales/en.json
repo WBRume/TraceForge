@@ -4108,7 +4108,12 @@
     "noBackups": "No local backups",
     "viewBackup": "View backup",
     "exportBackup": "Export backup",
-    "backupSource": "Local backup before restoration",
+    "backupSource": "Local backup before replacement",
+    "backupGroups": {
+      "round": "Conversation turn {count}",
+      "unknownRound": "Historical backup (conversation not recorded)",
+      "unknownTime": "Time not recorded"
+    },
     "noLocalPending": "No pending local changes.",
     "waitDesktop": "The connected desktop client prepares the code after you send. This browser does not access local files.",
     "localCount": "{count} local changes pending",
@@ -4262,7 +4267,8 @@
       "received": "Received",
       "pendingReceive": "Pending",
       "backToBackups": "Back to local backups",
-      "backupsHint": "Local files saved before adopting the Agent version.",
+      "backupsHint": "Local files before replacement, grouped by conversation.",
+      "repositoryCount": "{count} repositories",
       "errorDetails": "View error details",
       "fileSources": "Change source",
       "thisRound": "This round",

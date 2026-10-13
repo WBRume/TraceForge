@@ -19,13 +19,17 @@ const options = () => ({ state: path.join(root, 'state'), operation_id: 'write1'
   target: { path: 'file.txt', sha256: objects.put(Buffer.from('after')), size: 5, mode: '100644' as const }, objects })
 
 test('resumes after displacement and never replays a completed write over later local content', () => {
-  const input = options()
+  const input = { ...options(), context: { task_id: 'task', snapshot_id: 'result', workspace_revision: 3, session_generation: 1, session_revision: 2, session_turn_id: 'turn', turn_index: 2, source: 'AGENT_OUTPUT', kind: 'restore' as const, repo_slug: 'repo', branch_name: 'main' } }
   expect(() => applyFile({ ...input, afterMove: () => { throw new Error('simulated process crash') } })).toThrow('simulated process crash')
   expect(fs.existsSync(path.join(root, 'file.txt'))).toBe(false)
-  expect(applyFile(input).state).toBe('SUCCEEDED')
+  const receipt = applyFile(input)
+  expect(receipt.state).toBe('SUCCEEDED')
+  expect(receipt.context).toEqual(input.context)
+  expect(Number.isFinite(Date.parse(receipt.created_at!))).toBe(true)
   expect(fs.readFileSync(path.join(root, 'file.txt'), 'utf8')).toBe('after')
   fs.writeFileSync(path.join(root, 'file.txt'), 'edit after receipt')
   expect(applyFile(input).state).toBe('SUCCEEDED')
+  expect(applyFile(input).created_at).toBe(receipt.created_at)
   expect(fs.readFileSync(path.join(root, 'file.txt'), 'utf8')).toBe('edit after receipt')
 })
 test('revalidates the actually displaced file before resuming a crashed write', () => {
