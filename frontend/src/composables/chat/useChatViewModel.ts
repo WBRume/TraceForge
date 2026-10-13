@@ -455,6 +455,7 @@ export function useChatViewModel() {
           sessionState.onInitialSubscriptionReady(taskId, wasReady)
           // 就绪后补取一次个人阅读快照（覆盖断线期间的私有变更）
           void readingProgress.onConnectionReady(taskId)
+          collaboration.onConnectionReady(taskId)
           playbookEventHandler?.('playbook.resync', { task_id: taskId })
           return
         }

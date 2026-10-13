@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import type { Config } from '../desktop/local-resource/runtime'
 
-export async function startLocalResourceService(config: Config, options: { workerUrl?: URL } = {}) {
+export async function startLocalResourceService(config: Config, options: { workerUrl?: URL; onCollaborationChanged?: (event: { task_id: string }) => void } = {}) {
   if (!config.token || config.token.length < 32 || !isAbsolute(config.state_root)
     || !Array.isArray(config.allowed_roots) || config.allowed_roots.some(root => !isAbsolute(root))) {
     throw new Error('Invalid desktop local resource configuration')
@@ -31,7 +31,8 @@ export async function startLocalResourceService(config: Config, options: { worke
     rejectPending(error)
     void close()
   }
-  worker.on('message', ({ id, result, error }) => {
+  worker.on('message', ({ id, result, error, event, task_id }) => {
+    if (event === 'collaboration_changed') { if (!stopped) options.onCollaborationChanged?.({ task_id }); return }
     const item = pending.get(id)
     pending.delete(id)
     if (error) item?.reject(new Error(error)); else item?.resolve(result)

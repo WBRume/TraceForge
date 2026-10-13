@@ -23,7 +23,10 @@ parentPort!.on('message', ({ id, kind, payload }) => {
       parentPort!.postMessage({ id, result: true })
       return
     }
-    if (kind === 'configure') runtime = new Runtime(payload)
+    if (kind === 'configure') {
+      runtime = new Runtime(payload)
+      runtime.collaboration.index.onChanged = task_id => parentPort!.postMessage({ event: 'collaboration_changed', task_id })
+    }
     const result = kind === 'inspect' ? runtime.inspect(payload)
       : kind === 'collaboration' ? await runtime.collaboration.executeAsync(payload.kind, payload.payload)
       : kind === 'operation' ? runtime.operation(payload) : true

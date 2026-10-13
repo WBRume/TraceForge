@@ -65,7 +65,6 @@ async function connect() {
       </div>
     </div>
     <template v-else>
-      <label v-if="c.participating && c.driver && c.available" class="setting"><span>{{ t('collaboration.ui.autoReceive') }}<small>{{ t('collaboration.ui.autoReceiveHint') }}</small></span><input type="checkbox" :checked="c.progressive" :disabled="c.busy" @change="c.setProgressive(($event.target as HTMLInputElement).checked)" /></label>
       <div class="setting"><span>{{ t('collaboration.ui.device') }}<small>{{ t(c.state?.driver_connected === false ? 'collaboration.ui.deviceOffline' : c.driver ? 'collaboration.ui.thisDevice' : 'collaboration.ui.otherDevice') }}</small></span><button v-if="c.available && !c.driver" class="text-action" type="button" @click="emit('device')">{{ t('collaboration.ui.deviceDetails') }}</button></div>
       <p v-if="c.state?.driver_connected === false && !c.canReconnect" class="intro">{{ t('collaboration.ui.reconnectElsewhereHint') }}</p>
     </template>

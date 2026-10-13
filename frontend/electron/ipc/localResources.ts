@@ -1,4 +1,4 @@
-import { app, ipcMain, startLocalResourceService } from '../../desktop/native'
+import { app, BrowserWindow, ipcMain, startLocalResourceService } from '../../desktop/native'
 import spawn from 'cross-spawn'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { closeSync, existsSync, openSync } from 'node:fs'
@@ -214,7 +214,11 @@ async function startServices(payload: { backend: string }, includeAgent: boolean
   try {
     requireActive()
     if (!hostReady) {
-      resource = await startLocalResourceService({ ...config, roots_config_path: configFile })
+      resource = await startLocalResourceService({ ...config, roots_config_path: configFile }, {
+        onCollaborationChanged: event => {
+          for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('sdd:collaboration:changed', event)
+        },
+      })
       resourceServices.set(payload.backend, resource)
     }
     requireActive()

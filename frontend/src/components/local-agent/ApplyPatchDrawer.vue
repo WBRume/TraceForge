@@ -15,6 +15,7 @@ import type { AgentTask } from '@/types/agent'
 import { formatApiError } from '@/utils/error'
 import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
 import CollaborationHeader from '@/components/collaboration/CollaborationHeader.vue'
+import CollaborationActions from '@/components/collaboration/CollaborationActions.vue'
 import type { LocalCollaboration } from '@/composables/collaboration/useLocalCollaboration'
 
 const props = defineProps<{
@@ -307,11 +308,6 @@ watch(
   }
 )
 
-const refreshCollaboration = async () => {
-  if (props.collaboration) {
-    await props.collaboration.refresh()
-  }
-}
 </script>
 
 <template>
@@ -332,11 +328,7 @@ const refreshCollaboration = async () => {
       <span v-else>{{ $t('chat.change_apply_drawer_title') }}</span>
     </template>
     <template #actions>
-      <template v-if="isCollaboration && collaboration">
-        <button class="icon-btn" type="button" :title="$t('collaboration.refresh')" @click="refreshCollaboration">
-          <RefreshCw class="w-4 h-4" />
-        </button>
-      </template>
+      <CollaborationActions v-if="isCollaboration && collaboration" :controller="collaboration" />
       <button v-if="!isCollaboration" class="btn-secondary drawer-action-button" type="button" :disabled="!canGenerate || proposalGenerating || proposalLoading" :title="canGenerate ? '' : '请等待任务创建者生成并上传变更'" @click="refreshProposal">
         <Loader2 v-if="proposalGenerating" class="w-4 h-4 spin" />
         <RefreshCw v-else class="w-4 h-4" />
@@ -561,23 +553,6 @@ const refreshCollaboration = async () => {
   padding: 12px 18px;
   background: #ffffff;
   border-bottom: 1px solid #e2e8f0;
-}
-.icon-btn {
-  width: 30px;
-  height: 30px;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #64748b;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.icon-btn:hover {
-  background: #f1f5f9;
-  color: #0f172a;
 }
 .apply-patch-drawer {
   flex: 1;

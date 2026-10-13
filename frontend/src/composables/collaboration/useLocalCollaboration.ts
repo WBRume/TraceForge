@@ -50,8 +50,8 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const label = computed(() => (preparationRequired.value ? t('collaboration.preparationRequired') : deliveryRetryRequired.value && !busy.value ? t('collaboration.deliveryRetryRequired') : t(`collaboration.phases.${phase.value}`, phase.value)) + (phase.value === 'READY' && local.value?.local_changes?.length ? ` · ${t('collaboration.localCount', { count: local.value.local_changes.length })}` : ''))
   const blocked = computed(() => supported.value && (busy.value || leaving.value || (participating.value || remoteSender.value) && (loading.value || enabled.value && (preparationRequired.value || Boolean(error.value) || local.value?.state === 'RECOVERY_REQUIRED' || (!driver.value && !remoteSender.value) || state.value?.driver_connected === false || !['READY', 'DISABLED'].includes(phase.value)))))
   const conflicts = computed(() => participating.value && ['RUNNING', 'WAITING_HITL'].includes(phase.value) ? previewConflicts.value : local.value?.conflicts || [])
-  let generation = 0, timer: ReturnType<typeof setTimeout> | undefined, refreshing = false, disposed = false
-  let refreshQueued = false
+  let generation = 0, refreshing = false, disposed = false
+  let refreshQueued = false, localRefreshQueued = false, eventVersion = 0, observedVersion = 0
   let lastLease = 0, leaseRetryAt = 0, lastTarget = '', lastProgress = '', lastHandoff = ''
   const remote = () => collaborationApi(options.workspaceId(), String(options.task()?.id || ''))
   let transportStatus: LocalCollaborationStatus | null = null
@@ -294,7 +294,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     const token = generation
     try {
       const next = await remote().state(); check(token)
-      state.value = next
+      state.value = next; observedVersion = next.state_version
       if (mappingsDirty || (available && !nativeIdentityReady) || preparationRequired.value) await loadMappings()
       check(token); loading.value = false
       if (!next.enabled) { preparationRequired.value = false; deliveryRetryRequired.value = false; await loadMappings(); return }
@@ -308,7 +308,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       }
       if (next.driver_connected === false) return
       await renew(); check(token)
-      // Preparation failures require an explicit retry; polling must not create directories or hide the failure.
+      // Preparation failures require an explicit retry; events must not hide the failure.
       if (preparationRequired.value || deliveryRetryRequired.value) return
       if (!local.value) await loadMappings()
       const capturesLocal = next.sync_phase === 'PREPARING'
@@ -352,16 +352,22 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   async function refresh() {
     if (!supported.value || !options.task()?.id || disposed || leaving.value) return
     refreshQueued = true
-    if (refreshing || busy.value) return
+    await drainUpdates()
+  }
+  async function drainUpdates() {
+    if (refreshing || busy.value || disposed || leaving.value) return
     refreshing = true
     try {
       do {
-        refreshQueued = false
-        await refreshOnce()
-      } while (refreshQueued && !busy.value && !disposed)
+        const remoteRequested = refreshQueued || eventVersion > observedVersion
+        const localRequested = localRefreshQueued
+        refreshQueued = false; eventVersion = 0; localRefreshQueued = false
+        if (remoteRequested) await refreshOnce()
+        else if (localRequested && participating.value && !preparationRequired.value && !deliveryRetryRequired.value) await refreshComparison()
+      } while ((refreshQueued || localRefreshQueued || eventVersion > observedVersion) && !busy.value && !disposed && !leaving.value)
     } finally { refreshing = false }
   }
-  watch(busy, value => { if (!value) { operationStage.value = ''; if (refreshQueued) void refresh() } })
+  watch(busy, value => { if (!value) { operationStage.value = ''; if (!disposed && !leaving.value && (refreshQueued || localRefreshQueued || eventVersion)) void drainUpdates() } })
 
   async function enable() {
     if (busy.value || !available || !state.value) return
@@ -417,18 +423,20 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }
   async function refreshComparison() {
     if (busy.value) return
+    const token = generation
     try {
-      await loadMappings()
+      if (mappingsDirty || preparationRequired.value || !participating.value) await loadMappings()
+      check(token)
       if (!available) return
       if (!participating.value || !enabled.value || preparationRequired.value) { await inspectMappings(generation); error.value = ''; return }
       if (!driver.value) return
       const scanned = await native<LocalCollaborationStatus>('status', { task_id: String(options.task()?.id), verify: true })
-      local.value = scanned
+      check(token); local.value = scanned
       if (cloud.value?.source === 'PROGRESS') {
         const preview = await native<LocalCollaborationStatus>('reconcile', { task_id: String(options.task()?.id), operation_id: `compare-${cloud.value.snapshot_id}`, target: cloud.value, preview: true, progressive: false })
-        previewConflicts.value = preview.preview_conflicts || []
+        check(token); previewConflicts.value = preview.preview_conflicts || []
       }
-    } catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
+    } catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
   }
   async function handoffLocalChanges() {
     if (busy.value || !participating.value || !driver.value || state.value?.driver_connected === false || local.value?.state === 'RECOVERY_REQUIRED' || phase.value !== 'READY') return
@@ -498,7 +506,11 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     } catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
     finally { busy.value = false }
   }
-  function setProgressive(value: boolean) { progressive.value = value; localStorage.setItem(`traceforge.collaboration.progressive:${options.task()?.id}`, String(value)); lastProgress = '' }
+  function setProgressive(value: boolean) {
+    if (progressive.value === value) return
+    progressive.value = value; localStorage.setItem(`traceforge.collaboration.progressive:${options.task()?.id}`, String(value)); lastProgress = ''
+    if (participating.value) void refresh()
+  }
   async function suspendLocal() {
     const bindingId = local.value?.binding_id
     if (!bindingId) return
@@ -509,7 +521,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   async function leave(): Promise<boolean> {
     if (leaving.value) return false
     if (!participating.value) return true
-    leaving.value = true; generation++; refreshQueued = false
+    leaving.value = true; generation++; refreshQueued = false; localRefreshQueued = false; eventVersion = 0
     const lease = state.value && { ...identity, lease_epoch: state.value.lease_epoch, operation_id: crypto.randomUUID() }
     try {
       await suspendLocal()
@@ -551,9 +563,19 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     }
   }
   function onEvent(payload: Record<string, unknown>) {
-    if (payload.task_id !== options.task()?.id || Number(payload.state_version || 0) < Number(state.value?.state_version || 0)) return
-    void refresh()
+    const version = Number(payload.state_version || 0)
+    // A command response can advance state before its input/manifest is processed.
+    // Deduplicate against the last fetched state, not that response's version.
+    if (disposed || leaving.value || payload.task_id !== options.task()?.id || version <= observedVersion) return
+    eventVersion = Math.max(eventVersion, version)
+    void drainUpdates()
   }
+  function onConnectionReady(taskId: string) { if (taskId === options.task()?.id) void refresh() }
+  const stopLocalUpdates = desktop?.collaboration?.onChanged?.(event => {
+    if (disposed || leaving.value || !participating.value || event.task_id !== options.task()?.id) return
+    localRefreshQueued = true
+    void drainUpdates()
+  })
   const openDirectory = (repositoryId?: string) => {
     const path = repositoryId ? local.value?.repositories?.find(repo => repo.task_repository_id === repositoryId)?.local_worktree_path : local.value?.repositories?.[0]?.local_worktree_path
     return path ? desktop?.system.openPath(path) : undefined
@@ -562,7 +584,6 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     // Only a persisted PREPARING state or explicit handoff may upload local input.
     return enabled.value && (participating.value || remoteSender.value) ? { collaboration: { ...(remoteSender.value ? { request_driver_input: true } : identity), binding_id: state.value?.binding_id, lease_epoch: state.value?.lease_epoch } } : {}
   }
-  const schedule = () => { timer = setTimeout(() => { void refresh(); if (!disposed) schedule() }, 2500) }
   const stopMappingUpdates = onRepoPreferencesChanged(options.workspaceId(), String(auth.user?.id || ''), () => {
     mappingsDirty = true; mappingChecks.value = []
     void refresh()
@@ -570,12 +591,11 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   watch(() => [options.workspaceId(), options.task()?.id], () => {
     generation++; transportStatus = null; state.value = null; local.value = null; input.value = null; cloud.value = null; error.value = ''; busy.value = false; loading.value = supported.value
     lastTarget = ''; lastProgress = ''; lastHandoff = ''; lastLease = 0; leaseRetryAt = 0; mappings.value = {}; preparationRequired.value = false; deliveryRetryRequired.value = false
-    refreshQueued = false; mappingsDirty = true; directories.value = null
+    refreshQueued = false; localRefreshQueued = false; eventVersion = 0; observedVersion = 0; mappingsDirty = true; directories.value = null
     void refresh()
   }, { immediate: true })
-  schedule()
-  onScopeDispose(() => { disposed = true; generation++; clearTimeout(timer); clearInterval(heartbeat); clearInterval(stageClock); stopMappingUpdates() })
-  return { participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, cancelPreparation, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
+  onScopeDispose(() => { disposed = true; generation++; clearInterval(heartbeat); clearInterval(stageClock); stopMappingUpdates(); stopLocalUpdates?.() })
+  return { participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, cancelPreparation, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, onConnectionReady, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
 }
 type Controller = ReturnType<typeof createController>
 const controllers = new Map<string, { scope: EffectScope; controller: Controller; users: number }>()
@@ -639,6 +659,7 @@ export function useLocalCollaboration(options: { workspaceId: () => string; task
     cancelPreparation: async () => { await active.value?.cancelPreparation() },
     claimDriver: async () => { await active.value?.claimDriver() }, recover: async () => { await active.value?.recover() },
     onEvent: (payload: Record<string, unknown>) => active.value?.onEvent(payload),
+    onConnectionReady: (taskId: string) => active.value?.onConnectionReady(taskId),
     refreshComparison: async () => { await active.value?.refreshComparison() },
     checkMappings: async () => { await active.value?.checkMappings() }, selectMapping: async (repositoryId: string) => { await active.value?.selectMapping(repositoryId) },
     handoffLocalChanges: async () => { await active.value?.handoffLocalChanges() },
