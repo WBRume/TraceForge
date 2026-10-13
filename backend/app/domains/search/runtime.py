@@ -22,7 +22,8 @@ class SearchRuntime:
 
         kinds = ("search",) if local_only() else ("search", "embedding")
         self.tasks = [asyncio.create_task(self._supervise(kind), name=f"search-{kind}-worker") for kind in kinds]
-        self.tasks.append(asyncio.create_task(self._bootstrap(), name="search-sqlite-backfill"))
+        if settings.SEARCH_BACKEND != "elasticsearch":
+            self.tasks.append(asyncio.create_task(self._bootstrap(), name="search-sqlite-backfill"))
         logger.info("Search and embedding workers started inside backend")
 
     async def _bootstrap(self):

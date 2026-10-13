@@ -15,7 +15,7 @@ from app.domains.auth.models.user import User, Workspace, WorkspaceMember
 from app.domains.case_center.models.case import SddCase
 from app.domains.search import sessions
 from app.domains.search.embedding import EmbeddingError, embed
-from app.domains.search.es import scope_filters, search_body
+from app.domains.search.es import scope_filters
 from app.domains.search.models import (
     SearchDocumentState,
     SearchEmbeddingJob,
@@ -24,7 +24,8 @@ from app.domains.search.models import (
     SearchOutbox,
 )
 from app.domains.search.projection import build_search_projection, digest, embedding_text
-from app.domains.search.rrf import checked_hits, hybrid_search
+from app.domains.search.rrf import search_target
+from app.domains.search.storage import semantic_enabled
 from app.domains.search.worker import dto
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.task import SddTask
@@ -386,6 +387,8 @@ class SearchService:
         mode, degraded = params["retrieval"], None
         if local:
             mode, degraded = "lexical", "sqlite_bm25_only"
+        elif mode == "hybrid" and not semantic_enabled(target, params["type"]):
+            mode, degraded = "lexical", "history_lexical_only"
         vector = None
         if mode == "hybrid" and (not profile or not target["verified"]):
             mode, degraded = "lexical", "semantic_index_not_ready"
@@ -420,18 +423,15 @@ class SearchService:
                             date_from=params.get("from"),
                             date_to=params.get("to"),
                         )
-                    elif vector is not None:
-                        hits = await hybrid_search(
+                    else:
+                        hits = await search_target(
                             self.es,
-                            target["physical_index"],
+                            target,
                             params["q"],
                             filters,
-                            vector,
-                            target["embedding_profile_id"],
-                        )
-                    else:
-                        hits = checked_hits(
-                            await self.es.search(index=target["physical_index"], body=search_body(params["q"], filters))
+                            kind=params["type"],
+                            vector=vector,
+                            profile_id=target["embedding_profile_id"],
                         )
             except Exception:
                 if settings.SEARCH_BACKEND == "elasticsearch":

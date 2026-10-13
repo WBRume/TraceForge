@@ -24,6 +24,7 @@ from app.domains.search.models import (
     SearchOutbox,
 )
 from app.domains.search.projection import build_embedding_chunks, build_search_projection, digest, embedding_text
+from app.domains.search.storage import semantic_enabled, write_index
 
 worker_heartbeats = {}
 _redis_heartbeat_at = {}
@@ -208,7 +209,7 @@ def read_work(db, job):
 
 def prepare_document(doc, target, profile):
     doc = dict(doc)
-    if not doc["deleted"] and profile:
+    if not doc["deleted"] and profile and semantic_enabled(target, doc["kind"]):
         doc["embedding_profile_id"] = profile["id"]
         doc["embedding_input_hash"] = digest([doc["projection_hash"], profile["fingerprint"]])
     return doc
@@ -233,7 +234,7 @@ def confirm_body(db, job, documents, targets, profiles, keys):
         if not profile:
             continue
         for doc in documents:
-            if doc["deleted"]:
+            if doc["deleted"] or not semantic_enabled(target, doc["kind"]):
                 continue
             existing = (
                 db.query(SearchEmbeddingJob.id)
@@ -280,8 +281,11 @@ async def process_body(client, job):
     docs, targets, profiles, keys = work
     from . import sqlite_index
 
-    await asyncio.to_thread(sqlite_index.write, docs)
-    if sqlite_index.local_only() or not targets:
+    if settings.SEARCH_BACKEND != "elasticsearch":
+        await asyncio.to_thread(sqlite_index.write, docs)
+    else:
+        await asyncio.to_thread(sqlite_index.invalidate_checkpoints)
+    if sqlite_index.local_only() or (not targets and settings.SEARCH_BACKEND != "elasticsearch"):
 
         def confirm_local(db):
             row = owns(db, SearchOutbox, job)
@@ -301,7 +305,7 @@ async def process_body(client, job):
         batch, size = [], 0
 
         async def publish(batch, *, target=target):
-            result = await bulk_write(client, target["physical_index"], batch)
+            result = await bulk_write(client, target, batch)
             failures = [code for code in result.values() if code]
             if failures:
                 raise RuntimeError(failures[0])
@@ -333,6 +337,7 @@ def embedding_snapshot(db, job):
         or not profile
         or not doc
         or doc["deleted"]
+        or not semantic_enabled(dto(target), doc["kind"])
         or doc["source_version"] != job["source_version"]
         or doc.get("projection_hash") != job["projection_hash"]
         or digest([doc["projection_hash"], profile.fingerprint]) != job["input_hash"]
@@ -356,7 +361,8 @@ async def process_embedding(client, http, job):
         await run_db_txn(lambda db: finish(db, SearchEmbeddingJob, job, "pending", "SEARCH_SQLITE_MODE"))
         return
     # Do not spend embedding requests while its destination index is unavailable.
-    if not await client.indices.exists(index=target["physical_index"]):
+    index = write_index(target, doc["kind"])
+    if not await client.indices.exists(index=index):
         raise RuntimeError("SEARCH_TRANSPORT_FAILED")
     chunks = build_embedding_chunks(embedding_text(doc), profile["chunk_chars"], profile["chunk_overlap"])
     vectors = []
@@ -373,7 +379,7 @@ async def process_embedding(client, http, job):
         {k: v for k, v in c.items() if k != "text"} | {"vector": vector}
         for c, vector in zip(chunks, vectors, strict=True)
     ]
-    result = await bulk_write(client, target["physical_index"], [doc])
+    result = await bulk_write(client, target, [doc])
     if result[doc["entity_key"]]:
         raise RuntimeError(result[doc["entity_key"]])
     await run_db_txn(lambda db: finish(db, SearchEmbeddingJob, job))
@@ -400,7 +406,7 @@ async def run(kind, once=False, stop_event=None):
 
     load_models()
     # Load the application's model registry without starting its runtime.
-    if kind == "search" and stop_event is None:
+    if kind == "search" and stop_event is None and settings.SEARCH_BACKEND != "elasticsearch":
         from .sqlite_index import bootstrap
 
         await bootstrap(asyncio.Event())

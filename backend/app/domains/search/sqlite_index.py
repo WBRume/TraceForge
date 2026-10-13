@@ -1,6 +1,5 @@
 """Local, disposable FTS5 index; relational source remains authoritative."""
 
-import json
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -9,6 +8,8 @@ from pathlib import Path
 from app.core.feature_settings import feature_settings as settings
 
 from .projection import es_version
+from .rrf import fuse_rankings
+from .storage import CORPORA, SCHEMA_VERSION, corpora_for, corpus_for
 
 
 def tokens(text):
@@ -22,18 +23,32 @@ def tokens(text):
     ]
 
 
-@contextmanager
-def connection():
+def index_path(corpus):
+    if corpus not in CORPORA:
+        raise ValueError("SEARCH_INVALID_CORPUS")
     path = Path(settings.SEARCH_SQLITE_PATH).resolve()
+    return path.with_name(f"{path.stem}-v{SCHEMA_VERSION}-{corpus}{path.suffix}")
+
+
+@contextmanager
+def connection(corpus):
+    path = index_path(corpus)
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=5)
     try:
         db.execute("PRAGMA journal_mode=WAL")
         db.execute(
-            "CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, entity_key TEXT UNIQUE, version INTEGER, workspace_id TEXT, kind TEXT, task_id TEXT, role TEXT, created_at TEXT, deleted INTEGER, body TEXT)"
+            "CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, entity_key TEXT UNIQUE, version INTEGER, "
+            "workspace_id TEXT, kind TEXT, task_id TEXT, message_id TEXT, role TEXT, created_at TEXT, deleted INTEGER, "
+            "source_version INTEGER, projection_hash TEXT, title TEXT, content TEXT, symbols TEXT)"
         )
         db.execute("CREATE INDEX IF NOT EXISTS documents_scope ON documents(workspace_id, kind)")
-        db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS terms USING fts5(title, content, symbols)")
+        db.execute("CREATE VIEW IF NOT EXISTS indexed_documents AS SELECT * FROM documents WHERE deleted=0")
+        # One token copy supports deletes and BM25; FTS stores no second text copy or word offsets.
+        db.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS terms USING fts5(title, content, symbols, "
+            "content='indexed_documents', content_rowid='id', detail='column', tokenize='unicode61 tokenchars _')"
+        )
         db.execute("CREATE TABLE IF NOT EXISTS checkpoints (name TEXT PRIMARY KEY, cursor TEXT)")
         yield db
         db.commit()
@@ -42,46 +57,80 @@ def connection():
 
 
 def write(documents):
-    with connection() as db:
+    for corpus in CORPORA:
+        batch = [doc for doc in documents if corpus_for(doc["kind"]) == corpus]
+        if batch:
+            _write(corpus, batch)
+
+
+def _write(corpus, documents):
+    with connection(corpus) as db:
         db.execute("BEGIN IMMEDIATE")
         for doc in documents:
             version = es_version(doc["source_version"], int(bool(doc.get("deleted"))))
-            row = db.execute("SELECT id, version FROM documents WHERE entity_key=?", (doc["entity_key"],)).fetchone()
+            row = db.execute(
+                "SELECT id, version, deleted, title, content, symbols FROM documents WHERE entity_key=?",
+                (doc["entity_key"],),
+            ).fetchone()
             if row and row[1] >= version:
                 continue
             if row:
-                db.execute("DELETE FROM terms WHERE rowid=?", (row[0],))
+                if not row[2]:
+                    db.execute(
+                        "INSERT INTO terms(terms,rowid,title,content,symbols) VALUES('delete',?,?,?,?)",
+                        (row[0], *row[3:]),
+                    )
                 db.execute("DELETE FROM documents WHERE id=?", (row[0],))
-            clean = {k: v for k, v in doc.items() if k != "semantic_passages"}
-            if doc.get("deleted"):
-                clean = {k: v for k, v in clean.items() if k not in {"title", "content_text", "symbols"}}
+            fields = []
+            for value in (doc.get("title", ""), doc.get("content_text", ""), " ".join(doc.get("symbols", []))):
+                terms = [] if doc.get("deleted") else tokens(value)
+                # Repeated log lines must not create repeated stored token strings.
+                fields.append(" ".join(dict.fromkeys(terms) if corpus == "history" else terms))
             cursor = db.execute(
-                "INSERT INTO documents(entity_key,version,workspace_id,kind,task_id,role,created_at,deleted,body) VALUES(?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO documents(entity_key,version,workspace_id,kind,task_id,message_id,role,created_at,"
+                "deleted,source_version,projection_hash,title,content,symbols) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     doc["entity_key"],
                     version,
                     doc["workspace_id"],
                     doc["kind"],
                     doc.get("task_id"),
+                    doc.get("message_id"),
                     doc.get("role"),
                     doc.get("created_at"),
                     bool(doc.get("deleted")),
-                    json.dumps(clean, ensure_ascii=False),
+                    doc["source_version"],
+                    doc.get("projection_hash"),
+                    *fields,
                 ),
             )
             if not doc.get("deleted"):
                 db.execute(
                     "INSERT INTO terms(rowid,title,content,symbols) VALUES(?,?,?,?)",
-                    (
-                        cursor.lastrowid,
-                        " ".join(tokens(doc.get("title", ""))),
-                        " ".join(tokens(doc.get("content_text", ""))),
-                        " ".join(tokens(" ".join(doc.get("symbols", [])))),
-                    ),
+                    (cursor.lastrowid, *fields),
                 )
 
 
 def search(query, scope, *, kind="all", task_id=None, role=None, date_from=None, date_to=None, limit=200):
+    rankings = [
+        _search(
+            corpus,
+            query,
+            scope,
+            kind=kind,
+            task_id=task_id,
+            role=role,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+        for corpus in corpora_for(kind)
+    ]
+    # BM25 scores from independent corpora are not comparable.
+    return fuse_rankings(rankings[0], rankings[1], window=limit) if len(rankings) == 2 else rankings[0]
+
+
+def _search(corpus, query, scope, *, kind, task_id, role, date_from, date_to, limit):
     terms = list(dict.fromkeys(tokens(query)))[:100]
     if not terms or not scope:
         return []
@@ -98,23 +147,29 @@ def search(query, scope, *, kind="all", task_id=None, role=None, date_from=None,
         if stamp:
             where.append(f"julianday(d.created_at) {op} julianday(?)")
             args.append(str(stamp))
-    with connection() as db:
+    fields = ("entity_key", "kind", "source_version", "projection_hash", "workspace_id", "task_id", "message_id")
+    with connection(corpus) as db:
         rows = db.execute(
-            "SELECT d.body, bm25(terms,4.0,1.0,2.0) FROM terms JOIN documents d ON d.id=terms.rowid WHERE "
+            "SELECT "
+            + ",".join(f"d.{field}" for field in fields)
+            + ",bm25(terms,4.0,1.0,2.0) FROM terms JOIN documents d ON d.id=terms.rowid WHERE "
             + " AND ".join(where)
             + " ORDER BY bm25(terms,4.0,1.0,2.0),d.entity_key LIMIT ?",
             [*args, limit],
         ).fetchall()
-    fields = {"entity_key", "kind", "source_version", "projection_hash", "workspace_id", "task_id", "message_id"}
-    return [
-        {"_source": {k: v for k, v in json.loads(body).items() if k in fields}, "_score": -score}
-        for body, score in rows
-    ]
+    return [{"_id": row[0], "_source": dict(zip(fields, row[:-1], strict=True)), "_score": -row[-1]} for row in rows]
 
 
 def ready():
-    with connection() as db:
-        return db.execute("SELECT count(*) FROM checkpoints WHERE cursor='__done__'").fetchone()[0] == 4
+    return all(checkpoint(kind) == "__done__" for kinds in CORPORA.values() for kind in kinds)
+
+
+def invalidate_checkpoints():
+    """A later ES-to-auto switch must backfill writes skipped by the local index."""
+    for corpus in CORPORA:
+        if index_path(corpus).exists():
+            with connection(corpus) as db:
+                db.execute("DELETE FROM checkpoints")
 
 
 def local_only():
@@ -124,7 +179,7 @@ def local_only():
 
 
 def checkpoint(kind, cursor=None):
-    with connection() as db:
+    with connection(corpus_for(kind)) as db:
         if cursor is not None:
             db.execute("INSERT OR REPLACE INTO checkpoints(name,cursor) VALUES(?,?)", (kind, cursor))
         row = db.execute("SELECT cursor FROM checkpoints WHERE name=?", (kind,)).fetchone()

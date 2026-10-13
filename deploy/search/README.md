@@ -15,15 +15,35 @@ SEARCH_BACKEND=sqlite
 SEARCH_SQLITE_PATH=/app/storage/search/search-bm25.sqlite3
 ```
 
-本机开发可使用 `data/search-bm25.sqlite3`；Docker 使用上面的 storage 路径，沿用已有持久化卷。先执行现有 Alembic 迁移，再启动 backend。首次启动自动分批回填任务、消息、案例及诊断规程，支持中断恢复；后续通过事务 Outbox 更新，无需额外启动索引服务。分页仍使用已有 Redis。
+本机开发可使用 `data/search-bm25.sqlite3`；该配置现在是文件名前缀，实际生成 `search-bm25-v2-history.sqlite3` 和 `search-bm25-v2-knowledge.sqlite3` 两个独立数据库。Docker 使用上面的 storage 路径，沿用已有持久化卷。先执行现有 Alembic 迁移，再启动 backend。首次启动自动分批回填任务、消息、案例及诊断规程，支持中断恢复；后续通过事务 Outbox 更新，无需额外启动索引服务。分页仍使用已有 Redis。
 
 `SEARCH_BACKEND=auto` 优先使用已配置的 ES 索引；未配置或 ES 请求失败时使用本地 BM25。ES 可用且向量配置与索引就绪时沿用 BM25 + kNN + Python RRF。`SEARCH_BACKEND=elasticsearch` 则在 ES 故障时明确报错。SQLite 只提供 BM25，不模拟语义得分。索引文件可重建，返回结果仍复核业务库权限、版本和删除状态。
 
 SQLite 适合单机轻量部署；多个主机独立消费同一 Outbox 时应使用 ES，不能将各自的 SQLite 文件视为同一索引。切换到新 ES 索引时仍需执行下文的 backfill、verify 和 activate。
 
+## 搜索范围与存储分层
+
+在工作区内打开搜索，可以选择“所有工作区”或“当前工作区”；默认搜索所有有权访问的工作区。切换范围会取消旧请求并释放分页快照，后端在召回和返回结果时都检查工作区权限。离开工作区后不显示当前工作区选项。
+
+| 层 | 收录内容 | SQLite | 新版 Elasticsearch |
+| --- | --- | --- | --- |
+| 流水 | 任务、可见对话、排障结果消息 | 独立 history 库，关键词检索 | 独立 `-history` 索引，关键词检索，不生成向量 |
+| 知识资产 | 已审核/验证案例、诊断规程 | 独立 knowledge 库，关键词检索 | 独立 `-knowledge` 索引，可生成向量并混合检索 |
+| 业务正文 | 完整记录、权限、版本、删除状态 | 从 MySQL 回表读取 | 从 MySQL 回表读取 |
+
+本次分库限于可重建的搜索存储，MySQL 业务表保持原有事务边界。原始工具输出、思考过程及未成功发布的执行消息仍不收录；没有新增对全部原始排障日志的全文索引。
+
+SQLite 删除原来的正文 JSON 副本，使用外部内容 FTS5：分词文本只保存一份，倒排使用 `detail=column`，不保存词位置。流水分词在每个字段内去重，避免重复日志反复占用空间；知识资产保留词频。下划线标识符作为完整词检索。ES 新版索引的 `_source` 排除标题、正文和符号副本，文本字段只保存文档和词频倒排，不保存位置/偏移；摘要与命中标记由返回前的业务正文生成。因此新版不依赖索引端高亮，也不提供词位置/短语检索能力。参见 [SQLite 外部内容表与 detail](https://www.sqlite.org/fts5.html#external_content_tables)、[ES index_options](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/index-options) 和 [ES _source 排除字段](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/mapping-source-field)。
+
+跨两库搜索时，各库分别召回最多 200 条，以排名融合后截取 200 条；混合检索再与知识资产向量结果融合，避免直接比较不同库的 BM25 分数。SQLite 不生成向量。`SEARCH_BACKEND=elasticsearch` 不再维护 SQLite 副本；`auto` 模式保留两套索引以支持故障回退，这部分存储是显式的可用性成本。切回 auto 时会重新回填 ES 独占期间跳过的本地更新。
+
+升级后 SQLite 自动建立 v2 两库并从业务源回填，准备期间显示部分结果。旧单文件不再读取或写入，保留用于回滚，确认回填和搜索通过后可自行备份、移除旧文件。不会自动删除旧索引或业务数据。
+
+ES 旧目标保持兼容，必须新建目标并完成回填、verify、activate 才能切换到分层结构。新版逻辑目标 `traceforge-search-v2-000001` 对应两个物理索引 `traceforge-search-v2-000001-history`、`traceforge-search-v2-000001-knowledge`；验证要求两者都存在，激活会原子更新读别名到两者。管理页面建立新索引和动态配置均使用 v2 目标。ES 新索引重建必须从 MySQL backfill，不能依靠旧索引 `_source` 复制正文；已有 standby 目标为回滚保留并继续同步，确认不再需要后另行退役。
+
 案例库支持多选 1–20 个同工作区案例，经确认后使用工作区 CLI 提炼规程和症状短语；后台复用 AI 作业队列、取消及重启恢复。规程推荐复用同一检索基础设施。
 
-实现 BM25 + nested kNN + **Python RRF**。两路召回共用短期 PIT，分别取最多 200 个父实体，以 `1/(60+rank)` 等权融合，保留最多 200 个候选。首次检索后的分页只读用户隔离的 Redis 快照并重新授权，不再调用 embedding 或 ES。无需 Elastic Enterprise / 原生 RRF 授权。
+实现 BM25 + nested kNN + **Python RRF**。ES 各路召回共用短期 PIT，以 `1/(60+rank)` 等权融合，最终保留最多 200 个候选。首次检索后的分页只读用户隔离的 Redis 快照并重新授权，不再调用 embedding 或 ES。无需 Elastic Enterprise / 原生 RRF 授权。
 
 验证基线：ES 9.5.2、官方 Python 客户端 9.3.0、Python 3.11、MySQL、Redis、硅基流动 BAAI/bge-m3（1024 维）。生产要求认证、TLS 或受控内网；Compose 中 `search-local-es` 仅为本机单节点开发配置，不是高可用部署。
 
@@ -38,13 +58,13 @@ SQLite 适合单机轻量部署；多个主机独立消费同一 Outbox 时应�
 1. 备份现有数据库，检查 `python -m alembic current` 和 `heads`，按[迁移说明](../../backend/alembic/README.md)升级至当前 head，不清空业务数据。
 2. 在 backend 目录安装 requirements 并执行 `python -m alembic upgrade head`，先保持 `SEARCH_ENABLED=false`。新应用需要新 schema；不要先启动新代码再迁移。
 3. 使用管理员页面配置协议、endpoint、key、model 并测试；也可使用 `python -m app.domains.search.cli configure` 从 `SEARCH_EMBEDDING_*` 环境配置创建已探测且加密保存的 profile。配置完成后可清除环境中的 bootstrap API key，保留 Fernet 密钥。
-4. 创建目标：`python -m app.domains.search.cli create-index --target traceforge-search-v1-000001 --embedding-profile PROFILE_ID`。物理索引绑定不可变模型空间；仅轮换 API key 无需重建。
+4. 创建目标：`python -m app.domains.search.cli create-index --target traceforge-search-v2-000001 --embedding-profile PROFILE_ID`。物理索引绑定不可变模型空间；仅轮换 API key 无需重建。
 5. 设置 `SEARCH_ENABLED=true` 后照常启动 backend，正文与向量 worker 自动运行；auto 模式未激活 ES 索引时先使用 SQLite BM25。系统配置页可完成模型测试、建立索引、验证和激活，下面的 CLI 命令是可选方式。
-6. 执行 `python -m app.domains.search.cli backfill --target traceforge-search-v1-000001 --batch-size 100`。断线可 `resume --run-id RUN_ID`，search worker 也会继续 pending 回填。管理员“建立新索引”会创建持久化回填记录。回填走相同版本协议并分批补齐 sort_seq。
+6. 执行 `python -m app.domains.search.cli backfill --target traceforge-search-v2-000001 --batch-size 100`。断线可 `resume --run-id RUN_ID`，search worker 也会继续 pending 回填。管理员“建立新索引”会创建持久化回填记录。回填走相同版本协议并分批补齐 sort_seq。
 7. 使用 `status` 查看 outbox、embedding job、回填状态；`retry` 显式重试 dead 作业。首次回填和向量完成后执行 `verify --target INDEX`，再 `activate --target INDEX`。
 8. 激活完成后即可通过顶部入口或双 Shift 搜索；无需为 worker 再启动进程。输入框与 IME 中不触发快捷键。
 
-管理员的模型测试会发送两条合成文本；回填会向配置的供应商发送收录的可见正文分段。默认每 profile 后台 2 请求/秒（每批最多 16 段），查询 16 请求/秒、API 同时最多 8 次搜索。按实际供应商配额调小，不能视为供应商保证值。初始查询 embedding 预算 800ms、搜索总预算 2s；provider 超时会明确回退关键词。连接探测的 10s 预算不等于在线延迟目标。
+管理员的模型测试会发送两条合成文本；v2 目标仅向配置的供应商发送案例与诊断规程正文分段；旧版目标仍按原策略处理全部可见正文。默认每 profile 后台 2 请求/秒（每批最多 16 段），查询 16 请求/秒、API 同时最多 8 次搜索。按实际供应商配额调小，不能视为供应商保证值。初始查询 embedding 预算 800ms、搜索总预算 2s；provider 超时会明确回退关键词。连接探测的 10s 预算不等于在线延迟目标。
 
 ## 可选的独立 worker 部署
 

@@ -14,9 +14,10 @@ from app.dependencies import get_current_user, require_admin
 from app.domains.search import sessions
 from app.domains.search.embedding import EmbeddingError, embed, encrypt_key, validate_endpoint
 from app.domains.search.embedding_protocols import get_protocol, profile_fingerprint
-from app.domains.search.es import create_client
+from app.domains.search.es import create_client, indices_exist
 from app.domains.search.models import SearchEmbeddingProfile, SearchIndexTarget
 from app.domains.search.service import SearchService, configuration
+from app.domains.search.storage import SCHEMA_VERSION, partitioned
 from app.domains.search.worker import dto
 
 router = APIRouter(tags=["Search"])
@@ -88,7 +89,7 @@ async def capabilities(request: Request, user=Depends(get_current_user)):
     ready = False
     if target and not local_only():
         try:
-            ready = bool(await request.app.state.search_es.indices.exists(index=target["physical_index"]))
+            ready = await indices_exist(request.app.state.search_es, target)
         except Exception:
             pass
     reason = (
@@ -130,6 +131,9 @@ async def capabilities(request: Request, user=Depends(get_current_user)):
         "default_retrieval": "hybrid",
         "available_retrievals": ["lexical", "hybrid"] if hybrid else ["lexical"],
         "hybrid_available": hybrid,
+        "semantic_types": ["case", "playbook"]
+        if target and partitioned(target)
+        else ["task", "message", "case", "playbook"],
         "hybrid_unavailable_reason": reason,
         "semantic_indexing_state": target["semantic_indexing_state"] if target else "building",
         "result_window_size": 200,
@@ -375,7 +379,7 @@ async def build_profile(profile_id: str, request: Request, user=Depends(require_
     from app.domains.search.models import SearchBackfillRun
 
     # Stable name makes a repeated click idempotent for this immutable profile.
-    name = "traceforge-search-v1-" + profile_id.replace("-", "")
+    name = f"traceforge-search-v{SCHEMA_VERSION}-" + profile_id.replace("-", "")
     result = await create_index(request.app.state.search_es, name, profile_id)
 
     def enqueue(db):
