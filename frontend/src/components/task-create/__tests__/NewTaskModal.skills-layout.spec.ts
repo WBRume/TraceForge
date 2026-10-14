@@ -48,6 +48,7 @@ const mountModal = async () => {
 
 describe('NewTaskModal layout & skills sidebar slide-out interaction', () => {
   beforeEach(() => {
+  localStorage.setItem('traceforge.task-create-mode', 'quick')
     setActivePinia(createPinia())
     apiMock.get.mockReset()
     apiMock.post.mockReset()

@@ -4,8 +4,9 @@
      Skills / 仓库两个侧栏经插槽注入标题、工具行、过滤行与内容区。 -->
 <script setup lang="ts">
 import { X } from '@/components/icons'
+import { nextTick, useTemplateRef, watch } from 'vue'
 
-defineProps<{
+const props = defineProps<{
   open: boolean
   /** 标题行右侧的已选数量徽标文案 */
   badge: string
@@ -14,10 +15,20 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{ close: [] }>()
+const panel = useTemplateRef<HTMLElement>('panel')
+let returnFocus: HTMLElement | null = null
+watch(() => props.open, open => {
+  if (open) {
+    returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    void nextTick(() => panel.value?.querySelector<HTMLButtonElement>('.sidebar-close-btn')?.focus({ preventScroll: true }))
+  } else if (panel.value?.contains(document.activeElement)) {
+    returnFocus?.focus({ preventScroll: true })
+  }
+})
 </script>
 
 <template>
-  <aside class="modal-skills-sidebar" :class="{ open }">
+  <aside ref="panel" class="modal-skills-sidebar" :class="{ open }" :inert="!open" :aria-hidden="!open">
     <div class="sidebar-inner">
       <div class="skills-sidebar-header">
         <div class="skills-sidebar-title-row">
@@ -171,5 +182,11 @@ const emit = defineEmits<{ close: [] }>()
   border-top: 1px solid #f1f5f9;
   background: #ffffff;
   flex-shrink: 0;
+}
+
+@media (max-width: 760px) {
+  .modal-skills-sidebar.open { position: absolute; inset: 0; z-index: 5; width: 100%; }
+  .sidebar-inner { width: 100%; border-left: 0; }
+  .skills-sidebar-header { padding: 12px; }
 }
 </style>

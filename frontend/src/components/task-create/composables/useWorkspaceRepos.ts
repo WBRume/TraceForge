@@ -18,6 +18,7 @@ export function useWorkspaceRepos(getWsId: () => string) {
 
   const repos = shallowRef<WorkspaceRepo[]>([])
   const loading = shallowRef(false)
+  const error = shallowRef(false)
   // 勾选的仓库（默认全部；仅为所选仓库创建 worktree）
   const selectedIds = shallowRef<string[]>([])
   // 会话创建时按仓库选填分支覆盖（留空 = 沿用工作区绑定分支）
@@ -47,11 +48,13 @@ export function useWorkspaceRepos(getWsId: () => string) {
   /** 拉取工作区绑定的仓库环境；默认勾选全部仓库 */
   const load = async () => {
     loading.value = true
+    error.value = false
     try {
       const res = await api.get('/workspaces/' + getWsId())
       repos.value = res.data?.repositories || []
       selectedIds.value = repos.value.map(workspaceRepoBindingId).filter(Boolean)
     } catch {
+      error.value = true
       repos.value = []
       selectedIds.value = []
     } finally {
@@ -104,6 +107,7 @@ export function useWorkspaceRepos(getWsId: () => string) {
   return reactive({
     repos,
     loading,
+    error,
     selectedIds,
     branchOverrides,
     refsCache,

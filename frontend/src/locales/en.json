@@ -4441,5 +4441,65 @@
       "connect": "Start local collaboration",
       "choiceHint": "Receive once downloads cloud code only. Collaboration hands off local edits when you send a message."
     }
+  },
+  "task_create": {
+    "diagnosis_content_hint": "Name the task and describe the symptoms and affected functionality.",
+    "server_execution_hint": "This task will run on the server.",
+    "mode": "Creation mode",
+    "guided": "Guided",
+    "quick": "Quick",
+    "guided_hint": "Fill in each step, then review the configuration",
+    "quick_hint": "All options at once for experienced users",
+    "progress": "Creation steps",
+    "step_count": "Step {current} of {total}",
+    "steps": {
+      "content": {
+        "title": "Task",
+        "heading": "What do you want to accomplish?",
+        "hint": "Choose a task type and describe the goal. Linking a requirement fills in its saved content."
+      },
+      "environment": {
+        "title": "Environment",
+        "heading": "Where should this task run?",
+        "hint": "Check the model, repositories and branches. All workspace repositories are selected by default."
+      },
+      "options": {
+        "title": "Options",
+        "heading": "What else does this task need?",
+        "hint": "Check attachments, skills and task settings. Continue if you have nothing to add."
+      },
+      "review": {
+        "title": "Review",
+        "heading": "Review your task configuration",
+        "hint": "Options you left empty are also listed. Use Edit to return to the relevant step."
+      }
+    },
+    "previous": "Back",
+    "next": "Next",
+    "review_action": "Review settings",
+    "create": "Create task",
+    "edit": "Edit",
+    "edit_section": "Edit {section}",
+    "model": "Model",
+    "default_model": "Use the execution environment’s default model",
+    "execution": "Execution location",
+    "server": "Server",
+    "local": "Local",
+    "repositories": "Repositories and branches",
+    "no_repos": "This workspace has no repositories. No code repository will be loaded.",
+    "repos_loading": "Loading workspace repositories. Please wait.",
+    "repos_error": "Could not load repositories. Retry to check repositories and branches.",
+    "models_loading": "Loading model settings. Please wait.",
+    "name_required": "Enter a task name.",
+    "duration_invalid": "Enter a non-negative duration in increments of 0.5 hours.",
+    "task_type": "Task type",
+    "development_hint": "Implement requirements, fixes or improvements",
+    "diagnosis_hint": "Investigate problems and collect evidence",
+    "not_added": "Not added",
+    "independent": "No linked requirement (independent task)",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "playbook": "Diagnosis playbook",
+    "auto_run": "Run all stages automatically"
   }
 }

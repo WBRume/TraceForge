@@ -6,6 +6,37 @@
 /** 任务类型：研发 / 问题定位（诊断） */
 export type TaskTypeValue = 'DEVELOPMENT' | 'DIAGNOSIS'
 
+export type TaskCreateMode = 'guided' | 'quick'
+export type TaskCreateStep = 'content' | 'environment' | 'options' | 'review'
+
+export interface TaskCreateRepoReview {
+  id: string
+  name: string
+  branch: string
+}
+
+export interface TaskCreateFormProps {
+  wsId: string
+  taskType: TaskTypeValue
+  creating: boolean
+  mode?: TaskCreateMode
+  reposTotal: number
+  selectedRepoCount: number
+  selectedSkillCount: number
+  selectedSkillNames?: string[]
+  repoReview?: TaskCreateRepoReview[]
+  reposLoading?: boolean
+  reposError?: boolean
+  activeSidebar: TaskCreateSidebar
+  selectedPlaybook?: { id: string; title: string } | null
+  selectedRequirement?: import('@/types/taskRail').RequirementOption | null
+  requirementContext?: import('@/types/workspaceAssets').RequirementSummary | null
+  requirementLoading?: boolean
+  requirementError?: boolean
+  requirementLocked?: boolean
+  requirementRequired?: boolean
+}
+
 /** 右侧滑出侧栏；同一时刻至多展开一个，none = 全部收起 */
 export type TaskCreateSidebar = 'none' | 'skills' | 'repos' | 'playbooks' | 'requirements'
 

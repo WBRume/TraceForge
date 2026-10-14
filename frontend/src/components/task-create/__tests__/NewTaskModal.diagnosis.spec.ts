@@ -43,6 +43,7 @@ const setInputFiles = async (input: any, files: File[]) => {
 
 describe('NewTaskModal diagnosis mode', () => {
   beforeEach(() => {
+  localStorage.setItem('traceforge.task-create-mode', 'quick')
     setActivePinia(createPinia())
     apiMock.get.mockReset()
     apiMock.post.mockReset()
