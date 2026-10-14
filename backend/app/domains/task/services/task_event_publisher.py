@@ -113,7 +113,8 @@ async def publish_once() -> int:
                 task_id,
                 WSMessage(
                     type=payload["event_type"]
-                    if payload.get("event_type") in {"share_suggestion_update", "workspace_collaboration_update"}
+                    if payload.get("event_type")
+                    in {"share_suggestion_update", "workspace_collaboration_update", "task_repository_update"}
                     else "chat_submission_update",
                     payload=payload,
                 ),

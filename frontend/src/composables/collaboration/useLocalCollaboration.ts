@@ -23,6 +23,11 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const desktop = getSddDesktop()
   const state = shallowRef<CollaborationState | null>(null), local = shallowRef<LocalCollaborationStatus | null>(null)
   const input = shallowRef<CollaborationManifest | null>(null), cloud = shallowRef<CollaborationManifest | null>(null)
+  const reviewBaselines = shallowRef(new Map<string, CollaborationManifest>())
+  const baselineError = shallowRef('')
+  const repositoryKey = (repositories: CollaborationManifest['repositories'] | CollaborationState['repositories']) => JSON.stringify(repositories.map(repo => [repo.task_repository_id, repo.base_commit_sha]).sort())
+  // Publish a baseline with its matching cloud version, including during an update.
+  const reviewBaseline = computed(() => reviewBaselines.value.get(repositoryKey(cloud.value?.repositories || state.value?.repositories || [])) || null)
   const reviewRunning = shallowRef(false), reviewLoading = shallowRef(false), reviewError = shallowRef('')
   let reviewRequested = false
   const previewConflicts = shallowRef<CollaborationConflict[]>([])
@@ -305,6 +310,15 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     } catch (reason) { if (token === generation) reviewError.value = formatApiError(reason, t('collaboration.failed')) }
     finally { if (token === generation) reviewLoading.value = false }
   }
+  async function loadReviewBaseline() {
+    const key = repositoryKey(state.value?.repositories || [])
+    if (!reviewRequested || !state.value?.repositories.length || reviewBaselines.value.has(key)) return
+    const token = generation
+    try {
+      const value = await remote().reviewBaseline(); check(token)
+      reviewBaselines.value = new Map(reviewBaselines.value).set(repositoryKey(value.repositories), value); baselineError.value = ''
+    } catch (reason) { if (token === generation) baselineError.value = formatApiError(reason, t('collaboration.failed')) }
+  }
   async function loadReview() { reviewRequested = true; await refresh() }
   function refreshResults() { if (reviewRequested) void refresh() }
 
@@ -327,6 +341,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     try {
       const next = await remote().state(); check(token)
       state.value = next; observedVersion = next.state_version
+      await loadReviewBaseline(); check(token)
       if (participating.value && driver.value && next.sync_phase === 'PREPARING' && next.input_mode !== 'CLOUD' && next.pending_submission_id !== next.input_submission_id) preparingId = next.pending_submission_id
       // Retry only the failure report after reconnect; do not capture/upload the
       // same failed input again when the acknowledgement was lost.
@@ -640,7 +655,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     void refresh()
   }, { immediate: true })
   onScopeDispose(() => { disposed = true; generation++; clearInterval(heartbeat); clearInterval(stageClock); stopMappingUpdates(); stopLocalUpdates?.() })
-  return { reviewRunning, reviewLoading, reviewError, loadReview, refreshResults, participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, onConnectionReady, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
+  return { reviewBaseline, reviewRunning, reviewLoading, reviewError: computed(() => baselineError.value || reviewError.value), loadReview, refreshResults, participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, onConnectionReady, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
 }
 type Controller = ReturnType<typeof createController>
 const controllers = new Map<string, { scope: EffectScope; controller: Controller; users: number }>()
@@ -678,6 +693,7 @@ export function useLocalCollaboration(options: { workspaceId: () => string; task
     onCleanup(retained.release)
   }, { immediate: true })
   return {
+    reviewBaseline: computed(() => active.value?.reviewBaseline.value || null),
     reviewRunning: computed(() => active.value?.reviewRunning.value || false),
     reviewLoading: computed(() => active.value?.reviewLoading.value || false),
     reviewError: computed(() => active.value?.reviewError.value || ''),

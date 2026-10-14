@@ -4,6 +4,7 @@ import type { CollaborationManifest, CollaborationState, CollaborationHumanChang
 export function collaborationApi(workspaceId: string, taskId: string) {
   const path = `/workspaces/${encodeURIComponent(workspaceId)}/tasks/${encodeURIComponent(taskId)}/collaboration`
   return {
+    reviewBaseline: async (): Promise<CollaborationManifest> => (await api.get(`${path}/review/baseline`)).data,
     review: async (): Promise<{ input: CollaborationManifest; cloud: CollaborationManifest; running: boolean }> => (await api.get(`${path}/review`)).data,
     state: async (): Promise<CollaborationState> => (await api.get(path)).data,
     humanChanges: async (page = 1): Promise<CollaborationHumanChangePage> => (await api.get(`${path}/human-changes`, { params: { page } })).data,

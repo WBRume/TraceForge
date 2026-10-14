@@ -93,7 +93,7 @@ def latest_snapshot(db, task, _user_id, _request):
         if not snapshot_id:
             service._fail("SNAPSHOT_NOT_READY", "No published cloud version is available yet")
         return service.get_snapshot(db, task.id, snapshot_id)
-    service._assert_no_writer(db, task.id)
+    service._assert_no_writer(db, task.id, read_only=True)
     repositories = service.repository_metadata(db, task)
     service._ensure_store(db, task)
     captured = service._inventory(task, task.project_path, repositories, stable=True)

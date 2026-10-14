@@ -12,6 +12,70 @@ from . import content, manifest_store, service, session
 from .models import CollaborationSnapshot, CollaborationState
 
 
+def committed_baseline(db, task, _user_id):
+    """Cache the pinned remote Git tree for cumulative review, without scanning files."""
+    service._check_task(task)
+    repositories = service.repository_metadata(db, task)
+    store = service._ensure_store(db, task)
+    key = content.digest(repositories)
+    previous = db.query(CollaborationSnapshot).filter_by(task_id=task.id, source="REVIEW_BASELINE").all()
+    saved = next((row for row in previous if row.manifest_json.get("review_key") == key), None)
+    if saved:
+        return manifest_store.read_manifest(db, saved)
+    exported, public = [], []
+    for repo in repositories:
+        root = Path(task.project_path) / repo["rel_path"]
+        directory = content.git(root, ["rev-parse", "--absolute-git-dir"]).decode().strip()
+        entries = git_store.tree_entries(
+            {"git_dir": directory, "tree": repo["base_commit_sha"], "relative": "."}, str(root)
+        )
+        prefix = repo["rel_path"] + "/"
+        nested = [r["rel_path"][len(prefix) :] for r in repositories if r["rel_path"].startswith(prefix)]
+        scoped = []
+        for name, item in sorted(entries.items()):
+            if content._excluded_export(name, entries, nested):
+                continue
+            content.validate_path(name)
+            if item["size"] > content.MAX_OBJECT_BYTES:
+                raise ValueError("Review file exceeds 64 MiB")
+            scoped.append((name, item))
+            public.append(item)
+        exported.append((repo, scoped))
+    if len(public) > 100000 or sum(item["size"] for item in public) > content.MAX_MANIFEST_BYTES:
+        raise ValueError("Review snapshot exceeds limits")
+    mapped, _ = store.git_objects.export(public)
+    metadata = CollaborationState(
+        workspace_revision=0,
+        session_generation=task.session_generation or 0,
+        session_revision=task.session_revision or 0,
+        repository_set_digest=key,
+    )
+    manifest = service._snapshot(
+        db,
+        task,
+        metadata,
+        "REVIEW_BASELINE",
+        [
+            {
+                **repo,
+                "files": [
+                    {
+                        "path": name,
+                        "sha256": mapped[item["git_dir"], item["oid"]][0],
+                        "size": item["size"],
+                        "mode": item["mode"],
+                    }
+                    for name, item in scoped
+                ],
+            }
+            for repo, scoped in exported
+        ],
+    )
+    row = db.get(CollaborationSnapshot, manifest["snapshot_id"])
+    row.manifest_json = {**row.manifest_json, "review_key": key}
+    return manifest
+
+
 def _ignored_at_checkpoint(names, entries, untracked):
     """Use the recorded ignore files, even if the Agent changed .gitignore.
 
@@ -118,6 +182,16 @@ def changes(db, task, _user_id):
         .order_by(TaskSessionTurn.turn_index.desc())
         .first()
     )
+    if not turn:
+        # A baseline update starts a new session generation. Until a turn starts,
+        # its merged code is task output, not edits made by an Agent this round.
+        try:
+            cloud = session.latest_snapshot(db, task, _user_id, None)
+        except service.CollaborationError as exc:
+            if exc.code != "WRITER_ACTIVE":
+                raise
+        else:
+            return {"input": cloud, "cloud": cloud, "running": False}
     path = (
         turn.worktree_snapshot_path
         if turn
@@ -144,7 +218,7 @@ def changes(db, task, _user_id):
         row.manifest_json = {**row.manifest_json, "review_key": key}
     try:
         # Never publish a final result cut while the Agent still owns the workspace.
-        service._assert_no_writer(db, task.id)
+        service._assert_no_writer(db, task.id, read_only=True)
     except service.CollaborationError as exc:
         if exc.code != "WRITER_ACTIVE":
             raise

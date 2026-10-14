@@ -59,9 +59,15 @@ def accept_pre_input(db, task_id, actor_id, text, metadata):
 
 
 def require_ready(db, task_id, *, actor_id=None):
+    from app.domains.task.models.task import SddTask
+    from app.domains.task.services.repository_updates.storage import require_available
     from app.domains.task.services.task_session_control_service import TaskSessionControlError
     from app.domains.workspace_collaboration.session import cloud_input_available, uses_local_input
 
+    try:
+        require_available(db.get(SddTask, task_id))
+    except ValueError as exc:
+        raise TaskSessionControlError(str(exc), status_code=409) from exc
     state = db.get(CollaborationState, task_id)
     if state and state.enabled and state.sync_phase != "READY":
         if actor_id and not uses_local_input(state, actor_id) and cloud_input_available(state):

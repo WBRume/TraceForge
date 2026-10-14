@@ -6,11 +6,12 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import zh from '@/locales/zh.json'
 import type { CollaborationManifest, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
 
-const mocks = vi.hoisted(() => ({ desktop: true, changed: vi.fn(), unsubscribe: vi.fn(), api: { review: vi.fn(), state: vi.fn(), post: vi.fn(), snapshot: vi.fn(), object: vi.fn(), upload: vi.fn() }, native: vi.fn(), mapping: vi.fn(), setMapping: vi.fn(), directory: vi.fn(), validate: vi.fn(), remotes: vi.fn(), open: vi.fn(), auth: { user: null as { id: string } | null } }))
+const mocks = vi.hoisted(() => ({ desktop: true, changed: vi.fn(), unsubscribe: vi.fn(), api: { reviewBaseline: vi.fn(), review: vi.fn(), state: vi.fn(), post: vi.fn(), snapshot: vi.fn(), object: vi.fn(), upload: vi.fn() }, native: vi.fn(), mapping: vi.fn(), setMapping: vi.fn(), directory: vi.fn(), validate: vi.fn(), remotes: vi.fn(), open: vi.fn(), auth: { user: null as { id: string } | null } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => mocks.auth }))
 vi.mock('@/utils/runtime', () => ({ getSddDesktop: () => mocks.desktop ? ({ collaboration: { execute: mocks.native, onChanged: mocks.changed }, config: { getRepoMapping: mocks.mapping, setRepoMapping: mocks.setMapping }, git: { selectDirectory: mocks.directory, validateGitRepo: mocks.validate, getFetchRemotes: mocks.remotes }, system: { openPath: mocks.open } }) : null }))
 vi.mock('@/services/collaborationApi', () => ({ collaborationApi: () => mocks.api, base64Bytes: () => new Uint8Array([1]), bytesBase64: () => 'AQ==' }))
 vi.mock('@/components/collaboration/CodeComparison.vue', () => ({ default: { template: '<div />' } }))
+vi.mock('@/utils/api', () => ({ default: { get:vi.fn().mockResolvedValue({ data:{ repositories:[], plan:null } }) } }))
 import { useLocalCollaboration, type LocalCollaboration } from '../useLocalCollaboration'
 import { readRepoPreferences, saveRepoPreferences } from '@/composables/localRepoPreferences'
 import CollaborationActions from '@/components/collaboration/CollaborationActions.vue'
@@ -34,6 +35,7 @@ beforeEach(() => {
   manifest = { protocol_version: 1, task_id: crypto.randomUUID(), snapshot_id: 'snapshot1', workspace_revision: 1, session_generation: 1, session_revision: 1, repository_set_digest: 'digest', source: 'INITIAL', repositories: [repo] }
   state = { ...manifest, enabled: false, sync_phase: 'OFF', state_version: 1, input_snapshot_id: null, progress_snapshot_id: null, lease_epoch: 1, binding_id: 'binding', conflicts: [] }
   local = { directory_mode: 'MAPPED', task_id: manifest.task_id, binding_id: 'binding', task_root: 'G:/private/task', manifest, baseline: manifest, target: manifest, repositories: [{ ...repo, local_worktree_path: 'G:/private/task/api', mapped_repo_root: 'G:/api' }], state: 'READY', conflicts: [], local_changes: [] }
+  mocks.api.reviewBaseline.mockImplementation(async () => manifest)
   mocks.api.review.mockImplementation(async () => ({ input: { ...manifest, snapshot_id: 'before', repositories: manifest.repositories.map(repo => ({ ...repo, files: [] })) }, cloud: manifest, running: false }))
   mocks.api.state.mockImplementation(async () => ({ ...state }))
   mocks.api.snapshot.mockImplementation(async () => manifest)
@@ -76,6 +78,8 @@ describe('local collaboration coordinator', () => {
     mocks.native.mockClear(); mocks.api.post.mockClear()
     await controller.loadReview(); await flushPromises()
     expect(controller.input.value?.snapshot_id).toBe('before')
+    expect(controller.reviewBaseline.value?.snapshot_id).toBe(manifest.snapshot_id)
+    expect(mocks.api.reviewBaseline).toHaveBeenCalledTimes(1)
     expect(controller.cloud.value?.snapshot_id).toBe(manifest.snapshot_id)
     expect(controller.participating.value).toBe(false)
     expect(controller.blocked.value).toBe(false)
@@ -85,12 +89,28 @@ describe('local collaboration coordinator', () => {
     expect(mocks.api.review).toHaveBeenCalledTimes(1)
     controller.refreshResults(); await flushPromises()
     expect(mocks.api.review).toHaveBeenCalledTimes(2)
+    expect(mocks.api.reviewBaseline).toHaveBeenCalledTimes(1)
   })
   it('loads cloud results in a browser without desktop APIs', async () => {
     mocks.desktop = false
     setup(); await flushPromises(); await controller.loadReview(); await flushPromises()
     expect(controller.cloud.value?.snapshot_id).toBe(manifest.snapshot_id)
     expect(controller.reviewError.value).toBe('')
+  })
+  it('keeps the old comparison paired until the cloud snapshot reaches the new baseline', async () => {
+    mocks.desktop = false
+    setup(); await flushPromises(); await controller.loadReview(); await flushPromises()
+    const original = controller.reviewBaseline.value
+    const next = { ...manifest, snapshot_id:'updated', repositories:manifest.repositories.map(repo => ({ ...repo, base_commit_sha:'next-commit' })) }
+    state = { ...state, repositories:next.repositories }
+    mocks.api.reviewBaseline.mockResolvedValue(next)
+    let publish!: (value: any) => void
+    mocks.api.review.mockImplementationOnce(() => new Promise(resolve => { publish = resolve }))
+    controller.refreshResults(); await flushPromises()
+    expect(controller.reviewBaseline.value).toEqual(original)
+    publish({ input:next, cloud:next, running:false }); await flushPromises()
+    expect(controller.reviewBaseline.value?.repositories[0]?.base_commit_sha).toBe('next-commit')
+    expect(controller.cloud.value?.snapshot_id).toBe('updated')
   })
   it('performs no periodic state, file, or backup reads while connected, retaining only lease renewal', async () => {
     setup(); await flushPromises(); await controller.enable()
@@ -555,7 +575,7 @@ describe('local collaboration coordinator', () => {
     expect(controller.mappings.value).toEqual({ repo1: { local_path: 'G:/api', configured_git_url: 'https://fork.test/api' }, repo2: { local_path: 'G:/web', configured_git_url: second.repo_url } })
     const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } }), createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] })], stubs: { CodeComparison: true, CollaborationBackups: true } } })
     wrappers.push(panel)
-    await panel.findAll('button').find(button => button.text() === '仓库映射')!.trigger('click')
+    await panel.findAll('button').find(button => button.text() === '仓库与版本')!.trigger('click')
     expect(panel.text()).toContain('G:/api')
     expect(panel.text()).toContain('G:/web')
     expect(panel.text()).not.toContain(zh.collaboration.mappingMissing)

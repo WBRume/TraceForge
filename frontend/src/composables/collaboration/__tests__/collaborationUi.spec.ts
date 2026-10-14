@@ -1,19 +1,24 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, defineComponent, nextTick, proxyRefs, ref } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import zh from '@/locales/zh.json'
+import api from '@/utils/api'
 import { collaborationPresentation, openCollaborationView } from '../useCollaborationPresentation'
 import { collaborationReview } from '../review'
 import type { LocalCollaboration } from '../useLocalCollaboration'
 import type { CollaborationManifest, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
 import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
+import RepositoryUpdateChanges from '@/components/collaboration/RepositoryUpdateChanges.vue'
 import CollaborationInputStatus from '@/components/collaboration/CollaborationInputStatus.vue'
 import CollaborationEntry from '@/components/collaboration/CollaborationEntry.vue'
 import CollaborationHeader from '@/components/collaboration/CollaborationHeader.vue'
 import CollaborationActions from '@/components/collaboration/CollaborationActions.vue'
 import CollaborationHistory from '@/components/collaboration/CollaborationHistory.vue'
 vi.mock('@/components/collaboration/CodeComparison.vue', () => ({ default: { props: ['leftLabel', 'rightLabel'], template: '<section class="diff-stub">{{leftLabel}} / {{rightLabel}}</section>' } }))
+vi.mock('@/components/collaboration/RepositoryUpdatePanel.vue', () => ({ default: { template: '<section class="repository-update-stub" />' } }))
+vi.mock('@/utils/api', () => ({ default: { get:vi.fn().mockResolvedValue({ data:{ repositories:[], plan:null } }) } }))
+beforeEach(() => vi.mocked(api.get).mockResolvedValue({ data:{ repositories:[], plan:null, items:[] } }))
 
 function fixture() {
   const repositories = ['dsh', 'repo'].map((id, index) => ({ task_repository_id: id, repository_id: id, repo_slug: id, rel_path: id, repo_url: `https://example.test/${id}.git`, branch_name: index ? 'main' : 'master', base_commit_sha: id,
@@ -23,12 +28,13 @@ function fixture() {
   const local = ref<LocalCollaborationStatus>({ task_id: 'task', directory_mode: 'MAPPED', baseline: cloud, received: cloud, manifest: cloud, state: 'READY', conflicts: [], local_changes: [], repositories: repositories.map(repo => ({ ...repo, mapped_repo_root: `G:/${repo.repo_slug}`, local_worktree_path: `G:/${repo.repo_slug}` })) })
   const state = ref<CollaborationState>({ ...cloud, enabled: true, sync_phase: 'READY', state_version: 1, lease_epoch: 1, binding_id: 'binding', input_snapshot_id: 'start', progress_snapshot_id: null, driver_connected: true, conflicts: [] })
   const model = {
+    reviewBaseline: ref(input),
     loadReview: vi.fn(), reviewRunning: ref(false), reviewLoading: ref(false), reviewError: ref(''),
     participating: ref(true), leaving: ref(false), receivedOnce: ref(false), leave: vi.fn(), receiveOnce: vi.fn(), enable: vi.fn(), state, local, input: ref(input), cloud: ref<CollaborationManifest | null>(cloud), available: true, supported: ref(true), enabled: ref(true), driver: ref(true), remoteSender: ref(false), phase: computed(() => state.value.sync_phase),
     conflicts: computed(() => local.value.conflicts || []), error: ref(''), busy: ref(false), blocked: ref(false), loading: ref(false), preparationRequired: ref(false), mappingChecks: ref([]), mappings: ref({}),
     activity: ref({ direction: '', done: 0, total: 0, bytes: 0, totalBytes: 0 }), progressive: ref(false), operationStage: ref(''), operationSeconds: ref(0),
     view: ref({ page: 'files', tab: 'all', pair: 'auto', selected: '', selectedConflicts: [] as string[], conflictSetId: '' }),
-    restore: vi.fn(), recover: vi.fn(), cancelPreparation: vi.fn(), claimDriver: vi.fn(), listBackups: vi.fn().mockResolvedValue({ backups: [] }), checkMappings: vi.fn(), selectMapping: vi.fn(), readText: vi.fn().mockResolvedValue('text'), setProgressive: vi.fn(), refresh: vi.fn(),
+    restore: vi.fn(), recover: vi.fn(), cancelPreparation: vi.fn(), claimDriver: vi.fn(), listBackups: vi.fn().mockResolvedValue({ backups: [] }), checkMappings: vi.fn(), selectMapping: vi.fn(), readText: vi.fn().mockResolvedValue('text'), setProgressive: vi.fn(), refresh: vi.fn(), refreshResults:vi.fn(),
   }
   const controller = model as unknown as LocalCollaboration
   return { controller, model, state, local, input, cloud }
@@ -36,6 +42,65 @@ function fixture() {
 const global = () => ({ plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })], stubs: { CodeComparison: { props: ['leftLabel', 'rightLabel'], template: '<section class="diff-stub">{{leftLabel}} / {{rightLabel}}</section>' } } })
 
 describe('local collaboration presentation and review', () => {
+  it('defaults to cumulative differences even when the latest turn made no edits', async () => {
+    const { controller, model, cloud } = fixture()
+    model.participating.value = false
+    model.input.value = cloud
+    expect(collaborationReview(proxyRefs(controller), false).files).toHaveLength(2)
+    expect(collaborationReview(proxyRefs(controller), false, 'round').files).toHaveLength(0)
+    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
+    expect(panel.text()).toContain('累计差异')
+    expect(panel.findAll('.file')).toHaveLength(2)
+    expect(panel.get('.diff-stub').text()).toBe('远端基线 / 任务版本')
+    panel.unmount()
+  })
+  it('keeps unsent local edits out of cumulative task results and exposes them in the round view', async () => {
+    const { controller, local, cloud } = fixture()
+    local.value.manifest = { ...cloud, repositories: cloud.repositories.map(repo => ({ ...repo, files: [
+      { ...repo.files[0]!, sha256:'human' }, { path:'local-only.txt', sha256:'new', size:3, mode:'100644' },
+    ] })) }
+    const cumulative = collaborationReview(proxyRefs(controller), true)
+    expect(cumulative.files).toHaveLength(2)
+    expect(cumulative.files.every(file => file.kind === 'cloud' && file.right?.sha256 === 'agent')).toBe(true)
+    const round = collaborationReview(proxyRefs(controller), true, 'round')
+    expect(round.files).toHaveLength(4)
+    expect(round.files.every(file => file.kind === 'local')).toBe(true)
+    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
+    expect(panel.find('.file-filters').exists()).toBe(false)
+    expect(panel.findAll('.file')).toHaveLength(2)
+    await panel.get('.diff-purpose-tabs button:nth-child(2)').trigger('click')
+    expect(panel.findAll('.file')).toHaveLength(4)
+    expect(panel.findAll('.file-filters button').find(button => button.text().startsWith('本地修改'))!.get('small').text()).toBe('4')
+    expect(panel.get('.human-records-link').text()).toBe('人工修改记录')
+    await panel.get('.human-records-link').trigger('click')
+    expect(controller.view.value.page).toBe('history')
+    panel.unmount()
+  })
+  it('opens remote updates as a separate workflow from the two diff purposes and returns to the same purpose', async () => {
+    const { controller } = fixture()
+    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
+    await flushPromises()
+    expect(panel.get('.diff-purpose-tabs').text()).toBe('累计差异本轮差异')
+    expect(panel.find('.diff-scope-bar [role="combobox"]').exists()).toBe(false)
+    await panel.get('.diff-purpose-tabs button:nth-child(2)').trigger('click')
+    await panel.get('.baseline-entry').trigger('click')
+    expect(controller.view.value.page).toBe('updates')
+    expect(panel.find('.diff-purpose-tabs').exists()).toBe(false)
+    expect(panel.find('.file-filters').exists()).toBe(false)
+    expect(panel.get('.workflow-title h3').text()).toBe('更新任务基线')
+    expect(panel.get('.check-remote').text()).toBe('检查远端更新')
+    await panel.get('.back-link').trigger('click')
+    expect(controller.view.value.page).toBe('files')
+    expect(panel.get('.diff-purpose-tabs button[aria-pressed="true"]').text()).toBe('本轮差异')
+    controller.view.value.tab = 'local'
+    await panel.get('.baseline-entry').trigger('click')
+    panel.getComponent(RepositoryUpdateChanges).vm.$emit('applied'); await nextTick()
+    expect(controller.view.value.page).toBe('files')
+    expect(controller.view.value.tab).toBe('all')
+    expect(panel.get('.diff-purpose-tabs button[aria-pressed="true"]').text()).toBe('累计差异')
+    expect(controller.refreshResults).toHaveBeenCalledOnce()
+    panel.unmount()
+  })
   it('shows both repositories and diffs before connecting, without showing another device conflicts', async () => {
     const { controller, model, state } = fixture()
     model.participating.value = false; model.enabled.value = false; model.driver.value = false
@@ -208,7 +273,7 @@ describe('local collaboration presentation and review', () => {
   })
   it('retains both repositories in this-round diffs after delivery has aligned local and cloud files', () => {
     const { controller } = fixture()
-    const review = collaborationReview(proxyRefs(controller), true)
+    const review = collaborationReview(proxyRefs(controller), true, 'round')
     expect(review.files).toHaveLength(2)
     expect(new Set(review.files.map(file => file.key)).size).toBe(2)
     expect(review.files.every(file => file.kind === 'cloud' && file.delivered)).toBe(true)
@@ -225,7 +290,7 @@ describe('local collaboration presentation and review', () => {
     const entry = mount(CollaborationEntry, { props: { controller }, global: global() })
     const input = mount(CollaborationInputStatus, { props: { controller }, global: global() })
     expect(entry.findAll('button')).toHaveLength(1)
-    expect(entry.text()).toContain('本地协同')
+    expect(entry.text()).toContain('任务代码')
     expect(input.find('[role="status"]').exists()).toBe(false)
     local.value.local_changes = [{ task_repository_id: 'dsh', path: 'extra.txt', base: null, local: { path: 'extra.txt', sha256: 'extra', size: 5, mode: '100644' } }]
     await entry.trigger('click')

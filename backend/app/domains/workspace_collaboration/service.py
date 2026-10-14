@@ -60,6 +60,8 @@ def _state(db: Session, task_id: str, *, lock: bool = True, nowait: bool = False
 
 
 def repository_metadata(db: Session, task: SddTask) -> list[dict]:
+    from app.domains.task.services.repository_updates.storage import baseline
+
     rows = db.query(SddTaskRepository).filter_by(task_id=task.id).order_by(SddTaskRepository.id).all()
     if not rows:
         _fail("TASK_REPO_BINDING_MISMATCH", "Task has no prepared repository bindings")
@@ -81,7 +83,7 @@ def repository_metadata(db: Session, task: SddTask) -> list[dict]:
                 "repo_slug": row.repo_slug,
                 "rel_path": row.rel_path,
                 "branch_name": row.branch_name,
-                "base_commit_sha": row.base_commit_sha,
+                "base_commit_sha": baseline(task, row),
             }
         )
     return result
@@ -500,7 +502,16 @@ def renew_lease(db: Session, task: SddTask, user_id: str, request: LeaseRequest)
     return get_state(db, task)
 
 
-def _assert_no_writer(db: Session, task_id: str) -> None:
+def _assert_no_writer(db: Session, task_id: str, *, read_only: bool = False) -> None:
+    from app.domains.task.services.repository_updates.storage import require_available
+
+    try:
+        task = db.get(SddTask, task_id)
+        update = (getattr(task, "task_meta_json", None) or {}).get("repository_update") or {}
+        if not read_only or update.get("state") in {"APPLYING", "RECOVERY_REQUIRED"}:
+            require_available(task)
+    except ValueError as exc:
+        _fail("REPOSITORY_UPDATE_BUSY", str(exc))
     from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 
     live = (

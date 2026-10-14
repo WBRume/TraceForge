@@ -28,6 +28,7 @@ from . import (
     diagnosis,
     models,
     reading,
+    repository_updates,
     session_control,
     session_runs,
     session_shares,
@@ -47,5 +48,6 @@ for _submodule in (
     diagnosis,
     session_shares,
     reading,
+    repository_updates,
 ):
     router.include_router(_submodule.router)

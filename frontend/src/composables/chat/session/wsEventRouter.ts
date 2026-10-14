@@ -1,6 +1,7 @@
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import type { ChatAiJob } from '../types'
+import { notifyRepositoryUpdate } from '@/services/repositoryUpdates'
 
 /**
  * WS 事件路由：把任务频道的传输事件映射到各领域操作。
@@ -311,6 +312,15 @@ export function createTaskWsEventRouter(deps: {
 
       case 'workspace_collaboration_update': {
         deps.collaborationUpdate?.(payload)
+        break
+      }
+      case 'task_repository_update': {
+        if (String(payload?.task_id || '') !== deps.task.getTaskId()) break
+        notifyRepositoryUpdate(payload)
+        if (payload.state === 'APPLIED') {
+          deps.applyTaskSessionPayload(payload)
+          deps.cloudResultsUpdate?.()
+        }
         break
       }
       case 'share_suggestion_update': {
