@@ -10,6 +10,7 @@ vi.mock('element-plus', () => ({ ElMessage:{ error:vi.fn(), warning:vi.fn() } })
 const leaf = { id:'child', title:'Payment checks', status:'READY', child_count:0, can_link_task:true,
   body:'# Payment document\nValidate payments.', acceptance_criteria:['Reject expired tokens'], source_metadata:{ task_prompt:'Implement payment checks' } }
 beforeEach(() => {
+  localStorage.setItem('traceforge.task-create-mode', 'quick')
   vi.useFakeTimers()
   setActivePinia(createPinia())
   api.get.mockReset()

@@ -1,149 +1,102 @@
-<!-- TaskCreateForm: 任务创建草稿表单。
-     持有草稿字段与附件文件（随弹窗挂载/销毁天然复位），提交时发出草稿快照；
-     仓库 / Skills 侧栏入口条只负责发出切换事件，不做任何业务判断。 -->
 <script setup lang="ts">
-import { computed, shallowRef, watch } from 'vue'
-import { BookOpen, ChevronRight, Clock, FileText, GitFork, Loader2, Sparkles, Upload, X } from '@/components/icons'
+import { computed, nextTick, shallowRef, useTemplateRef, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { BookOpen, ChevronRight, FileText, GitFork, Loader2, Sparkles } from '@/components/icons'
 import TaskResourcePicker from '@/components/local-resource/TaskResourcePicker.vue'
 import AgentModelSelect from '@/components/agent/AgentModelSelect.vue'
-import { useAgentModels } from '@/composables/useAgentModels'
-import type { TaskExecution } from '@/composables/useLocalResources'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
-import type { RequirementOption } from '@/types/taskRail'
-import type { RequirementSummary } from '@/types/workspaceAssets'
-import type { TaskCreateSidebar, TaskCreateSidebarName, TaskDraftSnapshot, TaskTypeValue } from './types'
 import { isDesktop } from '@/utils/runtime'
+import TaskAttachmentFields from './TaskAttachmentFields.vue'
+import TaskCreateReview from './TaskCreateReview.vue'
+import { useTaskCreateDraft } from './composables/useTaskCreateDraft'
+import type { TaskCreateFormProps, TaskCreateSidebarName, TaskCreateStep, TaskDraftSnapshot } from './types'
 
-const props = defineProps<{
-  wsId: string
-  taskType: TaskTypeValue
-  creating: boolean
-  /** 工作区绑定仓库数（>0 才显示仓库入口条） */
-  reposTotal: number
-  selectedRepoCount: number
-  selectedSkillCount: number
-  activeSidebar: TaskCreateSidebar
-  selectedPlaybook?: { id: string; title: string } | null
-  selectedRequirement?: RequirementOption | null
-  requirementContext?: RequirementSummary | null
-  requirementLoading?: boolean
-  requirementError?: boolean
-  requirementLocked?: boolean
-  requirementRequired?: boolean
-}>()
-
+const props = defineProps<TaskCreateFormProps>()
 const emit = defineEmits<{
   submit: [draft: TaskDraftSnapshot]
   cancel: []
   'toggle-sidebar': [name: TaskCreateSidebarName]
   'playbook-context': [context: { name: string; description: string }]
   'retry-requirement': []
+  'retry-repos': []
+  'step-change': [step: TaskCreateStep]
 }>()
+const { t } = useI18n()
+const { isDiagnosisTask, execution, localCollaborationIntent, models, name, description,
+  phenomenon, priority, sopAutoRun, requirementDuration, specFile, diagnosisFiles, snapshot, reset } =
+  useTaskCreateDraft(props, context => emit('playbook-context', context))
+const guided = computed(() => props.mode === 'guided')
+const steps: TaskCreateStep[] = ['content', 'environment', 'options', 'review']
+const step = shallowRef<TaskCreateStep>('content')
+const validationMessage = shallowRef('')
+const executionLabel = shallowRef('')
+const formContent = useTemplateRef<HTMLElement>('formContent')
+const stepHeading = useTemplateRef<HTMLElement>('stepHeading')
+const modelLabel = computed(() => models.options.value.find(item => item.value === models.selected.value)?.label || models.selected.value || t('task_create.default_model'))
+const visible = (target: TaskCreateStep) => !guided.value || target === step.value
 
-const isDiagnosisTask = computed(() => props.taskType === 'DIAGNOSIS')
-
-const PRIORITIES = ['P0', 'P1', 'P2', 'P3'] as const
-
-// ── 草稿字段 ──
-const execution = shallowRef<TaskExecution>({ location: 'SERVER' })
-const localCollaborationIntent = shallowRef(false)
-const models = useAgentModels(() => ({
-  workspaceId: props.wsId,
-  resourceId: execution.value.location === 'LOCAL' ? execution.value.resource_id : undefined,
-  resourceRevision: execution.value.profile_revision,
-}))
-const name = shallowRef('')
-const description = shallowRef('')
-const phenomenon = shallowRef('')
-const priority = shallowRef('P2')
-const sopAutoRun = shallowRef(false)
-const requirementDuration = shallowRef(8)
-watch(() => [name.value, description.value, phenomenon.value, props.taskType], () => {
-  emit('playbook-context', { name: name.value, description: isDiagnosisTask.value ? phenomenon.value : description.value })
-}, { immediate: true })
-
-// ── 附件：研发态规范文档（单文件）/ 诊断态文档（多文件，类型不限） ──
-const specFile = shallowRef<File | null>(null)
-const diagnosisFiles = shallowRef<File[]>([])
-let inheritedName = ''
-let inheritedPrompt = ''
-let inheritedFile: File | null = null
-watch(() => props.requirementContext, (requirement) => {
-  const nextName = requirement?.title || ''
-  const rawPrompt = requirement?.task_prompt ?? requirement?.source_metadata?.task_prompt
-  const nextPrompt = typeof rawPrompt === 'string' && rawPrompt.trim() ? rawPrompt : requirement?.body || ''
-  if (!name.value || name.value === inheritedName) name.value = nextName
-  if (!description.value || description.value === inheritedPrompt) description.value = nextPrompt
-  if (!phenomenon.value || phenomenon.value === inheritedPrompt) phenomenon.value = nextPrompt
-  const document = requirement ? [requirement.body?.trim(), requirement.acceptance_criteria.length
-    ? `## 验收标准\n${requirement.acceptance_criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''].filter(Boolean).join('\n\n') : ''
-  const nextFile = document ? new File([document], `${nextName.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 100) || '需求规范'}.md`, { type: 'text/markdown' }) : null
-  if (!specFile.value || specFile.value === inheritedFile) specFile.value = nextFile
-  diagnosisFiles.value = diagnosisFiles.value.filter((file) => file !== inheritedFile)
-  if (nextFile) diagnosisFiles.value = [nextFile, ...diagnosisFiles.value]
-  inheritedName = nextName
-  inheritedPrompt = nextPrompt
-  inheritedFile = nextFile
-}, { immediate: true })
-
-const isPdfSpecFile = computed(() => (specFile.value?.name || '').toLowerCase().endsWith('.pdf'))
-
-const handleSpecFileUpload = (event: Event) => {
-  const file = (event.target as HTMLInputElement).files?.[0]
-  if (!file) return
-  specFile.value = file
-}
-
-const handleDiagnosisFiles = (event: Event) => {
-  const files = Array.from((event.target as HTMLInputElement).files || [])
-  if (files.length === 0) return
-  diagnosisFiles.value = [...diagnosisFiles.value, ...files]
-  ;(event.target as HTMLInputElement).value = ''
-}
-
-const removeDiagnosisFile = (index: number) => {
-  diagnosisFiles.value = diagnosisFiles.value.filter((_, i) => i !== index)
-}
-
-const submitDraft = () => {
-  emit('submit', {
-    taskType: props.taskType,
-    execution: execution.value,
-    ...(!isDiagnosisTask.value && execution.value.location === 'SERVER' && localCollaborationIntent.value ? { enableLocalCollaboration: true } : {}),
-    agentModel: models.selection.value,
-    name: name.value,
-    requirementId: isDiagnosisTask.value ? undefined : props.selectedRequirement?.id,
-    description: description.value,
-    phenomenon: phenomenon.value,
-    priority: priority.value,
-    sopAutoRun: sopAutoRun.value,
-    requirementDurationHours: Number(requirementDuration.value),
-    specFile: isDiagnosisTask.value ? null : specFile.value,
-    diagnosisFiles: isDiagnosisTask.value ? [...diagnosisFiles.value] : [],
-    diagnosisPlaybookSpecId: props.selectedPlaybook?.id,
+function goTo(target: TaskCreateStep) {
+  if (props.creating) return
+  step.value = target
+  validationMessage.value = ''
+  emit('step-change', target)
+  void nextTick(() => {
+    formContent.value?.scrollTo?.({ top: 0 })
+    stepHeading.value?.focus({ preventScroll: true })
   })
 }
 
-/** 清空草稿（创建成功后由对话框调用） */
-const reset = () => {
-  name.value = ''
-  description.value = ''
-  phenomenon.value = ''
-  priority.value = 'P2'
-  sopAutoRun.value = false
-  localCollaborationIntent.value = false
-  requirementDuration.value = 8
-  specFile.value = null
-  diagnosisFiles.value = []
+function validateThrough(target: TaskCreateStep): boolean {
+  let issue: { step: TaskCreateStep; key: string } | undefined
+  if (!isDiagnosisTask.value && props.requirementLoading) issue = { step: 'content', key: 'task_rail.loading_context' }
+  else if (!isDiagnosisTask.value && props.requirementError) issue = { step: 'content', key: 'task_rail.context_error' }
+  else if (!isDiagnosisTask.value && props.requirementRequired && !props.selectedRequirement) issue = { step: 'content', key: 'task_rail.select_requirement' }
+  else if (!name.value.trim()) issue = { step: 'content', key: 'task_create.name_required' }
+  else if (isDiagnosisTask.value && !phenomenon.value.trim()) issue = { step: 'content', key: 'diagnosis.phenomenon_required' }
+  else if (target !== 'content') {
+    if (props.reposLoading) issue = { step: 'environment', key: 'task_create.repos_loading' }
+    else if (props.reposError) issue = { step: 'environment', key: 'task_create.repos_error' }
+    else if (props.reposTotal > 0 && props.selectedRepoCount === 0) issue = { step: 'environment', key: 'dashboard.task_repo_required' }
+    else if (models.loading.value) issue = { step: 'environment', key: 'task_create.models_loading' }
+    else if (target !== 'environment' && !isDiagnosisTask.value && (String(requirementDuration.value).trim() === '' || !Number.isFinite(Number(requirementDuration.value)) || Number(requirementDuration.value) < 0 || Number(requirementDuration.value) % 0.5 !== 0)) issue = { step: 'options', key: 'task_create.duration_invalid' }
+  }
+  if (!issue) return true
+  goTo(issue.step)
+  validationMessage.value = t(issue.key)
+  return false
 }
 
-defineExpose({ reset })
+function submitDraft() {
+  if (props.creating) return
+  if (guided.value) {
+    if (!validateThrough(step.value)) return
+    if (step.value !== 'review') {
+      goTo(steps[steps.indexOf(step.value) + 1]!)
+      return
+    }
+  }
+  emit('submit', snapshot.value)
+}
+
+watch(() => props.taskType, () => { if (guided.value) goTo('content') })
+watch(() => props.mode, () => goTo('content'))
+defineExpose({ reset, goTo })
 </script>
 
 <template>
-  <form class="modal-form-main" @submit.prevent="submitDraft">
-    <TaskResourcePicker :workspace-id="wsId" @change="execution = $event" />
-    <div v-if="!isDiagnosisTask" class="form-meta-container">
+  <form class="modal-form-main" :class="{ 'guided-form': guided }" :novalidate="guided" @submit.prevent="submitDraft">
+    <div ref="formContent" class="form-content">
+    <div v-if="guided" class="guide-heading" tabindex="-1" ref="stepHeading">
+      <span class="guide-eyebrow">{{ $t('task_create.step_count', { current: steps.indexOf(step) + 1, total: steps.length }) }}</span>
+      <h3>{{ $t(`task_create.steps.${step}.heading`) }}</h3>
+      <p>{{ $t(isDiagnosisTask && step === 'content' ? 'task_create.diagnosis_content_hint' : `task_create.steps.${step}.hint`) }}</p>
+    </div>
+    <p v-if="validationMessage" class="guide-error" role="alert">{{ validationMessage }}</p>
+    <fieldset class="form-fields" :disabled="creating">
+    <slot v-if="guided && step === 'content'" name="task-type" />
+    <TaskResourcePicker v-show="visible('environment')" :workspace-id="wsId" @change="execution = $event" @label-change="executionLabel = $event" />
+    <p v-if="guided && step === 'environment' && !isDesktop()" class="guide-notice">{{ $t('task_create.server_execution_hint') }}</p>
+    <div v-if="!isDiagnosisTask" v-show="visible('content')" class="form-meta-container">
       <button type="button" class="meta-skills-bar skills-entry-card requirement-entry-card"
         :class="{ active: activeSidebar === 'requirements', 'has-selection': Boolean(selectedRequirement) }" :disabled="creating"
         :aria-expanded="activeSidebar === 'requirements'" @click="emit('toggle-sidebar', 'requirements')">
@@ -154,9 +107,9 @@ defineExpose({ reset })
       <small v-if="requirementLoading" class="requirement-context-hint">{{ $t('task_rail.loading_context') }}</small>
       <div v-if="requirementError" class="requirement-context-error" role="alert">{{ $t('task_rail.context_error') }} <button type="button" @click="emit('retry-requirement')">{{ $t('task_rail.retry') }}</button></div>
     </div>
-    <div class="form-row">
+    <div v-show="visible('environment')" class="form-row">
       <div class="form-group">
-        <label class="form-label">模型</label>
+        <label class="form-label">{{ $t('task_create.model') }}</label>
         <AgentModelSelect
           :model-value="models.selected.value" :options="models.options.value"
           :loading="models.loading.value" :error="models.error.value" :disabled="creating"
@@ -164,8 +117,8 @@ defineExpose({ reset })
         />
       </div>
     </div>
-    <!-- 行 1：任务名称 -->
-    <div class="form-row">
+    <!-- 任务内容 -->
+    <div v-show="visible('content')" class="form-row">
       <div class="form-group">
         <label class="form-label">
           <span>{{ $t('dashboard.task_name') }}</span>
@@ -181,114 +134,11 @@ defineExpose({ reset })
       </div>
     </div>
 
-    <!-- 行 2：双列网格（研发态：工时 + 规范文档上传；诊断态：优先级 + 文档上传） -->
-    <div class="form-row form-grid-2">
-      <!-- 研发态工时 -->
-      <div v-if="!isDiagnosisTask" class="form-group">
-        <label class="form-label">
-          <Clock class="w-3.5 h-3.5 text-slate-400" />
-          <span>{{ $t('dashboard.requirement_duration') }}</span>
-        </label>
-        <div class="input-with-suffix">
-          <input
-            v-model="requirementDuration"
-            type="number"
-            class="input-field"
-            required
-            min="0"
-            step="0.5"
-            :placeholder="$t('dashboard.requirement_placeholder')"
-          />
-          <span class="input-suffix">h</span>
-        </div>
-      </div>
+    <TaskAttachmentFields v-show="visible('options')" :ws-id="wsId" :is-diagnosis-task="isDiagnosisTask" :creating="creating"
+      v-model:requirement-duration="requirementDuration" v-model:priority="priority" v-model:spec-file="specFile" v-model:diagnosis-files="diagnosisFiles" />
 
-      <!-- 诊断态优先级 -->
-      <div v-if="isDiagnosisTask" class="form-group">
-        <label class="form-label">
-          <span>{{ $t('diagnosis.priority') }}</span>
-        </label>
-        <div class="priority-options">
-          <button
-            v-for="p in PRIORITIES"
-            :key="p"
-            type="button"
-            class="priority-option"
-            :class="{ active: priority === p, [`prio-${p.toLowerCase()}`]: true }"
-            @click="priority = p"
-          >
-            {{ p }}
-          </button>
-        </div>
-      </div>
-
-      <!-- 规范文档上传（研发态） -->
-      <div v-if="!isDiagnosisTask" class="form-group">
-        <label class="form-label">
-          <FileText class="w-3.5 h-3.5 text-slate-400" />
-          <span>{{ $t('dashboard.spec_doc') }}</span>
-        </label>
-        <div class="file-upload-box glass-panel compact-upload">
-          <Upload v-if="!creating" class="w-4 h-4 text-primary flex-shrink-0" />
-          <Loader2 v-else class="w-4 h-4 spin text-primary flex-shrink-0" />
-          <div class="file-name text-slate-600" :title="specFile?.name">
-            {{ specFile?.name || $t('dashboard.spec_placeholder') }}
-          </div>
-          <input
-            :id="`spec-upload-${props.wsId}`"
-            type="file"
-            class="hidden-input"
-            accept=".pdf,.docx,.md,.txt"
-            @change="handleSpecFileUpload"
-          />
-          <label :for="`spec-upload-${props.wsId}`" class="btn-primary file-choose-btn">
-            {{ $t('common.select') }}
-          </label>
-        </div>
-        <p v-if="isPdfSpecFile" class="pdf-agent-hint">
-          {{ $t('dashboard.spec_pdf_agent_hint') }}
-        </p>
-      </div>
-
-      <!-- 诊断态文档上传 -->
-      <div v-if="isDiagnosisTask" class="form-group">
-        <label class="form-label">
-          <FileText class="w-3.5 h-3.5 text-slate-400" />
-          <span>{{ $t('diagnosis.docs_upload_label') }}</span>
-        </label>
-        <div class="file-upload-box glass-panel compact-upload">
-          <Upload v-if="!creating" class="w-4 h-4 text-primary flex-shrink-0" />
-          <Loader2 v-else class="w-4 h-4 spin text-primary flex-shrink-0" />
-          <div class="file-name text-slate-600">
-            {{ $t('diagnosis.docs_upload_placeholder') }}
-          </div>
-          <input
-            :id="`diag-docs-upload-${props.wsId}`"
-            type="file"
-            class="hidden-input"
-            multiple
-            @change="handleDiagnosisFiles"
-          />
-          <label :for="`diag-docs-upload-${props.wsId}`" class="btn-primary file-choose-btn">
-            {{ $t('common.select') }}
-          </label>
-        </div>
-      </div>
-    </div>
-
-    <!-- 诊断模式已选文件列表 -->
-    <div v-if="isDiagnosisTask && diagnosisFiles.length > 0" class="diagnosis-files-list">
-      <div v-for="(file, index) in diagnosisFiles" :key="`${file.name}-${index}`" class="diagnosis-file-row">
-        <FileText class="w-3.5 h-3.5 diagnosis-file-icon" />
-        <span class="diagnosis-file-name">{{ file.name }}</span>
-        <button type="button" class="diagnosis-file-remove" :title="$t('common.delete')" @click="removeDiagnosisFile(index)">
-          <X class="w-3.5 h-3.5" />
-        </button>
-      </div>
-    </div>
-
-    <!-- 行 3：初始化提示词 / 现象描述 -->
-    <div class="form-row">
+    <!-- 初始化提示词 / 现象描述 -->
+    <div v-show="visible('content')" class="form-row">
       <div class="form-group">
         <label class="form-label">
           <span>{{ isDiagnosisTask ? $t('diagnosis.phenomenon') : $t('dashboard.description') }}</span>
@@ -313,7 +163,7 @@ defineExpose({ reset })
     </div>
 
     <!-- 自动执行全流程主开关（仅问题定位任务） -->
-    <div v-if="isDiagnosisTask" class="form-row">
+    <div v-if="isDiagnosisTask" v-show="visible('options')" class="form-row">
       <label class="auto-run-switch" title="开启后，SOP 阶段确认通过即由服务端自动衔接下一阶段，无需逐步确认；证据不足或执行失败时暂停。">
         <ToggleSwitch v-model="sopAutoRun" aria-label="自动执行全流程" />
         <span class="auto-run-title">自动执行全流程</span>
@@ -322,7 +172,7 @@ defineExpose({ reset })
     </div>
 
     <!-- 诊断规程入口（仅问题定位任务；研发态不可选诊断规程） -->
-    <div v-if="isDiagnosisTask" class="form-meta-container">
+    <div v-if="isDiagnosisTask" v-show="visible('options')" class="form-meta-container">
       <button type="button" class="meta-skills-bar skills-entry-card playbook-entry-card"
         :class="{ active: activeSidebar === 'playbooks', 'has-selection': !!selectedPlaybook }"
         :disabled="creating" @click="emit('toggle-sidebar', 'playbooks')">
@@ -337,9 +187,9 @@ defineExpose({ reset })
     </div>
 
     <!-- 行 4：Worktree 仓库载入触发条（整行可点击展开右侧仓库树） -->
-    <label v-if="!isDiagnosisTask && isDesktop() && execution.location === 'SERVER' && reposTotal > 0" class="collaboration-intent"><input v-model="localCollaborationIntent" type="checkbox" :disabled="creating" />{{ $t('collaboration.createIntent') }}<small>{{ $t('collaboration.createIntentHint') }}</small></label>
-    <div v-if="reposTotal > 0" class="form-meta-container">
-      <div
+    <label v-if="!isDiagnosisTask && isDesktop() && execution.location === 'SERVER' && reposTotal > 0" v-show="visible('environment')" class="collaboration-intent"><input v-model="localCollaborationIntent" type="checkbox" :disabled="creating" />{{ $t('collaboration.createIntent') }}<small>{{ $t('collaboration.createIntentHint') }}</small></label>
+    <div v-if="reposTotal > 0" v-show="visible('environment')" class="form-meta-container">
+      <button type="button" :disabled="creating"
         class="meta-skills-bar skills-entry-card repo-entry-card"
         :class="{ active: activeSidebar === 'repos', 'has-selection': selectedRepoCount > 0 }"
         @click="emit('toggle-sidebar', 'repos')"
@@ -357,12 +207,16 @@ defineExpose({ reset })
           <span class="skills-bar-action-text">{{ activeSidebar === 'repos' ? $t('skills.task_panel.close_panel') : $t('dashboard.task_repo_entry_action') }}</span>
           <ChevronRight class="w-3.5 h-3.5 chevron-icon" :class="{ open: activeSidebar === 'repos' }" />
         </div>
-      </div>
+      </button>
     </div>
 
-    <!-- 行 5：Skills 载入触发条（独占一行，整行可点击，研发 / 诊断态均可用） -->
-    <div class="form-meta-container">
-      <div
+    <p v-if="visible('environment') && reposLoading" class="guide-notice" role="status">{{ $t('task_create.repos_loading') }}</p>
+    <p v-else-if="visible('environment') && reposError" class="guide-error" role="alert">{{ $t('task_create.repos_error') }} <button type="button" @click="emit('retry-repos')">{{ $t('task_rail.retry') }}</button></p>
+    <p v-else-if="guided && step === 'environment' && reposTotal === 0" class="guide-notice">{{ $t('task_create.no_repos') }}</p>
+
+    <!-- Skills -->
+    <div v-show="visible('options')" class="form-meta-container">
+      <button type="button" :disabled="creating"
         class="meta-skills-bar skills-entry-card skill-picker-entry-card"
         :class="{ active: activeSidebar === 'skills', 'has-selection': selectedSkillCount > 0 }"
         @click="emit('toggle-sidebar', 'skills')"
@@ -383,467 +237,34 @@ defineExpose({ reset })
           <span class="skills-bar-action-text">{{ activeSidebar === 'skills' ? $t('skills.task_panel.close_panel') : $t('skills.task_panel.select_skills') }}</span>
           <ChevronRight class="w-3.5 h-3.5 chevron-icon" :class="{ open: activeSidebar === 'skills' }" />
         </div>
-      </div>
+      </button>
     </div>
 
-    <!-- 底部操作区 -->
+    </fieldset>
+    <TaskCreateReview v-if="guided && step === 'review'" :draft="snapshot" :model-label="modelLabel" :execution-label="executionLabel"
+      :requirement-title="selectedRequirement?.title" :repos="repoReview || []" :skill-names="selectedSkillNames || []"
+      :show-local-collaboration="isDesktop() && reposTotal > 0"
+      :skill-count="selectedSkillCount" :playbook-title="selectedPlaybook?.title" :disabled="creating" @edit="goTo" />
+    </div>
     <div class="modal-footer">
       <div class="footer-left-hint">
-        <span v-if="selectedSkillCount > 0" class="footer-skills-hint">
-          <Sparkles class="w-3.5 h-3.5 text-primary" />
-          {{ $t('skills.task_panel.selected_count', { count: selectedSkillCount }) }}
+        <span v-if="!guided && selectedSkillCount > 0" class="footer-skills-hint">
+          <Sparkles class="w-3.5 h-3.5 text-primary" />{{ $t('skills.task_panel.selected_count', { count: selectedSkillCount }) }}
         </span>
+        <button v-if="guided && step !== 'content'" type="button" class="btn-secondary modal-btn" :disabled="creating" @click="goTo(steps[steps.indexOf(step) - 1]!)">{{ $t('task_create.previous') }}</button>
       </div>
       <div class="footer-actions">
-        <button type="button" class="btn-secondary modal-btn" @click="emit('cancel')">{{ $t('common.cancel') }}</button>
-        <button type="submit" class="btn-primary modal-btn" :disabled="creating || (!isDiagnosisTask && (requirementLoading || requirementError || (requirementRequired && !selectedRequirement)))">
+        <button type="button" class="btn-secondary modal-btn" :disabled="creating" @click="emit('cancel')">{{ $t('common.cancel') }}</button>
+        <button v-if="guided && step !== 'review'" type="submit" class="btn-primary modal-btn guide-next" :disabled="creating">
+          {{ step === 'options' ? $t('task_create.review_action') : $t('task_create.next') }}<ChevronRight class="w-4 h-4" />
+        </button>
+        <button v-else type="submit" class="btn-primary modal-btn" :disabled="creating || reposLoading || reposError || (!isDiagnosisTask && (requirementLoading || requirementError || (requirementRequired && !selectedRequirement)))">
           <Loader2 v-if="creating" class="w-4 h-4 spin" />
-          <span>{{ creating ? $t('common.loading') : $t('chat.initialize') }}</span>
+          <span>{{ creating ? $t('common.loading') : guided ? $t('task_create.create') : $t('chat.initialize') }}</span>
         </button>
       </div>
     </div>
   </form>
 </template>
-
 <style scoped src="@/styles/task-create/task-create-shared.css"></style>
-<style scoped>
-.collaboration-intent { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; }.collaboration-intent small { width: 100%; color: var(--text-secondary); padding-left: 22px; }
-.requirement-context-hint { color:var(--color-text-muted); font-size:.72rem; }
-.requirement-selection { max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.requirement-context-error { color:#b91c1c; font-size:.75rem; }
-.modal-form-main {
-  flex: 1;
-  min-width: 0;
-  overflow-y: auto;
-  padding: 1.2rem 1.4rem 1.2rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.95rem;
-}
-
-.form-row {
-  display: flex;
-  flex-direction: column;
-}
-
-.form-grid-2 {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
-  gap: 12px;
-}
-
-.form-group {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.form-label {
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: #334155;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.required {
-  color: #ef4444;
-}
-
-.input-field {
-  padding: 8px 12px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  font-family: inherit;
-  font-size: 0.875rem;
-  width: 100%;
-  box-sizing: border-box;
-  background: #ffffff;
-  color: #0f172a;
-  transition: all 0.2s;
-}
-
-.input-field:focus {
-  border-color: #0ea5e9;
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
-}
-
-.input-field::placeholder {
-  color: #94a3b8;
-  font-size: 0.82rem;
-}
-
-.primary-input {
-  font-weight: 500;
-}
-
-.input-with-suffix {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.input-with-suffix input {
-  padding-right: 28px;
-}
-
-.input-suffix {
-  position: absolute;
-  right: 10px;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #94a3b8;
-  pointer-events: none;
-}
-
-.textarea-field {
-  resize: vertical;
-  min-height: 80px;
-  line-height: 1.45;
-}
-
-/* 优先级选择胶囊 */
-.priority-options {
-  display: flex;
-  gap: 6px;
-}
-
-.priority-option {
-  flex: 1;
-  padding: 6px 0;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #ffffff;
-  font-size: 0.78rem;
-  font-weight: 700;
-  color: #475569;
-  cursor: pointer;
-  transition: all 0.2s;
-  text-align: center;
-}
-
-.priority-option:hover {
-  border-color: #cbd5e1;
-  background: #f8fafc;
-}
-
-.priority-option.active.prio-p0 {
-  border-color: #ef4444;
-  background: #fef2f2;
-  color: #b91c1c;
-}
-
-.priority-option.active.prio-p1 {
-  border-color: #f97316;
-  background: #fff7ed;
-  color: #c2410c;
-}
-
-.priority-option.active.prio-p2 {
-  border-color: #0ea5e9;
-  background: #f0f9ff;
-  color: #0369a1;
-}
-
-.priority-option.active.prio-p3 {
-  border-color: #94a3b8;
-  background: #f1f5f9;
-  color: #475569;
-}
-
-/* 规范文档上传区域 */
-.file-upload-box {
-  border: 1px dashed var(--color-primary-100);
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  border-radius: var(--radius-md);
-}
-
-.compact-upload {
-  padding: 6px 10px;
-  min-height: 38px;
-  box-sizing: border-box;
-}
-
-.file-upload-box:hover {
-  border-style: solid;
-  border-color: var(--color-primary-500);
-}
-
-.file-name {
-  flex: 1;
-  min-width: 0;
-  font-size: 0.8rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.file-choose-btn {
-  flex-shrink: 0;
-  padding: 3px 10px;
-  font-size: 0.72rem;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.pdf-agent-hint {
-  margin: 6px 0 0;
-  font-size: 0.78rem;
-  line-height: 1.5;
-  color: #b45309;
-}
-
-.hidden-input {
-  display: none;
-}
-
-/* 仓库 / Skills 入口条容器（垂直两行排列，彻底避免横向重叠与遮挡） */
-.form-meta-container {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 2px;
-}
-
-/* 入口条（整行可点击） */
-.meta-skills-bar {
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #ffffff;
-  padding: 8px 12px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.playbook-entry-card { width:100%; min-width:0; gap:12px; text-align:left }
-.playbook-entry-card .skills-bar-left { flex-shrink:0 }
-.playbook-entry-card .skills-bar-right { min-width:0 }
-.playbook-entry-card .skills-bar-action-text { max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-
-.meta-skills-bar:hover {
-  border-color: #7dd3fc;
-  background: #f0f9ff;
-  transform: translateY(-1px);
-}
-
-.meta-skills-bar.active {
-  border-color: #0ea5e9;
-  background: #f0f9ff;
-  box-shadow: 0 0 0 1px #0ea5e9, 0 2px 6px rgba(14, 165, 233, 0.08);
-}
-
-.skills-bar-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.skills-bar-icon-box {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: #f0f9ff;
-  border: 1px solid #e0f2fe;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.skills-bar-title {
-  font-size: 0.8rem;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.skills-bar-badge {
-  font-size: 0.7rem;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: #f1f5f9;
-  color: #64748b;
-  font-weight: 500;
-}
-
-.skills-bar-badge.has-selected {
-  background: #0ea5e9;
-  color: #ffffff;
-  font-weight: 600;
-}
-
-.skills-bar-right {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: #0ea5e9;
-  font-size: 0.76rem;
-  font-weight: 600;
-}
-
-.skills-bar-action-text {
-  font-size: 0.76rem;
-}
-
-.chevron-icon {
-  transition: transform 0.2s;
-}
-
-.chevron-icon.open {
-  transform: rotate(90deg);
-}
-
-/* 自动执行全流程主开关（诊断态） */
-.auto-run-switch {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  font-size: 0.8rem;
-  color: #334155;
-  padding: 2px 0;
-}
-
-.auto-run-title {
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-.auto-run-hint {
-  color: #94a3b8;
-  font-size: 0.74rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 诊断模式文件列表 */
-.diagnosis-files-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: -4px;
-}
-
-.diagnosis-file-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #f8fafc;
-  font-size: 0.76rem;
-}
-
-.diagnosis-file-icon {
-  flex-shrink: 0;
-  color: #0ea5e9;
-}
-
-.diagnosis-file-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #1e293b;
-  font-weight: 500;
-}
-
-.diagnosis-file-remove {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: #94a3b8;
-  cursor: pointer;
-  transition: color 0.2s;
-}
-
-.diagnosis-file-remove:hover {
-  color: #ef4444;
-}
-
-/* 底部操作区 */
-.modal-footer {
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
-  flex-shrink: 0;
-  background: #ffffff;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: auto;
-  padding-top: 10px;
-  border-top: 1px solid #f1f5f9;
-  box-shadow: 0 -8px 12px #ffffff;
-}
-
-.footer-left-hint {
-  display: flex;
-  align-items: center;
-  font-size: 0.74rem;
-  color: #64748b;
-}
-
-.footer-skills-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-weight: 600;
-  color: #0369a1;
-  background: #f0f9ff;
-  padding: 2px 8px;
-  border-radius: 6px;
-  border: 1px solid #e0f2fe;
-}
-
-.footer-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.modal-btn {
-  padding: 7px 16px;
-  font-size: 0.84rem;
-  border-radius: 8px;
-}
-
-.btn-primary {
-  background: #0ea5e9;
-  color: #ffffff !important;
-  border: none;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 4px 6px -1px rgba(14, 165, 233, 0.2);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.btn-primary:hover {
-  background: #0284c7;
-  transform: translateY(-1px);
-  box-shadow: 0 8px 12px -2px rgba(14, 165, 233, 0.25);
-}
-
-.btn-primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
-}
-</style>
+<style scoped src="@/styles/task-create/task-create-form.css"></style>

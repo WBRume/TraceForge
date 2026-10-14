@@ -4446,5 +4446,65 @@
       "connect": "开启本地协同",
       "choiceHint": "接收一次仅下载云端代码；开启协同后，发送消息时会交接本地修改。"
     }
+  },
+  "task_create": {
+    "diagnosis_content_hint": "填写任务名称和问题现象，描述异常表现与影响范围。",
+    "server_execution_hint": "本次任务在服务器执行。",
+    "mode": "创建方式",
+    "guided": "引导创建",
+    "quick": "快速创建",
+    "guided_hint": "逐步填写，创建前检查全部配置",
+    "quick_hint": "一次展开全部选项，适合熟练使用",
+    "progress": "创建步骤",
+    "step_count": "第 {current} 步 / 共 {total} 步",
+    "steps": {
+      "content": {
+        "title": "任务内容",
+        "heading": "这次要完成什么？",
+        "hint": "选择任务类型，填写名称与目标。关联需求后会自动带入已有内容。"
+      },
+      "environment": {
+        "title": "执行环境",
+        "heading": "在哪里执行，用哪些代码？",
+        "hint": "确认模型、仓库与分支。默认选中工作区的全部仓库，可按本次任务调整。"
+      },
+      "options": {
+        "title": "补充配置",
+        "heading": "还需要哪些资料与能力？",
+        "hint": "检查附件、Skills 和任务配置；没有补充内容时可直接继续。"
+      },
+      "review": {
+        "title": "确认创建",
+        "heading": "检查本次任务配置",
+        "hint": "未添加的选项也会列出。需要调整时，点击对应区域的“修改”。"
+      }
+    },
+    "previous": "上一步",
+    "next": "下一步",
+    "review_action": "检查配置",
+    "create": "创建任务",
+    "edit": "修改",
+    "edit_section": "修改{section}",
+    "model": "模型",
+    "default_model": "沿用执行环境的默认模型",
+    "execution": "执行位置",
+    "server": "服务器",
+    "local": "本地",
+    "repositories": "仓库与分支",
+    "no_repos": "工作区未绑定仓库，本次不载入代码仓库。",
+    "repos_loading": "正在读取工作区仓库，请稍候。",
+    "repos_error": "仓库读取失败，请重试后确认仓库与分支。",
+    "models_loading": "正在读取模型配置，请稍候。",
+    "name_required": "请填写任务名称。",
+    "duration_invalid": "需求工时须为非负数，以 0.5 小时为单位。",
+    "task_type": "任务类型",
+    "development_hint": "实现需求、修复或改进代码",
+    "diagnosis_hint": "排查异常并收集定位证据",
+    "not_added": "未添加",
+    "independent": "未关联需求（独立任务）",
+    "enabled": "已开启",
+    "disabled": "未开启",
+    "playbook": "诊断规程",
+    "auto_run": "自动执行全流程"
   }
 }

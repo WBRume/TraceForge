@@ -2,7 +2,8 @@
      服务端分页搜索 / scope 过滤 / 分页为选择器私有状态；
      勾选集经 v-model 交给对话框，提交时组装 skill_ids。 -->
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, watch } from 'vue'
+import type { SkillSummary } from './types'
 import { FolderOpen, Globe, Loader2, RefreshCw, Search, Sparkles, X } from '@/components/icons'
 import SidebarPanel from './SidebarPanel.vue'
 import { isDraftSkill, useTaskSkillPicker } from './composables/useTaskSkillPicker'
@@ -12,7 +13,7 @@ const props = defineProps<{
   open: boolean
 }>()
 
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; loaded: [skills: SkillSummary[]] }>()
 
 const selectedIds = defineModel<string[]>('selectedIds', { required: true })
 
@@ -35,6 +36,8 @@ const {
   toggleSkill,
   toggleCurrentPageAll,
 } = useTaskSkillPicker({ wsId: () => props.wsId, selectedIds })
+
+watch(skills, items => emit('loaded', items))
 
 onMounted(() => {
   void load(1)

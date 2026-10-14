@@ -165,4 +165,14 @@ const applyBatch = () => {
 .meta-branch-input::placeholder {
   color: #94a3b8;
 }
+
+@media (max-width: 760px) {
+  :deep(.wf-tree-repo) { flex-direction: column; align-items: stretch; gap: 8px; }
+  :deep(.wf-tree-repo-main) { flex: none; }
+  :deep(.wf-tree-search) { flex-direction: column; align-items: stretch; gap: 6px; }
+  :deep(.wf-tree-summary) { font-size: 11px; }
+  :deep(.mgmt-search) { box-sizing: border-box; }
+  .meta-repo-branch { display: flex; width: 100%; }
+  .meta-branch-input { width: 100%; min-width: 0; box-sizing: border-box; padding: 6px; }
+}
 </style>

@@ -7,7 +7,7 @@ import { isDesktop } from '@/utils/runtime'
 import { useLocalResources, type TaskExecution } from '@/composables/useLocalResources'
 
 const props = defineProps<{ workspaceId: string }>()
-const emit = defineEmits<{ change: [value: TaskExecution] }>()
+const emit = defineEmits<{ change: [value: TaskExecution]; 'label-change': [name: string] }>()
 const desktop = isDesktop()
 
 const { items, enabled, error, load } = useLocalResources(() => props.workspaceId)
@@ -24,11 +24,13 @@ function emitCurrent() {
   if (desktop && mode.value === 'LOCAL') {
     const item = available.value.find(r => r.id === selectedResourceId.value)
     if (item) {
+      emit('label-change', item.name)
       emit('change', { location: 'LOCAL', resource_id: item.id, profile_revision: item.profile_revision })
       return
     }
   }
   emit('change', { location: 'SERVER' })
+  emit('label-change', '')
 }
 
 function selectMode(next: ExecutionMode) {

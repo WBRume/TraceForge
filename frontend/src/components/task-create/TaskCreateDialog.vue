@@ -3,7 +3,7 @@
      持有任务类型 / 侧栏状态 / 仓库控制器 / 技能勾选集，
      负责草稿校验、payload 组装、任务创建与 provision 浮窗接入。 -->
 <script setup lang="ts">
-import { onMounted, ref, shallowRef, useTemplateRef } from 'vue'
+import { computed, onMounted, ref, shallowRef, useTemplateRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Hammer, Plus, BugAntIcon, X } from '@/components/icons'
@@ -11,6 +11,10 @@ import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { useProvisioningStore } from '@/stores/provisioning'
 import TaskCreateForm from './TaskCreateForm.vue'
+import TaskCreateModeSwitch from './TaskCreateModeSwitch.vue'
+import TaskCreateProgress from './TaskCreateProgress.vue'
+import { useTaskCreateMode } from './composables/useTaskCreateMode'
+import { workspaceRepoBindingId } from './lib/repoTree'
 import SkillsPickerSidebar from './SkillsPickerSidebar.vue'
 import ReposPickerSidebar from './ReposPickerSidebar.vue'
 import PlaybookPicker from './PlaybookPickerSidebar.vue'
@@ -21,7 +25,7 @@ import type { RequirementOption } from '@/types/taskRail'
 import { useWorkspaceRepos } from './composables/useWorkspaceRepos'
 import { buildTaskCreatePayload, validateTaskDraft } from './lib/taskPayload'
 import { rememberCollaborationIntent } from './lib/localCollaborationIntent'
-import type { TaskCreatedEvent, TaskCreateSidebar, TaskCreateSidebarName, TaskDraftSnapshot, TaskTypeValue } from './types'
+import type { SkillSummary, TaskCreatedEvent, TaskCreateMode, TaskCreateSidebar, TaskCreateSidebarName, TaskCreateStep, TaskDraftSnapshot, TaskTypeValue } from './types'
 
 const props = defineProps<{ wsId: string; initialTaskType?: TaskTypeValue; initialRequirement?: RequirementOption | null }>()
 
@@ -39,11 +43,31 @@ const taskType = shallowRef<TaskTypeValue>(props.initialTaskType ?? 'DEVELOPMENT
 const activeSidebar = shallowRef<TaskCreateSidebar>('none')
 
 const creatingTask = shallowRef(false)
-const formRef = useTemplateRef<{ reset: () => void }>('taskForm')
+const formRef = useTemplateRef<{ reset: () => void; goTo: (step: TaskCreateStep) => void }>('taskForm')
+const { mode, setMode } = useTaskCreateMode()
+const currentStep = shallowRef<TaskCreateStep>('content')
+function changeMode(value: TaskCreateMode) {
+  if (creatingTask.value || mode.value === value) return
+  activeSidebar.value = 'none'
+  setMode(value)
+}
+function onStepChange(step: TaskCreateStep) {
+  currentStep.value = step
+  activeSidebar.value = 'none'
+}
 
 // ── 领域状态 ──
 const repos = useWorkspaceRepos(() => props.wsId)
 const selectedSkillIds = ref<string[]>([])
+const knownSkills = shallowRef<Record<string, string>>({})
+function rememberSkills(items: SkillSummary[]) {
+  knownSkills.value = { ...knownSkills.value, ...Object.fromEntries(items.map(item => [item.id, item.name])) }
+}
+const selectedSkillNames = computed(() => selectedSkillIds.value.map(id => knownSkills.value[id] || id))
+const repoReview = computed(() => repos.repos.filter(repo => repos.isSelected(workspaceRepoBindingId(repo))).map(repo => {
+  const id = workspaceRepoBindingId(repo)
+  return { id, name: repo.repo_name, branch: repos.branchOverrides[id]?.trim() || repos.defaultBranchOf(id) }
+}))
 const initialParent = props.initialRequirement && (props.initialRequirement.child_count || 0) > 0 ? props.initialRequirement : null
 const selectedRequirement = shallowRef<RequirementOption | null>(initialParent ? null : props.initialRequirement ?? null)
 const lockedRequirementId = initialParent ? undefined : props.initialRequirement?.id
@@ -62,6 +86,7 @@ const toggleSidebar = (name: TaskCreateSidebarName) => {
 
 /** 切换任务类型：诊断规程仅问题定位任务可选，切走时清空已选并收起侧栏 */
 const switchTaskType = (type: TaskTypeValue) => {
+  if (creatingTask.value) return
   if (taskType.value === type) return
   taskType.value = type
   if (type === 'DIAGNOSIS' && activeSidebar.value === 'requirements') activeSidebar.value = 'none'
@@ -72,6 +97,7 @@ const switchTaskType = (type: TaskTypeValue) => {
 }
 
 const handleSubmit = async (draft: TaskDraftSnapshot) => {
+  if (creatingTask.value || repos.loading || repos.error) return
   if (taskType.value === 'DEVELOPMENT' && (requirementContext.loading.value || requirementContext.error.value || (props.initialRequirement && !selectedRequirement.value))) return
   if (!draft.name.trim()) return
   const invalid = validateTaskDraft(draft, {
@@ -89,6 +115,7 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
   }
 
   creatingTask.value = true
+  activeSidebar.value = 'none'
   try {
     const payload = buildTaskCreatePayload(draft, {
       repos: repos.repos,
@@ -140,7 +167,7 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
 </script>
 
 <template>
-  <div class="modal glass-panel" :class="{ 'with-sidebar': activeSidebar !== 'none' }">
+  <div class="modal glass-panel" role="dialog" aria-modal="true" :aria-label="$t('dashboard.new_task')" :class="{ 'with-sidebar': activeSidebar !== 'none', 'guided-modal': mode === 'guided' }">
     <!-- 顶部 Header（标题 + 任务类型分段控制器 + 关闭按钮） -->
     <header class="modal-top-bar">
       <div class="modal-title-group">
@@ -153,11 +180,12 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
       </div>
 
       <!-- 紧凑型任务类型分段控制器 (Segmented Tab Control) -->
-      <div class="task-type-segmented">
+      <div v-if="mode === 'quick'" class="task-type-segmented">
         <button
           type="button"
           class="segmented-btn task-type-card"
           :class="{ active: taskType === 'DEVELOPMENT' }"
+          :disabled="creatingTask"
           @click="switchTaskType('DEVELOPMENT')"
         >
           <Hammer class="w-3.5 h-3.5" />
@@ -167,6 +195,7 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
           type="button"
           class="segmented-btn task-type-card"
           :class="{ active: taskType === 'DIAGNOSIS' }"
+          :disabled="creatingTask"
           @click="switchTaskType('DIAGNOSIS')"
         >
           <BugAntIcon class="w-3.5 h-3.5" />
@@ -174,16 +203,24 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
         </button>
       </div>
 
-      <button type="button" class="modal-close-btn" :title="$t('common.cancel')" @click="emit('close')">
+      <button type="button" class="modal-close-btn" :title="$t('common.cancel')" :disabled="creatingTask" @click="emit('close')">
         <X class="w-4 h-4" />
       </button>
     </header>
+
+    <TaskCreateModeSwitch :mode="mode" :disabled="creatingTask" @change="changeMode" />
+    <TaskCreateProgress v-if="mode === 'guided'" :step="currentStep" :disabled="creatingTask" @navigate="formRef?.goTo($event)" />
 
     <!-- 弹窗主体布局（主表单 + 可平滑滑出的侧边栏） -->
     <div class="modal-body-layout">
       <TaskCreateForm
         ref="taskForm"
         :ws-id="props.wsId"
+        :mode="mode"
+        :repo-review="repoReview"
+        :repos-loading="repos.loading"
+        :repos-error="repos.error"
+        :selected-skill-names="selectedSkillNames"
         :selected-requirement="selectedRequirement"
         :requirement-context="requirementContext.requirement.value"
         :requirement-loading="requirementContext.loading.value"
@@ -202,7 +239,19 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
         @cancel="emit('close')"
         @toggle-sidebar="toggleSidebar"
         @retry-requirement="requirementContext.load"
-      />
+        @retry-repos="repos.load"
+        @step-change="onStepChange"
+      >
+        <template #task-type>
+          <div class="guided-task-types" role="group" :aria-label="$t('task_create.task_type')">
+            <button v-for="type in (['DEVELOPMENT', 'DIAGNOSIS'] as const)" :key="type" type="button" class="task-type-card guided-type"
+              :class="{ active: taskType === type }" :aria-pressed="taskType === type" :disabled="creatingTask" @click="switchTaskType(type)">
+              <component :is="type === 'DEVELOPMENT' ? Hammer : BugAntIcon" class="w-4 h-4" />
+              <span><strong>{{ $t(type === 'DEVELOPMENT' ? 'task_types.development' : 'task_types.diagnosis') }}</strong><small>{{ $t(type === 'DEVELOPMENT' ? 'task_create.development_hint' : 'task_create.diagnosis_hint') }}</small></span>
+            </button>
+          </div>
+        </template>
+      </TaskCreateForm>
 
       <RequirementPickerSidebar v-if="taskType === 'DEVELOPMENT'" :workspace-id="props.wsId" :open="activeSidebar === 'requirements'" :selected="selectedRequirement"
         :locked-id="lockedRequirementId" :disabled="creatingTask" :initial-parent="initialParent"
@@ -214,6 +263,7 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
         :ws-id="props.wsId"
         :open="activeSidebar === 'skills'"
         @close="activeSidebar = 'none'"
+        @loaded="rememberSkills"
       />
 
       <!-- 右侧平滑横向展开的仓库选择侧边栏 -->
@@ -248,6 +298,23 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
   flex-direction: column;
   overflow: hidden;
   transition: max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.guided-modal { max-width: 720px; height: min(740px, 90dvh); max-height: 90dvh; }
+.guided-task-types { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.guided-type { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 10px; background: white; color: #475569; text-align: left; cursor: pointer; }
+.guided-type.active { border-color: #0284c7; background: #f0f9ff; color: #0369a1; }
+.guided-type strong { display: block; font-size: 13px; }
+.guided-type small { display: block; margin-top: 4px; font-size: 11px; line-height: 1.6; color: #64748b; }
+.modal-body-layout { position: relative; }
+@media (max-width: 760px) {
+  .modal { width: 100%; max-height: 94dvh; }
+  .modal-top-bar { padding: 12px !important; flex-wrap: wrap; }
+  .task-type-segmented { order: 3; flex-basis: 100%; justify-content: center; }
+  .guided-modal { height: 90dvh; }
+  .guided-task-types { gap: 8px; }
+  .guided-type { padding: 10px 8px; gap: 6px; }
+  .guided-type > svg { display: none; }
 }
 
 .modal.with-sidebar {
