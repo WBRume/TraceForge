@@ -6,6 +6,18 @@ from . import content, manifest_store, service
 from .models import CollaborationSnapshot
 
 
+def uses_local_input(state, actor_id):
+    return bool(
+        state and state.enabled and state.driver_user_id == actor_id and state.lease_expires_at > datetime.utcnow()
+    )
+
+
+def cloud_input_available(state):
+    return state.sync_phase in {"READY", "DELIVERY_PENDING", "CONFLICT_PENDING"} or (
+        state.sync_phase == "RECOVERY_REQUIRED" and state.recovery_kind == "LOCAL_DELIVERY"
+    )
+
+
 def is_cloud_input(db, task_id, submission_id):
     from app.domains.task.models.chat_submission import TaskChatSubmission
 
@@ -17,8 +29,7 @@ def is_cloud_input(db, task_id, submission_id):
 
 def request_cloud_input(db, task, state, submission_id):
     """Pin existing cloud code; a detached desktop is never an input dependency."""
-    local_delivery_error = state.sync_phase == "RECOVERY_REQUIRED" and state.recovery_kind == "LOCAL_DELIVERY"
-    if state.sync_phase not in {"READY", "DELIVERY_PENDING", "CONFLICT_PENDING"} and not local_delivery_error:
+    if not cloud_input_available(state):
         service._fail("CLOUD_WORKSPACE_NOT_READY", "Wait for the cloud execution or workspace recovery to finish")
     service._assert_no_writer(db, task.id)
     service.get_snapshot(db, task.id, state.snapshot_id)

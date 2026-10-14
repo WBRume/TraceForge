@@ -35,6 +35,7 @@ from app.domains.task.services import (
     task_session_service,
 )
 from app.domains.task.services.task_records import queries as task_task_records_queries
+from app.domains.workspace_collaboration.service import CollaborationError
 
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 
@@ -150,7 +151,7 @@ async def resume_interrupted_task(
                 client_message_id=body.client_message_id,
                 metadata_json={"agent_model": body.agent_model.model_dump()} if body.agent_model else None,
             )
-    except chat_submission_service.SubmissionError as exc:
+    except (chat_submission_service.SubmissionError, CollaborationError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except task_session_service.TaskSessionUndoError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
