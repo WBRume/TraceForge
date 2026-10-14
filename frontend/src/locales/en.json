@@ -4113,6 +4113,8 @@
     "confirmSnapshot": "Use confirmed cloud snapshot {snapshot}",
     "backups": "Local backups",
     "noBackups": "No local backups",
+    "noBackupsHint": "Local files are backed up here before cloud code or conflict resolutions replace them.",
+    "backupsDesktopRequired": "Local backups are stored on the computer that created them. View them in the desktop client on that computer.",
     "viewBackup": "View backup",
     "exportBackup": "Export backup",
     "backupSource": "Local backup before replacement",

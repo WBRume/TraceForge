@@ -71,6 +71,47 @@ afterEach(async () => {
 })
 
 describe('local collaboration coordinator', () => {
+  it.each([
+    "Error invoking remote method 'sdd:collaboration:execute': Error: ENOENT: no such file or directory, open 'C:\\profile\\collaboration\\bindings\\TASK.json'",
+    "ENOENT: no such file or directory, open '/profile/collaboration/bindings/TASK.json'",
+    'COLLABORATION_BINDING_MISSING',
+  ])('treats only the missing local task binding as an empty backup list on older hosts: %s', async message => {
+    setup(); await flushPromises()
+    mocks.native.mockClear().mockRejectedValue(new Error(message.replace('TASK', manifest.task_id)))
+    mocks.api.post.mockClear()
+    await expect(controller.listBackups()).resolves.toEqual({ backup_directory:'', backups:[] })
+    expect(mocks.native).toHaveBeenCalledOnce()
+    expect(mocks.native).toHaveBeenCalledWith(expect.objectContaining({ kind:'backups', payload:expect.objectContaining({ task_id:manifest.task_id }) }))
+    expect(controller.participating.value).toBe(false)
+    expect(mocks.api.post).not.toHaveBeenCalled()
+  })
+  it('does not hide missing backup contents, another task binding or permissions errors', async () => {
+    setup(); await flushPromises()
+    for (const message of [
+      "ENOENT: no such file or directory, open 'C:\\profile\\collaboration\\objects\\missing.json'",
+      "ENOENT: no such file or directory, open 'C:\\profile\\collaboration\\bindings\\other-task.json'",
+      `EACCES: permission denied, open 'C:/profile/collaboration/bindings/${manifest.task_id}.json'`,
+      'Unexpected token in binding JSON',
+    ]) {
+      mocks.native.mockRejectedValueOnce(new Error(message))
+      await expect(controller.listBackups()).rejects.toThrow(message)
+    }
+  })
+  it('still queries retained backups when not participating and avoids native access in a browser', async () => {
+    setup(); await flushPromises()
+    const saved = { backup_directory:'G:/backups', backups:[{ path:'shared.txt', sha256:'retained' }] }
+    mocks.native.mockClear().mockResolvedValueOnce(saved)
+    expect(controller.participating.value).toBe(false)
+    expect(await controller.listBackups()).toEqual(saved)
+    expect(mocks.native).toHaveBeenCalledOnce()
+  })
+  it('does not invoke the native backup API in a browser', async () => {
+    mocks.desktop = false
+    setup(); await flushPromises()
+    mocks.native.mockClear()
+    expect(await controller.listBackups()).toEqual({ backup_directory:'', backups:[] })
+    expect(mocks.native).not.toHaveBeenCalled()
+  })
   it('loads cloud results lazily with no mapping, connection, file scan or polling', async () => {
     mocks.mapping.mockResolvedValue(null)
     setup(); await flushPromises()

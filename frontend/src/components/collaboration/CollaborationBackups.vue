@@ -8,7 +8,7 @@ const props = defineProps<{ controller: LocalCollaboration }>()
 const emit = defineEmits<{ select: [backup: CollaborationBackup] }>()
 const { t, locale } = useI18n()
 const entries = shallowRef<CollaborationBackup[]>([]), error = shallowRef(''), busy = shallowRef(false)
-// Polling replaces state objects; reload only when the actual backup context changes.
+// State refreshes replace objects; reload only when the actual backup context changes.
 watch([
   () => props.controller,
   () => props.controller.state.value?.binding_id,
@@ -36,8 +36,9 @@ async function exportFile(backup: CollaborationBackup) {
     <p class="intro">{{ t('collaboration.ui.backupsHint') }}</p>
     <p v-if="error" role="alert" class="state-msg error">{{ error }}</p>
     <p v-if="busy" class="state-msg">{{ t('common.loading') }}</p>
-    <p v-else-if="!entries.length" class="state-msg">{{ t('collaboration.noBackups') }}</p>
-    <div v-else class="backup-list">
+    <p v-else-if="controller.available === false" class="state-msg">{{ t('collaboration.backupsDesktopRequired') }}</p>
+    <div v-else-if="!error && !entries.length" class="state-msg empty-backups"><p>{{ t('collaboration.noBackups') }}</p><small>{{ t('collaboration.noBackupsHint') }}</small></div>
+    <div v-else-if="entries.length" class="backup-list">
       <section v-for="round in rounds" :key="round.id" class="backup-round">
         <header class="round-header">
           <h3>{{ round.context?.turn_title || (round.context?.turn_index != null ? t('collaboration.backupGroups.round', { count: round.context.turn_index }) : t('collaboration.backupGroups.unknownRound')) }}</h3>
@@ -96,6 +97,8 @@ async function exportFile(backup: CollaborationBackup) {
 
 .state-msg { color: var(--color-text-muted, #64748b); padding: 24px 0; text-align: center; font-size: 12.5px; }
 .state-msg.error { color: #dc2626; }
+.empty-backups p { margin: 0 0 8px; }
+.empty-backups small { font-size: 12px; }
 
 @media(max-width:600px) {
   .backup-card { flex-wrap: wrap; }

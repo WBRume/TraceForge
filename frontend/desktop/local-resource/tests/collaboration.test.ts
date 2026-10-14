@@ -47,6 +47,19 @@ function deliver(manifest: SyncManifest, operation_id = 'delivery1', preview = f
 }
 
 describe('embedded local collaboration with real Git worktrees', () => {
+  test('keeps file backups readable after disconnecting without reconnecting or scanning code', () => {
+    const final = target(); setFile(final, 'api', 'shared.txt', 'delivered result')
+    deliver(final, 'backup-delivery')
+    const before = runtime.execute('backups', { task_id:task })
+    expect(before.backups.length).toBeGreaterThan(0)
+    const backup = before.backups.find((file: any) => file.task_repository_id === 'api' && file.path === 'shared.txt')
+    expect(runtime.objects.get(backup.sha256).toString()).toBe('base api')
+    runtime.execute('suspend', { task_id:task, binding_id:'binding1' })
+    runtime.index.scan = () => { throw new Error('Backup listing must not scan code') }
+    expect(runtime.execute('backups', { task_id:task })).toEqual(before)
+    expect(runtime.execute('binding', { task_id:task }).released).toBe(true)
+    expect(fs.readFileSync(path.join(worktree(), 'shared.txt'), 'utf8')).toBe('delivered result')
+  })
   test('delta IPC fences status, freezes input retries and falls back after renderer or worker restart', async () => {
     const base = target()
     let current = await runtime.executeAsync('reconcile', { task_id: task, operation_id: 'init-delta', target: base, delta_transport: true })
