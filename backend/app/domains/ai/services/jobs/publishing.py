@@ -25,6 +25,20 @@ async def broadcast_job_payload(payload: dict[str, Any]) -> None:
     status = str(payload.get("status") or "")
     final = status in {item.value for item in constants.FINAL_STATUSES}
     channel = str(payload.get("channel") or "")
+    if (payload.get("context_json") or {}).get("job_kind") == "TASK_REPOSITORY_ADAPT":
+        from app.core.offload import run_db_txn
+        from app.domains.task.services.repository_updates.adaptation import settle
+
+        if final:
+            await run_db_txn(lambda db: settle(db, payload["id"]))
+        await task_ws_manager.send_message_to_room(
+            str(payload["task_id"]),
+            WSMessage(
+                type="task_repository_update",
+                payload={"task_id": payload["task_id"], "job_id": payload["id"], "job_status": status},
+            ),
+        )
+        return
     if (payload.get("context_json") or {}).get("job_kind") == "PLAYBOOK_PROMOTION":
         from app.domains.notification.ws.notification_manager import notification_ws_manager
 

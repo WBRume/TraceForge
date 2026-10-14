@@ -4149,8 +4149,9 @@
     "upload": "Uploading changes",
     "download": "Receiving changes",
     "files": "files",
-    "title": "Local collaboration",
-    "code": "Local collaboration",
+    "title": "Task code",
+    "connectionLabel": "Local collaboration",
+    "code": "Task code",
     "enable": "Enable local collaboration",
     "history": "Human change history",
     "humanHistory": {
@@ -4167,7 +4168,7 @@
       "largeFile": "Online text comparison is unavailable for files over 2 MiB. Original versions remain preserved.",
       "binaryFile": "This is not UTF-8 text. Original versions remain preserved."
     },
-    "back": "Back to local collaboration",
+    "back": "Back to task code",
     "refresh": "Refresh file status",
     "split": "Side by side",
     "unified": "Unified diff",

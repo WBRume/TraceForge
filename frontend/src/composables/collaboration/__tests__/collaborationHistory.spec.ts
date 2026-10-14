@@ -27,7 +27,7 @@ it('opens the latest immutable human change and distinguishes same paths in two 
   await wrapper.findAll('nav button')[1]!.trigger('click')
   expect(compare().props()).toMatchObject({ path: 'web/same.txt', leftHash: 'web-before', rightHash: 'web-after' })
   expect(compare().props('leftLabel')).toContain('云端已确认版本')
-  expect(await compare().props('readText')('web-after')).toBe('test')
+  expect(await compare().props('readText')!('web-after')).toBe('test')
   expect(api.object).toHaveBeenCalledWith('web-after')
   wrapper.unmount()
 })
@@ -35,7 +35,7 @@ it('opens a task-detail record directly and reports unavailable content instead 
   const wrapper = open('record'); await flushPromises()
   expect(api.humanChanges).not.toHaveBeenCalled()
   api.object.mockRejectedValue(new Error('object missing'))
-  await expect(wrapper.findComponent(CodeComparison).props('readText')('api-before')).rejects.toThrow('object missing')
+  await expect(wrapper.findComponent(CodeComparison).props('readText')!('api-before')).rejects.toThrow('object missing')
   wrapper.unmount()
 })
 it('discards a late response when a different historical record is opened', async () => {

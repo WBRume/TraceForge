@@ -96,6 +96,15 @@ async def review_changes(
     return await _locked(db, ws_id, task_id, user, review.changes, write=False)
 
 
+@router.get("/review/baseline")
+async def review_baseline(
+    ws_id: str, task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    from . import review
+
+    return await _locked(db, ws_id, task_id, user, review.committed_baseline, write=False)
+
+
 @router.post("/lease")
 def lease(
     ws_id: str, task_id: str, data: LeaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)

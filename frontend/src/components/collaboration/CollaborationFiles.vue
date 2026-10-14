@@ -4,8 +4,9 @@ import { useI18n } from 'vue-i18n'
 import { GitBranch, FileText } from '@/components/icons'
 import type { CollaborationReviewFile } from '@/composables/collaboration/review'
 
+type FileItem = Pick<CollaborationReviewFile, 'key' | 'path' | 'task_repository_id' | 'kind' | 'delivered'> & { statusLabel?: string }
 const props = defineProps<{
-  files: CollaborationReviewFile[]; repositories: Array<{ task_repository_id: string; repo_slug: string; branch_name: string }>
+  files: FileItem[]; repositories: Array<{ task_repository_id: string; repo_slug: string; branch_name: string }>
   selected: string; checked: string[]; canRestore: boolean; localAvailable: boolean; running: boolean
 }>()
 const emit = defineEmits<{ select: [key: string]; check: [key: string, checked: boolean] }>()
@@ -14,7 +15,8 @@ const groups = computed(() => props.repositories.map(repo => ({ ...repo, files: 
 const name = (path: string) => path.split('/').at(-1)
 const parent = (path: string) => path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
 
-const statusLabel = (file: CollaborationReviewFile) => {
+const statusLabel = (file: FileItem) => {
+  if (file.statusLabel) return file.statusLabel
   if (file.kind === 'conflicts') return '待裁决'
   if (file.kind === 'local') return '本地修改'
   if (file.delivered) return '已同步'
@@ -64,6 +66,7 @@ const statusLabel = (file: CollaborationReviewFile) => {
 }
 
 .repo-section {
+  flex-shrink: 0;
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 9px;

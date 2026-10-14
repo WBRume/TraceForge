@@ -5,12 +5,13 @@ import IdeOpenButton from './IdeOpenButton.vue'
 import MonacoDiffViewer from '@/components/diff/MonacoDiffViewer.vue'
 import { Laptop, UploadCloud } from '@/components/icons'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   leftHash?: string; rightHash?: string; leftLabel: string; rightLabel: string
-  readText: (hash: string) => Promise<string>; path: string
+  readText?: (hash: string) => Promise<string>; path: string
+  leftText?: string; rightText?: string; leftExists?: boolean; rightExists?: boolean; editable?: boolean
   wordWrap?: boolean; openInIde?: boolean; ideTitle?: string
-}>()
-const emit = defineEmits<{ 'open-in-ide': [position: { line: number; column: number }]; 'ide-error': [message: string] }>()
+}>(), { leftExists:undefined, rightExists:undefined })
+const emit = defineEmits<{ 'open-in-ide': [position: { line: number; column: number }]; 'ide-error': [message: string]; 'update:rightText': [text: string] }>()
 const { t } = useI18n()
 const media = window.matchMedia('(max-width: 720px)')
 const compact = shallowRef(media.matches), preferredLayout = shallowRef<'split' | 'unified' | null>(null)
@@ -25,7 +26,7 @@ watch(() => [props.leftHash, props.rightHash, props.path], async (_, __, onClean
   onCleanup(() => { current = false })
   loading.value = true; error.value = ''; original.value = ''; modified.value = ''
   try {
-    const pair = await Promise.all([props.leftHash ? props.readText(props.leftHash) : '', props.rightHash ? props.readText(props.rightHash) : ''])
+    const pair = await Promise.all([props.leftHash && props.leftText === undefined ? props.readText?.(props.leftHash) || '' : '', props.rightHash && props.rightText === undefined ? props.readText?.(props.rightHash) || '' : ''])
     if (current) [original.value, modified.value] = pair
   } catch (reason) { if (current) error.value = reason instanceof Error ? reason.message : String(reason) }
   finally { if (current) loading.value = false }
@@ -65,14 +66,14 @@ const pathParts = computed(() => {
       <div class="version-header-pane left">
         <span class="version-badge">
           <Laptop :size="13" class="version-icon" />
-          <span>{{ leftLabel }}{{ !leftHash ? ` · ${t('collaboration.absent')}` : '' }}</span>
+          <span>{{ leftLabel }}{{ !(leftExists ?? Boolean(leftHash)) ? ` · ${t('collaboration.absent')}` : '' }}</span>
         </span>
         <code v-if="leftHash" class="sha-pill">{{ leftHash.slice(0, 7) }}</code>
       </div>
       <div class="version-header-pane right">
         <span class="version-badge right-badge">
           <UploadCloud :size="13" class="version-icon" />
-          <span>{{ rightLabel }}{{ !rightHash ? ` · ${t('collaboration.absent')}` : '' }}</span>
+          <span>{{ rightLabel }}{{ !(rightExists ?? Boolean(rightHash)) ? ` · ${t('collaboration.absent')}` : '' }}</span>
         </span>
         <code v-if="rightHash" class="sha-pill">{{ rightHash.slice(0, 7) }}</code>
       </div>
@@ -81,7 +82,7 @@ const pathParts = computed(() => {
     <p v-if="error" role="alert" class="state-message error">{{ error }}</p>
     <p v-else-if="loading" role="status" class="state-message loading">{{ t('common.loading') }}</p>
     <div v-else class="monaco-wrapper">
-      <MonacoDiffViewer :file-path="path" :original-label="leftLabel" :modified-label="rightLabel" :original-revision="leftHash" :modified-revision="rightHash" :open-in-ide="openInIde" :ide-title="ideTitle" @open-in-ide="emit('open-in-ide', $event)" :original="original" :modified="modified" :render-side-by-side="layout === 'split'" :word-wrap="wordWrap ? 'on' : 'off'" theme="vs" height="100%" />
+      <MonacoDiffViewer :file-path="path" :original-label="leftLabel" :modified-label="rightLabel" :original-revision="leftHash" :modified-revision="rightHash" :open-in-ide="openInIde" :ide-title="ideTitle" @open-in-ide="emit('open-in-ide', $event)" :original="leftText ?? original" :modified="rightText ?? modified" :editable="editable" @update:modified="emit('update:rightText', $event)" :render-side-by-side="layout === 'split'" :word-wrap="wordWrap ? 'on' : 'off'" theme="vs" height="100%" />
     </div>
   </section>
 </template>

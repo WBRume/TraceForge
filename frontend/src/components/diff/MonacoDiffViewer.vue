@@ -11,6 +11,7 @@ const props = defineProps<{
   humanHunks?: DiffHunk[]
   original?: string
   modified?: string
+  editable?: boolean
   renderSideBySide?: boolean
   wordWrap?: 'on' | 'off'
   language?: string
@@ -27,6 +28,7 @@ const props = defineProps<{
 ensureMonacoViteSetup()
 
 const emit = defineEmits<{
+  'update:modified': [text: string]
   'open-in-ide': [position: { line: number; column: number }]
   'range-select': [payload: { lineStart: number; lineEnd: number; side: 'ai' | 'human'; selectedText: string }]
 }>()
@@ -55,10 +57,13 @@ const modifiedText = computed(() => props.modified ?? extractOutputText(props.hu
 
 const diffEditorOptions = computed<Monaco.editor.IDiffEditorConstructionOptions>(() => ({
   automaticLayout: true,
-  readOnly: true,
+  readOnly: !props.editable,
   renderSideBySide: props.renderSideBySide !== false,
   useInlineViewWhenSpaceIsLimited: false,
   originalEditable: false,
+  renderGutterMenu: false,
+  renderMarginRevertIcon: false,
+  occurrencesHighlight: 'off',
   enableSplitViewResizing: true,
   minimap: { enabled: false },
   lineNumbers: 'on',
@@ -82,6 +87,10 @@ function handleDiffMount(editor: Monaco.editor.IStandaloneDiffEditor, monaco: ty
   monacoRef.value = monaco
 
   const modifiedEditor = editor.getModifiedEditor()
+  disposables.push(modifiedEditor.onDidChangeModelContent(() => {
+    const value = modifiedEditor.getValue()
+    if (props.editable && value !== props.modified) emit('update:modified', value)
+  }))
 
   for (const pane of [editor.getOriginalEditor(), modifiedEditor]) {
     const glyphs = pane.createDecorationsCollection()
@@ -146,7 +155,10 @@ onBeforeUnmount(() => {
   annotations?.dismiss()
   disposables.forEach(item => item.dispose())
   if (diffEditorRef.value) {
+    const models = diffEditorRef.value.getModel()
     diffEditorRef.value.setModel(null)
+    models?.original.dispose()
+    models?.modified.dispose()
   }
 })
 </script>

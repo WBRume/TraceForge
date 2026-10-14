@@ -459,6 +459,7 @@ export function useChatViewModel() {
           void readingProgress.onConnectionReady(taskId)
           collaboration.onConnectionReady(taskId)
           playbookEventHandler?.('playbook.resync', { task_id: taskId })
+          void import('@/services/repositoryUpdates').then(({ notifyRepositoryUpdate }) => notifyRepositoryUpdate({ task_id: taskId }))
           return
         }
         if (frameType === 'reading_progress_changed') {

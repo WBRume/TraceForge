@@ -4154,8 +4154,9 @@
     "upload": "上传增量",
     "download": "接收增量",
     "files": "个文件",
-    "title": "本地协同",
-    "code": "本地协同",
+    "title": "任务代码",
+    "connectionLabel": "本地协同",
+    "code": "任务代码",
     "enable": "启用本地协同",
     "history": "人工修改记录",
     "humanHistory": {
@@ -4172,7 +4173,7 @@
       "largeFile": "文件超过 2 MiB，暂不提供在线文本比对。原始版本仍完整保留。",
       "binaryFile": "此文件不是 UTF-8 文本，暂不提供文本比对。原始版本仍完整保留。"
     },
-    "back": "返回本地协同",
+    "back": "返回任务代码",
     "refresh": "刷新文件状态",
     "split": "左右对照",
     "unified": "统一差异",

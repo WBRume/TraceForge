@@ -158,6 +158,11 @@ async def execute_job(job_id: str) -> JobExecutionOutcome:
 
     with bind_ai_context(job_id=job_id, event_type="execute_job"):
         try:
+            if job_kind == "TASK_REPOSITORY_ADAPT":
+                from app.domains.task.services.repository_updates.adaptation import run
+
+                provider_seen = await run(job_id)
+                return JobExecutionOutcome(requested_status=None, provider_outcome_seen=provider_seen)
             if job_kind == "PLAYBOOK_PROMOTION":
                 from app.domains.diagnosis_playbook.promotion import run
 

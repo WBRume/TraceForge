@@ -112,7 +112,13 @@ async def wake_event_publisher():
 
 
 def assert_no_preparing_submission(db, task_id, allowed_id=None):
-    db.query(SddTask).filter_by(id=task_id).with_for_update().first()
+    from app.domains.task.services.repository_updates.storage import require_available
+
+    task = db.query(SddTask).filter_by(id=task_id).with_for_update().first()
+    try:
+        require_available(task)
+    except ValueError as exc:
+        raise SubmissionError(str(exc), "REPOSITORY_UPDATE_BUSY") from exc
     row = (
         db.query(TaskChatSubmission)
         .filter(
@@ -169,6 +175,12 @@ def _accept_sync(db, task_id, actor_id, client_id, content, metadata):
     if previous is not None:
         return previous
     task = db.get(SddTask, task_id)
+    from app.domains.task.services.repository_updates.storage import require_available
+
+    try:
+        require_available(task)
+    except ValueError as exc:
+        raise SubmissionError(str(exc), "REPOSITORY_UPDATE_BUSY") from exc
     fingerprint = hashlib.sha256(
         json.dumps([content, metadata], sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()

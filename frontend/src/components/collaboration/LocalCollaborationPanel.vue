@@ -6,9 +6,12 @@ import BaseSelect from '@/components/BaseSelect.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import CodeComparison from './CodeComparison.vue'
 import CollaborationBackups from './CollaborationBackups.vue'
-import CollaborationRepositories from './CollaborationRepositories.vue'
 import CollaborationFiles from './CollaborationFiles.vue'
 import CollaborationHistory from './CollaborationHistory.vue'
+import RepositoryUpdatePanel from './RepositoryUpdatePanel.vue'
+import RepositoryUpdateChanges from './RepositoryUpdateChanges.vue'
+import RepositoryUpdateEntry from './RepositoryUpdateEntry.vue'
+import { useRepositoryUpdates } from '@/composables/collaboration/useRepositoryUpdates'
 import { useOpenInIde } from '@/composables/collaboration/useOpenInIde'
 import { collaborationFileKey } from '@/composables/collaboration/compare'
 import { collaborationReview } from '@/composables/collaboration/review'
@@ -20,6 +23,14 @@ const props = defineProps<{ controller: LocalCollaboration; workspaceId: string;
 const emit = defineEmits<{ error: [message: string] }>()
 const { t } = useI18n()
 const c = computed(() => proxyRefs(props.controller))
+const updates = useRepositoryUpdates(() => props)
+const diffScope = shallowRef<'cumulative' | 'round'>('cumulative')
+function showRemoteChanges() {
+  c.value.view.page = 'updates'
+  const conflict = updates.files.value.find(file => file.conflict)
+  if (conflict) updates.selected.value = conflict.key
+}
+watch(() => props.taskId, () => { diffScope.value = 'cumulative' })
 const ide = useOpenInIde(() => c.value, () => props.workspaceId)
 watch(() => props.controller, controller => { void controller.loadReview() }, { immediate: true })
 watch(ide.error, message => emit('error', message))
@@ -29,8 +40,14 @@ const tab = computed({ get: () => c.value.view.tab, set: value => { c.value.view
 const pair = computed({ get: () => c.value.view.pair, set: value => { c.value.view.pair = value } })
 const selected = computed({ get: () => c.value.view.selected, set: value => { c.value.view.selected = value } })
 const checked = computed({ get: () => c.value.view.selectedConflicts, set: value => { c.value.view.selectedConflicts = value } })
-const review = computed(() => collaborationReview(c.value, Boolean(ui.value?.localAvailable)))
-const files = computed(() => review.value.files.filter(file => tab.value === 'all' || file.kind === tab.value))
+const review = computed(() => collaborationReview(c.value, Boolean(ui.value?.localAvailable), diffScope.value))
+const files = computed(() => review.value.files.filter(file => diffScope.value === 'cumulative' || tab.value === 'all' || file.kind === tab.value))
+function selectDiffScope(scope: 'cumulative' | 'round') {
+  tab.value = 'all'
+  diffScope.value = scope
+}
+watch(diffScope, () => { pair.value = 'auto' })
+watch(tab, value => { if (value === 'local' || value === 'conflicts') diffScope.value = 'round' }, { immediate: true })
 
 const searchQuery = shallowRef('')
 const filteredFiles = computed(() => {
@@ -56,7 +73,8 @@ const comparison = computed(() => {
   const right = pair.value !== 'auto' ? review.value.cloud.get(file?.key || '') : file?.right
   const leftSource = localPair || (pair.value === 'auto' && file?.kind === 'conflicts' && ui.value?.localAvailable) ? 'localSource' : pair.value === 'auto' && file?.kind === 'local' ? 'receivedSource' : downloadOnly.value ? 'session.beforeReceive' : 'inputSource'
   const rightSource = pair.value === 'auto' && file?.kind === 'local' ? 'localSource' : downloadOnly.value ? 'session.publishedSource' : ui.value?.running ? 'candidateSource' : 'finalSource'
-  return { left, right, leftLabel: t(`collaboration.${leftSource}`), rightLabel: t(`collaboration.${rightSource}`) }
+  const cumulative = diffScope.value === 'cumulative' && pair.value === 'auto' && file?.kind === 'cloud'
+  return { left, right, leftLabel: cumulative ? '远端基线' : t(`collaboration.${leftSource}`), rightLabel: cumulative ? '任务版本' : t(`collaboration.${rightSource}`) }
 })
 const restoreDescription = computed(() => pendingRestore.value?.conflicts.map(row => {
   const repo = c.value.state?.repositories.find(item => item.task_repository_id === row.task_repository_id)
@@ -109,13 +127,13 @@ async function confirmRestore() {
   <section v-if="ui" class="collaboration-panel">
     <!-- 统一二级视图导航栏 -->
     <nav class="drawer-subnav">
-      <button class="nav-tab-item" :class="{ active: c.view.page === 'files' }" type="button" @click="c.view.page = 'files'">
+      <button class="nav-tab-item" :class="{ active: ['files', 'updates'].includes(c.view.page) }" type="button" @click="c.view.page = 'files'">
         <FileText :size="13" />
         <span>变更差异</span>
       </button>
       <button class="nav-tab-item" :class="{ active: c.view.page === 'settings' }" type="button" @click="c.view.page = 'settings'">
         <GitBranch :size="13" />
-        <span>仓库映射</span>
+        <span>仓库与版本</span>
       </button>
       <button class="nav-tab-item" :class="{ active: c.view.page === 'backups' }" type="button" @click="c.view.page = 'backups'">
         <Clock :size="13" />
@@ -129,30 +147,39 @@ async function confirmRestore() {
 
     <ConfirmActionModal :show="c.view.page === 'disconnect'" tone="primary" :title="t('collaboration.session.disconnect')" :message="t('collaboration.session.leaveHint')" :cancel-text="t('common.cancel')" :confirm-text="t('collaboration.session.disconnect')" :loading="c.busy || c.leaving" @cancel="c.view.page = 'files'" @confirm="async () => { if (await c.leave()) c.view.page = 'files' }" />
     <template v-if="c.view.page === 'settings'">
-      <CollaborationRepositories :controller="controller" :setup="!c.participating || ui.setup" @device="deviceConfirmation = true" />
+      <div class="repository-version-settings">
+        <RepositoryUpdatePanel :model="updates" :controller="controller" :setup="!c.participating || ui.setup" @device="deviceConfirmation = true" />
+      </div>
     </template>
     <template v-else-if="c.view.page === 'backups'">
       <template v-if="backup"><button class="back-button" type="button" @click="backup = null">{{ t('collaboration.ui.backToBackups') }}</button><CodeComparison :path="backup.path" :left-hash="backup.sha256 || undefined" :right-hash="review.local.get(collaborationFileKey(backup.task_repository_id, backup.path))?.sha256" :left-label="t('collaboration.backupSource')" :right-label="t('collaboration.localSource')" :read-text="c.readText" /></template>
       <CollaborationBackups v-else :controller="controller" @select="backup = $event" />
     </template>
     <CollaborationHistory v-else-if="c.view.page === 'history'" :workspace-id="workspaceId" :task-id="taskId" />
+    <RepositoryUpdateChanges v-else-if="c.view.page === 'updates'" :model="updates" @back="c.view.page = 'files'" @close="c.view.page = 'files'" @applied="selectDiffScope('cumulative'); c.view.page = 'files'; c.refreshResults()" />
     <template v-else>
-      <CollaborationRepositories v-if="ui.setup" :controller="controller" :setup="true" />
-      <template v-else>
+      <div class="diff-scope-bar">
+        <nav class="diff-purpose-tabs" aria-label="差异用途">
+          <button type="button" :class="{ active:diffScope === 'cumulative' }" :aria-pressed="diffScope === 'cumulative'" @click="selectDiffScope('cumulative')">累计差异</button>
+          <button type="button" :class="{ active:diffScope === 'round' }" :aria-pressed="diffScope === 'round'" @click="selectDiffScope('round')">本轮差异</button>
+        </nav>
+        <RepositoryUpdateEntry class="update-entry" :model="updates" @open="showRemoteChanges" />
+      </div>
         <!-- 分段筛选条与搜索过滤 -->
         <div class="filter-bar-wrapper">
-          <nav class="file-filters" :aria-label="t('collaboration.ui.fileSources')">
+          <span v-if="diffScope === 'cumulative'" class="result-summary">任务执行成果 <small>{{ review.files.length }} 个文件</small></span>
+          <nav v-else class="file-filters" :aria-label="t('collaboration.ui.fileSources')">
             <button v-for="item in filters" :key="item.value" type="button" :class="{ active: tab === item.value, 'is-warning': item.value === 'conflicts' }" :aria-pressed="tab === item.value" :disabled="item.value === 'local' && !ui.localAvailable" :title="item.value === 'local' && !ui.localAvailable ? t('collaboration.ui.localUnavailable') : ''" @click="tab = item.value">
               <span>{{ t(downloadOnly && item.value === 'cloud' ? 'collaboration.session.cloudChanges' : `collaboration.ui.filters.${item.value}`) }}</span>
               <small :class="{ 'warning-badge': item.value === 'conflicts' }">{{ item.count }}</small>
             </button>
           </nav>
           <div class="filter-right-tools">
+            <button v-if="diffScope === 'round'" class="human-records-link" type="button" @click="c.view.page = 'history'">人工修改记录</button>
             <div class="file-search-box">
               <Search :size="13" class="search-icon" />
               <input v-model="searchQuery" type="text" placeholder="过滤文件路径..." class="filter-search-input" />
             </div>
-            <span class="scope-label">{{ t(downloadOnly ? 'collaboration.session.receiveScope' : 'collaboration.ui.thisRound') }}</span>
           </div>
         </div>
 
@@ -161,12 +188,12 @@ async function confirmRestore() {
           <CollaborationFiles :files="filteredFiles" :repositories="c.state?.repositories || []" :selected="selected" :checked="checked" :can-restore="ui.canRestore" :local-available="ui.localAvailable" :running="ui.running" @select="selected = $event; pair = 'auto'" @check="checkFile" />
           <div v-if="active" class="diff-workspace">
             <CodeComparison :path="`${active.repo_slug}/${active.path}`" :left-hash="comparison.left?.sha256" :right-hash="comparison.right?.sha256" :left-label="comparison.leftLabel" :right-label="comparison.rightLabel" :read-text="c.readText" :open-in-ide="ide.available" :ide-title="ide.hint(active.task_repository_id)" @ide-error="ide.error.value = $event" @open-in-ide="position => ide.open(active!.task_repository_id, active!.path, position.line, position.column)">
-              <template #tools><BaseSelect v-model="pair" size="sm" :aria-label="t('collaboration.ui.compareVersions')" :options="[{ value: 'auto', label: t('collaboration.ui.defaultComparison') }, { value: 'local-cloud', label: t('collaboration.localCloud'), disabled: !ui.localAvailable }, { value: 'input-cloud', label: t('collaboration.inputCloud') }]" /></template>
+              <template v-if="diffScope === 'round'" #tools><BaseSelect v-model="pair" size="sm" :aria-label="t('collaboration.ui.compareVersions')" :options="[{ value: 'auto', label: t('collaboration.ui.defaultComparison') }, { value: 'local-cloud', label: t('collaboration.localCloud'), disabled: !ui.localAvailable }, { value: 'input-cloud', label: t('collaboration.inputCloud') }]" /></template>
             </CodeComparison>
             <div class="diff-note-bar" :class="{ 'is-decision-bar': active.kind === 'conflicts' && ui.canRestore }">
               <p class="diff-note">
                 <span class="diff-note-icon">ℹ</span>
-                <span>{{ t(active.kind === 'conflicts' ? ui.running ? 'collaboration.ui.previewConflictHint' : 'collaboration.ui.restoreNotice' : active.kind === 'local' ? 'collaboration.ui.localNotice' : ui.running ? 'collaboration.ui.runningNotice' : 'collaboration.ui.agentNotice') }}</span>
+                <span>{{ diffScope === 'cumulative' && active.kind === 'cloud' ? '显示任务相对当前远端基线的全部累计修改。' : t(active.kind === 'conflicts' ? ui.running ? 'collaboration.ui.previewConflictHint' : 'collaboration.ui.restoreNotice' : active.kind === 'local' ? 'collaboration.ui.localNotice' : ui.running ? 'collaboration.ui.runningNotice' : 'collaboration.ui.agentNotice') }}</span>
                 <span v-if="comparison.left?.mode !== comparison.right?.mode" class="mode-tag"> · {{ t('collaboration.ui.fileMode') }} {{ comparison.left?.mode || '—' }} → {{ comparison.right?.mode || '—' }}</span>
               </p>
               <div v-if="active.kind === 'conflicts' && ui.canRestore" class="single-file-actions">
@@ -184,8 +211,8 @@ async function confirmRestore() {
               <Check v-if="!review.files.length && !downloadOnly" :size="24" />
               <GitPullRequest v-else :size="24" />
             </div>
-            <strong>{{ t(!review.cloudKnown && !c.reviewError && tab !== 'local' ? 'collaboration.ui.loadingFiles' : tab === 'local' ? 'collaboration.ui.noLocalChanges' : downloadOnly ? 'collaboration.session.noChanges' : 'collaboration.ui.noAgentChanges') }}</strong>
-            <p>{{ t(tab === 'local' ? 'collaboration.ui.noLocalHint' : downloadOnly ? 'collaboration.session.noChangesHint' : 'collaboration.ui.noAgentHint') }}</p>
+            <strong>{{ diffScope === 'cumulative' && review.cloudKnown && tab !== 'local' ? '暂无累计修改' : t(!review.cloudKnown && !c.reviewError && tab !== 'local' ? 'collaboration.ui.loadingFiles' : tab === 'local' ? 'collaboration.ui.noLocalChanges' : downloadOnly ? 'collaboration.session.noChanges' : 'collaboration.ui.noAgentChanges') }}</strong>
+            <p>{{ diffScope === 'cumulative' && review.cloudKnown && tab !== 'local' ? '任务相对当前远端基线没有文件差异。' : t(tab === 'local' ? 'collaboration.ui.noLocalHint' : downloadOnly ? 'collaboration.session.noChangesHint' : 'collaboration.ui.noAgentHint') }}</p>
             <div v-if="!review.files.length" class="empty-actions">
               <button class="btn-secondary btn-sm" type="button" @click="c.view.page = 'settings'">查看仓库映射</button>
               <button class="btn-secondary btn-sm" type="button" @click="c.view.page = 'backups'">查看历史快照</button>
@@ -194,7 +221,7 @@ async function confirmRestore() {
         </div>
 
         <!-- 底部全局操作枢纽 (Action Hub) -->
-        <footer v-if="ui.canRestore && c.conflicts.length" class="conflict-actions">
+        <footer v-if="diffScope === 'round' && ui.canRestore && c.conflicts.length" class="conflict-actions">
           <div class="conflict-selection-meta">
             <label class="select-all-label">
               <input type="checkbox" :checked="allChecked" @change="checked = ($event.target as HTMLInputElement).checked ? c.conflicts.map(row => collaborationFileKey(row.task_repository_id, row.path)) : []" />
@@ -213,7 +240,6 @@ async function confirmRestore() {
             </button>
           </div>
         </footer>
-      </template>
     </template>
     <ConfirmActionModal :show="Boolean(pendingRestore)" :title="t('collaboration.restoreTitle', { count: pendingRestore?.conflicts.length || 0 })" :message="t('collaboration.backupFirst')" :cancel-text="t('common.cancel')" :confirm-text="t('collaboration.confirmRestore')" :loading="c.busy" @cancel="pendingRestore = null" @confirm="confirmRestore"><template #content><pre class="restore-paths">{{ restoreDescription }}</pre></template></ConfirmActionModal>
     <ConfirmActionModal :show="deviceConfirmation" tone="primary" :title="t('collaboration.ui.device')" :message="t(`collaboration.ui.${deviceHint}`)" :cancel-text="t('common.cancel')" :confirm-text="t(canReconnect ? 'collaboration.ui.actions.reconnect' : 'common.confirm')" :loading="c.busy" @cancel="deviceConfirmation = false" @confirm="async () => { if (canReconnect) await c.claimDriver(); deviceConfirmation = false; c.view.page = 'files' }" />
@@ -221,6 +247,15 @@ async function confirmRestore() {
 </template>
 
 <style scoped>
+.diff-scope-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid #e2e8f0; }
+.diff-purpose-tabs { display:flex; gap:2px; padding:3px; border-radius:7px; background:#f1f5f9; }
+.diff-purpose-tabs button { border:0; border-radius:5px; padding:5px 12px; color:#64748b; font-size:12px; background:transparent; cursor:pointer; }
+.diff-purpose-tabs button.active { color:#0284c7; background:#fff; box-shadow:0 1px 3px #0f172a12; }
+.diff-purpose-tabs button:focus-visible { outline:2px solid #38bdf8; outline-offset:2px; }
+.update-entry { margin-left:auto; }
+.result-summary { font-size:12px; font-weight:500; color:#334155; } .result-summary small { margin-left:8px; color:#64748b; font-size:11px; font-weight:400; }
+.human-records-link { border:0; background:none; color:#0284c7; padding:0; font-size:11px; cursor:pointer; }
+.repository-version-settings { flex:1; min-height:0; display:flex; overflow:hidden; }
 .collaboration-panel {
   flex: 1;
   display: flex;

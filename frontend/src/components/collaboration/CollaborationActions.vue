@@ -41,8 +41,8 @@ async function recover() {
   <div class="collaboration-actions">
     <button v-if="!c.participating && c.available" class="session-button" type="button" :disabled="disabled" @click="connectOrReceive(true)">{{ t('collaboration.session.receive') }}</button>
     <div v-if="c.available" class="collaboration-switch" :title="!c.participating && c.enabled && !c.canReconnect ? t('collaboration.ui.activeDeviceHint') : ''">
-      <span>{{ t('collaboration.title') }}</span>
-      <ToggleSwitch :model-value="c.participating" :disabled="disabled || !c.participating && c.enabled && !c.canReconnect" :aria-label="t('collaboration.title')" @update:model-value="toggleCollaboration" />
+      <span>{{ t('collaboration.connectionLabel') }}</span>
+      <ToggleSwitch :model-value="c.participating" :disabled="disabled || !c.participating && c.enabled && !c.canReconnect" :aria-label="t('collaboration.connectionLabel')" @update:model-value="toggleCollaboration" />
     </div>
     <button v-if="c.participating && ui && ui.action !== 'none' && c.available" class="session-button primary" type="button" :disabled="disabled" @click="recover">{{ ui.actionLabel }}</button>
     <div v-if="c.participating && c.driver && c.available" class="auto-receive" :title="t('collaboration.ui.autoReceiveHint')">
