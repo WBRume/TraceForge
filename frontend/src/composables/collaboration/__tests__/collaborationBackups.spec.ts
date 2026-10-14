@@ -13,6 +13,32 @@ const backup = (round: number, repo: string, operation = `restore-${round}`): Co
     session_generation: 1, session_revision: round + 5, session_turn_id: `turn-${round}`, turn_index: round, turn_title: `用户的第 ${round} 次请求`, turn_created_at: `2026-10-13T0${round}:00:00Z`, source: 'AGENT_OUTPUT', kind: 'restore', repo_slug: repo, branch_name: `branch-${round}` },
 })
 const plugins = () => [createI18n({ legacy: false, locale: 'zh', messages: { zh } })]
+it('explains an empty local backup list without reporting an error', async () => {
+  const controller = { available:true, state:ref(null), local:ref(null), listBackups:vi.fn().mockResolvedValue({ backups:[] }) } as unknown as LocalCollaboration
+  const wrapper = mount(CollaborationBackups, { props:{ controller }, global:{ plugins:plugins() } })
+  await flushPromises()
+  expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  expect(wrapper.get('.empty-backups').text()).toContain('暂无本地备份')
+  expect(wrapper.get('.empty-backups').text()).toContain('替换前的本地文件')
+  wrapper.unmount()
+})
+it('does not show no-backup claims when the backup read actually failed', async () => {
+  const controller = { available:true, state:ref(null), local:ref(null), listBackups:vi.fn().mockRejectedValue(new Error('EACCES: backup directory')) } as unknown as LocalCollaboration
+  const wrapper = mount(CollaborationBackups, { props:{ controller }, global:{ plugins:plugins() } })
+  await flushPromises()
+  expect(wrapper.get('[role="alert"]').text()).toContain('EACCES')
+  expect(wrapper.text()).not.toContain('暂无本地备份')
+  wrapper.unmount()
+})
+it('explains that local backup files require the desktop that created them', async () => {
+  const controller = { available:false, state:ref(null), local:ref(null), listBackups:vi.fn().mockResolvedValue({ backups:[] }) } as unknown as LocalCollaboration
+  const wrapper = mount(CollaborationBackups, { props:{ controller }, global:{ plugins:plugins() } })
+  await flushPromises()
+  expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  expect(wrapper.text()).toContain('请在该电脑的桌面客户端查看')
+  expect(wrapper.text()).not.toContain('暂无本地备份')
+  wrapper.unmount()
+})
 function pollingContext() {
   const state = ref({ binding_id: 'binding', state_version: 1, repositories: [] })
   const local = ref({ task_id: 'task' })

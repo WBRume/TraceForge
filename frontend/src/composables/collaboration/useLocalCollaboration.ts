@@ -521,7 +521,19 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     } catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
     finally { if (token === generation) busy.value = false }
   }
-  const listBackups = () => native<{ backup_directory: string; backups: CollaborationBackup[] }>('backups', { task_id: String(options.task()?.id) })
+  async function listBackups() {
+    const empty = { backup_directory: '', backups: [] as CollaborationBackup[] }
+    const taskId = String(options.task()?.id || '')
+    if (!available || !taskId) return empty
+    try { return await native<typeof empty>('backups', { task_id: taskId }) }
+    catch (reason) {
+      // Older desktop hosts throw ENOENT instead of returning an empty backup list.
+      const message = String(reason)
+      const missing = /ENOENT\b[^\r\n]*[\\/]collaboration[\\/]bindings[\\/]([^\\/'"\r\n]+)\.json(?:['"]|$)/i.exec(message)
+      if (missing?.[1] === taskId || /\bCOLLABORATION_BINDING_MISSING\b/.test(message)) return empty
+      throw reason
+    }
+  }
   async function exportBackup(backup: CollaborationBackup) {
     if (!desktop || !backup.sha256) return
     const object = await native<{ content: string }>('read_object', { sha256: backup.sha256 })

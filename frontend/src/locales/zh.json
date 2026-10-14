@@ -4118,6 +4118,8 @@
     "confirmSnapshot": "使用已确认云端版本 {snapshot}",
     "backups": "本地备份",
     "noBackups": "暂无本地备份",
+    "noBackupsHint": "接收云端代码或处理冲突时，替换前的本地文件会保存在这里。",
+    "backupsDesktopRequired": "本地备份保存在创建它的电脑上，请在该电脑的桌面客户端查看。",
     "viewBackup": "查看备份",
     "exportBackup": "导出备份",
     "backupSource": "替换前的本地备份",

@@ -72,7 +72,7 @@ export class CollaborationRuntime {
       case 'status': return this.status(this.load(payload.task_id), undefined, payload.background !== true || payload.verify === true, payload.verify_raw === true)
       case 'capture': return this.capture(payload)
       case 'accept_input': return this.acceptInput(payload)
-      case 'backups': return this.backups(this.load(payload.task_id, true))
+      case 'backups': return this.listBackups(payload.task_id)
       case 'reconcile': return this.reconcile(payload)
       case 'restore': return this.restore(payload)
       default: fail('UNSUPPORTED_COLLABORATION_OPERATION')
@@ -474,6 +474,15 @@ export class CollaborationRuntime {
   private backupDirectories(binding: SyncBinding) {
     const directories = [...new Set(binding.repositories.map(repo => this.scratch(binding, repo)))]
     return { backup_directory: directories.length === 1 ? directories[0] : '', backup_directories: directories }
+  }
+  private listBackups(taskId: string) {
+    let binding: SyncBinding
+    try { binding = this.load(taskId, true) }
+    catch (error: any) {
+      if (error.code === 'ENOENT' && error.path === this.bindingFile(taskId)) return { backup_directory: '', backup_directories: [], backups: [] }
+      throw error
+    }
+    return this.backups(binding)
   }
   private backups(binding: SyncBinding) {
     const directory = path.join(this.state, 'operations')
