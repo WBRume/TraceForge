@@ -836,6 +836,7 @@
     "hitl_answer_cancelled": "Job cancelled",
     "hitl_answer_done": "Completed",
     "ai_job_failed_default": "AI job failed",
+    "message_failed": "This message could not be completed",
     "stage_step": "Stage {index}: {timestamp}",
     "temporary_interrupt_desc": "Stop the current execution, keep session context, and continue later.",
     "temporary_interrupt_reason": "User temporarily interrupted the current AI session",

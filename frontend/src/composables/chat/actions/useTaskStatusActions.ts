@@ -15,6 +15,7 @@ export function useTaskStatusActions(options: {
   canManageTaskStatus: { value: boolean }
   getWorkspaceId: () => string
   engineRunning: { value: boolean }
+  preparingSubmission?: { value: boolean }
   interruptingTask: { value: boolean }
   cardsDropStatusCards: () => void
   cardsDropByTypes: (types: string[]) => void
@@ -40,6 +41,7 @@ export function useTaskStatusActions(options: {
   const canTemporarilyInterrupt = computed(() => (
     Boolean(options.getCurrentTask()?.id)
     && options.engineRunning.value
+    && !options.preparingSubmission?.value
     && options.canManageTaskStatus.value
     && !options.interruptingTask.value
   ))
@@ -92,6 +94,7 @@ export function useTaskStatusActions(options: {
       ElMessage.warning(t('chat.errors.no_permission_manage_task_status'))
       return false
     }
+    if (options.preparingSubmission?.value) return false
     if (!options.engineRunning.value) {
       ElMessage.warning(t('chat.no_running_engine'))
       return false

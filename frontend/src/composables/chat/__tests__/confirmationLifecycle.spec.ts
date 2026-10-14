@@ -29,12 +29,17 @@ const createLifecycle = () => {
     getMessages: () => messages.value, getJobs: jobs.jobList, getCurrentTask: () => task.value,
   })
   const engineRunning = ref(false)
+  const preparingSubmission = ref(false)
+  const putSubmission = vi.fn(() => { preparingSubmission.value = false })
   const syncEngine = () => { engineRunning.value = jobs.hasExecutingJob() }
   const ingestJob = createChatJobIngest({ jobs, cards, syncEngineFromJobs: syncEngine, onJobUpdate: () => {} })
   const generationBump = vi.fn()
+  const interruptTask = vi.fn(async () => ({ task_id: 'task', status: 'INTERRUPTED',
+    session_generation: task.value.session_generation,
+    job: { ...jobs.jobList().find(job => job.status === 'RUNNING'), status: 'INTERRUPTED' } }))
   const state = useSessionState({
     getWorkspaceId: () => 'workspace', getCurrentTask: () => task.value,
-    submissions: { unconfirmedKeys: () => [], current: () => [], put: () => {},
+    submissions: { unconfirmedKeys: () => [], current: () => [], put: putSubmission,
       send: async () => true, clear: () => {} },
     ingestJob, resetJobs: jobs.reset, syncEngineFromJobs: syncEngine,
     convergeFromJobs: () => { syncEngine(); return true }, syncConfirmationCards: cards.syncConfirmationCards,
@@ -60,13 +65,12 @@ const createLifecycle = () => {
   })
   const status = useTaskStatusActions({
     getCurrentTask: () => task.value, getWorkspaceId: () => 'workspace', engineRunning,
+    preparingSubmission,
     isTaskProvisioning: ref(false), canManageTaskStatus: ref(true), interruptingTask: ref(false),
     cardsDropStatusCards: cards.dropStatusCards, cardsDropByTypes: cards.dropByTypes, jobsReset: jobs.reset,
     messagesPush: message => messages.value.push(message), isHistoryAnchored: () => false,
     scrollToChatBottom: () => {},
-    interruptTask: async () => ({ task_id: 'task', status: 'INTERRUPTED',
-      session_generation: task.value.session_generation,
-      job: { ...jobs.jobList().find(job => job.status === 'RUNNING'), status: 'INTERRUPTED' } }),
+    interruptTask,
     applyTaskSessionPayload: state.applyTaskSessionPayload, refreshActiveJobs: jobs.loadActive,
     loadTasks: async () => {}, patchTask: (_id, patch) => Object.assign(task.value, patch),
     removeTask: () => {}, clearCurrentTask: () => {},
@@ -75,10 +79,27 @@ const createLifecycle = () => {
   })
   ingestJob({ id: 'old-job', task_id: 'task', status: 'RUNNING', progress: 0, session_generation: 1 })
   cards.syncConfirmationCards()
-  return { task, messages, jobs, cards, state, start, status, ingestJob, engineRunning, generationBump }
+  return { task, messages, jobs, cards, state, start, status, ingestJob, engineRunning, preparingSubmission, putSubmission, interruptTask, generationBump }
 }
 
 describe('confirmation lifecycle', () => {
+  it.each([false, true])('disables stopping during preparation even when engine state is stale (%s)', async engineRunning => {
+    const runtime = createLifecycle()
+    runtime.jobs.reset()
+    runtime.engineRunning.value = engineRunning
+    runtime.preparingSubmission.value = true
+    expect(runtime.status.canTemporarilyInterrupt.value).toBe(false)
+    expect(await runtime.status.interruptCurrentRun()).toBe(false)
+    expect(runtime.interruptTask).not.toHaveBeenCalled()
+    expect(runtime.putSubmission).not.toHaveBeenCalled()
+    expect(runtime.preparingSubmission.value).toBe(true)
+    expect(runtime.task.value.status).toBe('CODING')
+    runtime.preparingSubmission.value = false
+    runtime.ingestJob({ id: 'new-job', task_id: 'task', status: 'RUNNING', progress: 0, session_generation: 1 })
+    expect(runtime.status.canTemporarilyInterrupt.value).toBe(true)
+    runtime.state.dispose()
+  })
+
   it('keeps initialization busy while clearing the old run and restores history if the request fails', async () => {
     const runtime = createLifecycle()
     api.get.mockResolvedValue({ data: { items: [

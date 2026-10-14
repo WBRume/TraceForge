@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 from app.domains.task.services import task_git_snapshot_store as git_store
@@ -26,8 +27,14 @@ class GitObjects:
             db.execute("CREATE INDEX IF NOT EXISTS by_sha256 ON objects(sha256)")
             db.execute("CREATE INDEX IF NOT EXISTS by_oid ON objects(oid)")
 
+    @contextmanager
     def connect(self):
-        return sqlite3.connect(self.database, timeout=30)
+        connection = sqlite3.connect(self.database, timeout=30)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def shared_root(self) -> Path:
         binding = self.root / "git-store.json"

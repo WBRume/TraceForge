@@ -319,6 +319,23 @@ async def cancel(
     return await _locked(db, ws_id, task_id, user, service.cancel_preparation, data, data.submission_id)
 
 
+class PreparationFailureRequest(CancelRequest):
+    error_message: str = Field(min_length=1, max_length=1000)
+
+
+@router.post("/fail-preparation")
+async def fail_preparation(
+    ws_id: str,
+    task_id: str,
+    data: PreparationFailureRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return await _locked(
+        db, ws_id, task_id, user, service.cancel_preparation, data, data.submission_id, data.error_message
+    )
+
+
 class RecoverRequest(Fence):
     operation_id: str = Field(min_length=1, max_length=128)
 

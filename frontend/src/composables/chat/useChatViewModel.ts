@@ -721,6 +721,7 @@ export function useChatViewModel() {
     canManageTaskStatus: canManageTaskStatus,
     getWorkspaceId,
     engineRunning: engine.engineRunning,
+    preparingSubmission: computed(() => submissions.current.value.some(row => row.status === 'PREPARING')),
     interruptingTask: taskSessionControls.interruptingTask,
     cardsDropStatusCards: cards.dropStatusCards,
     cardsDropByTypes: cards.dropByTypes,

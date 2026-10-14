@@ -2,6 +2,8 @@
 
 import copy
 import hashlib
+import shutil
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -243,8 +245,143 @@ def test_partial_input_failure_is_recoverable_and_local_receipt_cannot_clear_it(
     monkeypatch.setattr(content.os, "replace", replace)
     state = service.recover_input(db, task, "u", Fence(**fence(state)), "handoff")
     db.commit()
-    assert state["sync_phase"] == "PREPARING" and service.input_ready(db, "t", "submission")
+    assert state["sync_phase"] == "READY" and not service.input_ready(db, "t", "submission")
+    assert db.get(TaskChatSubmission, "submission").status == "FAILED"
     assert (root / "web/same.txt").read_bytes() == b"new web"
+
+
+def test_deleted_snapshots_rebuild_current_storage_without_rewriting_history(environment, tmp_path):
+    from app.domains.task.services import task_session_snapshot_service as snapshots
+    from app.domains.task.services.task_snapshot_anchor import current_anchor
+
+    db, task, root = environment
+    state = preparing(environment)
+    request = input_request(environment, state)
+    original = task.task_meta_json["initial_workspace_checkpoint"]
+    before = {
+        repo: (git(root / repo, "status", "--porcelain"), git(root / repo, "rev-parse", "HEAD"))
+        for repo in ["api", "web"]
+    }
+
+    def delete_test_store(path):
+        assert path.resolve().is_relative_to(tmp_path.resolve())
+
+        def remove_readonly(function, filename, _error):
+            Path(filename).chmod(0o700)
+            function(filename)
+
+        shutil.rmtree(path, onerror=remove_readonly)
+
+    delete_test_store(Path(original).parent)
+    delete_test_store(content.ObjectStore(task).root)
+
+    state = service.handoff(db, task, "u", request)
+    db.commit()
+    assert state["sync_phase"] == "PREPARING"
+    assert service.input_ready(db, "t", "submission")
+    assert task.task_meta_json["initial_workspace_checkpoint"] == original
+    assert not Path(original).exists()
+    anchor = current_anchor(task, ["api", "web"], "Multi repo")
+    assert anchor == task.task_meta_json["workspace_snapshot_checkpoint"]
+    checkpoint = snapshots._create_checkpoint_sync(
+        str(root), ["api", "web"], "none", None, "w", "Multi repo", "t", "Task", anchor
+    )
+    assert Path(checkpoint["root"], "worktree.json").is_file()
+    manifest = service.get_snapshot(db, "t", state["input_snapshot_id"])
+    store = content.ObjectStore(task)
+    for repo in manifest["repositories"]:
+        for file in repo["files"]:
+            assert store.read(file["sha256"]) == (root / repo["rel_path"] / file["path"]).read_bytes()
+    assert before == {
+        repo: (git(root / repo, "status", "--porcelain"), git(root / repo, "rev-parse", "HEAD"))
+        for repo in ["api", "web"]
+    }
+
+
+@pytest.mark.parametrize("snapshot_error", [False, True])
+def test_capture_failure_ends_receipt_and_recovery_does_not_execute_cancelled_message(
+    environment, monkeypatch, snapshot_error
+):
+    from app.domains.task.services.task_session_snapshot_service import TaskSessionSnapshotError
+
+    db, task, _ = environment
+    state = preparing(environment)
+    request = input_request(environment, state)
+    capture = service._capture
+    error = (
+        TaskSessionSnapshotError("deleted checkpoint") if snapshot_error else FileNotFoundError("deleted checkpoint")
+    )
+
+    def fail_capture(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(service, "_capture", fail_capture)
+    with pytest.raises(service.CollaborationError, match="deleted checkpoint"):
+        service.handoff(db, task, "u", request)
+    db.commit()
+    state = service.get_state(db, task)
+    assert state["sync_phase"] == "RECOVERY_REQUIRED"
+    assert state["pending_submission_id"] is None
+    assert db.get(TaskChatSubmission, "submission").status == "FAILED"
+    monkeypatch.setattr(service, "_capture", capture)
+    state = service.recover_input(db, task, "u", Fence(**fence(state)), "handoff")
+    assert state["sync_phase"] == "READY"
+    assert state["pending_submission_id"] is None
+    assert not service.input_ready(db, "t", "submission")
+
+
+def test_desktop_preparation_failure_is_durable_idempotent_and_cannot_release_a_new_message(environment):
+    from app.domains.workspace_collaboration.router import PreparationFailureRequest, _invoke
+
+    db, task, _ = environment
+    state = preparing(environment)
+    request = PreparationFailureRequest(
+        **fence(state), operation_id="failed-input", submission_id="submission", error_message="Local snapshot missing"
+    )
+    result = _invoke(db, service.cancel_preparation, task, "u", request, request.submission_id, request.error_message)
+    db.expire_all()
+    receipt = db.get(TaskChatSubmission, "submission")
+    assert receipt.status == "FAILED" and receipt.active_task_id is None
+    assert receipt.error_message == "Local snapshot missing"
+    assert result["sync_phase"] == "READY" and result["pending_submission_id"] is None
+    # An old report never cancels a subsequently prepared message, including a
+    # retry whose first successful acknowledgement was lost.
+    row = db.get(CollaborationState, "t")
+    row.sync_phase, row.pending_submission_id = "PREPARING", "next-submission"
+    db.commit()
+    service.cancel_preparation(db, task, "u", request, request.submission_id, request.error_message)
+    assert row.pending_submission_id == "next-submission" and row.sync_phase == "PREPARING"
+
+
+def test_desktop_failure_report_cannot_cancel_already_accepted_input(environment):
+    from app.domains.workspace_collaboration.router import PreparationFailureRequest
+
+    db, task, _ = environment
+    state = preparing(environment)
+    state = service.handoff(db, task, "u", input_request(environment, state))
+    db.commit()
+    request = PreparationFailureRequest(
+        **fence(state), operation_id="lost-response", submission_id="submission", error_message="Handoff timed out"
+    )
+    with pytest.raises(service.CollaborationError, match="already been accepted"):
+        service.cancel_preparation(db, task, "u", request, request.submission_id, request.error_message)
+    assert db.get(TaskChatSubmission, "submission").status == "PREPARING"
+    assert service.input_ready(db, task.id, "submission")
+
+
+def test_cancel_preparation_in_server_input_recovery_keeps_file_barrier(environment):
+    db, task, _ = environment
+    preparing(environment)
+    row = db.get(CollaborationState, "t")
+    row.sync_phase, row.recovery_kind = "RECOVERY_REQUIRED", "SERVER_INPUT"
+    row.recovery_operation_id = "lost-input"
+    db.commit()
+    state = service.get_state(db, task)
+    state = service.cancel_preparation(db, task, "u", Fence(**fence(state)), "submission")
+    assert state["sync_phase"] == "RECOVERY_REQUIRED"
+    assert state["recovery_operation_id"] == "lost-input"
+    assert state["pending_submission_id"] is None
+    assert db.get(TaskChatSubmission, "submission").status == "FAILED"
 
 
 def test_lease_session_and_repository_identity_are_fenced(environment):
@@ -491,7 +628,7 @@ def test_file_directory_transitions_and_interrupted_recovery(environment, monkey
     state = service.get_state(db, task)
     state = service.recover_input(db, task, "u", Fence(**fence(state)), "handoff")
     db.commit()
-    assert state["sync_phase"] == "PREPARING"
+    assert state["sync_phase"] == "READY"
     assert (root / "api/folder").read_bytes() == b"directory became file"
     assert (root / "api/same.txt/nested.bin").read_bytes() == b"\x00\xff"
 
@@ -693,7 +830,7 @@ def test_input_recovers_when_all_files_written_but_completion_journal_fails(envi
     monkeypatch.setattr(content.ObjectStore, "journal", original_journal)
     recovered = service.recover_input(db, task, "u", Fence(**fence(service.get_state(db, task))), "handoff")
     db.commit()
-    assert recovered["sync_phase"] == "PREPARING"
+    assert recovered["sync_phase"] == "READY"
     assert content.ObjectStore("t").read_journal("handoff")["status"] == "COMPLETED"
 
 
@@ -1114,10 +1251,11 @@ def test_hot_publication_keeps_refs_and_reads_only_requested_object_mappings(env
     queries = []
     connect = GitObjects.connect
 
+    @contextmanager
     def traced_connect(self):
-        connection = connect(self)
-        connection.set_trace_callback(queries.append)
-        return connection
+        with connect(self) as connection:
+            connection.set_trace_callback(queries.append)
+            yield connection
 
     monkeypatch.setattr(GitObjects, "connect", traced_connect)
     accepted = service.handoff(db, task, "u", request)

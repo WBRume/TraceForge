@@ -45,6 +45,7 @@ beforeEach(() => {
     if (action === 'latest-snapshot') return manifest
     if (action === 'objects/missing') return { missing: [] }
     if (action === 'handoff') state = { ...state, input_submission_id: body.submission_id, input_snapshot_id: 'input2' }
+    if (action === 'fail-preparation') state = { ...state, sync_phase: 'READY', pending_submission_id: null }
     return { ...state }
   })
   mocks.mapping.mockResolvedValue({ localPath: 'G:/api', gitRemoteUrl: repo.repo_url })
@@ -650,6 +651,88 @@ describe('local collaboration coordinator', () => {
     expect(mocks.api.post).toHaveBeenCalledWith('handoff', expect.objectContaining({ submission_id: 'submission1', manifest }))
     expect(mocks.api.post.mock.calls.filter(([action]) => action === 'objects/missing')).toHaveLength(1)
     expect(mocks.native.mock.calls.some(([request]) => request.kind === 'status')).toBe(false)
+  })
+  it.each(['capture', 'upload'])('automatically ends the pending input after a %s failure', async stage => {
+    setup(); await flushPromises(); await controller.enable(); await controller.refresh()
+    const native = mocks.native.getMockImplementation()!, post = mocks.api.post.getMockImplementation()!
+    mocks.native.mockClear().mockImplementation(async request => {
+      if (stage === 'capture' && request.kind === 'capture') throw new Error('local snapshot missing')
+      return native(request)
+    })
+    mocks.api.post.mockClear().mockImplementation(async (action, body) => {
+      if (stage === 'upload' && action === 'objects/missing') throw new Error('object upload failed')
+      return post(action, body)
+    })
+    state = { ...state, sync_phase: 'PREPARING', pending_submission_id: 'failed-input' }
+    await controller.refresh()
+    expect(mocks.api.post).toHaveBeenCalledWith('fail-preparation', expect.objectContaining({
+      submission_id: 'failed-input', operation_id: 'preparation-failed:failed-input',
+      error_message: stage === 'capture' ? 'local snapshot missing' : 'object upload failed',
+    }))
+    expect(controller.busy.value).toBe(false)
+    expect(controller.phase.value).toBe('READY')
+    expect(controller.error.value).toContain(stage === 'capture' ? 'local snapshot missing' : 'object upload failed')
+    expect(mocks.api.post.mock.calls.some(([action]) => action === 'handoff')).toBe(false)
+    await controller.refresh()
+    expect(mocks.native.mock.calls.filter(([request]) => request.kind === 'capture')).toHaveLength(1)
+  })
+  it('retries only the failure report on reconnect without recapturing failed input', async () => {
+    setup(); await flushPromises(); await controller.enable(); await controller.refresh()
+    const native = mocks.native.getMockImplementation()!, post = mocks.api.post.getMockImplementation()!
+    mocks.native.mockClear().mockImplementation(async request => {
+      if (request.kind === 'capture') throw new Error('capture failed')
+      return native(request)
+    })
+    let attempts = 0
+    mocks.api.post.mockImplementation(async (action, body) => {
+      if (action === 'fail-preparation' && ++attempts === 1) throw new Error('connection lost')
+      return post(action, body)
+    })
+    state = { ...state, sync_phase: 'PREPARING', pending_submission_id: 'failed-input' }
+    await controller.refresh()
+    expect(controller.phase.value).toBe('PREPARING')
+    controller.onConnectionReady(manifest.task_id); await flushPromises()
+    expect(attempts).toBe(2)
+    expect(controller.phase.value).toBe('READY')
+    expect(mocks.native.mock.calls.filter(([request]) => request.kind === 'capture')).toHaveLength(1)
+  })
+  it('discards a delayed failure report before preparing a newer message', async () => {
+    setup(); await flushPromises(); await controller.enable(); await controller.refresh()
+    const native = mocks.native.getMockImplementation()!, post = mocks.api.post.getMockImplementation()!
+    mocks.native.mockImplementation(async request => {
+      if (request.kind === 'capture' && request.payload.operation_id === 'handoff:old-input') throw new Error('capture failed')
+      return native(request)
+    })
+    mocks.api.post.mockImplementation(async (action, body) => {
+      if (action === 'fail-preparation') throw new Error('response lost')
+      return post(action, body)
+    })
+    state = { ...state, sync_phase: 'PREPARING', pending_submission_id: 'old-input' }
+    await controller.refresh()
+    mocks.api.post.mockClear()
+    state = { ...state, pending_submission_id: 'next-input' }
+    await controller.refresh()
+    expect(mocks.api.post.mock.calls.some(([action]) => action === 'fail-preparation')).toBe(false)
+    expect(mocks.api.post).toHaveBeenCalledWith('handoff', expect.objectContaining({ submission_id: 'next-input' }))
+  })
+  it('does not fail an accepted input when a handoff acknowledgement was lost', async () => {
+    setup(); await flushPromises(); await controller.enable(); await controller.refresh()
+    const post = mocks.api.post.getMockImplementation()!
+    mocks.api.post.mockClear().mockImplementation(async (action, body) => {
+      if (action === 'handoff') {
+        await post(action, body)
+        throw new Error('handoff response lost')
+      }
+      if (action === 'fail-preparation') throw { response: { status: 409, data: { detail: { code: 'STATE_CHANGED' } } } }
+      return post(action, body)
+    })
+    state = { ...state, sync_phase: 'PREPARING', pending_submission_id: 'accepted-input' }
+    await controller.refresh()
+    const attempts = mocks.api.post.mock.calls.filter(([action]) => action === 'fail-preparation').length
+    controller.onConnectionReady(manifest.task_id); await flushPromises()
+    expect(mocks.api.post.mock.calls.filter(([action]) => action === 'fail-preparation')).toHaveLength(attempts)
+    expect(controller.state.value?.input_submission_id).toBe('accepted-input')
+    expect(controller.phase.value).toBe('PREPARING')
   })
   it('only enables delta handoff after the server advertises support', async () => {
     state.capabilities = { manifest_delta: 1 }

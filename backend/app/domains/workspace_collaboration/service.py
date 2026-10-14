@@ -235,7 +235,7 @@ def _ensure_store(db: Session, task: SddTask) -> content.ObjectStore:
     initial = metadata.get("initial_workspace_checkpoint")
     if not initial:
         # Older tasks can predate provisioning-time snapshots. Establish their
-        # first shared store once; a supplied but broken checkpoint never resets.
+        # first shared store once. Recorded historical baselines remain immutable.
         workspace = db.get(Workspace, task.workspace_id)
         created = snapshots._create_checkpoint_sync(
             task.project_path,
@@ -257,7 +257,13 @@ def _ensure_store(db: Session, task: SddTask) -> content.ObjectStore:
     if not metadata.get("collaboration_store_path"):
         task.task_meta_json = {**metadata, "collaboration_store_path": str(store.root.resolve())}
         db.flush()
-    store.bind(initial, task.project_path)
+    from app.domains.task.services.task_snapshot_anchor import bind_recovered_store, current_anchor
+
+    anchor = (task.task_meta_json or {}).get("workspace_snapshot_checkpoint") or initial
+    if not Path(anchor, "worktree.json").is_file():
+        workspace = db.get(Workspace, task.workspace_id)
+        anchor = current_anchor(task, [repo["rel_path"] for repo in repository_metadata(db, task)], workspace.name)
+    bind_recovered_store(store, anchor, task.project_path)
     return store
 
 
@@ -680,6 +686,8 @@ def _validate_manifest(
 
 
 def handoff(db: Session, task: SddTask, user_id: str, request: HandoffRequest) -> dict:
+    from app.domains.task.services.task_session_snapshot_service import TaskSessionSnapshotError
+
     from . import delta
 
     state = _state(db, task.id)
@@ -722,11 +730,15 @@ def handoff(db: Session, task: SddTask, user_id: str, request: HandoffRequest) -
         if content.digest(actual["repositories"]) != content.digest(repositories):
             _fail("INPUT_CHANGED", "Server input verification did not match captured local input")
         _complete_driver_operation(state, user_id, request)
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, TaskSessionSnapshotError) as exc:
         state.sync_phase = "RECOVERY_REQUIRED"
         state.recovery_kind = "SERVER_INPUT"
         state.recovery_message = str(exc)[:1000]
         state.recovery_operation_id = request.operation_id
+        if request.submission_id:
+            from app.domains.task.services.chat_submission_service import _fail_sync
+
+            _fail_sync(db, request.submission_id, "本地代码交接失败，本次消息未执行。恢复协同后可重新发送。")
         _bump(state)
         # The router commits this failure state before returning the error.
         raise CollaborationError("RECOVERY_REQUIRED", str(exc)) from exc
@@ -1021,6 +1033,12 @@ def abandon_input(db: Session, task_id: str, submission_id: str) -> None:
     state = _state(db, task_id)
     if not state or not state.enabled or state.pending_submission_id != submission_id:
         return
+    if state.sync_phase == "RECOVERY_REQUIRED" and state.recovery_kind == "SERVER_INPUT":
+        # Cancelling the message must not waive a partially installed file input.
+        state.pending_submission_id = None
+        state.input_submission_id = None
+        _bump(state)
+        return
     if state.sync_phase != "PREPARING":
         return
     if state.input_submission_id != submission_id:
@@ -1063,19 +1081,30 @@ def reset_session(db: Session, task: SddTask) -> None:
     _bump(state)
 
 
-def cancel_preparation(db: Session, task: SddTask, user_id: str, request: Fence, submission_id: str) -> dict:
+def cancel_preparation(
+    db: Session,
+    task: SddTask,
+    user_id: str,
+    request: Fence,
+    submission_id: str,
+    error_message: str | None = None,
+) -> dict:
     state = _state(db, task.id)
     if not state:
         _fail("COLLABORATION_DISABLED", "Local collaboration is disabled")
     operation_id = getattr(request, "operation_id", None)
+    operation_kind = "FAIL_PREPARATION" if error_message else "CANCEL_PREPARATION"
     if operation_id:
         _check_driver(state, user_id, request)
-        previous = _operation(db, task.id, operation_id, "CANCEL_PREPARATION", request.model_dump())
+        previous = _operation(db, task.id, operation_id, operation_kind, request.model_dump())
         if previous:
             return previous
     _check_fence(state, task, user_id, request)
-    if state.sync_phase != "PREPARING" or state.pending_submission_id != submission_id:
+    recoverable_input = state.sync_phase == "RECOVERY_REQUIRED" and state.recovery_kind == "SERVER_INPUT"
+    if (state.sync_phase != "PREPARING" and not recoverable_input) or state.pending_submission_id != submission_id:
         _fail("PREPARATION_CHANGED", "The preparation has already changed")
+    if error_message and state.input_submission_id == submission_id:
+        _fail("PREPARATION_CHANGED", "The local input has already been accepted")
     from app.domains.task.models.chat_submission import TaskChatSubmission
 
     submission = db.get(TaskChatSubmission, submission_id)
@@ -1083,13 +1112,13 @@ def cancel_preparation(db: Session, task: SddTask, user_id: str, request: Fence,
         _fail("PREPARATION_CHANGED", "The message is no longer preparing")
     from app.domains.task.services.chat_submission_service import _transition
 
-    _transition(db, submission, "FAILED", error_message="Local code preparation cancelled by the driver")
+    _transition(
+        db, submission, "FAILED", error_message=error_message or "Local code preparation cancelled by the driver"
+    )
     abandon_input(db, task.id, submission_id)
     db.flush()
     return (
-        _record(db, task, operation_id, "CANCEL_PREPARATION", request.model_dump())
-        if operation_id
-        else get_state(db, task)
+        _record(db, task, operation_id, operation_kind, request.model_dump()) if operation_id else get_state(db, task)
     )
 
 
@@ -1101,7 +1130,7 @@ def recover_input(db: Session, task: SddTask, user_id: str, request: Fence, oper
     if state.sync_phase != "RECOVERY_REQUIRED" or state.recovery_kind != "SERVER_INPUT":
         _fail("RECOVERY_NOT_PENDING", "No server input installation is awaiting recovery")
     _assert_no_writer(db, task.id)
-    store = content.ObjectStore(task)
+    store = _ensure_store(db, task)
     journal = store.read_journal(operation_id)
     if not journal or not journal.get("target"):
         # A failed preflight has not changed any server files. It is safe to

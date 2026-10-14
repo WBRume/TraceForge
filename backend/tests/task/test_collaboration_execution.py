@@ -128,6 +128,27 @@ def test_message_is_durable_while_waiting_for_actual_input(collaboration_db):
     assert db.query(SddAiJob).count() == 0
 
 
+@pytest.mark.parametrize("phase", ["PREPARING", "RECOVERY_REQUIRED"])
+def test_stop_does_not_cancel_preparing_message_without_an_agent_job(collaboration_db, phase):
+    from app.domains.task.services import task_session_control_service as controls
+
+    db = collaboration_db
+    receipt = accept(db)
+    state = db.get(CollaborationState, "t")
+    state.sync_phase = phase
+    if phase == "RECOVERY_REQUIRED":
+        state.recovery_kind = "SERVER_INPUT"
+        state.recovery_operation_id = "lost-handoff"
+    db.commit()
+    with pytest.raises(controls.TaskSessionControlError, match="No running"):
+        controls._cancel_active_jobs_sync(db, task_id="t", workspace_id="w", message="cancel preparation")
+    assert receipt.status == "PREPARING"
+    assert receipt.active_task_id == "t"
+    assert state.pending_submission_id == receipt.id
+    assert state.sync_phase == phase
+    assert db.query(SddAiJob).count() == 0
+
+
 def test_another_desktop_cannot_submit_using_same_user(collaboration_db):
     db = collaboration_db
     with pytest.raises(submissions.SubmissionError, match="bound desktop"):
@@ -301,7 +322,9 @@ def test_fixed_input_is_bound_to_one_job_after_checkpoint_preparation(
         assert manifest["turn_index"] == turn.turn_index
         assert manifest["turn_title"] == "Update login"
         assert manifest["turn_created_at"] == turn.created_at.isoformat() + "Z"
-        assert db.get(CollaborationSnapshot, manifest["snapshot_id"]).manifest_json == manifest
+        # Inventories are compressed separately; the persisted header does not
+        # duplicate repositories. Compare through the public snapshot reader.
+        assert service.get_snapshot(db, "t", manifest["snapshot_id"]) == manifest
     state.run_id = "missing-historical-job"
     assert "turn_index" not in service._snapshot(db, db.get(SddTask, "t"), state, "AGENT_OUTPUT", [])
 

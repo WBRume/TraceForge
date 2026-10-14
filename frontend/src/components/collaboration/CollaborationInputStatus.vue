@@ -32,8 +32,7 @@ function open() { openCollaborationView(props.controller, ui.value?.action === '
     <div v-if="visible && ui?.inputText" class="collaboration-input-status" :class="{ 'is-warning': pending || ui.tone === 'warning' }">
       <Loader2 v-if="pending" class="status-spinner" aria-hidden="true" />
       <span role="status" aria-live="polite" aria-atomic="true" :title="statusText">{{ statusText }}</span>
-      <button v-if="pending && controllerPreparing" type="button" :title="t('collaboration.cancelPreparation')" :aria-label="t('collaboration.cancelPreparation')" @click="controller.cancelPreparation">{{ t('common.cancel') }}</button>
-      <button v-else type="button" @click="open">{{ t(ui.key === 'conflict' ? 'collaboration.ui.handleFiles' : ui.action !== 'none' ? `collaboration.ui.actions.${ui.action}` : 'collaboration.ui.view') }}</button>
+      <button type="button" @click="open">{{ t(ui.key === 'conflict' ? 'collaboration.ui.handleFiles' : ui.action !== 'none' ? `collaboration.ui.actions.${ui.action}` : 'collaboration.ui.view') }}</button>
     </div>
   </Transition>
 </template>
