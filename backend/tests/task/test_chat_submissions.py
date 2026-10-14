@@ -590,7 +590,13 @@ async def test_slow_checkpoint_remains_visible_and_rejects_second_send(task_db, 
     finally:
         finish.set()
         await runner
-    assert task_db.get(TaskChatSubmission, row.id).status == "FAILED"
+    failed = task_db.get(TaskChatSubmission, row.id)
+    assert failed.status == "FAILED" and failed.active_task_id is None
+    assert failed.error_message == "消息准备失败，请重试"
+    assert task_db.query(ChatMessage).count() == 0
+    assert task_db.query(SddAiJob).count() == 0
+    assert service._load_preparation(task_db, row.id) is None
+    assert accepted(task_db, "after-failed-preparation").status == "PREPARING"
 
 
 @pytest.mark.asyncio

@@ -269,6 +269,9 @@ export function useSessionState(options: {
     if (payload?.interrupted_at !== undefined) {
       task.interrupted_at = payload.interrupted_at
     }
+    if (payload?.submission?.task_id === String(task.id)) {
+      options.submissions.put(payload.submission)
+    }
     const job = payload?.job as ChatAiJob | undefined
     if (job?.id) {
       options.ingestJob(job)

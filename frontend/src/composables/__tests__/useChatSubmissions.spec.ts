@@ -77,9 +77,13 @@ describe('durable chat submissions', () => {
   })
   it('shows a failure without keeping the task busy', () => {
     const { model } = setup()
-    model.put({ ...receipt, status: 'FAILED', error_message: 'snapshot failed' })
+    model.put(receipt)
+    expect(model.busy.value).toBe(true)
+    model.put({ ...receipt, status: 'FAILED', version: 2, error_message: 'snapshot failed' })
+    model.put(receipt) // A delayed preparation event cannot reopen the failed turn.
     expect(model.busy.value).toBe(false)
     expect(model.bubbles([])[0].delivery_error).toBe('snapshot failed')
+    expect(api.post).not.toHaveBeenCalled()
   })
   it('retries an unknown receipt with the same key on demand', async () => {
     vi.mocked(api.post).mockRejectedValueOnce(new Error('lost response'))

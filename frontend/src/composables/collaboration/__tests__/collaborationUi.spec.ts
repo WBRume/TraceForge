@@ -293,14 +293,16 @@ describe('composer feedback only when attention is needed', () => {
     wrapper.unmount()
   })
 
-  it('offers cancellation only after a long wait and removes it as soon as preparation completes', async () => {
+  it('offers only details after a long wait and never allows cancelling preparation', async () => {
     const { wrapper, model, state } = preparing()
     await vi.advanceTimersByTimeAsync(7999)
     expect(wrapper.find('[role="status"]').exists()).toBe(false)
     await vi.advanceTimersByTimeAsync(1)
     expect(wrapper.get('[role="status"]').text()).toContain('发送准备耗时较长')
-    await wrapper.get('[aria-label="取消本轮准备"]').trigger('click')
-    expect(model.cancelPreparation).toHaveBeenCalledOnce()
+    expect(wrapper.find('[aria-label="取消本轮准备"]').exists()).toBe(false)
+    await wrapper.get('button').trigger('click')
+    expect(wrapper.emitted('open')).toHaveLength(1)
+    expect(model.cancelPreparation).not.toHaveBeenCalled()
     state.value.sync_phase = 'RUNNING'; model.blocked.value = false
     await nextTick()
     expect(wrapper.find('button').exists()).toBe(false)

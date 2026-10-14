@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bot } from '@/components/icons'
+import { AlertCircle, Bot } from '@/components/icons'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 import { messageAuthorColor, memberColorFor, memberColorRgba } from '@/composables/chat/message/memberColor'
 import type { ChatMessageFields } from '@/composables/chat/shared/messageIdentity'
@@ -144,12 +144,27 @@ const showTrailingAvatar = computed(() => (
           <div v-else class="msg-content">{{ content ?? msg.content }}</div>
         </div>
       </slot>
+      <div v-if="msgRole === 'user' && msg.delivery_status === 'failed'" class="message-delivery-error" role="alert">
+        <AlertCircle :size="14" aria-hidden="true" />
+        <span>{{ msg.delivery_error || t('chat.message_failed') }}</span>
+      </div>
       <slot name="actions" />
     </div>
   </div>
 </template>
 
 <style scoped>
+.message-delivery-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--color-danger-600, #dc2626);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.message-delivery-error svg { flex-shrink: 0; margin-top: 2px; }
 .message-wrapper {
   display: flex;
   min-width: 0;

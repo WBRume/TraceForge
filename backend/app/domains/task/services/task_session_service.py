@@ -278,12 +278,15 @@ def _prepare_chat_turn_sync(
         str(session_id if session_id is not None else (None if fresh_session else task.session_id) or "").strip()
         or None
     )
+    from app.domains.task.services.task_snapshot_anchor import current_anchor
+
+    anchor = current_anchor(task, _repo_rel_paths(task), str(task.workspace.name or ""))
     return {
         "task_id": task.id,
         "workspace_id": task.workspace_id,
         "workspace_name": str(task.workspace.name or ""),
         "task_name": str(task.name or ""),
-        "initial_workspace_checkpoint": (task.task_meta_json or {}).get("initial_workspace_checkpoint"),
+        "initial_workspace_checkpoint": anchor,
         "pinned_worktree": input_worktree_checkpoint(db, task, submission_id),
         "project_path": str(task.project_path or ""),
         "repo_rel_paths": _repo_rel_paths(task),
