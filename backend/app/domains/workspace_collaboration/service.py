@@ -1064,11 +1064,14 @@ def abandon_input(db: Session, task_id: str, submission_id: str) -> None:
     _bump(state)
 
 
-def reset_session(db: Session, task: SddTask) -> None:
+def reset_session(db: Session, task: SddTask, *, actor_id: str | None = None) -> None:
+    from .session import cloud_input_available, uses_local_input
+
     state = _state(db, task.id)
     if not state or not state.enabled:
         return
-    if state.sync_phase != "READY":
+    cloud_reset = actor_id and not uses_local_input(state, actor_id) and cloud_input_available(state)
+    if state.sync_phase != "READY" and not cloud_reset:
         _fail("DELIVERY_REQUIRED", "Finish code delivery before initializing a new session")
     state.session_generation = task.session_generation
     state.session_revision = task.session_revision

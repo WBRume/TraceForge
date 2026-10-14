@@ -21,7 +21,8 @@ from app.domains.task.routers.task.deps import (
     verify_workspace_permission,
 )
 from app.domains.task.schemas.task import InitializeRequest, TaskStartRequest
-from app.domains.task.services import task_session_control_service, task_session_service
+from app.domains.task.services import chat_submission_service, task_session_control_service, task_session_service
+from app.domains.workspace_collaboration.service import CollaborationError
 
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 
@@ -63,6 +64,8 @@ async def start_task(
             )
     except task_session_control_service.TaskSessionControlError as exc:
         raise_session_control_error(exc)
+    except (chat_submission_service.SubmissionError, CollaborationError) as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except LockAcquireTimeout as exc:
         raise_task_lock_conflict(exc)
 

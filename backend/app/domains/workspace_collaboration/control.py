@@ -1,6 +1,5 @@
 """Keep start/resume commands on the same durable input path as ordinary chat."""
 
-from datetime import datetime
 from uuid import uuid4
 
 from app.domains.workspace_collaboration.models import CollaborationState
@@ -15,22 +14,24 @@ def accept_control(
     db, task, actor_id, *, content, prompt=None, fresh_session=False, source, client_id=None, metadata=None
 ):
     from app.domains.task.services import chat_submission_service
-    from app.domains.workspace_collaboration.service import CollaborationError
+    from app.domains.workspace_collaboration.session import uses_local_input
 
     state = db.get(CollaborationState, task.id)
-    if state.driver_user_id != actor_id:
-        raise CollaborationError("COLLABORATION_DRIVER_REQUIRED", "请由主控桌面客户端发起下一轮")
     metadata = {
         **(metadata or {}),
         "source": source,
-        "collaboration": {
+        "_collaboration_control": {"prompt": prompt or content, "fresh_session": fresh_session},
+    }
+    # Historical bindings are not an input dependency. Match ordinary chat:
+    # only the connected driver's own command requests a local handoff.
+    metadata.pop("collaboration", None)
+    if uses_local_input(state, actor_id):
+        metadata["collaboration"] = {
             "client_id": state.client_id,
             "instance_id": state.instance_id,
             "binding_id": state.binding_id,
             "lease_epoch": state.lease_epoch,
-        },
-        "_collaboration_control": {"prompt": prompt or content, "fresh_session": fresh_session},
-    }
+        }
     return chat_submission_service._accept_sync(db, task.id, actor_id, client_id or str(uuid4()), content, metadata)
 
 
@@ -43,22 +44,9 @@ async def schedule_control(receipt):
 
 def accept_pre_input(db, task_id, actor_id, text, metadata):
     from app.domains.task.models.task import SddTask
-    from app.domains.task.services import chat_submission_service
 
     if not enabled(db, task_id):
         return None
-    state = db.get(CollaborationState, task_id)
-    if state.driver_user_id != actor_id or state.lease_expires_at <= datetime.utcnow():
-        # A shared prompt from another member (or a disconnected driver) uses
-        # cloud code, just like their ordinary messages. Never claim a desktop.
-        return chat_submission_service._accept_sync(
-            db,
-            task_id,
-            actor_id,
-            f"pre-input:{metadata['pre_input_id']}",
-            text,
-            {**metadata, "source": "pre_input_collaboration"},
-        )
     return accept_control(
         db,
         db.get(SddTask, task_id),
@@ -70,11 +58,14 @@ def accept_pre_input(db, task_id, actor_id, text, metadata):
     )
 
 
-def require_ready(db, task_id):
+def require_ready(db, task_id, *, actor_id=None):
     from app.domains.task.services.task_session_control_service import TaskSessionControlError
+    from app.domains.workspace_collaboration.session import cloud_input_available, uses_local_input
 
     state = db.get(CollaborationState, task_id)
     if state and state.enabled and state.sync_phase != "READY":
+        if actor_id and not uses_local_input(state, actor_id) and cloud_input_available(state):
+            return
         raise TaskSessionControlError("请先完成当前本地代码交付及冲突恢复", status_code=409)
 
 
@@ -111,7 +102,7 @@ def resume_submission(db, task_id, actor_id, prepared, client_id, metadata=None)
     task = db.get(SddTask, task_id)
     if not enabled(db, task_id):
         return None
-    require_ready(db, task_id)
+    require_ready(db, task_id, actor_id=actor_id)
     task.status = TaskStatus.CODING
     task.session_id = prepared.get("session_id", task.session_id)
     task.error_message = None
