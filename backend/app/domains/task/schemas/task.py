@@ -155,6 +155,7 @@ class InitializeRequest(BaseModel):
     reason: str | None = None
     skill_ids: list[str] | None = None
     keep_deleted_runtime_skills: bool | None = True
+    operation_id: str | None = Field(default=None, min_length=8, max_length=48, pattern=r"^[a-zA-Z0-9_-]+$")
 
 
 class TaskRuntimeSkillUsage(BaseModel):

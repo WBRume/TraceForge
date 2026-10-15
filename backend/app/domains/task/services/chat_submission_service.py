@@ -111,12 +111,12 @@ async def wake_event_publisher():
     task_event_publisher.wake()
 
 
-def assert_no_preparing_submission(db, task_id, allowed_id=None):
+def assert_no_preparing_submission(db, task_id, allowed_id=None, *, initialization_id=None):
     from app.domains.task.services.repository_updates.storage import require_available
 
     task = db.query(SddTask).filter_by(id=task_id).with_for_update().first()
     try:
-        require_available(task)
+        require_available(task, initialization_id=initialization_id)
     except ValueError as exc:
         raise SubmissionError(str(exc), "REPOSITORY_UPDATE_BUSY") from exc
     row = (

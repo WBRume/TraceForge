@@ -85,6 +85,12 @@ def get_task_or_404(db: Session, task_id: str, ws_id: str):
 
 
 def ensure_task_not_baselined(task) -> None:
+    from app.domains.task.services.initialization.state import InitializationError, require_available
+
+    try:
+        require_available(task)
+    except InitializationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if task.status == TaskStatus.BASELINED:
         raise HTTPException(status_code=403, detail=BASELINED_LOCKED_MSG)
 

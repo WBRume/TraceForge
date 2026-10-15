@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import api from '@/utils/api'
 import { noteTaskRunInitiated } from '@/utils/taskAwarenessIntent'
 import { ElMessage } from 'element-plus'
@@ -54,6 +54,8 @@ export function useTaskStartActions(options: {
   const initializingTask = computed(() => Boolean(initializingTaskId.value) && options.getCurrentTask()?.id === initializingTaskId.value)
   const initPrompt = ref('')
   const initReason = ref('')
+  const initOperationId = shallowRef('')
+  const initRecoveryPending = shallowRef(false)
   const initSkillOptionsLoading = ref(false)
   const initSkillOptions = ref<any[]>([])
   const initSelectedSkillIds = ref<string[]>([])
@@ -200,6 +202,24 @@ export function useTaskStartActions(options: {
       loadInitSkillOptions(),
     ])
     initSelectedSkillIds.value = extractTaskSkillIds()
+    const taskId = options.getCurrentTask()?.id
+    try {
+      const { data } = await api.get(`/workspaces/${options.getWorkspaceId()}/tasks/${taskId}/initialize`)
+      if (options.getCurrentTask()?.id !== taskId) return
+      const operation = data?.operation
+      initRecoveryPending.value = Boolean(operation && operation.state !== 'COMPLETED')
+      if (initRecoveryPending.value) {
+        initOperationId.value = operation.id
+        initPrompt.value = operation.request?.requested_prompt || defaultInitialPromptForTask(options.getCurrentTask())
+        initReason.value = operation.request?.reason || ''
+        initSelectedSkillIds.value = operation.request?.skill_ids || extractTaskSkillIds()
+      } else if (operation?.id !== initOperationId.value) {
+        initOperationId.value = ''
+      }
+    } catch (error) {
+      ElMessage.error(options.resolveActionError(error, 'chat.errors.initialize_failed', 'chat.errors.no_permission_manage_task_status'))
+      showInitReasonModal.value = false
+    }
   }
 
   const initializeTaskWithReason = async (
@@ -237,6 +257,7 @@ export function useTaskStartActions(options: {
     options.engineRunning.value = true
     try {
       const payload: Record<string, unknown> = {
+        operation_id: initOperationId.value || (initOperationId.value = crypto.randomUUID()),
         reason: reasonText || undefined,
         prompt: promptText || undefined,
       }
@@ -247,6 +268,7 @@ export function useTaskStartActions(options: {
       const res = await api.post(
         `/workspaces/${workspaceId}/tasks/${task.id}/initialize`,
         payload,
+        { timeout: 0 },
       )
       const job = res.data?.job
       noteTaskRunInitiated(task.id, undefined, job?.id)
@@ -271,6 +293,10 @@ export function useTaskStartActions(options: {
       options.patchTask(task.id, hasSkillSelectionArg
         ? { status: 'CODING', session_generation: task.session_generation, skill_ids: normalizedSkillIds }
         : { status: 'CODING', session_generation: task.session_generation })
+      // Retain the receipt if refreshing history fails after the server commits.
+      // Retrying the UI must recover that turn, not discard code a second time.
+      initOperationId.value = ''
+      initRecoveryPending.value = false
       return true
     } catch (e) {
       console.error('Initialize failed', e)
@@ -323,6 +349,8 @@ export function useTaskStartActions(options: {
   /** 会话切换：清空初始化弹窗的技能选择（弹窗状态由打开时重建）。 */
   const resetInitializeState = () => {
     initSelectedSkillIds.value = []
+    initOperationId.value = ''
+    initRecoveryPending.value = false
   }
 
   return {
@@ -334,6 +362,7 @@ export function useTaskStartActions(options: {
     initializingTask,
     initPrompt,
     initReason,
+    initRecoveryPending,
     initSkillOptions,
     initSkillOptionsLoading,
     initSelectedSkillIds,

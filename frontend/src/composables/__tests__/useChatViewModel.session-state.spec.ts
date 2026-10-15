@@ -131,6 +131,34 @@ const readySocket = async (frame: Record<string, any> = { type: 'resume_ok', epo
 }
 
 describe('useChatViewModel session state single flight', () => {
+  it('continues initialization with its persisted operation after reload and a lost response', async () => {
+    apiMock.get.mockImplementation((url: string) => {
+      if (url.includes('/permissions/me')) return Promise.resolve({ data: { permissions: { manage_task_status: true } } })
+      if (url.endsWith('/initialize')) return Promise.resolve({ data: { operation: {
+        id: 'persisted-operation', state: 'RESETTING', request: { requested_prompt: 'original prompt', reason: 'restart', skill_ids: [] },
+      } } })
+      return resolveByUrl(url)
+    })
+    await mountViewModel()
+    await vm.selectTask({ ...task('t1'), session_generation: 1 })
+    await readySocket()
+    await vm.handleInitialize()
+    expect(vm.initRecoveryPending.value).toBe(true)
+    expect(vm.initPrompt.value).toBe('original prompt')
+    apiMock.post.mockRejectedValueOnce(new Error('lost response'))
+    expect(await vm.initializeTaskWithReason()).toBe(false)
+    apiMock.post.mockResolvedValueOnce({ data: { job: { id: 'one-job', session_generation: 2 } } })
+    expect(await vm.initializeTaskWithReason()).toBe(true)
+    const calls = apiMock.post.mock.calls.filter(([url]) => url.endsWith('/initialize'))
+    expect(calls).toHaveLength(2)
+    for (const [, payload, config] of calls) {
+      expect(payload.operation_id).toBe('persisted-operation')
+      expect(payload.prompt).toBe('original prompt')
+      expect(config.timeout).toBe(0)
+    }
+    expect(vm.initRecoveryPending.value).toBe(false)
+  })
+
   it('resumes the server operation after reload and reuses it after a lost response', async () => {
     await mountViewModel()
     await vm.selectTask({ ...task('t1'), execution_location: 'LOCAL', creator_id: 'u1', session_generation: 1 })

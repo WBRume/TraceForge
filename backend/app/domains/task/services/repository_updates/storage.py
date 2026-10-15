@@ -72,7 +72,10 @@ def publish(db, task, pointer):
     )
 
 
-def require_available(task):
+def require_available(task, *, initialization_id=None):
+    from app.domains.task.services.initialization.state import require_available as require_initialized
+
+    require_initialized(task, initialization_id)
     state = ((getattr(task, "task_meta_json", None) or {}).get("repository_update") or {}).get("state")
     if state in BLOCKED:
         raise UpdateError(

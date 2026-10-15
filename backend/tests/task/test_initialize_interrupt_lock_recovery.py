@@ -30,10 +30,11 @@ from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed
 
 
 @pytest.fixture
-def task_api(monkeypatch):
+def task_api(monkeypatch, tmp_path):
     db_engine, SessionLocal = _build_db()
     with SessionLocal() as db:
         _user, _workspace, task = _seed_workspace(db)
+        task.project_path = str(tmp_path)
         task.status = TaskStatus.INTERRUPTED
         task.session_generation = 1
         task.session_id = "old-session"
@@ -54,6 +55,7 @@ def task_api(monkeypatch):
             return AgentStopResult(execution_kind="REMOTE_SESSION", stop_acknowledged=True)
 
     remote = RemoteEngine()
+    monkeypatch.setattr("app.domains.task.services.task_snapshot_anchor.current_anchor", lambda *args: None)
     monkeypatch.setattr(database, "SessionLocal", SessionLocal)
     patch_ai_job_db(monkeypatch, SessionLocal)
     monkeypatch.setattr(lifecycle, "get_engine", lambda _task_id: remote)

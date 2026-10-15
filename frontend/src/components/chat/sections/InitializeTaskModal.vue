@@ -27,11 +27,14 @@ const { t } = useI18n()
         <span>{{ t('chat.init_reason_title') }}</span>
       </div>
       <div class="modal-form">
+        <p class="initialize-description">{{ t('chat.initialize_code_reset_description') }}</p>
+        <p v-if="props.vm.initRecoveryPending" role="status">{{ t('chat.initialize_recovery_description') }}</p>
         <div class="form-group">
           <label for="initialize-initial-prompt">{{ t('chat.initial_prompt_label') }}</label>
           <textarea
             id="initialize-initial-prompt"
             v-model="props.vm.initPrompt"
+            :disabled="props.vm.initRecoveryPending"
             class="input-field textarea-field"
             rows="5"
             :placeholder="t('chat.initial_prompt_placeholder')"
@@ -42,6 +45,7 @@ const { t } = useI18n()
           <input
             type="text"
             v-model="props.vm.initReason"
+            :disabled="props.vm.initRecoveryPending"
             :placeholder="t('chat.init_reason_placeholder')"
             class="input-field"
             @keyup.enter="props.vm.confirmInitialize"
@@ -55,7 +59,7 @@ const { t } = useI18n()
               {{ t('chat.task_skills_empty') }}
             </div>
             <label v-else v-for="skill in props.vm.initSkillOptions" :key="skill.id" class="init-skill-item">
-              <input v-model="props.vm.initSelectedSkillIds" type="checkbox" :value="skill.id" />
+              <input v-model="props.vm.initSelectedSkillIds" type="checkbox" :value="skill.id" :disabled="props.vm.initRecoveryPending" />
               <span class="init-skill-name">{{ skill.name }}</span>
               <span class="init-skill-meta">{{ skill.dimension }}</span>
             </label>
@@ -74,7 +78,7 @@ const { t } = useI18n()
           :disabled="props.vm.initSkillOptionsLoading || props.vm.taskRuntimeSkillsLoading"
           @click="props.vm.confirmInitialize"
         >
-          {{ t('chat.init_reason_confirm') }}
+          {{ t(props.vm.initRecoveryPending ? 'chat.initialize_continue' : 'chat.init_reason_confirm') }}
         </button>
       </div>
     </div>
@@ -146,6 +150,7 @@ const { t } = useI18n()
   flex-direction: column;
   gap: var(--space-4);
 }
+.initialize-description { margin: 0; color: var(--color-text-secondary); font-size: 0.875rem; line-height: 1.6; }
 .form-group {
   display: flex;
   flex-direction: column;

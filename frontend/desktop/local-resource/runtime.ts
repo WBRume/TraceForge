@@ -9,6 +9,7 @@ import { snapshot } from './snapshots'
 import { cleanupSession, forkSession, sessionRoot } from './provider'
 import { CollaborationRuntime } from './collaboration'
 import { rejectManagedWrite } from './collaboration-guard'
+import { initialize } from './initialize'
 
 export interface Config { roots_config_path?: string; state_root: string; allowed_roots: string[]; token: string; listen_host?: string; port?: number; dsh_session_root?: string; collaboration_registry_path?: string }
 export interface Operation { operation_id: string; resource_id: string; task_id: string; kind: string; payload_hash: string; payload: any }
@@ -49,7 +50,7 @@ export class Runtime {
     if (prior) {
       if (prior.hash !== digest) fail('OPERATION_ID_CONFLICT')
       if (prior.state === 'SUCCEEDED') return { state: 'SUCCEEDED', result: JSON.parse(prior.result) }
-      if (!['provision', 'release'].includes(command.kind)) fail('EXECUTION_UNKNOWN: 操作结果未知，请对账后重试')
+      if (!['provision', 'release', 'initialize'].includes(command.kind)) fail('EXECUTION_UNKNOWN: 操作结果未知，请对账后重试')
     } else this.db.query('INSERT INTO operations VALUES (?,?,?,NULL)').run(command.operation_id, digest, 'RUNNING')
     try {
       const result = this.execute(command)
@@ -81,6 +82,7 @@ export class Runtime {
     const receipt = readJson<Receipt>(path.join(this.state, 'tasks', command.task_id + '.json'))
     const dshRoot = sessionRoot(this.config.dsh_session_root)
     switch (command.kind) {
+      case 'initialize': return initialize(receipt, payload)
       case 'repository_details': return { repositories: receipt.repositories.map(repo => ({
         repository_id: repo.repository_id,
         base_commit: repo.base_commit || readCommitInfo(child(root, repo.rel_path), repo.base_commit_sha),

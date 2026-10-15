@@ -104,6 +104,7 @@ async def initialize_task(
                 keep_deleted_runtime_skills=body.keep_deleted_runtime_skills is not False,
                 requested_prompt=body.prompt,
                 reason=body.reason,
+                operation_id=body.operation_id,
             )
     except task_session_service.TaskSessionUndoError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
@@ -111,3 +112,27 @@ async def initialize_task(
         raise_session_control_error(exc)
     except LockAcquireTimeout as exc:
         raise_task_lock_conflict(exc)
+
+
+@router.get("/{task_id}/initialize")
+async def initialization_status(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.domains.task.routers.task.deps import get_task_or_404
+    from app.domains.task.services.initialization.state import public
+
+    def read(session):
+        verify_workspace_permission(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.MANAGE_TASK_STATUS,
+            "No permission to initialize tasks",
+            task_id=task_id,
+        )
+        return public(get_task_or_404(session, task_id, ws_id))
+
+    return await run_route_db_txn(db, get_db_bind(db), read)

@@ -330,7 +330,7 @@ def _snapshot(db: Session, task: SddTask, state: CollaborationState, source: str
             manifest.update(session_turn_id=turn.id, turn_index=turn.turn_index)
             # This database timestamp follows the same contract as conversation history.
             # A naive server-local value must not be relabeled as UTC.
-            manifest["turn_created_at"] = turn.created_at.isoformat()
+            manifest["turn_created_at"] = turn.created_at.isoformat() + ("Z" if turn.created_at.tzinfo is None else "")
             message = db.get(ChatMessage, turn.user_message_id) if turn.user_message_id else None
             if message and message.task_id == task.id:
                 title = " ".join(message.content.split())
@@ -505,10 +505,12 @@ def renew_lease(db: Session, task: SddTask, user_id: str, request: LeaseRequest)
 
 
 def _assert_no_writer(db: Session, task_id: str, *, read_only: bool = False) -> None:
+    from app.domains.task.services.initialization.state import require_available as require_initialized
     from app.domains.task.services.repository_updates.storage import require_available
 
     try:
         task = db.get(SddTask, task_id)
+        require_initialized(task)
         update = (getattr(task, "task_meta_json", None) or {}).get("repository_update") or {}
         if not read_only or update.get("state") in {"APPLYING", "RECOVERY_REQUIRED"}:
             require_available(task)
