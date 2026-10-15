@@ -783,7 +783,7 @@
     "session_scroll_load_more": "Scroll to the bottom to load more sessions",
     "empty_hint": "Select a task to view conversation",
     "initializing_session": "Updating repositories, clearing task output and starting a new session…",
-    "initialize_code_reset_description": "All task repositories will incrementally reset to the latest commit of their bound branches. Generated files, code changes and conflict resolutions will be discarded without backups, and a fresh Agent session will start.",
+    "initialize_code_reset_description": "All task repositories will incrementally reset to the latest commit of their bound branches. With local collaboration enabled, connected local repositories are also reset. Generated files, code changes and resolved merges are discarded without backups. The Agent session restarts after both sides are clean.",
     "initialize_recovery_description": "Initialization is unfinished. Continue resetting all repositories to the already pinned remote commits.",
     "initialize_continue": "Continue initialization",
     "start_before_chat": "Please start the engine before sending messages",

@@ -783,7 +783,7 @@
     "session_scroll_load_more": "下滑到底自动加载更多会话",
     "empty_hint": "选择一个任务查看会话",
     "initializing_session": "正在更新仓库、清理任务产出并建立新会话…",
-    "initialize_code_reset_description": "所有任务仓库将增量更新到绑定分支的最新提交。任务生成文件、代码改动和冲突解决结果都会清除，不创建备份，并重新开始 Agent 会话。",
+    "initialize_code_reset_description": "所有任务仓库将增量更新到绑定分支的最新提交。开启本地协同时，也会清理已连接的本地仓库。生成文件、代码改动和冲突解决结果都会清除，不创建备份；两端清理完成后重新开始 Agent 会话。",
     "initialize_recovery_description": "上次初始化尚未完成。继续会使用已固定的远端版本，接续完成所有仓库的重置。",
     "initialize_continue": "继续初始化",
     "start_before_chat": "请先启动引擎后再发送消息",

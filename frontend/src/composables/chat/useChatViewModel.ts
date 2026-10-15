@@ -693,6 +693,9 @@ export function useChatViewModel() {
   ))
 
   const startActions = useTaskStartActions({
+    initializationIdentity: collaboration.initializationIdentity,
+    resetForInitialization: collaboration.resetForInitialization,
+    finishInitialization: collaboration.finishInitialization,
     collaborationBlocked: () => collaboration.blocked.value,
     getSubmissionMetadata: collaboration.submissionMetadata,
     getCurrentTask: () => taskState.currentTask.value,

@@ -19,6 +19,7 @@ from app.domains.task.services import task_session_service as turns
 from app.domains.task.services.task_attempt_recovery_service import recover_task_attempts
 from app.domains.workspace_collaboration.models import CollaborationState
 
+from . import collaboration as local_collaboration
 from . import state, worktree
 
 PROTECTED = [".sdd/assets", ".sdd/spec", ".agents/skills", ".claude/skills", ".dsh/skills"]
@@ -40,7 +41,7 @@ def _load(db, ws_id, task_id, operation_id):
     return operation if operation.get("id") == operation_id else None
 
 
-def _begin(db, ws_id, task_id, actor_id, operation_id, request):
+def _begin(db, ws_id, task_id, actor_id, operation_id, request, identity=None):
     task = db.query(SddTask).filter_by(id=task_id, workspace_id=ws_id).with_for_update().one()
     control._ensure_task_not_baselined(task)
     if control._initialize_has_active_jobs_sync(db, task_id=task_id):
@@ -73,6 +74,8 @@ def _begin(db, ws_id, task_id, actor_id, operation_id, request):
         "created_at": datetime.utcnow().isoformat(),
         "error": None,
         "generation": int(task.session_generation or 0) + 1,
+        "revision": int(task.session_revision or 0) + 1,
+        "collaboration": local_collaboration.require_driver(db, task, actor_id, identity),
         "repositories": [
             {
                 "id": row.id,
@@ -98,6 +101,8 @@ def _begin(db, ws_id, task_id, actor_id, operation_id, request):
         collaboration.lease_epoch += 1
         collaboration.lease_expires_at = datetime.utcnow()
         collaboration.binding_id = str(uuid4())
+        if operation["collaboration"]:
+            operation["collaboration"]["binding_id"] = collaboration.binding_id
         collaboration.snapshot_id = collaboration.input_snapshot_id = collaboration.progress_snapshot_id = None
         collaboration.pending_submission_id = collaboration.input_submission_id = None
         collaboration.sync_phase = "READY"
@@ -123,13 +128,22 @@ def _start_generation(db, ws_id, task_id, operation):
     )
 
 
-async def initialize(db, *, ws_id, task_id, actor_user_id, operation_id=None, **request):
+async def initialize(
+    db, *, ws_id, task_id, actor_user_id, operation_id=None, collaboration=None, local_reset_receipt=None, **request
+):
     run = control._bind_txn_runner(db, control._session_bind(db))
     await run(lambda session: control._require_local_actor(session, task_id, actor_user_id))
     operation = await run(lambda session: _load(session, ws_id, task_id, operation_id))
     if not operation:
+        await run(
+            lambda session: local_collaboration.require_driver(
+                session, session.get(SddTask, task_id), actor_user_id, collaboration
+            )
+        )
         await _stop_previous(run, ws_id, task_id, actor_user_id)
-        operation = await run(lambda session: _begin(session, ws_id, task_id, actor_user_id, operation_id, request))
+        operation = await run(
+            lambda session: _begin(session, ws_id, task_id, actor_user_id, operation_id, request, collaboration)
+        )
     if operation["actor_id"] != actor_user_id:
         raise state.InitializationError("请由发起初始化的成员继续该操作。")
     if operation["state"] == "COMPLETED":
@@ -144,23 +158,10 @@ async def initialize(db, *, ws_id, task_id, actor_user_id, operation_id=None, **
     config = await run_file_job(resources.task_profile, task_id) if operation["local"] else None
 
     async def action(kind, index=None, repo=None):
-        if config:
-            payload = {"action": kind, "repository": repo, "protected": operation["protected"]}
-            return await run_file_job(
-                ResourceClient(config).operation,
-                task_id,
-                "initialize",
-                payload,
-                f"init-{identifier}-{kind}-{index if index is not None else 'root'}",
-            )
-        if kind == "clean":
-            return await run_file_job(
-                worktree.clean_root, operation["roots"], operation["repositories"], operation["protected"]
-            )
-        return await run_file_job(getattr(worktree, kind), operation["roots"], repo)
+        return await _action(task_id, identifier, operation, config, kind, index, repo)
 
     try:
-        if operation["state"] != "STARTING":
+        if operation["state"] not in {"STARTING", "WAITING_LOCAL"}:
             repos = operation["repositories"]
             for index, repo in enumerate(repos):
                 if not repo.get("target"):
@@ -172,6 +173,14 @@ async def initialize(db, *, ws_id, task_id, actor_user_id, operation_id=None, **
                     repo.update(await action("reset", index, repo))
                     operation = await update(repositories=repos)
             await action("clean")
+        if operation.get("collaboration") and not operation.get("local_reset_receipt"):
+            operation = await update(state="WAITING_LOCAL", error=None)
+            if not local_collaboration.verify_receipt(task_id, operation, collaboration, local_reset_receipt):
+                return {"operation_id": identifier, "local_reset": local_collaboration.command(task_id, operation)}
+            operation = await update(
+                local_reset_receipt=local_reset_receipt,
+                collaboration={**operation["collaboration"], "instance_id": collaboration["instance_id"]},
+            )
         result = await run(lambda session: _start_generation(session, ws_id, task_id, operation))
         baseline_started = time.monotonic()
         created = await turns.create_task_chat_turn(
@@ -211,3 +220,20 @@ async def _stop_previous(run, ws_id, task_id, actor_id):
     for job_id in prepared["cancelled_job_ids"]:
         await publishing.publish_job(job_id)
     await recover_task_attempts(task_id, run_txn=run, wait_for_running=True)
+
+
+async def _action(task_id, identifier, operation, config, kind, index, repo):
+    if config:
+        payload = {"action": kind, "repository": repo, "protected": operation["protected"]}
+        return await run_file_job(
+            ResourceClient(config).operation,
+            task_id,
+            "initialize",
+            payload,
+            f"init-{identifier}-{kind}-{index if index is not None else 'root'}",
+        )
+    if kind == "clean":
+        return await run_file_job(
+            worktree.clean_root, operation["roots"], operation["repositories"], operation["protected"]
+        )
+    return await run_file_job(getattr(worktree, kind), operation["roots"], repo)

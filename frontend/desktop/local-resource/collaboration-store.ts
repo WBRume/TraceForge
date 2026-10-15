@@ -32,6 +32,7 @@ export interface SyncBinding {
   target: SyncManifest | null; conflicts: SyncConflict[]; conflict_set_id: string | null;
   applied: Record<string, SyncFile | null>; errors: string[];
   directory_mode?: 'MAPPED'; released?: boolean; suspended?: boolean;
+  initialization?: { operation_id: string; binding_id: string; signature: string; completed: string[]; receipt?: any };
 }
 
 export function durableJson(file: string, value: unknown) {

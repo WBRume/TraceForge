@@ -8,6 +8,7 @@ import { CollaborationIndex } from './collaboration-index'
 import { observeFile, updateObservation } from './collaboration-observation'
 import { prepareTaskWorktree } from './collaboration-prepare'
 import { inspectMappedRepositories, requireCleanMappings } from './collaboration-mapped'
+import { initializeMapped } from './collaboration-initialize'
 import {
   durableJson, fileKey, identifier, repositoryFileModes, sameFile, syncPath, SyncObjects, validateFileMode, validateRepositoryIdentity,
   type SyncBinding, type SyncConflict, type SyncFile, type SyncManifest, type LocalRepository,
@@ -68,7 +69,14 @@ export class CollaborationRuntime {
   }
   private dispatch(kind: string, payload: any): any {
     this.index.beginOperation()
+    if (['prepare', 'capture', 'reconcile', 'restore', 'accept_input'].includes(kind)) {
+      const binding = this.findBinding(payload.task_id)
+      if (binding?.initialization && !binding.initialization.receipt) fail('COLLABORATION_INITIALIZATION_PENDING')
+      if (binding && payload.target?.session_generation < binding.metadata.session_generation) fail('COLLABORATION_SESSION_CHANGED')
+      if (binding && payload.session_generation !== undefined && payload.session_generation < binding.metadata.session_generation) fail('COLLABORATION_SESSION_CHANGED')
+    }
     switch (kind) {
+      case 'initialize': return this.initialize(payload)
       case 'inspect_mappings': { const { repositories: _bound, ...result } = inspectMappedRepositories(payload.repositories, this.roots()); return result }
       case 'prepare': return this.prepare(payload)
       case 'release': return this.release(payload)
@@ -88,6 +96,20 @@ export class CollaborationRuntime {
       case 'restore': return this.restore(payload)
       default: fail('UNSUPPORTED_COLLABORATION_OPERATION')
     }
+  }
+  private initialize(payload: any) {
+    const binding = this.load(payload.task_id, true)
+    const reused = initializeMapped(binding, payload, () => this.save(binding))
+    if (reused) return reused
+    this.index.close(binding.task_id)
+    this.observations.delete(binding.task_id); this.transports.delete(binding.task_id)
+    binding.baseline = this.scan(binding)
+    binding.initialization!.receipt = { task_id: binding.task_id, operation_id: payload.operation_id,
+      binding_id: binding.binding_id, repositories: binding.repositories.map(repo => ({
+        task_repository_id: repo.task_repository_id, head: repo.base_commit_sha, clean: true,
+      })) }
+    this.save(binding)
+    return binding.initialization!.receipt
   }
   private prepare(payload: any) {
     identifier(payload.task_id); identifier(payload.binding_id)
@@ -270,6 +292,7 @@ export class CollaborationRuntime {
     const reused = capturedFile && fs.existsSync(capturedFile)
     const saved = reused ? readJson(capturedFile!) : null
     const manifest: SyncManifest = saved ? saved.manifest ?? saved : this.scan(binding)
+    if (manifest.session_generation < binding.metadata.session_generation) fail('COLLABORATION_CAPTURE_IDENTITY_CHANGED')
     const inputCutSeq = saved?.input_cut_seq ?? this.scanSequence(binding, manifest)
     if (reused && ((payload.session_generation !== undefined && payload.session_generation !== manifest.session_generation)
       || (payload.session_revision !== undefined && payload.session_revision !== manifest.session_revision))) fail('COLLABORATION_CAPTURE_IDENTITY_CHANGED')

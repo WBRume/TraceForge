@@ -188,3 +188,40 @@ test('uses the mapped directories for dual delivery and selected recovery withou
   fs.writeFileSync(receiptPath, JSON.stringify(legacy))
   expect(runtime.execute('backups', { task_id: 'task' }).backups.find((row: any) => row.operation_id === 'restore-api').context).toBeUndefined()
 }, 120_000)
+
+test('initialization resets both mapped clones without backups and fences old captures after restart', async () => {
+  const first = await runtime.executeAsync('prepare', input)
+  const stamps = repositories.map(repo => fs.statSync(path.join(repo.local_path, 'shared.txt'), { bigint: true }).mtimeNs)
+  const gitDirs = repositories.map(repo => fs.statSync(path.join(repo.local_path, '.git'), { bigint: true }).ino)
+  for (const repo of repositories) {
+    fs.appendFileSync(path.join(repo.local_path, '.git/info/exclude'), '\noutput/\n')
+    fs.mkdirSync(path.join(repo.local_path, 'output')); fs.writeFileSync(path.join(repo.local_path, 'output/build.bin'), 'discard')
+    fs.writeFileSync(path.join(repo.local_path, 'generated.txt'), 'discard')
+  }
+  runtime.execute('capture', { task_id: 'task', operation_id: 'old-input', include_objects: false })
+  const command = { task_id: 'task', operation_id: 'initialization', binding_id: 'new-binding', previous_binding_id: 'binding',
+    session_generation: 2, session_revision: 2, repositories: repositories.map(repo => ({ task_repository_id: repo.task_repository_id, target: repo.base_commit_sha, url: repo.repo_url })) }
+  // A real Git lock interrupts the second reset after the first has completed.
+  fs.writeFileSync(path.join(repositories[1].local_path, '.git/index.lock'), 'fault')
+  expect(() => runtime.execute('initialize', command)).toThrow()
+  expect(fs.existsSync(path.join(repositories[0].local_path, 'generated.txt'))).toBe(false)
+  expect(fs.existsSync(path.join(repositories[1].local_path, 'generated.txt'))).toBe(true)
+  expect(() => runtime.execute('capture', { task_id: 'task' })).toThrow('COLLABORATION_INITIALIZATION_PENDING')
+  fs.unlinkSync(path.join(repositories[1].local_path, '.git/index.lock'))
+  runtime.close(); runtime = new CollaborationRuntime(path.join(root, 'private'), () => [path.join(root, 'user-repositories')])
+  const receipt = runtime.execute('initialize', command)
+  expect(receipt.repositories).toHaveLength(2)
+  expect(receipt.repositories.every((repo: any) => repo.clean)).toBe(true)
+  for (const [i, repo] of repositories.entries()) {
+    expect(git(repo.local_path, 'status', '--porcelain', '--ignored')).toBe('')
+    expect(fs.statSync(path.join(repo.local_path, 'shared.txt'), { bigint: true }).mtimeNs).toBe(stamps[i])
+    expect(fs.statSync(path.join(repo.local_path, '.git'), { bigint: true }).ino).toBe(gitDirs[i])
+    expect(fs.existsSync(path.join(repo.local_path, '.git/.traceforge-sync'))).toBe(false)
+  }
+  expect(fs.existsSync(path.join(root, 'private/previous-bindings'))).toBe(false)
+  expect(() => runtime.execute('capture', { task_id: 'task', operation_id: 'old-input', include_objects: false })).toThrow('COLLABORATION_CAPTURE_IDENTITY_CHANGED')
+  expect(() => runtime.execute('reconcile', { task_id: 'task', target: first.baseline, operation_id: 'old-delivery' })).toThrow('COLLABORATION_SESSION_CHANGED')
+  fs.writeFileSync(path.join(repositories[0].local_path, 'new-session.txt'), 'retain on replay')
+  expect(runtime.execute('initialize', command)).toEqual(receipt)
+  expect(fs.readFileSync(path.join(repositories[0].local_path, 'new-session.txt'), 'utf8')).toBe('retain on replay')
+}, 120_000)

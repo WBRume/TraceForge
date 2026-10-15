@@ -406,7 +406,7 @@ def _persist_chat_turn_sync(
         commit=False,
     )
     turn.ai_job_id = job.id
-    _complete_initialization(task, prepared, job.id, checkpoint_root)
+    _apply_initialization(db, task, prepared, job, checkpoint_root)
     if metadata.get("_collaboration_control") and metadata.get("pre_input_id"):
         from app.domains.task.models.pre_input import SddTaskPreInput
 
@@ -461,11 +461,15 @@ def _persist_chat_turn_sync(
     )
 
 
-def _complete_initialization(task, prepared, job_id, checkpoint):
-    if prepared.get("initialization_id"):
-        from app.domains.task.services.initialization.state import complete_with_turn
+def _apply_initialization(db, task, prepared, job, checkpoint):
+    """Publish the new baseline and its authorized collaboration input with the turn."""
+    if not prepared.get("initialization_id"):
+        return
+    from app.domains.task.services.initialization.collaboration import resume_with_turn
+    from app.domains.task.services.initialization.state import complete_with_turn
 
-        complete_with_turn(task, prepared["initialization_id"], job_id, checkpoint)
+    complete_with_turn(task, prepared["initialization_id"], job.id, checkpoint)
+    resume_with_turn(db, task, job)
 
 
 async def create_task_chat_turn(
