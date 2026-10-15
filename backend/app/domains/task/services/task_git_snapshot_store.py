@@ -7,6 +7,7 @@ configuration, or working files are changed by capture.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -305,7 +306,7 @@ class Shadow:
 
         Hardlinks own an independent directory entry, so deleting/pruning the
         source cannot invalidate a snapshot. Cross-volume stores deliberately
-        use Git repack instead. A link error is fatal, never a copy fallback.
+        use Git repack instead. Other link errors remain fatal.
         """
         source = git(self.source, ["rev-parse", "--path-format=absolute", "--git-path", "objects"]).decode().strip()
         roots = [source]
@@ -318,6 +319,16 @@ class Shadow:
             return
         # A seeded cache-tree may reuse source tree objects as well as blobs.
         needed = set(self.run(["rev-list", "--objects", "--no-object-names", tree]).decode().splitlines())
+        try:
+            self._link_objects(roots, target, needed)
+        except OSError as exc:
+            # Separate Docker bind mounts can share st_dev yet reject links.
+            if exc.errno != errno.EXDEV:
+                raise
+            self.run(["repack", "-a", "-d", "--window=0"])
+
+    @staticmethod
+    def _link_objects(roots: list[str], target: Path, needed: set[str]) -> None:
         for root in roots:
             # Packed objects are immutable; only pack and index are necessary.
             for packed in Path(root, "pack").glob("pack-*"):

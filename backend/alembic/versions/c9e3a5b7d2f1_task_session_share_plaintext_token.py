@@ -21,16 +21,14 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "sdd_task_session_shares",
-        sa.Column("token", sa.String(64), nullable=True),
-    )
-    op.create_index(
-        "ix_sdd_task_session_shares_token",
-        "sdd_task_session_shares",
-        ["token"],
-        unique=True,
-    )
+    # Some installations already received this column in the sharing migration.
+    # Inspect the column and index separately to also resume partial MySQL DDL.
+    inspector = sa.inspect(op.get_bind())
+    table = "sdd_task_session_shares"
+    if "token" not in {column["name"] for column in inspector.get_columns(table)}:
+        op.add_column(table, sa.Column("token", sa.String(64), nullable=True))
+    if "ix_sdd_task_session_shares_token" not in {index["name"] for index in inspector.get_indexes(table)}:
+        op.create_index("ix_sdd_task_session_shares_token", table, ["token"], unique=True)
 
 
 def downgrade() -> None:

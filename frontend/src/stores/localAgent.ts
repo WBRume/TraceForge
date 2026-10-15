@@ -16,7 +16,7 @@ import type {
   ChangeProposalRepoPatch,
 } from '@/types/agent'
 import type { DesktopRepoMapping } from '@/types/sddDesktop'
-import { DEFAULT_SERVER_URL, setApiServerUrl } from '@/utils/api'
+import { getApiServerUrl, setApiServerUrl } from '@/utils/api'
 import { readRepoPreferences, saveRepoPreferences } from '@/composables/localRepoPreferences'
 import { remoteUrlsMatch } from '@/composables/local-agent/localAgentUtils'
 import { getSddDesktop, isDesktop } from '@/utils/runtime'
@@ -142,7 +142,7 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
       authStore.setToken(config.token)
     }
     token.value = authStore.token || config.token || ''
-    setApiServerUrl(DEFAULT_SERVER_URL)
+    setApiServerUrl(config.serverUrl)
     initialized.value = true
   }
 
@@ -150,7 +150,7 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
     token.value = authStore.token || ''
     if (!desktop) return
     await desktop.config.setConfig({
-      serverUrl: DEFAULT_SERVER_URL,
+      serverUrl: getApiServerUrl(),
       token: authStore.token || null,
     })
   }
