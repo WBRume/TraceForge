@@ -131,6 +131,27 @@ const readySocket = async (frame: Record<string, any> = { type: 'resume_ok', epo
 }
 
 describe('useChatViewModel session state single flight', () => {
+  it('resumes the server operation after reload and reuses it after a lost response', async () => {
+    await mountViewModel()
+    await vm.selectTask({ ...task('t1'), execution_location: 'LOCAL', creator_id: 'u1', session_generation: 1 })
+    const socket = await readySocket()
+    socket.receive({ type: 'local_resource_status', payload: { task_id: 't1', status: 'online' } })
+    await flushPromises()
+    const { mapHistoryMessages } = await import('@/composables/chat/shared/messageIdentity')
+    const [message] = mapHistoryMessages([{
+      id: 'm-recovery', role: 'user', content: 'restore', session_turn_id: 'turn1',
+      session_generation: 1, can_undo: true, undo_operation_id: 'server-operation',
+    }])
+    expect(vm.canUndoMessage(message)).toBe(true)
+    apiMock.post.mockRejectedValueOnce(new Error('connection reset'))
+    expect(await vm.undoMessage(message)).toBe(false)
+    apiMock.post.mockResolvedValueOnce({ data: { removed_message_ids: ['m-recovery'], session_generation: 1 } })
+    expect(await vm.undoMessage({ ...message, undo_operation_id: null })).toBe(true)
+    const requests = apiMock.post.mock.calls.filter(([url]) => String(url).endsWith('/m-recovery/undo'))
+    expect(requests).toHaveLength(2)
+    expect(requests.map(([, body]) => body.operation_id)).toEqual(['server-operation', 'server-operation'])
+  })
+
   it('keeps a completed diagnosis task active when its requirement association refreshes the list', async () => {
     await mountViewModel()
     await vm.selectTask({ ...task('t1'), task_type: 'DIAGNOSIS', status: 'DONE' })

@@ -298,8 +298,18 @@ def get_case(db: Session, case_id: str, workspace_id: str) -> SddCase | None:
     return _case_query(db).filter(SddCase.id == case_id, SddCase.workspace_id == workspace_id).first()
 
 
-def _require_case(db: Session, case_id: str, workspace_id: str) -> SddCase:
-    case = get_case(db, case_id, workspace_id)
+def _require_case(db: Session, case_id: str, workspace_id: str, *, for_update: bool = False) -> SddCase:
+    # Lock the current row before checking a transition. Refresh any identity-map
+    # copy loaded during authorization so a waiting contender sees the winner.
+    case = (
+        db.query(SddCase)
+        .filter(SddCase.id == case_id, SddCase.workspace_id == workspace_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+        if for_update
+        else get_case(db, case_id, workspace_id)
+    )
     if not case:
         raise CaseError("Case not found", status_code=404)
     return case
@@ -370,7 +380,7 @@ def update_case(
     actor: User,
     data: CaseUpdateRequest,
 ) -> SddCase:
-    case = _require_case(db, case_id, workspace_id)
+    case = _require_case(db, case_id, workspace_id, for_update=True)
     if case.status not in _EDITABLE_STATUSES:
         raise CaseError(
             f"Case can only be edited in DRAFT or REJECTED state (current: {case.status})",
@@ -396,7 +406,7 @@ def delete_case(
     workspace_id: str,
     actor: User,
 ) -> None:
-    case = _require_case(db, case_id, workspace_id)
+    case = _require_case(db, case_id, workspace_id, for_update=True)
     if case.status not in _EDITABLE_STATUSES and case.status not in _TERMINAL_EDIT_STATUSES:
         raise CaseError(
             f"Case cannot be deleted in state {case.status}",
@@ -420,7 +430,7 @@ def submit_case(
     workspace_id: str,
     actor: User,
 ) -> SddCase:
-    case = _require_case(db, case_id, workspace_id)
+    case = _require_case(db, case_id, workspace_id, for_update=True)
     if case.status != CaseStatus.DRAFT.value:
         raise CaseError(f"Only DRAFT cases can be submitted (current: {case.status})", status_code=409)
     if not _clean(case.title) or not _clean(case.problem_description):
@@ -448,7 +458,7 @@ def start_review(
     workspace_id: str,
     reviewer: User,
 ) -> SddCase:
-    case = _require_case(db, case_id, workspace_id)
+    case = _require_case(db, case_id, workspace_id, for_update=True)
     if case.status != CaseStatus.PENDING_REVIEW.value:
         raise CaseError(f"Only PENDING_REVIEW cases can be taken for review (current: {case.status})", status_code=409)
     case.status = CaseStatus.IN_REVIEW.value
@@ -483,7 +493,7 @@ def review_case(
     conclusion: str,
     comment: str | None,
 ) -> SddCase:
-    case = _require_case(db, case_id, workspace_id)
+    case = _require_case(db, case_id, workspace_id, for_update=True)
     if case.status != CaseStatus.IN_REVIEW.value:
         raise CaseError(f"Only IN_REVIEW cases can be decided (current: {case.status})", status_code=409)
 
@@ -532,7 +542,7 @@ def resubmit_case(
     workspace_id: str,
     actor: User,
 ) -> SddCase:
-    case = _require_case(db, case_id, workspace_id)
+    case = _require_case(db, case_id, workspace_id, for_update=True)
     if case.status != CaseStatus.REJECTED.value:
         raise CaseError(f"Only REJECTED cases can be resubmitted (current: {case.status})", status_code=409)
     if not _clean(case.title) or not _clean(case.problem_description):

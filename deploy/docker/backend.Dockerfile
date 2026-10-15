@@ -40,6 +40,10 @@ COPY backend/requirements.txt /tmp/requirements.raw.txt
 RUN grep -v -E '^[[:space:]]*(wexpect)' /tmp/requirements.raw.txt > /tmp/requirements.txt \
     && pip install --no-cache-dir -r /tmp/requirements.txt
 
+# Mock 网关随机响应的运行时依赖，不依赖前端构建产物。
+COPY backend/package.json backend/package-lock.json ${APP_HOME}/
+RUN npm ci --omit=dev && npm cache clean --force
+
 COPY backend/alembic.ini ${APP_HOME}/alembic.ini
 COPY backend/alembic ${APP_HOME}/alembic
 COPY backend/app ${APP_HOME}/app

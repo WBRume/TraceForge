@@ -187,6 +187,10 @@ def test_requirement_import_preview_requires_confirm_before_creating_requirement
         assert batch["item_count"] == 2
         assert batch["items"][0]["task_prompt"] == "Implement checkout payment-state validation."
 
+        reloaded = client.get(f"/api/workspaces/ws-import/workspace-assets/requirements/import-batches/{batch['id']}")
+        assert reloaded.status_code == 200
+        assert reloaded.json() == batch
+
         with _session(SessionLocal) as db:
             assert db.query(SddRequirement).filter(SddRequirement.workspace_id == workspace.id).count() == 0
 
@@ -700,6 +704,10 @@ def test_requirement_split_draft_save_find_and_clear_lifecycle():
         assert saved.status_code == 200
         assert saved.json()["draft"]["change_reason"] == "manual tweak"
         assert saved.json()["draft"]["items"][0]["title"] == "Edited title"
+
+        reloaded = client.get(f"{base}/import-batches/batch-draft-1")
+        assert reloaded.status_code == 200
+        assert reloaded.json() == saved.json()
         assert saved.json()["items"][0]["title"] == "AI title"
         assert saved.json()["items"][0]["task_prompt"] is None
 

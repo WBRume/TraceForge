@@ -745,11 +745,11 @@ class OpenCodeAdapter(AgentBackend):
             self._watchdog = None
             self._pending_asks.clear()
 
-    async def _abort_session(self, sid: str) -> AgentStopResult:
+    async def _abort_session(self, sid: str, *, connect: bool = False) -> AgentStopResult:
         """Interrupt the v2 worker and verify quiescence before acknowledging stop."""
         from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
 
-        if self._client is None:
+        if self._client is None and not connect:
             return AgentStopResult(
                 execution_kind=EXECUTION_KIND_REMOTE_SESSION,
                 stop_acknowledged=False,
@@ -757,7 +757,8 @@ class OpenCodeAdapter(AgentBackend):
                 error_message="OpenCode client is closed; abort not sent",
             )
         try:
-            response = await self._client.post(self._session_url(sid, "/interrupt"), params={"resume": "false"})
+            client = await self._ensure_client() if connect else self._client
+            response = await client.post(self._session_url(sid, "/interrupt"), params={"resume": "false"})
         except Exception as exc:
             return AgentStopResult(
                 execution_kind=EXECUTION_KIND_REMOTE_SESSION,
@@ -831,7 +832,9 @@ class OpenCodeAdapter(AgentBackend):
                 failure_code="REMOTE_STOP_LOCATOR_MISSING",
                 error_message="persisted OpenCode session id is required",
             )
-        return await self._abort_session(sid)
+        # Reapers create a fresh adapter without running/probing a session first.
+        # Durable cleanup must establish its own authenticated transport.
+        return await self._abort_session(sid, connect=True)
 
     def is_running(self, run_id: str | None = None) -> bool:
         return self._running

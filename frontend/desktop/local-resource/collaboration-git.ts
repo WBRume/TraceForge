@@ -79,7 +79,10 @@ export function captureCollaborationGit(repo: LocalRepository, objects: SyncObje
   const mapped = repo.directory_mode === 'MAPPED'
   const started = performance.now(), owner = snapshotOwner(objects.state, task.task_id + (mapped ? '-mapped' : ''), task.task_root)
   const captureRoot = mapped ? repo.local_worktree_path : task.task_root
-  const captureStore = mapped ? path.join(owner, 'mapped', hash(repo.task_repository_id).slice(0, 24)) : owner
+  // A released task may be mapped to another clone. Keep each directory's
+  // private index and retained trees separate; never reuse an index owned by
+  // the previous clone or discard its recovery data.
+  const captureStore = mapped ? path.join(owner, 'mapped', hash(JSON.stringify([repo.task_repository_id, captureRoot])).slice(0, 24)) : owner
   const captureRelative = mapped ? '.' : repo.rel_path
   const forced = verifyRaw && process.platform === 'win32'
   return withSnapshotLock(owner, () => {

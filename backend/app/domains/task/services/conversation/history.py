@@ -9,7 +9,12 @@ from sqlalchemy.orm import Session
 from app.domains.auth.models.user import User, WorkspaceMember
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.log import LogType, SddExecutionLog
-from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus
+from app.domains.task.models.session_turn import (
+    TaskSessionOperation,
+    TaskSessionOperationStatus,
+    TaskSessionTurn,
+    TaskSessionTurnStatus,
+)
 from app.domains.task.models.task import SddTask
 
 TERMINAL_LOG_HISTORY_LIMIT = 500
@@ -284,6 +289,25 @@ def serialize_history_messages(db, task, msg_query, workspace_id, task_id):
         if turn_ids
         else set()
     )
+    pending_undo = (
+        db.query(TaskSessionOperation)
+        .filter(
+            TaskSessionOperation.task_id == task_id,
+            TaskSessionOperation.status.in_([TaskSessionOperationStatus.REVERTING, TaskSessionOperationStatus.FAILED]),
+        )
+        .order_by(TaskSessionOperation.created_at, TaskSessionOperation.id)
+        .first()
+    )
+    recovery_turn = db.get(TaskSessionTurn, pending_undo.target_turn_id) if pending_undo else None
+    recovery_turn_id = (
+        recovery_turn.id
+        if recovery_turn
+        and recovery_turn.task_id == task_id
+        and recovery_turn.provider == "opencode"
+        and recovery_turn.status == TaskSessionTurnStatus.REVERTING
+        and recovery_turn.checkpoint_path
+        else None
+    )
 
     # 阅读身份批量装配（避免 N+1）：共享内容版本，不含任何个人进度
     reading_by_message_id = {}
@@ -331,10 +355,16 @@ def serialize_history_messages(db, task, msg_query, workspace_id, task_id):
                 "session_generation": msg.session_generation,
                 "reading_item_key": reading_item.item_key if reading_item is not None else None,
                 "reading_change_seq": str(int(reading_item.change_seq)) if reading_item is not None else None,
+                "undo_operation_id": pending_undo.operation_id
+                if pending_undo and msg.session_turn_id == recovery_turn_id and msg.role == "user"
+                else None,
                 "can_undo": bool(
                     getattr(msg.role, "value", msg.role) == "user"
                     and msg.session_turn_id
-                    and str(msg.session_turn_id) in active_turn_ids
+                    and (
+                        (not pending_undo and str(msg.session_turn_id) in active_turn_ids)
+                        or msg.session_turn_id == recovery_turn_id
+                    )
                     and msg.session_generation == getattr(task, "session_generation", None)
                     and msg.id not in decisions_by_message_id
                 ),

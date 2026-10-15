@@ -23,6 +23,7 @@ from .job_service import (
     _append_job_event,
     _append_job_log,
     _raise_if_cancel_requested,
+    _set_job_cancelled,
     _set_job_failed,
     _set_job_progress,
     _set_job_running,
@@ -109,6 +110,7 @@ def run_import_job_internal(
 
     except JobCancelledError:
         db.rollback()
+        _set_job_cancelled(db, project.id, job, "Import cancelled by user")
         _append_job_log(db, project.id, job, "Import cancelled.")
     except Exception as exc:
         db.rollback()
@@ -502,6 +504,7 @@ def analyze_workspace_and_sync(
 
     except JobCancelledError:
         db.rollback()
+        _set_job_cancelled(db, project.id, job, "Sync cancelled by user")
         _append_job_log(db, project.id, job, "Sync cancelled.")
     except Exception as exc:
         db.rollback()

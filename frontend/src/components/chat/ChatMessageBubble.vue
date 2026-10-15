@@ -256,12 +256,13 @@ function openDiagnosisCase(caseId: string) {
           :disabled="Boolean(vm.isUndoing)"
           :class="{ 'is-loading': isUndoingMessage }"
           :aria-busy="isUndoingMessage"
-          :aria-label="isUndoingMessage ? $t('chat.undo.in_progress') : $t('chat.undo.message')"
-          :title="$t('chat.undo.message')"
+          :aria-label="isUndoingMessage ? $t('chat.undo.in_progress') : $t(msg.undo_operation_id ? 'chat.undo.resume' : 'chat.undo.message')"
+          :title="$t(msg.undo_operation_id ? 'chat.undo.resume' : 'chat.undo.message')"
           @click.stop="handleUndoMessage"
         >
           <Loader2 v-if="isUndoingMessage" class="undo-icon undo-spin" />
           <Undo2 v-else class="undo-icon" />
+          <span v-if="msg.undo_operation_id">{{ $t('chat.undo.resume') }}</span>
         </button>
 
         <button

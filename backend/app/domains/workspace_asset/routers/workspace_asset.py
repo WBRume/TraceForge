@@ -75,6 +75,7 @@ from app.domains.workspace_asset.services.overview import get_overview, list_kno
 from app.domains.workspace_asset.services.requirements import import_service
 from app.domains.workspace_asset.services.requirements import queries as requirement_queries
 from app.domains.workspace_asset.services.requirements import writes as requirement_writes
+from app.domains.workspace_asset.services.requirements.presenters import import_batch_response
 from app.domains.workspace_asset.services.requirements.preview import job_service as preview_job_service
 from app.domains.workspace_asset.services.task_final_workflow import (
     clarification_service,
@@ -498,7 +499,7 @@ def get_workspace_asset_requirement_import_batch(
     batch = preview_job_service.get_import_batch(db, ws_id, batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="Import batch not found")
-    return batch
+    return import_batch_response(batch)
 
 
 @router.get("/requirements/{requirement_id}/split-draft", response_model=RequirementImportBatchResponse)

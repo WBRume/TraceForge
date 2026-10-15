@@ -3,8 +3,10 @@
 覆盖：任务类型创建/过滤、定位结果、一键转案例、案例生命周期状态机、检索与权限。
 """
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import update
 
 from app.domains.auth.models.user import (
     User,
@@ -17,6 +19,30 @@ from app.domains.task.routers import task as task_router
 from app.domains.task.services.provisioning.creation import create_task_record_for_provision
 from app.domains.task.services.task_records.queries import list_tasks
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session
+
+
+def test_case_transition_refreshes_stale_state_before_checking():
+    from app.domains.case_center.models.case import SddCase
+    from app.domains.case_center.schemas.case import CaseCreateRequest
+    from app.domains.case_center.services import case_service
+
+    engine, factory = _build_db()
+    try:
+        with _session(factory) as db:
+            user, workspace, _ = _seed_workspace(db, workspace_id="ws-stale-case")
+            case = case_service.create_case(
+                db, workspace.id, user, CaseCreateRequest(title="Race", problem_description="State changed")
+            )
+            db.execute(
+                update(SddCase).where(SddCase.id == case.id).values(status="PENDING_REVIEW"),
+                execution_options={"synchronize_session": False},
+            )
+            assert case.status == "DRAFT"
+            with pytest.raises(case_service.CaseError) as error:
+                case_service.submit_case(db, case.id, workspace.id, user)
+            assert error.value.status_code == 409
+    finally:
+        engine.dispose()
 
 
 def _build_app(SessionLocal, user):

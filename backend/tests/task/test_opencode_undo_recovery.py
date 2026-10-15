@@ -114,6 +114,27 @@ def test_same_failed_or_interrupted_operation_can_resume_without_new_operation(u
     assert db.query(TaskSessionOperation).count() == 1
 
 
+@pytest.mark.parametrize("failed", [False, True])
+def test_history_exposes_same_recovery_operation_after_reload(undo_db, failed):
+    from app.domains.task.services.conversation.history import get_task_history
+
+    db, task, job, turn = undo_db
+    prepare(db)
+    if failed:
+        service._fail_undo_sync(db, task_id=task.id, operation_id="same-undo")
+    db.expire_all()
+    message = get_task_history(db, task.id, task.workspace_id)["messages"][0]
+    assert message["can_undo"] is True
+    assert message["undo_operation_id"] == "same-undo"
+    # A suffix turn is not a valid recovery target even if it shares the operation.
+    operation = db.query(TaskSessionOperation).one()
+    operation.target_turn_id = None
+    db.commit()
+    message = get_task_history(db, task.id, task.workspace_id)["messages"][0]
+    assert message["can_undo"] is False
+    assert message["undo_operation_id"] is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("already_reverted", [False, True])
 async def test_recovery_reverts_exact_input_or_verifies_already_removed(monkeypatch, already_reverted):

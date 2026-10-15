@@ -644,6 +644,8 @@
     "copied": "Copied",
     "copy_failed": "Copy failed",
     "undo": {
+      "resume": "Resume session recovery",
+      "resume_message": "The previous undo is unfinished. Resume the same history point before starting new conversation writes.",
       "message": "Undo and edit",
       "confirm_title": "Confirm message undo",
       "confirm_message": "Are you sure you want to undo this message?",
@@ -651,7 +653,7 @@
       "confirm_action": "Confirm undo",
       "in_progress": "Reverting the session, please wait…",
       "success": "Turn reverted. The original message is ready to edit.",
-      "failed": "Undo failed. Current history was not changed."
+      "failed": "Undo is unfinished. Resume session recovery."
     },
     "decision": {
       "mark": "Mark as Decision",

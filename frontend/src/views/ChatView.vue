@@ -452,11 +452,11 @@ watch(
 
     <ConfirmActionModal
       :show="Boolean(pendingUndoMessage)"
-      :title="$t('chat.undo.confirm_title')"
-      :message="$t('chat.undo.confirm_message')"
+      :title="$t(pendingUndoMessage?.undo_operation_id ? 'chat.undo.resume' : 'chat.undo.confirm_title')"
+      :message="$t(pendingUndoMessage?.undo_operation_id ? 'chat.undo.resume_message' : 'chat.undo.confirm_message')"
       :description="$t('chat.undo.confirm_description')"
       :cancel-text="$t('common.cancel')"
-      :confirm-text="$t('chat.undo.confirm_action')"
+      :confirm-text="$t(pendingUndoMessage?.undo_operation_id ? 'chat.undo.resume' : 'chat.undo.confirm_action')"
       tone="danger"
       :loading="vm.isUndoing"
       @cancel="cancelUndoConfirmation"

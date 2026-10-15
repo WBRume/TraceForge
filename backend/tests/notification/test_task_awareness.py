@@ -130,6 +130,27 @@ def test_reads_and_historical_errors_never_create_events(seeded):
     assert db.query(TaskAwarenessEvent).count() == 0
 
 
+def test_new_endpoint_uses_utc_and_receives_next_business_event(seeded):
+    db, _, user, workspace, task = seeded
+    before = datetime.utcnow()
+    routes.save_endpoint(
+        routes.EndpointInput(enabled=True, url="https://hooks.example/test", events=["TASK_FAILED"]),
+        user=user,
+        db=db,
+    )
+    row = db.query(TaskWebhookEndpoint).one()
+    assert before <= row.created_at <= datetime.utcnow()
+    assert before <= row.updated_at <= datetime.utcnow()
+    # This default is evaluated in Python, regardless of MySQL session time zone.
+    assert TaskWebhookEndpoint.__table__.c.created_at.default is not None
+    assert TaskWebhookEndpoint.__table__.c.created_at.server_default is None
+    capture_business(db, task, user.id, "TASK_FAILED", "failure after webhook setup")
+    db.commit()
+    hooks.prepare_deliveries(db, latest(db, "TASK_FAILED"), datetime.utcnow())
+    db.commit()
+    assert len(hooks.claim_deliveries(db, location="server")) == 1
+
+
 def test_provider_resolution_resumes_awareness_only_after_all_questions_are_closed(seeded):
     db, _, user, workspace, task = seeded
     job = start(db, user, workspace, task)

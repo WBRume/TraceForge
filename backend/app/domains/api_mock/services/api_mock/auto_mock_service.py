@@ -18,6 +18,7 @@ from .job_service import (
     _append_job_log,
     _is_cancel_requested,
     _raise_if_cancel_requested,
+    _set_job_cancelled,
     _set_job_failed,
     _set_job_progress,
     _set_job_running,
@@ -230,6 +231,8 @@ def auto_generate_mock_cases_for_endpoint(
         _append_job_log(db, project.id, job, f"Generation complete. Created {created_count} mock cases.")
 
     except JobCancelledError:
+        db.rollback()
+        _set_job_cancelled(db, project.id, job, "Generation cancelled by user")
         _append_job_log(db, project.id, job, "Generation cancelled.")
     except Exception as exc:
         msg = f"Auto mock failed: {exc}"

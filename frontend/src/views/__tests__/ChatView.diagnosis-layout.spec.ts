@@ -54,7 +54,8 @@ describe('ChatView diagnosis summary layout containment', () => {
 
   it('keeps the task sidebar and spec drawer constraints inside their section components', () => {
     expect(declarations(taskSidebarSource, '.task-sidebar')).toContain('width: 280px')
-    expect(declarations(taskSidebarSource, '.task-filter-select:deep(.select-trigger)')).toContain('height: 32px')
+    expect(taskSidebarSource).toContain('<TaskAdvancedFilterDrawer')
+    expect(declarations(taskSidebarSource, '.sidebar-search')).toContain('position: relative')
 
     expect(declarations(specSidebarSource, '.spec-sidebar')).toContain('position: absolute')
     expect(specSidebarSource).toContain('.spec-sidebar.is-open.level-1')
@@ -110,7 +111,7 @@ describe('ChatView diagnosis summary layout containment', () => {
     expect(chatViewSource).toContain('<span class="session-operation-copy">')
     expect(chatViewSource).not.toContain('session-operation-card glass-panel')
     expect(chatViewSource).not.toContain('class="session-operation-banner"')
-    expect(chatViewSource).toContain(":title=\"$t('chat.undo.confirm_title')\"")
+    expect(chatViewSource).toContain("pendingUndoMessage?.undo_operation_id ? 'chat.undo.resume' : 'chat.undo.confirm_title'")
     expect(chatViewSource).toContain('@confirm="confirmUndoMessage"')
 
     const confirmBlock = chatViewSource.slice(

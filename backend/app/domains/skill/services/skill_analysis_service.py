@@ -10,6 +10,7 @@ import re
 import shutil
 import tempfile
 import threading
+import uuid
 from collections import Counter
 from collections.abc import Iterable
 from datetime import datetime
@@ -17,6 +18,9 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.agents.contract import AgentRunRequest
+from app.agents.run_logging import run_agent_backend_with_logging
+from app.agents.selection import create_legacy_bridge, resolve_workspace_backend
 from app.config import settings
 from app.core.background_tasks import retain_background_task
 from app.database import SessionLocal
@@ -32,7 +36,6 @@ from app.domains.skill.models.skill import (
 from app.domains.skill.services.packages import git as git_service
 from app.domains.skill.services.packages import storage as storage_service
 from app.domains.skill.services.packages import versions as skill_packages_versions
-from app.engine.claude_bridge import create_cli_bridge
 
 LARGE_FILE_BYTES = 1024 * 1024
 SEMANTIC_TIMEOUT_SECONDS = 240
@@ -91,13 +94,13 @@ RISK_DETAIL_TEMPLATES: dict[str, dict[str, str]] = {
 }
 
 
-SEMANTIC_UNAVAILABLE_MESSAGE = "静态包摘要已完成；Claude AI 语义风险审阅未返回可用结果，暂不展示需要语义确认的风险项。"
+SEMANTIC_UNAVAILABLE_MESSAGE = "静态包摘要已完成；AI 语义风险审阅未返回可用结果，暂不展示需要语义确认的风险项。"
 
-SEMANTIC_CONTRACT_FAILED_MESSAGE = "Claude AI 语义审阅输出不完整，未能生成可定位的具体风险项。"
+SEMANTIC_CONTRACT_FAILED_MESSAGE = "AI 语义审阅输出不完整，未能生成可定位的具体风险项。"
 
 
 class SemanticAnalysisContractError(ValueError):
-    """Raised when Claude returns an internally inconsistent semantic result."""
+    """Raised when the provider returns an internally inconsistent semantic result."""
 
 
 def _enum_value(value: Any) -> str:
@@ -147,7 +150,7 @@ def serialize_analysis(analysis: SddSkillAnalysis) -> dict[str, Any]:
             else analysis.message
         ),
         "error_message": (
-            f"Claude returned risk_level={risk_level} but no concrete risk_items; re-run Analysis."
+            f"Provider returned risk_level={risk_level} but no concrete risk_items; re-run Analysis."
             if semantic_contract_failed
             else None
             if semantic_degraded
@@ -396,7 +399,9 @@ def _copy_commit_snapshot(skill: SddSkill, commit_sha: str, target_root: str) ->
 
 
 def _make_snapshot(skill: SddSkill, analysis: SddSkillAnalysis) -> str:
-    tmp_root = tempfile.mkdtemp(prefix="sdd-skill-analysis-")
+    snapshot_root = os.path.join(storage_service._skills_root(), ".analysis-snapshots")
+    os.makedirs(snapshot_root, exist_ok=True)
+    tmp_root = tempfile.mkdtemp(prefix="sdd-skill-analysis-", dir=snapshot_root)
     package_root = os.path.join(tmp_root, "package")
     os.makedirs(package_root, exist_ok=True)
     if analysis.commit_sha:
@@ -687,7 +692,7 @@ def _semantic_contract_error(semantic: dict[str, Any]) -> str | None:
     semantic_level = _normalize_level(semantic.get("risk_level"), "LOW")
     if semantic_level in {"MEDIUM", "HIGH"} and not _has_valid_semantic_risk_item(semantic):
         return (
-            f"Claude returned risk_level={semantic_level} but did not return any valid file-level risk_items. "
+            f"Provider returned risk_level={semantic_level} but did not return any valid file-level risk_items. "
             "A MEDIUM/HIGH semantic result must include at least one risk item with file_path and evidence_detail."
         )
     return None
@@ -900,9 +905,45 @@ def _max_level(left: Any, right: Any) -> str:
     return left_text if order[left_text] >= order[right_text] else right_text
 
 
-async def _run_claude_semantic_analysis(package_root: str, *, prompt: str | None = None) -> dict[str, Any]:
-    bridge = create_cli_bridge(cli_path=settings.CLAUDE_CLI_PATH)
+async def _run_remote_semantic(provider, package_root: str, instructions: str) -> dict[str, Any]:
+    async def on_event(event):
+        if event.type != "ask_user":
+            return
+        if event.payload.get("permission_request"):
+            # Background analysis has no interactive approval surface.
+            await provider.respond_to_ask_user(event.payload["ask_user_id"], "reject")
+            return
+        raise ValueError("Skill background analysis requires interactive input")
+
+    request = AgentRunRequest(
+        run_id=f"skill-analysis-{uuid.uuid4().hex}",
+        prompt=instructions,
+        project_path=package_root,
+        permission_mode="read-only",
+        execution_kind=provider.capabilities.execution_kind,
+        timeout_seconds=SEMANTIC_TIMEOUT_SECONDS,
+    )
+    try:
+        result = await asyncio.wait_for(
+            run_agent_backend_with_logging(provider, request, on_event),
+            timeout=SEMANTIC_TIMEOUT_SECONDS,
+        )
+        if not result.success:
+            raise ValueError("Skill semantic analysis did not complete successfully")
+        parsed = _json_from_text(result.result_text)
+        parsed["_provider_session_id"] = result.session_id
+        return parsed
+    except BaseException:
+        await asyncio.shield(provider.cancel())
+        raise
+    finally:
+        await provider.close()
+
+
+async def _run_semantic_analysis(package_root: str, *, backend_name: str, prompt: str | None = None) -> dict[str, Any]:
+    bridge = create_legacy_bridge(backend_name)
     texts: list[str] = []
+    provider = getattr(bridge, "backend", None)
 
     async def _event_callback(event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "").lower()
@@ -919,29 +960,36 @@ async def _run_claude_semantic_analysis(package_root: str, *, prompt: str | None
             if result:
                 texts.append(result)
 
-    await bridge.start_session(
-        prompt=prompt or _semantic_prompt(),
-        project_path=package_root,
-        event_callback=_event_callback,
-        session_id=None,
+    instructions = (
+        "Use directory read listings to discover package files, including hidden entries. "
+        "Read only paths present in those listings; do not guess filenames or probe absent secrets. "
+        "If glob or grep times out, use directory reads and file reads instead of retrying searches.\n\n"
+        + (prompt or _semantic_prompt())
     )
-    if hasattr(bridge, "wait"):
+    if provider is not None:
+        return await _run_remote_semantic(provider, package_root, instructions)
+    try:
+        await bridge.start_session(
+            prompt=instructions,
+            project_path=package_root,
+            event_callback=_event_callback,
+            session_id=None,
+        )
         await asyncio.wait_for(bridge.wait(), timeout=SEMANTIC_TIMEOUT_SECONDS)
-    elif hasattr(bridge, "is_running"):
-        deadline = asyncio.get_running_loop().time() + SEMANTIC_TIMEOUT_SECONDS
-        while bridge.is_running():
-            if asyncio.get_running_loop().time() >= deadline:
-                raise TimeoutError("Claude semantic analysis timed out")
-            await asyncio.sleep(0.1)
+    except BaseException:
+        await asyncio.shield(bridge.cancel())
+        raise
     raw_text = "\n".join(texts)
     try:
-        return _json_from_text(raw_text)
+        result = _json_from_text(raw_text)
+        result["_provider_session_id"] = bridge.session_id
+        return result
     except ValueError as exc:
         process = getattr(bridge, "process", None)
         return_code = getattr(process, "returncode", None)
         if return_code not in {None, 0}:
             raise ValueError(
-                f"Claude semantic review exited with code {return_code} and did not return valid JSON"
+                f"Provider semantic review exited with code {return_code} and did not return valid JSON"
             ) from exc
         raise
 
@@ -974,6 +1022,7 @@ def run_analysis_job(analysis_id: str) -> None:
             message="Preparing skill package snapshot",
             started=True,
         )
+        backend_name = resolve_workspace_backend(db, analysis.workspace_id)
         tmp_root = _make_snapshot(skill, analysis)
         package_root = os.path.join(tmp_root, "package")
         _set_analysis_state(db, analysis, progress=25, message="Scanning package files")
@@ -981,8 +1030,10 @@ def run_analysis_job(analysis_id: str) -> None:
         _set_analysis_state(db, analysis, progress=60, message="Running semantic risk review", payload=deterministic)
 
         try:
-            semantic = asyncio.run(_run_claude_semantic_analysis(package_root))
+            semantic = asyncio.run(_run_semantic_analysis(package_root, backend_name=backend_name))
             contract_error = _semantic_contract_error(semantic)
+            if contract_error and settings.SKILL_ANALYSIS_MAX_ATTEMPTS == 1:
+                raise SemanticAnalysisContractError(contract_error)
             if contract_error:
                 _set_analysis_state(
                     db,
@@ -991,8 +1042,9 @@ def run_analysis_job(analysis_id: str) -> None:
                     message="Retrying semantic risk review with stricter output contract",
                 )
                 semantic = asyncio.run(
-                    _run_claude_semantic_analysis(
+                    _run_semantic_analysis(
                         package_root,
+                        backend_name=backend_name,
                         prompt=_semantic_retry_prompt(contract_error),
                     )
                 )
@@ -1000,6 +1052,8 @@ def run_analysis_job(analysis_id: str) -> None:
                 if contract_error:
                     raise SemanticAnalysisContractError(contract_error)
             result = _merge_semantic_result(deterministic, semantic)
+            result["file_stats"]["semantic_backend"] = backend_name
+            result["file_stats"]["semantic_session_id"] = semantic.get("_provider_session_id")
         except SemanticAnalysisContractError as exc:
             failed = dict(deterministic)
             file_stats = dict(failed.get("file_stats") or {})

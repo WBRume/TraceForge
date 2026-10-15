@@ -39,6 +39,7 @@ export function useMessageActions(options: {
   const { t } = useI18n()
 
   const isUndoing = computed(() => Boolean(options.undoingMessageId.value))
+  const pendingOperationIds = new Map<string, string>()
 
   const canMarkMessageAsDecision = (msg: any): boolean => {
     if (String(msg?.id || '').startsWith('submission-')) return false
@@ -69,13 +70,18 @@ export function useMessageActions(options: {
     if (isUndoing.value) return false
     if (!canUndoMessage(msg) || !options.getCurrentTask()?.id) return false
     const messageId = String(msg.id)
+    const taskId = String(options.getCurrentTask().id)
+    const key = `${taskId}:${messageId}`
+    const operationId = String(msg.undo_operation_id || pendingOperationIds.get(key) || generateClientMessageId())
+    pendingOperationIds.set(key, operationId)
     options.undoingMessageId.value = messageId
     try {
       const payload = await options.undoTaskMessage(
-        options.getCurrentTask().id,
+        taskId,
         messageId,
-        { operationId: generateClientMessageId() },
+        { operationId },
       )
+      pendingOperationIds.delete(key)
       const removedIds = new Set<string>(
         (Array.isArray(payload?.removed_message_ids) ? payload.removed_message_ids : []).map((id: any) => String(id)),
       )
@@ -104,6 +110,9 @@ export function useMessageActions(options: {
     } catch (e: any) {
       console.error('Undo task message failed', e)
       ElMessage.error(options.resolveActionError(e, 'chat.undo.failed', 'chat.undo.failed'))
+      if (String(options.getCurrentTask()?.id) === taskId) {
+        try { await options.loadHistory(taskId, true) } catch { /* Retain the operation ID for a retry after reconnect. */ }
+      }
       return false
     } finally {
       options.undoingMessageId.value = ''
