@@ -20,6 +20,7 @@ export function createTaskWsEventRouter(deps: {
     upsert: (message: any) => void
     findByIdentity: (identity: string) => any
     removeByIds: (ids: Set<string>) => void
+    invalidateUndoBeforeRevision?: (revision: number) => void
   }
   terminalLogs: {
     appendToolUse: (payload: any) => void
@@ -319,6 +320,7 @@ export function createTaskWsEventRouter(deps: {
         notifyRepositoryUpdate(payload)
         if (payload.state === 'APPLIED') {
           deps.applyTaskSessionPayload(payload)
+          if (payload.undo_before_revision != null) deps.messages.invalidateUndoBeforeRevision?.(Number(payload.undo_before_revision))
           deps.cloudResultsUpdate?.()
         }
         break

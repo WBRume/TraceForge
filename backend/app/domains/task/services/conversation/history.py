@@ -276,6 +276,8 @@ def serialize_history_messages(db, task, msg_query, workspace_id, task_id):
                 TaskSessionTurn.id.in_(turn_ids),
                 TaskSessionTurn.status == TaskSessionTurnStatus.ACTIVE,
                 TaskSessionTurn.checkpoint_path.isnot(None),
+                TaskSessionTurn.session_revision
+                > int((task.task_meta_json or {}).get("repository_update_revision", -1)),
             )
             .all()
         }

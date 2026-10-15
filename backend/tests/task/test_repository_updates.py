@@ -41,6 +41,7 @@ def env(db, tmp_path, monkeypatch):
         status=TaskStatus.CODING,
         session_generation=1,
         session_revision=0,
+        session_id="existing-task-session",
     )
     db.add(task)
     remotes = {}
@@ -89,6 +90,35 @@ def apply(env, plan):
 
 def test_two_repositories_merge_and_preserve_creation_metadata(env):
     db, task, root, remotes, _ = env
+    from app.domains.task.models.session_turn import TaskSessionTurn
+    from app.domains.task.services import task_session_service
+    from app.domains.task.services.conversation.history import get_task_history
+
+    historical = task_session_service._new_chat_message(
+        db,
+        task_id=task.id,
+        workspace_id=task.workspace_id,
+        actor_user_id=task.creator_id,
+        content="保留历史需求",
+        metadata_json={"session_revision": 0},
+        session_generation=1,
+    )
+    turn = TaskSessionTurn(
+        task_id=task.id,
+        workspace_id=task.workspace_id,
+        user_message_id=historical.id,
+        session_generation=1,
+        turn_index=1,
+        session_revision=0,
+        provider="opencode",
+        provider_session_id=task.session_id,
+        checkpoint_path="historical-checkpoint",
+    )
+    db.add(turn)
+    db.flush()
+    historical.session_turn_id = turn.id
+    db.commit()
+    assert get_task_history(db, task.id, task.workspace_id)["messages"][0]["can_undo"]
     original = {r.id: r.base_commit_sha for r in service.repositories(db, task)}
     write(root / "api", "task-only.txt", "task output\n")
     write(root / "web", "shared.txt", "task\n" + "middle\n" * 8 + "last\n")
@@ -110,7 +140,14 @@ def test_two_repositories_merge_and_preserve_creation_metadata(env):
         assert repo.base_commit_sha == original[repo.id]
         assert storage.baseline(task, repo) == targets[repo.repo_slug]
         assert git.git(root / repo.rel_path, "rev-parse", "HEAD") == targets[repo.repo_slug]
-    assert task.session_generation == 2
+    assert task.session_generation == 1
+    assert task.session_id == "existing-task-session"
+    assert task.task_meta_json["repository_update_revision"] == task.session_revision
+    history = get_task_history(db, task.id, task.workspace_id)["messages"]
+    assert history[0]["id"] == historical.id and history[0]["content"] == "保留历史需求"
+    assert not history[0]["can_undo"]
+    with pytest.raises(task_session_service.TaskSessionUndoError, match="代码基线已更新"):
+        task_session_service._load_turn_target(db, task, historical.id)
 
 
 def test_conflicts_offer_three_versions_and_explicit_delete(env):
@@ -234,7 +271,8 @@ def test_new_remote_file_does_not_overwrite_ignored_cloud_file(env):
     assert (root / "api" / "secret.txt").read_text() == "do not overwrite\n"
 
 
-def test_agent_adaptation_is_reviewed_before_replacing_original(env):
+@pytest.mark.parametrize("auto_apply", [False, True])
+def test_agent_adaptation_applies_automatically_only_with_upfront_consent(env, auto_apply):
     from pathlib import Path
 
     from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
@@ -245,7 +283,9 @@ def test_agent_adaptation_is_reviewed_before_replacing_original(env):
     write(remotes["api"], "shared.txt", "new architecture\n")
     commit(remotes["api"])
     plan = prepare(env)
-    plan = adaptation.create(db, task, actor, plan["id"], plan["version"], "保留任务目标并适配新架构")
+    plan = adaptation.create(
+        db, task, actor, plan["id"], plan["version"], "保留任务目标并适配新架构", auto_apply=auto_apply
+    )
     db.commit()
     assert plan["state"] == "ADAPTING"
     from app.domains.workspace_collaboration.service import CollaborationError, _assert_no_writer
@@ -256,21 +296,113 @@ def test_agent_adaptation_is_reviewed_before_replacing_original(env):
     with pytest.raises(git.UpdateError, match="任务代码正在更新"):
         storage.require_available(task)
     job = db.get(SddAiJob, plan["job_id"])
+    from app.domains.ai.models.ai_job import AiJobChannel
+    from app.domains.task.models.chat import ChatMessage
+    from app.domains.task.models.task_event_outbox import TaskEventOutbox
+    from app.domains.task.services.conversation.history import get_task_history
+
+    assert job.channel == AiJobChannel.TASK_CHAT
+    assert job.session_id == task.session_id == "existing-task-session"
+    assert job.queue_key == f"TASK_CHAT:{task.id}"
+    message = db.get(ChatMessage, job.context_json["chat_message_id"])
+    assert "保留任务目标并适配新架构" in message.content
+    assert message.session_generation == task.session_generation == 1
+    assert get_task_history(db, task.id, task.workspace_id)["messages"][-1]["id"] == message.id
+    events = [row.payload_json for row in db.query(TaskEventOutbox).filter_by(task_id=task.id).all()]
+    assert any(e.get("event_type") == "chat_message" and e["id"] == message.id for e in events)
+    assert adaptation.prepare_job(db, job.id, None) == job.context_json["candidate_root"]
     candidate = Path(job.context_json["candidate_root"])
     assert candidate.is_relative_to(Path(settings.TASK_SESSION_SNAPSHOT_ROOT))
     assert (candidate / "api" / "shared.txt").read_text() == "new architecture\n"
     write(candidate / "api", "shared.txt", "new architecture with task feature\n")
+    assert (root / "api" / "shared.txt").read_text() == "old task implementation\n"
     job.status, job.result_json = AiJobStatus.SUCCESS, {"text": "verification report"}
     db.commit()
     adaptation.settle(db, job.id)
     db.commit()
-    assert (root / "api" / "shared.txt").read_text() == "old task implementation\n"
     plan = service.summary(db, task)["plan"]
-    assert plan["state"] == "READY"
+    assert plan["state"] == ("APPLIED" if auto_apply else "READY")
     assert plan["agent_summary"] == "verification report"
     assert next(repo for repo in plan["repositories"] if repo["name"] == "api")["mode"] == "ADAPTED"
-    apply(env, plan)
+    if auto_apply:
+        assert "自动应用" in message.content
+        assert "无需再次请用户确认" in job.prompt_text
+        # Replayed completion and summary recovery cannot apply twice.
+        revision = task.session_revision
+        adaptation.settle(db, job.id)
+        assert task.session_revision == revision
+        assert len(task.task_meta_json["repository_update_history"]) == 1
+        states = [e.payload_json.get("state") for e in db.query(TaskEventOutbox).filter_by(task_id=task.id)]
+        assert "READY" not in states[states.index("ADAPTING") :]
+    else:
+        assert (root / "api" / "shared.txt").read_text() == "old task implementation\n"
+        apply(env, plan)
     assert (root / "api" / "shared.txt").read_text() == "new architecture with task feature\n"
+    assert task.session_generation == 1
+    assert task.session_id == job.session_id == "existing-task-session"
+
+
+@pytest.mark.parametrize(
+    "failure", ["conflict_markers", "source_changed", "session_changed", "cancelled", "install", "restore"]
+)
+def test_automatic_adaptation_keeps_failed_results_out_of_task_code(env, monkeypatch, failure):
+    from pathlib import Path
+
+    from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+    from app.domains.task.services.repository_updates import adaptation
+
+    db, task, root, remotes, actor = env
+    write(root / "api", "shared.txt", "original task\n")
+    write(remotes["api"], "shared.txt", "new remote\n")
+    commit(remotes["api"])
+    plan = prepare(env)
+    plan = adaptation.create(db, task, actor, plan["id"], plan["version"], "自动适配", auto_apply=True)
+    job = db.get(SddAiJob, plan["job_id"])
+    candidate = Path(job.context_json["candidate_root"])
+    write(candidate / "api", "shared.txt", "adapted feature\n")
+    job.status = AiJobStatus.SUCCESS
+    if failure == "conflict_markers":
+        write(candidate / "api", "shared.txt", "<<<<<<< task\nold\n=======\nnew\n>>>>>>> remote\n")
+        commit(candidate / "api")
+    elif failure == "source_changed":
+        write(root / "api", "shared.txt", "new external edit\n")
+    elif failure == "session_changed":
+        task.session_id = "changed-session"
+    elif failure == "cancelled":
+        job.status = AiJobStatus.CANCELLED
+    elif failure in {"install", "restore"}:
+        monkeypatch.setattr(git, "install", lambda *args: (_ for _ in ()).throw(OSError("failed install")))
+        if failure == "restore":
+            monkeypatch.setattr(
+                service.snapshots,
+                "_restore_worktree_sync",
+                lambda *args: (_ for _ in ()).throw(OSError("failed restore")),
+            )
+    db.commit()
+    adaptation.settle(db, job.id)
+    db.commit()
+    assert storage.load(task)["state"] == ("RECOVERY_REQUIRED" if failure == "restore" else "ADAPT_FAILED")
+    assert (root / "api" / "shared.txt").read_text() == (
+        "new external edit\n" if failure == "source_changed" else "original task\n"
+    )
+    assert not task.task_meta_json.get("repository_update_history")
+
+
+def test_summary_recovers_automatic_application_and_returns_current_baselines(env):
+    from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+    from app.domains.task.services.repository_updates import adaptation
+
+    db, task, root, remotes, actor = env
+    write(remotes["api"], "new.txt", "remote\n")
+    commit(remotes["api"])
+    plan = prepare(env)
+    plan = adaptation.create(db, task, actor, plan["id"], plan["version"], "适配", auto_apply=True)
+    db.get(SddAiJob, plan["job_id"]).status = AiJobStatus.SUCCESS
+    db.commit()
+    result = service.summary(db, task)
+    assert result["plan"]["state"] == "APPLIED"
+    assert (root / "api" / "new.txt").read_text() == "remote\n"
+    assert {r["id"]: r["baseline"] for r in result["repositories"]} == task.task_meta_json["repository_baselines"]
 
 
 def test_failed_apply_fences_new_messages_until_recovery(env, monkeypatch):
@@ -317,3 +449,45 @@ def test_discard_publishes_to_other_reviewers_and_preserves_original(env):
     assert (root / "api" / "shared.txt").read_text() == "keep task output\n"
     events = [row.payload_json for row in db.query(TaskEventOutbox).filter_by(task_id=task.id).all()]
     assert any(event.get("state") == "DISCARDED" and event["id"] == plan["id"] for event in events)
+
+
+def test_adaptation_refuses_missing_or_changed_original_session(env):
+    from app.domains.ai.models.ai_job import SddAiJob
+    from app.domains.task.models.chat import ChatMessage
+    from app.domains.task.services.repository_updates import adaptation
+
+    db, task, _, _, actor = env
+    plan = prepare(env)
+    task.session_id = None
+    db.commit()
+    with pytest.raises(git.UpdateError, match="没有可继续"):
+        adaptation.create(db, task, actor, plan["id"], plan["version"], "继续原需求")
+    assert db.query(SddAiJob).filter_by(task_id=task.id).count() == 0
+    assert db.query(ChatMessage).filter_by(task_id=task.id).count() == 0
+    task.session_id = "original"
+    plan = adaptation.create(db, task, actor, plan["id"], plan["version"], "继续原需求")
+    db.commit()
+    task.session_id = "another-session"
+    db.commit()
+    with pytest.raises(git.UpdateError, match="原任务会话已变化"):
+        adaptation.prepare_job(db, plan["job_id"], None)
+
+
+@pytest.mark.asyncio
+async def test_adaptation_publishes_normal_task_chat_lifecycle(env, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.domains.ai.models.ai_job import SddAiJob
+    from app.domains.ai.services.jobs import publishing
+    from app.domains.ai.services.jobs.store import serialize_job
+    from app.domains.task.services.repository_updates import adaptation
+
+    db, task, _, _, actor = env
+    plan = prepare(env)
+    plan = adaptation.create(db, task, actor, plan["id"], plan["version"], "继续原需求")
+    db.commit()
+    send = AsyncMock()
+    monkeypatch.setattr(publishing.task_ws_manager, "send_message_to_room", send)
+    await publishing.broadcast_job_payload(serialize_job(db.get(SddAiJob, plan["job_id"])))
+    assert [call.args[1].type for call in send.await_args_list] == ["task_repository_update", "chat_job_update"]
+    assert send.await_args_list[-1].args[1].payload["job"]["session_id"] == "existing-task-session"

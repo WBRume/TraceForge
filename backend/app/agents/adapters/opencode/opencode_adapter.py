@@ -138,7 +138,9 @@ class OpenCodeAdapter(AgentBackend):
         body: dict[str, Any] = {}
         if request.project_path:
             body["location"] = {"directory": request.project_path}
-            body["permissions"] = workspace_permissions(request.project_path)
+            body["permissions"] = workspace_permissions(
+                request.project_path, request.provider_options.get("additional_workspace_directories", ())
+            )
         if request.model:
             body["model"] = self._model_ref(request.model)
         response = await client.post(f"{self.server_url}/api/session", json=body)
@@ -150,10 +152,12 @@ class OpenCodeAdapter(AgentBackend):
             raise AgentError("OpenCode create session returned no session id")
         return session_id
 
-    async def _ensure_workspace_permissions(self, session_id: str, project_path: str) -> None:
+    async def _ensure_workspace_permissions(
+        self, session_id: str, project_path: str, additional_directories=()
+    ) -> None:
         if not project_path:
             return
-        rules = workspace_permissions(project_path)
+        rules = workspace_permissions(project_path, additional_directories)
         client = await self._ensure_client()
         response = await client.get(self._session_url(session_id))
         self._check_response(response, "session directory")
@@ -665,7 +669,11 @@ class OpenCodeAdapter(AgentBackend):
         try:
             if request.session_id:
                 session_id = request.session_id
-                await self._ensure_workspace_permissions(session_id, request.project_path)
+                await self._ensure_workspace_permissions(
+                    session_id,
+                    request.project_path,
+                    request.provider_options.get("additional_workspace_directories", ()),
+                )
             else:
                 session_id = await self._create_session(request)
             self._session_id = session_id

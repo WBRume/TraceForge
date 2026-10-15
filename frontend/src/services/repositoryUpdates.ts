@@ -10,7 +10,7 @@ export interface UpdateRepository {
 }
 export interface UpdatePlan {
   id: string; version: number; state: UpdateState; repositories: UpdateRepository[]
-  error?: string | null; job_id?: string; agent_summary?: string; storage_missing?: boolean
+  error?: string | null; job_id?: string; agent_summary?: string; storage_missing?: boolean; auto_apply?: boolean
 }
 export interface UpdateSummary {
   can_update?: boolean

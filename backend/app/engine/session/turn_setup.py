@@ -46,7 +46,16 @@ def playbook_turn_sync(task_id: str) -> dict:
     with SessionLocal() as db:
         task = db.get(SddTask, task_id)
         fence = turn_context(task) if task else None
-        return {"fence": fence, "prompt": prompt(task) if fence else ""}
+        suffix = prompt(task) if fence else ""
+        if task and any(
+            (task.task_meta_json or {}).get(key) for key in ("repository_update", "repository_update_revision")
+        ):
+            suffix += (
+                "\n\n[任务代码版本]\n"
+                "远端更新的候选目录只用于对应的适配回合；除非本轮明确指定候选目录，"
+                "请继续在原任务工作目录工作，并重新读取当前文件，不沿用历史文件内容。"
+            )
+        return {"fence": fence, "prompt": suffix}
 
 
 def record_playbook_result_sync(task_id, fence, text, job_id, streamed_text=""):

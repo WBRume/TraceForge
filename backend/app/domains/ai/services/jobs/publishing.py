@@ -26,11 +26,18 @@ async def broadcast_job_payload(payload: dict[str, Any]) -> None:
     final = status in {item.value for item in constants.FINAL_STATUSES}
     channel = str(payload.get("channel") or "")
     if (payload.get("context_json") or {}).get("job_kind") == "TASK_REPOSITORY_ADAPT":
+        from app.core.distributed_lock import lock_task
         from app.core.offload import run_db_txn
         from app.domains.task.services.repository_updates.adaptation import settle
 
-        if final:
-            await run_db_txn(lambda db: settle(db, payload["id"]))
+        if final or status == AiJobStatus.INTERRUPTED.value:
+            if status == AiJobStatus.SUCCESS.value and (payload.get("context_json") or {}).get("auto_apply"):
+                async with lock_task(str(payload["task_id"]), ttl=600, blocking_timeout=30):
+                    await run_db_txn(lambda db: settle(db, payload["id"]))
+            else:
+                # Interrupt/stop callers may already hold the task lock. These
+                # outcomes only settle the preview; they never install code.
+                await run_db_txn(lambda db: settle(db, payload["id"]))
         await task_ws_manager.send_message_to_room(
             str(payload["task_id"]),
             WSMessage(
@@ -38,7 +45,6 @@ async def broadcast_job_payload(payload: dict[str, Any]) -> None:
                 payload={"task_id": payload["task_id"], "job_id": payload["id"], "job_status": status},
             ),
         )
-        return
     if (payload.get("context_json") or {}).get("job_kind") == "PLAYBOOK_PROMOTION":
         from app.domains.notification.ws.notification_manager import notification_ws_manager
 

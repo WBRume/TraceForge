@@ -530,6 +530,11 @@ export function useChatViewModel() {
       upsert: messages.upsert,
       findByIdentity: messages.findByIdentity,
       removeByIds: messages.removeByIds,
+      invalidateUndoBeforeRevision: (revision) => {
+        for (const message of messages.messages.value) {
+          if (Number(message.metadata?.session_revision || 0) <= revision) message.can_undo = false
+        }
+      },
     },
     terminalLogs: {
       appendToolUse: terminalLogs.appendToolUse,

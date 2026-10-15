@@ -114,7 +114,12 @@ async def publish_once() -> int:
                 WSMessage(
                     type=payload["event_type"]
                     if payload.get("event_type")
-                    in {"share_suggestion_update", "workspace_collaboration_update", "task_repository_update"}
+                    in {
+                        "share_suggestion_update",
+                        "workspace_collaboration_update",
+                        "task_repository_update",
+                        "chat_message",
+                    }
                     else "chat_submission_update",
                     payload=payload,
                 ),
@@ -122,7 +127,11 @@ async def publish_once() -> int:
             published += 1
             # 公开 READ 分享页的实时 nudge：正式消息事件（payload 含 message）
             # 意味着会话历史变化。每批每任务至多通知一次。
-            if task_id not in notified_tasks and isinstance(payload, dict) and payload.get("message"):
+            if (
+                task_id not in notified_tasks
+                and isinstance(payload, dict)
+                and (payload.get("message") or payload.get("event_type") == "chat_message")
+            ):
                 notified_tasks.add(task_id)
                 await notify_task_shares_history_changed(task_id)
         except Exception as exc:

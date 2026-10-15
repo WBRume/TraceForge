@@ -224,7 +224,7 @@ async def deliver_confirmation_response(
 # ────────────────────────── 引擎接线与回合执行 ──────────────────────────
 
 
-def _load_task_chat_turn_state_sync(db, job_id: str) -> dict[str, Any] | None:
+def _load_task_chat_turn_state_sync(db, job_id: str, run_token: str | None = None) -> dict[str, Any] | None:
     from app.agents.selection import resolve_task_backend
 
     job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
@@ -235,6 +235,11 @@ def _load_task_chat_turn_state_sync(db, job_id: str) -> dict[str, Any] | None:
         raise ValueError("Task not found")
     # 任务粘性 backend：首次运行固化到 sdd_tasks，之后工作区切换不影响本任务
     task_backend = resolve_task_backend(db, task.id)
+    additional_directories = []
+    if (job.context_json or {}).get("job_kind") == "TASK_REPOSITORY_ADAPT":
+        from app.domains.task.services.repository_updates.adaptation import prepare_job
+
+        additional_directories = [prepare_job(db, job.id, run_token)]
     return {
         "task_id": task.id,
         "workspace_id": task.workspace_id,
@@ -245,11 +250,15 @@ def _load_task_chat_turn_state_sync(db, job_id: str) -> dict[str, Any] | None:
         "session_turn_id": getattr(job, "session_turn_id", None),
         "session_revision": getattr(job, "session_revision", None),
         "recovery": dict(job.provider_execution_json or {}),
+        "additional_workspace_directories": additional_directories,
     }
 
 
 async def _run_task_chat_turn(job_id: str, prompt: str) -> bool | None:
-    state_row = await run_db_txn(lambda db: _load_task_chat_turn_state_sync(db, job_id))
+    attempt = current_agent_attempt()
+    state_row = await run_db_txn(
+        lambda db: _load_task_chat_turn_state_sync(db, job_id, attempt.run_token if attempt else None)
+    )
     if state_row is None:
         return None
     recovery = state_row.get("recovery")
@@ -291,6 +300,7 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> bool | None:
             engine.session_id = state_row["job_session_id"]
     engine.session_turn_id = state_row["session_turn_id"]
     engine.session_revision = state_row["session_revision"]
+    engine.additional_workspace_directories = state_row["additional_workspace_directories"]
 
     with (
         bind_task_context(
@@ -352,6 +362,9 @@ async def execute_task_chat_job(job_id: str, dispatch: dict[str, Any]) -> bool |
                 message="Dispatching user prompt to AI engine",
                 context_patch={"source": "task_chat_user_input"},
             )
+
+            if dispatch.get("job_kind") == "TASK_REPOSITORY_ADAPT":
+                return await _run_task_chat_turn(job_id, prompt)
 
             from app.domains.workspace_collaboration.hooks import execution, minimal_context
 
