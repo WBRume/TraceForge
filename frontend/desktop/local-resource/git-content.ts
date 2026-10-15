@@ -85,8 +85,14 @@ export class GitContent {
     return entry ? path.join(entry.git_dir, 'objects', entry.oid.slice(0, 2), entry.oid.slice(2)) : this.legacy(digest)
   }
   get(digest: string): Buffer {
+    const value = this.find(digest)
+    if (value === null) fail('LOCAL_CONTENT_OBJECT_MISSING')
+    return value!
+  }
+  /** A cache miss is expected for cloud-only previews; corrupt objects still fail. */
+  find(digest: string): Buffer | null {
     const entry = this.lookup(digest)
-    if (!entry) fail('LOCAL_CONTENT_OBJECT_MISSING')
+    if (!entry) return null
     let value: Buffer | undefined
     try { readGitBlobs(entry!.git_dir, [entry!], (_entry, data) => { value = Buffer.from(data) }) }
     catch { fail('CORRUPT_LOCAL_CONTENT_OBJECT') }

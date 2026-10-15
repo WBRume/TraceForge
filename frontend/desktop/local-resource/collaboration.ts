@@ -27,8 +27,16 @@ export class CollaborationRuntime {
   }
   private bindingFile(task: string) { return path.join(this.state, 'bindings', identifier(task) + '.json') }
   private load(task: string, allowReleased = false): SyncBinding {
-    const binding = readJson<SyncBinding>(this.bindingFile(task))
+    const binding = this.findBinding(task)
+    if (!binding) return fail('COLLABORATION_BINDING_MISSING')
     if (binding.released && !allowReleased) fail('COLLABORATION_BINDING_MISSING: binding released')
+    return binding
+  }
+  private findBinding(task: string): SyncBinding | null {
+    const file = this.bindingFile(task)
+    let binding: SyncBinding
+    try { binding = readJson<SyncBinding>(file) }
+    catch (error: any) { if (error.code === 'ENOENT' && error.path === file) return null; throw error }
     if (inside(binding.task_root, binding.directory_mode === 'MAPPED' ? [this.state] : this.roots()) !== binding.task_root) fail('COLLABORATION_DIRECTORY_IDENTITY_CHANGED')
     for (const repo of binding.repositories) if (inside(repo.local_worktree_path, binding.directory_mode === 'MAPPED' ? this.roots() : [binding.task_root]) !== repo.local_worktree_path
       || (binding.directory_mode === 'MAPPED' && repo.local_worktree_path !== repo.mapped_repo_root)) fail('COLLABORATION_DIRECTORY_IDENTITY_CHANGED')
@@ -65,9 +73,12 @@ export class CollaborationRuntime {
       case 'prepare': return this.prepare(payload)
       case 'release': return this.release(payload)
       case 'suspend': return this.release({ ...payload, suspend: true })
-      case 'binding': return this.load(payload.task_id, true)
+      case 'binding': return payload.optional === true ? this.findBinding(payload.task_id) : this.load(payload.task_id, true)
       case 'cache_objects': return this.objects.receive(payload.objects)
-      case 'read_object': return { sha256: payload.sha256, content: this.objects.get(payload.sha256).toString('base64') }
+      case 'read_object': {
+        const data = payload.optional === true ? this.objects.git.find(payload.sha256) : this.objects.get(payload.sha256)
+        return data === null ? null : { sha256: payload.sha256, content: data.toString('base64') }
+      }
       case 'missing_objects': return { missing: this.objects.git.check((payload.sha256 as string[]).map(sha256 => ({ sha256 }))) }
       case 'status': return this.status(this.load(payload.task_id), undefined, payload.background !== true || payload.verify === true, payload.verify_raw === true)
       case 'capture': return this.capture(payload)
@@ -476,12 +487,8 @@ export class CollaborationRuntime {
     return { backup_directory: directories.length === 1 ? directories[0] : '', backup_directories: directories }
   }
   private listBackups(taskId: string) {
-    let binding: SyncBinding
-    try { binding = this.load(taskId, true) }
-    catch (error: any) {
-      if (error.code === 'ENOENT' && error.path === this.bindingFile(taskId)) return { backup_directory: '', backup_directories: [], backups: [] }
-      throw error
-    }
+    const binding = this.findBinding(taskId)
+    if (!binding) return { backup_directory: '', backup_directories: [], backups: [] }
     return this.backups(binding)
   }
   private backups(binding: SyncBinding) {

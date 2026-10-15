@@ -9,7 +9,7 @@ import type { CollaborationManifest, CollaborationState, LocalCollaborationStatu
 const mocks = vi.hoisted(() => ({ desktop: true, changed: vi.fn(), unsubscribe: vi.fn(), api: { reviewBaseline: vi.fn(), review: vi.fn(), state: vi.fn(), post: vi.fn(), snapshot: vi.fn(), object: vi.fn(), upload: vi.fn() }, native: vi.fn(), mapping: vi.fn(), setMapping: vi.fn(), directory: vi.fn(), validate: vi.fn(), remotes: vi.fn(), open: vi.fn(), auth: { user: null as { id: string } | null } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => mocks.auth }))
 vi.mock('@/utils/runtime', () => ({ getSddDesktop: () => mocks.desktop ? ({ collaboration: { execute: mocks.native, onChanged: mocks.changed }, config: { getRepoMapping: mocks.mapping, setRepoMapping: mocks.setMapping }, git: { selectDirectory: mocks.directory, validateGitRepo: mocks.validate, getFetchRemotes: mocks.remotes }, system: { openPath: mocks.open } }) : null }))
-vi.mock('@/services/collaborationApi', () => ({ collaborationApi: () => mocks.api, base64Bytes: () => new Uint8Array([1]), bytesBase64: () => 'AQ==' }))
+vi.mock('@/services/collaborationApi', () => ({ collaborationApi: () => mocks.api, base64Bytes: (content: string) => Uint8Array.from(atob(content), char => char.charCodeAt(0)), bytesBase64: () => 'AQ==' }))
 vi.mock('@/components/collaboration/CodeComparison.vue', () => ({ default: { template: '<div />' } }))
 vi.mock('@/utils/api', () => ({ default: { get:vi.fn().mockResolvedValue({ data:{ repositories:[], plan:null } }) } }))
 import { useLocalCollaboration, type LocalCollaboration } from '../useLocalCollaboration'
@@ -56,10 +56,11 @@ beforeEach(() => {
   mocks.remotes.mockResolvedValue([{ name: 'origin', fetchUrl: repo.repo_url }])
   mocks.setMapping.mockImplementation(async (mapping) => { mocks.mapping.mockResolvedValue(mapping); return mapping })
   mocks.api.upload.mockReset().mockResolvedValue(undefined)
-  mocks.native.mockImplementation(async ({ kind }) => {
+  mocks.native.mockImplementation(async ({ kind, payload }) => {
     if (kind === 'inspect_mappings') return { ready: true, checks: manifest.repositories.map(repo => ({ task_repository_id: repo.task_repository_id, local_path: `G:/${repo.repo_slug}`, expected_head: repo.base_commit_sha, local_head: repo.base_commit_sha, clean: true, changes: [], errors: [] })) }
     if (kind === 'describe') return { mapped_repositories: 1, task_root: local.task_root, repositories: local.repositories }
-    if (['status', 'binding'].includes(kind) && !state.enabled) throw new Error('ENOENT: local binding does not exist')
+    if (kind === 'binding' && payload.optional && !state.enabled) return null
+    if (['status', 'binding'].includes(kind) && !state.enabled) throw new Error('COLLABORATION_BINDING_MISSING')
     if (kind === 'missing_objects') return { missing: [] }
     if (kind === 'capture') return { manifest, status: local, objects: [] }
     return local
@@ -71,6 +72,61 @@ afterEach(async () => {
 })
 
 describe('local collaboration coordinator', () => {
+  it('enables a first-time binding without requesting status for a nonexistent binding', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    const calls = mocks.native.mock.calls.map(([request]) => request)
+    const preparedAt = calls.findIndex(request => request.kind === 'prepare')
+    expect(preparedAt).toBeGreaterThan(-1)
+    expect(calls.slice(0, preparedAt).some(request => request.kind === 'status')).toBe(false)
+    expect(calls.filter(request => request.kind === 'binding').every(request => request.payload.optional === true)).toBe(true)
+    expect(controller.phase.value).toBe('READY')
+    expect(controller.error.value).toBe('')
+  })
+  it.each([false, true])('reads uncached preview text from the cloud (legacy host: %s)', async legacy => {
+    setup(); await flushPromises()
+    mocks.native.mockClear()
+    mocks.native.mockImplementation(async ({ kind, payload }) => {
+      expect(kind).toBe('read_object'); expect(payload.optional).toBe(true)
+      if (legacy) throw new Error("Error invoking remote method 'sdd:collaboration:execute': Error: LOCAL_CONTENT_OBJECT_MISSING")
+      return null
+    })
+    mocks.api.object.mockResolvedValue(new TextEncoder().encode('cloud text').buffer)
+    await expect(controller.readText('a'.repeat(64))).resolves.toBe('cloud text')
+    expect(mocks.api.object).toHaveBeenCalledWith('a'.repeat(64))
+    expect(controller.participating.value).toBe(false)
+  })
+  it.each(['local text', ''])('uses cached preview bytes, including an empty file: %s', async content => {
+    setup(); await flushPromises()
+    mocks.native.mockResolvedValue({ content: btoa(content) })
+    await expect(controller.readText('a'.repeat(64))).resolves.toBe(content)
+    expect(mocks.api.object).not.toHaveBeenCalled()
+  })
+  it('reads preview text directly from the cloud in a browser and propagates download errors', async () => {
+    mocks.desktop = false
+    setup(); await flushPromises(); mocks.native.mockClear()
+    mocks.api.object.mockResolvedValueOnce(new TextEncoder().encode('browser text').buffer)
+    await expect(controller.readText('a'.repeat(64))).resolves.toBe('browser text')
+    mocks.api.object.mockRejectedValueOnce(new Error('Cloud object unavailable'))
+    await expect(controller.readText('b'.repeat(64))).rejects.toThrow('Cloud object unavailable')
+    expect(mocks.native).not.toHaveBeenCalled()
+  })
+  it.each(['CORRUPT_LOCAL_CONTENT_OBJECT', 'Local resource worker exited (1)', 'EACCES: permission denied'])('keeps local preview failures visible: %s', async message => {
+    setup(); await flushPromises()
+    mocks.native.mockRejectedValue(new Error(message))
+    await expect(controller.readText('a'.repeat(64))).rejects.toThrow(message)
+    expect(mocks.api.object).not.toHaveBeenCalled()
+  })
+  it.each(['Unexpected token in binding JSON', 'ENOENT: missing Git index', 'EACCES: permission denied'])('does not enable over an unreadable local binding: %s', async message => {
+    setup(); await flushPromises()
+    const nativeImplementation = mocks.native.getMockImplementation()!
+    mocks.native.mockImplementation(async request => {
+      if (request.kind === 'binding') throw new Error(message)
+      return nativeImplementation(request)
+    })
+    await controller.enable()
+    expect(controller.error.value).toContain(message)
+    expect(mocks.api.post).not.toHaveBeenCalled()
+  })
   it.each([
     "Error invoking remote method 'sdd:collaboration:execute': Error: ENOENT: no such file or directory, open 'C:\\profile\\collaboration\\bindings\\TASK.json'",
     "ENOENT: no such file or directory, open '/profile/collaboration/bindings/TASK.json'",
@@ -567,7 +623,8 @@ describe('local collaboration coordinator', () => {
     let exists = false
     mocks.native.mockImplementation(async request => {
       if (request.kind === 'describe') return { mapped_repositories: 1, task_root: local.task_root, repositories: local.repositories, client_id: state.client_id, instance_id: state.instance_id }
-      if (['status', 'binding'].includes(request.kind) && !exists) throw new Error('ENOENT: local binding does not exist')
+      if (request.kind === 'binding' && request.payload.optional && !exists) return null
+      if (['status', 'binding'].includes(request.kind) && !exists) throw new Error('COLLABORATION_BINDING_MISSING')
       if (request.kind === 'prepare') exists = true
       return nativeImplementation(request)
     })
@@ -599,7 +656,7 @@ describe('local collaboration coordinator', () => {
     let exists = false
     mocks.native.mockImplementation(async request => {
       if (request.kind === 'describe') return { mapped_repositories: 1, task_root: local.task_root, repositories: local.repositories, client_id: state.client_id, instance_id: state.instance_id }
-      if (['status', 'binding'].includes(request.kind) && !exists) throw new Error("Error invoking remote method 'sdd:collaboration:execute': ENOENT: no such file or directory, open 'C:\\profile\\collaboration\\bindings\\task.json'")
+      if (['status', 'binding'].includes(request.kind) && !exists) throw new Error(`Error invoking remote method 'sdd:collaboration:execute': ENOENT: no such file or directory, open 'C:/profile/collaboration/bindings/${manifest.task_id}.json'`)
       if (request.kind === 'prepare') exists = true
       return nativeImplementation(request)
     })
