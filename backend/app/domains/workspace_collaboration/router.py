@@ -27,7 +27,9 @@ from .schemas import (
 router = APIRouter(prefix="/workspaces/{ws_id}/tasks/{task_id}/collaboration", tags=["Workspace collaboration"])
 
 
-def _task(db: Session, ws_id: str, task_id: str, user: User | str, *, write: bool = False) -> SddTask:
+def _task(
+    db: Session, ws_id: str, task_id: str, user: User | str, *, write: bool = False, allow_baselined: bool = False
+) -> SddTask:
     user_id = user if isinstance(user, str) else user.id
     if not workspace_service.get_workspace_member(db, ws_id, user_id):
         raise HTTPException(403, "No access to this workspace")
@@ -37,7 +39,7 @@ def _task(db: Session, ws_id: str, task_id: str, user: User | str, *, write: boo
     if write:
         if not workspace_service.user_has_permission(db, ws_id, user_id, WorkspacePermission.START_TASK):
             raise HTTPException(403, "No permission to collaborate on this task")
-        if task.status == TaskStatus.BASELINED:
+        if task.status == TaskStatus.BASELINED and not allow_baselined:
             raise HTTPException(403, "Baselined task is read-only")
     return task
 
@@ -58,14 +60,23 @@ def _invoke(db: Session, function, *args, **kwargs):
         raise HTTPException(409, {"code": "COLLABORATION_CONTENT_ERROR", "message": str(exc)}) from exc
 
 
-async def _locked(db: Session, ws_id: str, task_id: str, user: User, function, *args, write: bool = True):
+async def _locked(
+    db: Session,
+    ws_id: str,
+    task_id: str,
+    user: User,
+    function,
+    *args,
+    write: bool = True,
+    allow_baselined: bool = False,
+):
     user_id = user.id
     bind = db.get_bind()
     db.close()
 
     def execute():
         with Session(bind=bind) as transaction:
-            task = _task(transaction, ws_id, task_id, user_id, write=write)
+            task = _task(transaction, ws_id, task_id, user_id, write=write, allow_baselined=allow_baselined)
             return _invoke(transaction, function, task, user_id, *args)
 
     try:
@@ -109,7 +120,9 @@ async def review_baseline(
 def lease(
     ws_id: str, task_id: str, data: LeaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    return _invoke(db, service.renew_lease, _task(db, ws_id, task_id, user, write=True), user.id, data)
+    # Existing delivery connections may finish and leave after the task is frozen.
+    task = _task(db, ws_id, task_id, user, write=True, allow_baselined=True)
+    return _invoke(db, service.renew_lease, task, user.id, data)
 
 
 @router.post("/claim-driver")
@@ -162,7 +175,7 @@ async def release_driver(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return await _locked(db, ws_id, task_id, user, session.release_driver, data)
+    return await _locked(db, ws_id, task_id, user, session.release_driver, data, allow_baselined=True)
 
 
 class LatestSnapshotRequest(BaseModel):
@@ -177,7 +190,7 @@ async def latest_snapshot(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return await _locked(db, ws_id, task_id, user, session.download, data.base_snapshot_id)
+    return await _locked(db, ws_id, task_id, user, session.download, data.base_snapshot_id, write=False)
 
 
 @router.get("/snapshots/{snapshot_id}")
@@ -302,7 +315,8 @@ def receipt(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return _invoke(db, service.receipt, _task(db, ws_id, task_id, user, write=True), user.id, data)
+    task = _task(db, ws_id, task_id, user, write=True, allow_baselined=True)
+    return _invoke(db, service.receipt, task, user.id, data)
 
 
 @router.post("/disable")
@@ -313,7 +327,8 @@ def disable(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return _invoke(db, service.disable, _task(db, ws_id, task_id, user, write=True), user.id, data, data.operation_id)
+    task = _task(db, ws_id, task_id, user, write=True, allow_baselined=True)
+    return _invoke(db, service.disable, task, user.id, data, data.operation_id)
 
 
 class CancelRequest(Fence):

@@ -199,18 +199,23 @@ def create_human_delta(
     actor_id: str | None,
     payload: HumanDeltaCreateRequest,
 ) -> str:
-    from app.domains.workspace_asset.services.human_delta_compare_service import create_delta
+    from app.domains.workspace_asset.services.human_delta_compare_service import HumanDeltaError, create_delta
 
     task = get_task_or_error(db, workspace_id, task_id)
     ensure_task_not_baselined(task)
-    return create_delta(
-        db,
-        workspace_id=workspace_id,
-        task_id=task_id,
-        actor_id=actor_id,
-        proposal_id=payload.proposal_id or "",
-        final_evidence_id=payload.final_evidence_id or "",
-    )
+    if not payload.proposal_id or not payload.final_evidence_id:
+        raise WorkspaceAssetError("ChangeProposal and final evidence are required.", status_code=400)
+    try:
+        return create_delta(
+            db,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            actor_id=actor_id,
+            proposal_id=payload.proposal_id,
+            final_evidence_id=payload.final_evidence_id,
+        )
+    except HumanDeltaError as exc:
+        raise WorkspaceAssetError(str(exc), status_code=exc.status_code) from exc
 
 
 def update_human_delta(

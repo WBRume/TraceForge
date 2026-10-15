@@ -250,6 +250,7 @@ class Settings(BaseSettings):
     MAX_RETRY_COUNT: int = 3
     SKILLS_STORAGE_ROOT: str = "storage/skills"
     SKILL_MAX_TEXT_FILE_SIZE_BYTES: int = 10 * 1024 * 1024
+    SKILL_ANALYSIS_MAX_ATTEMPTS: int = Field(default=2, ge=1, le=2)
     # 工作区根目录默认值（env 层）。留空 = 未启用；
     # 系统配置表（界面保存）非空时覆盖该值，系统配置清空后回退到该 env 默认值。
     WORKSPACE_ROOT_DIR: str = ""

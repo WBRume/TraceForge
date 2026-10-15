@@ -1,5 +1,7 @@
 """Durable execution events and independent webhook delivery leases."""
 
+from datetime import datetime
+
 from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 
 from app.database import Base
@@ -34,8 +36,10 @@ class TaskWebhookEndpoint(Base):
     url = Column(Text, nullable=False)
     delivery_location = Column(String(20), nullable=False, default="server")
     events_json = Column(JSON, nullable=False)
-    created_at = Column(DateTime, nullable=False, server_default=func.now())
-    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+    # Event timestamps are UTC. Database NOW() can use a different session zone
+    # and would incorrectly exclude new events as predating this endpoint.
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class TaskWebhookDelivery(Base):

@@ -163,6 +163,18 @@ describe('ChatMessageBubble diagnosis_result rendering', () => {
     })
   })
 
+  it('offers recovery with the persisted operation instead of a fresh undo', async () => {
+    const wrapper = mountBubble({
+      id: 'resume-1', role: 'user', content: 'restore', message_type: 'text',
+      session_turn_id: 'turn-1', session_generation: 1, undo_operation_id: 'operation-1',
+      created_at: '2026-08-07T10:00:00Z',
+    }, { canUndoMessage: () => true, isUndoing: false, undoingMessageId: '' })
+    const button = wrapper.find('.message-undo-btn')
+    expect(button.attributes('title')).toBe('chat.undo.resume')
+    await button.trigger('click')
+    expect(wrapper.emitted('undo-request')?.[0]?.[0]).toMatchObject({ undo_operation_id: 'operation-1' })
+  })
+
   it('falls back to message content when metadata is missing', () => {
     const wrapper = mountBubble({
       id: 'msg-diag-2',

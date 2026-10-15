@@ -404,3 +404,11 @@ def _set_job_failed(db: Session, project_id: str, job: SddApiMockJob, message: s
     job.message = message
     job.finished_at = datetime.utcnow()
     _commit_job_state(db, project_id, job, done=True)
+
+
+def _set_job_cancelled(db: Session, project_id: str, job: SddApiMockJob, message: str) -> None:
+    """Finalize cancellation only after the worker has stopped its provider work."""
+    # This job table represents cancellation as FAILED plus durable result flags.
+    _mark_job_cancelled(job)
+    job.progress = 100
+    _set_job_failed(db, project_id, job, message)

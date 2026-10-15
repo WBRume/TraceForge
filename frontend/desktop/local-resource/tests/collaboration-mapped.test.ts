@@ -27,6 +27,30 @@ beforeEach(() => {
 }, 60_000)
 afterEach(() => { runtime.close(); fs.rmSync(root, { recursive: true, force: true }) })
 
+test('a released dual-repository task can move to new clean clones and retain the old files and snapshots', async () => {
+  const first = await runtime.executeAsync('prepare', input)
+  runtime.execute('release', { task_id: 'task', binding_id: 'binding' })
+  const oldRoots = repositories.map(repo => repo.local_path)
+  const remapped = repositories.map(repo => {
+    const target = path.join(root, 'user-repositories', repo.repo_slug + '-second')
+    git(root, 'clone', '--no-hardlinks', '--config', 'core.autocrlf=false', repo.local_path, target)
+    git(target, 'remote', 'set-url', 'origin', repo.repo_url)
+    return { ...repo, local_path: resolved(target) }
+  })
+  fs.writeFileSync(path.join(oldRoots[0], 'shared.txt'), 'retained old human change\n')
+  const next = await runtime.executeAsync('prepare', { ...input, binding_id: 'binding2', previous_binding_id: 'binding', repositories: remapped })
+  expect(next.repositories.map((repo: any) => repo.local_worktree_path)).toEqual(remapped.map(repo => repo.local_path))
+  expect(next.baseline.repositories.map((repo: any) => repo.files)).toEqual(first.baseline.repositories.map((repo: any) => repo.files))
+  expect(fs.readFileSync(path.join(oldRoots[0], 'shared.txt'), 'utf8')).toBe('retained old human change\n')
+  const archived = fs.readdirSync(path.join(root, 'private', 'previous-bindings'))
+  expect(archived).toHaveLength(1)
+  runtime.close()
+  runtime = new CollaborationRuntime(path.join(root, 'private'), () => [path.join(root, 'user-repositories')])
+  const reopened = await runtime.executeAsync('status', { task_id: 'task' })
+  expect(reopened.local_changes).toHaveLength(0)
+  expect(reopened.repositories.map((repo: any) => repo.local_worktree_path)).toEqual(remapped.map(repo => repo.local_path))
+}, 120_000)
+
 test('checks every repository and refuses HEAD mismatch and dirty files before any binding or checkout', () => {
   const [api, web] = repositories, originalHeads = repositories.map(head), originalIndexes = repositories.map(index)
   fs.writeFileSync(path.join(api.local_path, 'shared.txt'), 'local edit')

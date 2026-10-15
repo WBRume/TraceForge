@@ -3,12 +3,12 @@ API MOCK Preview Service.
 """
 
 import json
-import os
 import subprocess
 import time
 import urllib.parse
 import urllib.request
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -27,7 +27,7 @@ from .path_matcher import (
     _normalize_path_for_compare,
     _to_string_compare,
 )
-from .utils import _repo_root, _safe_json_dumps
+from .utils import _safe_json_dumps
 
 logger = get_logger(__name__, category="api_mock")
 
@@ -170,11 +170,13 @@ def _render_mockjs(template: str | None, fallback_body: dict[str, Any] | None) -
         "process.stdout.write(JSON.stringify(output));"
     )
 
-    frontend_dir = os.path.join(_repo_root(), "frontend")
+    backend_root = Path(__file__).resolve().parents[5]
+    frontend_dir = backend_root.parent / "frontend"
+    runtime_dir = frontend_dir if (frontend_dir / "node_modules/mockjs").is_dir() else backend_root
     try:
         proc = subprocess.run(
             ["node", "-e", script, _safe_json_dumps(payload)],
-            cwd=frontend_dir,
+            cwd=runtime_dir,
             capture_output=True,
             text=True,
             timeout=8,

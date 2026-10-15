@@ -644,6 +644,8 @@
     "copied": "已复制",
     "copy_failed": "复制失败",
     "undo": {
+      "resume": "继续恢复会话",
+      "resume_message": "上次撤销尚未完成。将继续恢复同一历史位置，完成前不能开始新的会话写入。",
       "message": "撤销并重新编辑",
       "confirm_title": "确认撤销消息",
       "confirm_message": "确定要撤销这条消息吗？",
@@ -651,7 +653,7 @@
       "confirm_action": "确认撤销",
       "in_progress": "正在撤回会话，请稍候…",
       "success": "已撤销后续会话，原消息已放回输入框",
-      "failed": "撤销失败，当前历史未改变"
+      "failed": "撤销未完成，请继续恢复会话"
     },
     "decision": {
       "mark": "标记为关键决策",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import constants as ai_job_constants
 from app.domains.ai.services.jobs.store import create_asset_thread_job, serialize_job
 from app.domains.asset.models.asset import (
@@ -83,6 +84,7 @@ def _create_asset_resolution_job_sync(
         asset, context_version_id or asset.active_version_id
     )
     proposal_id = str(context_json.get("proposal_id") or "").strip() or None
+    task_cli_state_service.ensure_bootstrap_ready_or_start(db, workspace_id=ws_id, task_id=thread.task_id)
     if job_kind == ai_job_constants.JOB_KIND_RESOLUTION_REWRITE:
         proposal = (
             db.query(SddAssetResolutionProposal)
@@ -90,13 +92,41 @@ def _create_asset_resolution_job_sync(
                 SddAssetResolutionProposal.id == proposal_id,
                 SddAssetResolutionProposal.thread_id == thread.id,
             )
+            .populate_existing()
+            .with_for_update()
             .first()
         )
         if not proposal:
             raise ReviewError(status_code=404, detail="Resolution proposal not found")
         if proposal.status != AssetResolutionProposalStatus.DRAFT:
             raise ReviewError(status_code=409, detail="Only draft proposals can be rewritten")
-    task_cli_state_service.ensure_bootstrap_ready_or_start(db, workspace_id=ws_id, task_id=thread.task_id)
+        # Hold the proposal lock through job creation. A locking read also sees
+        # the preceding request's commit under MySQL REPEATABLE READ.
+        active_jobs = (
+            db.query(SddAiJob)
+            .filter(
+                SddAiJob.thread_id == thread.id,
+                SddAiJob.status.in_(
+                    [
+                        AiJobStatus.PENDING,
+                        AiJobStatus.RUNNING,
+                        AiJobStatus.WAITING_HITL,
+                        AiJobStatus.TERMINATING,
+                        AiJobStatus.ORPHANED,
+                    ]
+                ),
+            )
+            .populate_existing()
+            .with_for_update()
+            .all()
+        )
+        for active in active_jobs:
+            context = active.context_json or {}
+            if context.get("job_kind") == job_kind and context.get("proposal_id") == proposal_id:
+                raise ReviewError(
+                    status_code=409,
+                    detail={"message": "Proposal rewrite is already in progress", "job_id": active.id},
+                )
     if job_kind == ai_job_constants.JOB_KIND_RESOLUTION_PROPOSAL:
         existing_draft = (
             db.query(SddAssetResolutionProposal)
