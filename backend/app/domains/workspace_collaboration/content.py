@@ -223,7 +223,12 @@ def _tracked_modes(root: Path, paths: list[str] | None = None) -> dict[str, str]
         header, name = item.split(b"\t", 1)
         mode, _sha, stage = header.decode().split()
         relative = name.decode("utf-8")
-        if mode not in {"100644", "100755", "120000"} or stage != "0":
+        # Collaboration transfers working bytes, not the user's merge index.
+        # Regular conflict files must remain readable so the next Agent turn
+        # can resolve them. Link/type conflicts still require explicit recovery.
+        if mode not in {"100644", "100755", "120000"} or (
+            stage != "0" and (stage not in {"1", "2", "3"} or mode == "120000")
+        ):
             raise ValueError(f"Unsupported submodule, link or unmerged file: {relative}")
         tracked[relative] = mode
     return tracked
