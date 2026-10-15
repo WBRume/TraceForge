@@ -47,6 +47,7 @@ class _TurnEvents:
         self.text_parts: list[str] = []
         self.result_text = ""
         self.result_is_error = False
+        self.result_seen = False
         self.persist_session = persist_session
 
     async def on_event(self, event: dict):
@@ -76,6 +77,7 @@ class _TurnEvents:
                     if text:
                         self.text_parts.append(text)
         elif event_type == "result":
+            self.result_seen = True
             subtype = str(event.get("subtype") or "").lower()
             self.result_is_error = bool(event.get("is_error")) or subtype == "error"
             text = str(event.get("result") or "").strip()

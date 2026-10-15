@@ -81,9 +81,10 @@ const restoreDescription = computed(() => pendingRestore.value?.conflicts.map(ro
   return `${repo?.repo_slug || row.task_repository_id}/${row.path}${!row.cloud ? ` · ${t('collaboration.delete')}` : ''}`
 }).join('\n') || '')
 const canReconnect = computed(() => c.value.canReconnect)
+const activeConflict = computed(() => c.value.conflicts.find(item => collaborationFileKey(item.task_repository_id, item.path) === active.value?.key))
 const deviceHint = computed(() => c.value.state?.driver_connected === false ? canReconnect.value ? 'reconnectHint' : 'reconnectElsewhereHint' : 'activeDeviceHint')
 
-function resolveActiveSingle(decision: 'accept' | 'keep') {
+async function resolveActiveSingle(decision: 'accept' | 'keep') {
   if (!active.value) return
   if (decision === 'accept') {
     const row = c.value.conflicts.find(item => collaborationFileKey(item.task_repository_id, item.path) === active.value?.key)
@@ -91,7 +92,8 @@ function resolveActiveSingle(decision: 'accept' | 'keep') {
       pendingRestore.value = { conflicts: [structuredClone(toRaw(row))], id: c.value.local.conflict_set_id }
     }
   } else {
-    checked.value = checked.value.filter(k => k !== active.value?.key)
+    const row = c.value.conflicts.find(item => collaborationFileKey(item.task_repository_id, item.path) === active.value?.key)
+    if (row && c.value.local?.conflict_set_id) await c.value.restore([structuredClone(toRaw(row))], c.value.local.conflict_set_id, 'keep')
   }
 }
 
@@ -197,8 +199,8 @@ async function confirmRestore() {
                 <span v-if="comparison.left?.mode !== comparison.right?.mode" class="mode-tag"> · {{ t('collaboration.ui.fileMode') }} {{ comparison.left?.mode || '—' }} → {{ comparison.right?.mode || '—' }}</span>
               </p>
               <div v-if="active.kind === 'conflicts' && ui.canRestore" class="single-file-actions">
-                <button type="button" class="btn-secondary btn-xs" @click="resolveActiveSingle('keep')">保留本地</button>
-                <button type="button" class="btn-primary btn-xs" @click="resolveActiveSingle('accept')">采纳 Agent 版本</button>
+                <button type="button" class="btn-secondary btn-xs" :disabled="c.busy || activeConflict?.reason === 'PATH_STRUCTURE'" title="保留当前文件，作为下一次发送时的本地修改" @click="resolveActiveSingle('keep')">保留本地</button>
+                <button type="button" class="btn-primary btn-xs" :disabled="c.busy" @click="resolveActiveSingle('accept')">采纳 Agent 版本</button>
               </div>
             </div>
           </div>

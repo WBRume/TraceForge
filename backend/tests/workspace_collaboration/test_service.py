@@ -552,6 +552,20 @@ def test_restore_recovery_requires_exact_completed_operation(environment):
     assert service.get_snapshot(db, "t", result["snapshot_id"])["source"] == "RESTORE"
 
 
+def test_same_restore_operation_can_resume_after_server_failure(environment):
+    db, task, _ = environment
+    acknowledge(environment, enabled(environment))
+    service.begin_restore(db, task, "same-undo")
+    service.mark_recovery(db, task.id, "temporary restore failure")
+    db.commit()
+    with pytest.raises(service.CollaborationError, match="Finish current delivery"):
+        service.begin_restore(db, task, "other-undo")
+    assert service.begin_restore(db, task, "same-undo") is True
+    state = service.get_state(db, task)
+    assert state["sync_phase"] == "SETTLING"
+    assert state["recovery_kind"] is None
+
+
 def test_api_authentication_and_raw_transfer(environment):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

@@ -557,7 +557,7 @@ def update_endpoint(
         endpoint = api_mock_service.update_endpoint(
             db,
             project,
-            endpoint_id,
+            endpoint_id=endpoint_id,
             row_version=data.row_version,
             method=data.method,
             path=data.path,
@@ -568,7 +568,6 @@ def update_endpoint(
             request_schema_json=data.request_schema_json,
             responses_json=data.responses_json,
             response_schema_json=data.response_schema_json,
-            entity_refs_json=data.entity_refs_json,
             updater_id=current_user.id,
         )
     except ValueError as exc:
@@ -625,7 +624,8 @@ def create_entity(
             endpoint_id=data.endpoint_id,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status_code = 409 if "updated by another user" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     return ApiMockEntityResponse.model_validate(entity)
 
 
@@ -645,7 +645,7 @@ def update_entity(
         entity = api_mock_service.update_entity(
             db,
             project,
-            entity_id,
+            entity_id=entity_id,
             row_version=data.row_version,
             name=data.name,
             description=data.description,
@@ -674,7 +674,8 @@ def delete_entity(
     try:
         api_mock_service.delete_entity(db, project, entity_id, updater_id=current_user.id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        status_code = 409 if "updated by another user" in str(exc) else 404
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     return {"ok": True}
 
 
@@ -797,7 +798,8 @@ def create_mock_case(
             cookies_json=data.cookies_json,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        status_code = 409 if "updated by another user" in str(exc) else 404
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     return ApiMockMockCaseResponse.model_validate(mock_case)
 
 

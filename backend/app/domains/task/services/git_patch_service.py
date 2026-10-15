@@ -81,8 +81,10 @@ def _is_excluded_path(path: str | None) -> bool:
     return normalized == ".sdd" or normalized.startswith(".sdd/")
 
 
-def _command_output(result: subprocess.CompletedProcess[str]) -> str:
+def _command_output(result: subprocess.CompletedProcess) -> str:
     message = (result.stderr or "").strip() or (result.stdout or "").strip()
+    if isinstance(message, bytes):
+        message = message.decode("utf-8", errors="replace")
     return message or f"exit code {result.returncode}"
 
 
@@ -101,6 +103,7 @@ def _run_git(
             cwd=os.path.abspath(repo_path),
             timeout_seconds=_GIT_TIMEOUT_SECONDS,
             env_extra=env,
+            decode_text=False,
         )
     except FileNotFoundError as exc:
         raise GitPatchError("Git executable not found in PATH", status_code=500) from exc
@@ -109,7 +112,11 @@ def _run_git(
 
     if check and result.returncode != 0:
         raise GitPatchError(f"Git command failed: git {' '.join(args)} | {_command_output(result)}")
-    return (result.stdout or "").strip()
+    # Diff output is a transport format: stripping its final newline corrupts
+    # the last hunk and can also remove significant trailing file whitespace.
+    # Scalar callers normalize their own output in _try_git.
+    # Text-mode subprocess pipes also translate CRLF inside diff hunks.
+    return (result.stdout or b"").decode("utf-8", errors="replace")
 
 
 def _try_git(repo_path: str, args: list[str]) -> str | None:

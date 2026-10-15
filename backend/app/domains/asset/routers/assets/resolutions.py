@@ -146,7 +146,7 @@ def precheck_thread_resolution_anchor(
     if resolved_context_version_id:
         context_version = document_repository.get_asset_version(db, asset.id, resolved_context_version_id)
     if not context_version:
-        context_version = asset_review_documents._ensure_active_version(db, asset)
+        context_version = asset_review_documents.ensure_active_version(db, asset)
 
     anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
         db,

@@ -61,6 +61,12 @@ class PublicShareConnectionManager:
     def disconnect(self, websocket: WebSocket, share_id: str) -> None:
         self.registry.disconnect(self._room_key(share_id), websocket)
 
+    def revoke(self, share_id: str) -> None:
+        """Fence existing visitors immediately after the share deletion commits."""
+        connections = list(self.registry.rooms.get(self._room_key(share_id), {}).values())
+        for connection in connections:
+            connection.evict("share_revoked")
+
     async def complete_resync(
         self,
         websocket: WebSocket,

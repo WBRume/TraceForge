@@ -1,5 +1,7 @@
 """Human edits retain their immutable versions and appear in task detail."""
 
+from datetime import datetime
+
 import pytest
 from sqlalchemy import text
 
@@ -10,6 +12,35 @@ from tests.workspace_collaboration.test_service import environment as repository
 from tests.workspace_collaboration.test_service import input_request, preparing
 
 environment = repository_environment
+
+
+def test_backup_turn_time_preserves_the_conversation_timestamp(environment):
+    from app.domains.task.models.session_turn import TaskSessionTurn
+    from app.domains.workspace_collaboration.models import CollaborationState
+    from tests.workspace_collaboration.test_service import enabled
+
+    db, task, _ = environment
+    initial = enabled(environment)
+    state = db.get(CollaborationState, task.id)
+    state.run_id = "job"
+    created = datetime(2026, 10, 15, 17, 36, 48)
+    db.add(
+        TaskSessionTurn(
+            task_id=task.id,
+            workspace_id=task.workspace_id,
+            session_generation=1,
+            session_revision=0,
+            turn_index=1,
+            provider="opencode",
+            ai_job_id="job",
+            created_at=created,
+        )
+    )
+    db.flush()
+    manifest = service._snapshot(
+        db, task, state, "AGENT_OUTPUT", service.get_snapshot(db, task.id, initial["snapshot_id"])["repositories"]
+    )
+    assert manifest["turn_created_at"] == "2026-10-15T17:36:48"
 
 
 def test_handoff_is_indexed_once_and_comparison_survives_later_edits(environment):

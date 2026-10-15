@@ -34,6 +34,7 @@ def _run_git(args, cwd):
 
 def _seed_repo(repo_path: str):
     _run_git(["init"], cwd=repo_path)
+    _run_git(["config", "core.autocrlf", "false"], cwd=repo_path)
     _run_git(["config", "user.email", "tester@example.com"], cwd=repo_path)
     _run_git(["config", "user.name", "tester"], cwd=repo_path)
     with open(os.path.join(repo_path, "README.md"), "w", encoding="utf-8") as handle:
@@ -103,3 +104,33 @@ def test_generate_task_patch_snapshot_includes_worktree_changes_without_pollutin
         cached = _run_git(["diff", "--cached", "--name-only"], cwd=repo_path).stdout.strip()
         assert cached == ""
         assert all("push" not in call for call in git_calls)
+
+
+@pytest.mark.parametrize(
+    "last_content", [b"last line  \t\n", b"CRLF  \t\r\n", b"no final newline  \t", b"\x00\xff\x01binary\x00"]
+)
+def test_generated_patch_applies_exact_bytes_to_clean_checkout(tmp_path, last_content):
+    source = tmp_path / "source"
+    source.mkdir()
+    _seed_repo(str(source))
+    _run_git(["config", "core.autocrlf", "false"], cwd=source)
+    target = tmp_path / "target"
+    _run_git(["clone", "--no-hardlinks", str(source), str(target)], cwd=tmp_path)
+    _run_git(["config", "core.autocrlf", "false"], cwd=target)
+
+    expected = {"README.md": b"updated\n", "z-last.dat": last_content}
+    for name, data in expected.items():
+        (source / name).write_bytes(data)
+    # A pre-existing staged change must remain staged exactly as it was.
+    _run_git(["add", "README.md"], cwd=source)
+    index_before = (source / ".git" / "index").read_bytes()
+    snapshot = git_patch_service.generate_task_patch_snapshot(_task(str(source)), _workspace(str(source)))
+    assert (source / ".git" / "index").read_bytes() == index_before
+
+    patch = tmp_path / "generated.patch"
+    patch.write_bytes(snapshot.patch_text.encode("utf-8"))
+    _run_git(["apply", "--check", str(patch)], cwd=target)
+    _run_git(["apply", "--whitespace=nowarn", str(patch)], cwd=target)
+    for name, data in expected.items():
+        assert (target / name).read_bytes() == data
+    assert (target / "delete_me.txt").read_bytes() == (source / "delete_me.txt").read_bytes()

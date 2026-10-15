@@ -135,9 +135,15 @@ def _existing_submission_sync(db, task_id, actor_id, client_id, content, metadat
     task = db.query(SddTask).filter(SddTask.id == task_id).with_for_update().one_or_none()
     if task is None:
         raise SubmissionError("Task not found", "TASK_NOT_FOUND", 404)
+    from app.domains.auth.models.user import WorkspacePermission
     from app.domains.local_resource.client import ResourceError
     from app.domains.local_resource.service import require_operation
+    from app.domains.workspace.services import workspace_service
 
+    if task.execution_location != "LOCAL" and not workspace_service.user_has_permission(
+        db, task.workspace_id, actor_id, WorkspacePermission.START_TASK
+    ):
+        raise SubmissionError("No permission to send messages in this task", "TASK_WRITE_FORBIDDEN", 403)
     try:
         require_operation(db, task, actor_id)
     except ResourceError as exc:
@@ -200,7 +206,10 @@ def _accept_sync(db, task_id, actor_id, client_id, content, metadata):
 
     if (
         db.query(TaskSessionOperation.id)
-        .filter_by(task_id=task_id, status=TaskSessionOperationStatus.REVERTING)
+        .filter(
+            TaskSessionOperation.task_id == task_id,
+            TaskSessionOperation.status.in_([TaskSessionOperationStatus.REVERTING, TaskSessionOperationStatus.FAILED]),
+        )
         .first()
     ):
         raise SubmissionError("当前会话正在撤销，请等待完成")

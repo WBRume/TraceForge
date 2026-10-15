@@ -473,13 +473,13 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     finally { if (token === generation) busy.value = false }
   }
 
-  async function restore(selected: CollaborationConflict[], conflictSetId: string) {
+  async function restore(selected: CollaborationConflict[], conflictSetId: string, decision: 'accept' | 'keep' = 'accept') {
     if (!selected.length || busy.value || (!receivedOnce.value && (!participating.value || !driver.value || !state.value?.snapshot_id || phase.value !== 'CONFLICT_PENDING'))) return
     const token = generation
     busy.value = true; error.value = ''
     try {
       if (!participating.value) await resumeForDownload(token)
-      local.value = await native<LocalCollaborationStatus>('restore', { task_id: String(options.task()?.id), operation_id: crypto.randomUUID(), conflict_set_id: conflictSetId, selected: selected.map(row => ({ task_repository_id: row.task_repository_id, path: row.path, expected_sha256: row.expected_sha256 ?? row.local?.sha256 ?? null })) })
+      local.value = await native<LocalCollaborationStatus>('restore', { task_id: String(options.task()?.id), operation_id: crypto.randomUUID(), conflict_set_id: conflictSetId, decision, selected: selected.map(row => ({ task_repository_id: row.task_repository_id, path: row.path, expected_sha256: row.expected_sha256 ?? row.local?.sha256 ?? null })) })
       check(token); if (participating.value) await receipt(state.value!.snapshot_id!, local.value, token)
     } catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
     finally {
@@ -737,7 +737,7 @@ export function useLocalCollaboration(options: { workspaceId: () => string; task
     view: computed(() => active.value?.view.value || { page: 'files', tab: 'all', pair: 'auto', selected: '', selectedConflicts: [] as string[], conflictSetId: '' }),
     progressive: computed(() => active.value?.progressive.value || false), setProgressive: (value: boolean) => active.value?.setProgressive(value),
     refresh: async () => { await active.value?.refresh() }, enable: async () => { await active.value?.enable() },
-    restore: async (selected: CollaborationConflict[], id: string) => { await active.value?.restore(selected, id) },
+    restore: async (selected: CollaborationConflict[], id: string, decision: 'accept' | 'keep' = 'accept') => { await active.value?.restore(selected, id, decision) },
     readText: async (hash: string) => { if (!active.value) throw new Error('COLLABORATION_CONTEXT_CHANGED'); return active.value.readText(hash) },
     openDirectory: (repositoryId?: string) => active.value?.openDirectory(repositoryId), submissionMetadata: () => active.value?.submissionMetadata() || {},
     claimDriver: async () => { await active.value?.claimDriver() }, recover: async () => { await active.value?.recover() },

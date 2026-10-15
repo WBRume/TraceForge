@@ -48,7 +48,7 @@ def list_asset_threads(
     if resolved_context_version_id:
         context_version = document_repository.get_asset_version(db, asset.id, resolved_context_version_id)
     if not context_version:
-        context_version = asset_review_documents._ensure_active_version(db, asset)
+        context_version = asset_review_documents.ensure_active_version(db, asset)
     items = asset_discussion_service.list_threads(db, asset_id=asset.id, version_id=None)
     return AssetThreadListResponse(
         items=[
@@ -83,7 +83,7 @@ def get_asset_thread(
     if context_version_id:
         context_version = document_repository.get_asset_version(db, asset.id, context_version_id)
     if not context_version:
-        context_version = asset_review_documents._ensure_active_version(db, asset)
+        context_version = asset_review_documents.ensure_active_version(db, asset)
     return asset_review_serialization._serialize_thread_with_context(
         db,
         thread=thread,
