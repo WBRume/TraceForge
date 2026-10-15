@@ -96,6 +96,7 @@ def create_job(
     context_json: dict[str, Any] | None = None,
     stage: str = "QUEUED",
     message: str | None = None,
+    job_id: str | None = None,
 ) -> SddProvisionJob:
     job = SddProvisionJob(
         job_type=job_type,
@@ -108,6 +109,8 @@ def create_job(
         workspace_id=(str(workspace_id).strip() if workspace_id else None),
         task_id=(str(task_id).strip() if task_id else None),
     )
+    if job_id is not None:
+        job.id = job_id
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -121,16 +124,59 @@ def retry_job(
     creator_id: str,
     message: str | None = None,
 ) -> SddProvisionJob:
+    # Serialize retries of the same failed job. The task and successor receipt
+    # commit together so a failed retry never leaves an unqueued pending task.
+    source_job = (
+        db.query(SddProvisionJob)
+        .filter(SddProvisionJob.id == source_job.id)
+        .populate_existing()
+        .with_for_update()
+        .one()
+    )
     context_json = dict(source_job.context_json or {}) if isinstance(source_job.context_json, dict) else {}
+    previous_id = context_json.pop("retry_job_id", None)
+    previous = get_job(db, previous_id) if previous_id else None
+    if previous and previous.status != ProvisionJobStatus.FAILED:
+        raise ValueError("此任务已发起重试，请查看已有重试任务")
+    task_id = source_job.task_id
+    if source_job.job_type == ProvisionJobType.CREATE_TASK:
+        from app.domains.auth.models.user import WorkspacePermission
+        from app.domains.task.models.task import SddTask
+        from app.domains.task.schemas.task import TaskCreate
+        from app.domains.task.services.provisioning.creation import create_task_from_request
+
+        task = db.get(SddTask, task_id) if task_id else None
+        if not task:
+            request = context_json.get("task_create_request")
+            if not isinstance(request, dict):
+                raise ValueError("此历史任务已清理且未保存创建参数，请重新创建任务；无法直接重试")
+            if not workspace_service.user_has_permission(
+                db, source_job.workspace_id, creator_id, WorkspacePermission.CREATE_TASK
+            ):
+                raise PermissionError("No permission to create tasks")
+            user = db.get(User, creator_id)
+            if not user:
+                raise ValueError("User not found")
+            task = create_task_from_request(
+                db, user, source_job.workspace_id, TaskCreate.model_validate(request), commit=False
+            )
+        task_id = task.id
+        context_json.update(task_id=task.id, task_name=task.name)
+    from app.domains.auth.models.user import generate_uuid
+
+    retry_id = generate_uuid()
+    source_job.context_json = {**(source_job.context_json or {}), "retry_job_id": retry_id}
+    context_json["retry_of_job_id"] = source_job.id
     return create_job(
         db,
         job_type=source_job.job_type,
         creator_id=str(creator_id or "").strip(),
         workspace_id=source_job.workspace_id,
-        task_id=source_job.task_id,
+        task_id=task_id,
         context_json=context_json,
         stage="QUEUED",
         message=message or "Provision retry queued",
+        job_id=retry_id,
     )
 
 
@@ -852,8 +898,8 @@ async def run_create_task_job(job_id: str) -> None:
                 job_id=job_id,
             )
         except (ProvisionJobCancelled, QueueWaitCancelled):
-            _mark_job_cancelled(job_id)
             await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id)
+            _mark_job_cancelled(job_id)
             audit_log(
                 action="create_task",
                 outcome="cancelled",
@@ -869,6 +915,8 @@ async def run_create_task_job(job_id: str) -> None:
                 err = "Provision queue is busy. Please retry later."
             else:
                 err = "Workspace repository is busy. Please retry later."
+            # Do not expose retry until the previous task's cleanup has finished.
+            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id)
             mark_failed(
                 job_id,
                 stage="FAILED",
@@ -876,7 +924,6 @@ async def run_create_task_job(job_id: str) -> None:
                 error_message=err,
             )
             # 失败不留任务：清理磁盘资源并删除任务记录（FAILED 仅允许用户标记）
-            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id)
             task_logger.warning(
                 "Task provision lock timeout: job_id={}, workspace_id={}, task_id={}, lock_key={}",
                 job_id,
@@ -904,6 +951,7 @@ async def run_create_task_job(job_id: str) -> None:
                 error_message=str(exc),
             )
         except Exception as exc:
+            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id)
             mark_failed(
                 job_id,
                 stage="FAILED",
@@ -911,7 +959,6 @@ async def run_create_task_job(job_id: str) -> None:
                 error_message=str(exc),
             )
             # 失败不留任务：清理磁盘资源并删除任务记录（FAILED 仅允许用户标记）
-            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id)
             task_logger.exception(
                 "Task provision job failed: job_id={}, workspace_id={}, task_id={}, error={}",
                 job_id,

@@ -142,12 +142,12 @@ def prepare_task_resources_for_provision(
 
 
 def _prune_empty_parent_dirs(task_project_path: str, workspace_project_path: str) -> None:
-    """best-effort 清理任务目录下残留的空父目录（不超过工作区根目录）。"""
+    """best-effort 清理空任务根目录及其空父目录（不超过工作区根目录）。"""
     try:
         stop = os.path.abspath(str(workspace_project_path or "").strip())
         if not stop or not os.path.isdir(stop):
             return
-        current = os.path.dirname(os.path.abspath(str(task_project_path or "").strip()))
+        current = os.path.abspath(str(task_project_path or "").strip())
         while current.startswith(stop + os.sep):
             try:
                 os.rmdir(current)

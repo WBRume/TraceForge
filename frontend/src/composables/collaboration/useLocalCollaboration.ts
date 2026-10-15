@@ -286,7 +286,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       local.value = result; cloud.value = manifest
       if (preview) previewConflicts.value = result.preview_conflicts || []
       if (!preview) { await receipt(manifest.snapshot_id, result, token); lastTarget = manifest.snapshot_id }
-      deliveryRetryRequired.value = false; error.value = ''
+      deliveryRetryRequired.value = false; error.value = ''; reviewError.value = ''
     } catch (reason) {
       if (token === generation) deliveryRetryRequired.value = true
       throw reason
@@ -317,7 +317,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       if (!participating.value && !receivedOnce.value) {
         input.value = result.input; cloud.value = result.cloud; reviewRunning.value = result.running
       }
-    } catch (reason) { if (token === generation) reviewError.value = formatApiError(reason, t('collaboration.failed')) }
+    } catch (reason) { if (token === generation && !participating.value && !receivedOnce.value) reviewError.value = formatApiError(reason, t('collaboration.failed')) }
     finally { if (token === generation) reviewLoading.value = false }
   }
   async function loadReviewBaseline() {

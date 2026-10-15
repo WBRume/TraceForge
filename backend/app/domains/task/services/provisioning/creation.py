@@ -11,10 +11,30 @@ from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.skill.services.packages import storage as skill_storage_service
 from app.domains.skill.services.runtime import bindings as skill_runtime_bindings
 from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.schemas.task import TaskCreate
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 from app.domains.workspace_asset.models.workspace_asset import SddRequirement, SddTaskRequirement
 
 logger = get_logger(__name__, category="task_execution")
+
+
+def request_for_retry(task: SddTask, data: TaskCreate) -> dict:
+    """Freeze default repository selection and branches at acceptance time."""
+    payload = data.model_dump(mode="json")
+    if task.repo_bindings:
+        payload["repository_ids"] = [repo.repository_id for repo in task.repo_bindings]
+        payload["repository_branches"] = [
+            {"repository_id": repo.repository_id, "branch_name": repo.branch_name} for repo in task.repo_bindings
+        ]
+    return payload
+
+
+def create_task_from_request(db: Session, user: User, workspace_id: str, data: TaskCreate, *, commit=True) -> SddTask:
+    values = data.model_dump(exclude={"execution"})
+    values["description"] = (data.description or "").strip()
+    values["repository_ids"] = values["repository_ids"] or None
+    values["repository_branches"] = values["repository_branches"] or None
+    return create_task_record_for_provision(db, user, workspace_id, **values, execution=data.execution, commit=commit)
 
 
 def _build_task_project_path(base_path: str, task_id: str, task_name: str) -> str:
@@ -69,6 +89,7 @@ def create_task_record_for_provision(
     execution=None,
     agent_model=None,
     requirement_id: str | None = None,
+    commit: bool = True,
 ) -> SddTask:
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
@@ -200,8 +221,11 @@ def create_task_record_for_provision(
             )
         )
 
-        db.commit()
-        db.refresh(task)
+        if commit:
+            db.commit()
+            db.refresh(task)
+        else:
+            db.flush()
         return task
     except Exception:
         db.rollback()

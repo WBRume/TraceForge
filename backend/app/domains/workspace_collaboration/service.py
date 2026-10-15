@@ -677,7 +677,8 @@ def _validate_manifest(
             if (name == ".env" or name.startswith(".env.")) and entry["path"] not in tracked:
                 _fail("PATH_EXCLUDED", "Untracked environment files cannot be included in collaboration input")
             if "120000" in {entry["mode"], old_files.get(entry["path"], {}).get("mode")} and (
-                entry["path"] not in placeholders or entry["mode"] != old_files.get(entry["path"], {}).get("mode")
+                (content.os.name == "nt" and entry["path"] not in placeholders)
+                or entry["mode"] != old_files.get(entry["path"], {}).get("mode")
             ):
                 _fail("MODE_UNSUPPORTED", "Git link placeholders cannot be created or converted to another file type")
             if content.os.name == "nt" and entry["mode"] != old_files.get(entry["path"], {}).get("mode", "100644"):
