@@ -90,6 +90,10 @@ class Journal:
 
     def close(self):
         self.stop.set()
+        # Let the native watcher release its Rust/Python resources before the
+        # interpreter exits or a replaced cut discards its owning Journal.
+        if threading.current_thread() is not self.thread:
+            self.thread.join(timeout=2)
 
 
 class CachedCut:

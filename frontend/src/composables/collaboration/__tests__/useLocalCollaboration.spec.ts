@@ -72,6 +72,27 @@ afterEach(async () => {
 })
 
 describe('local collaboration coordinator', () => {
+  it('clears a failed browsing review after a complete collaboration delivery', async () => {
+    setup(); await flushPromises()
+    mocks.api.review.mockRejectedValueOnce(new Error('timeout of 15000ms exceeded'))
+    await controller.loadReview()
+    expect(controller.reviewError.value).toContain('15000ms')
+    await controller.enable()
+    expect(controller.phase.value).toBe('READY')
+    expect(controller.reviewError.value).toBe('')
+    expect(controller.blocked.value).toBe(false)
+  })
+  it('ignores a late browsing failure after the client has joined collaboration', async () => {
+    setup(); await flushPromises()
+    let reject!: (reason: Error) => void
+    mocks.api.review.mockImplementationOnce(() => new Promise((_resolve, failed) => { reject = failed }))
+    const browsing = controller.loadReview(); await flushPromises()
+    await controller.enable()
+    reject(new Error('expired browsing request')); await browsing
+    expect(controller.phase.value).toBe('READY')
+    expect(controller.reviewError.value).toBe('')
+    expect(controller.blocked.value).toBe(false)
+  })
   it('enables a first-time binding without requesting status for a nonexistent binding', async () => {
     setup(); await flushPromises(); await controller.enable()
     const calls = mocks.native.mock.calls.map(([request]) => request)

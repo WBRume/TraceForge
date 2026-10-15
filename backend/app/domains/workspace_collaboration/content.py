@@ -54,18 +54,53 @@ def validate_path(value: str) -> str:
     return value
 
 
-def safe_path(root: Path, relative: str, *, resolved_root: Path | None = None) -> Path:
+def safe_path(root: Path, relative: str, *, resolved_root: Path | None = None, leaf_link: bool = False) -> Path:
+    """Resolve parents only when the caller handles a leaf link without following it."""
     validate_path(relative)
     root = resolved_root if resolved_root is not None else root.resolve(strict=True)
     path = root.joinpath(*relative.split("/"))
     cursor = root
-    for part in relative.split("/"):
+    parts = relative.split("/")
+    for part in parts[:-1] if leaf_link else parts:
         cursor /= part
         if cursor.is_symlink() or (hasattr(cursor, "is_junction") and cursor.is_junction()):
             raise ValueError(f"Linked collaboration path is unsupported: {relative}")
-    if not path.resolve().is_relative_to(root):
+    if not (path.parent if leaf_link else path).resolve().is_relative_to(root):
         raise ValueError("Collaboration path escapes repository")
     return path
+
+
+def _file_bytes(path: Path, *, link: bool) -> bytes | None:
+    """Read the directory entry itself, including dangling links, never their target."""
+    try:
+        value = path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    if stat.S_ISLNK(value.st_mode):
+        if link and os.name != "nt":
+            return os.fsencode(os.readlink(path))
+        raise ValueError(f"Unexpected collaboration link: {path.name}")
+    if link and os.name != "nt":
+        raise ValueError(f"Git link type changed: {path.name}")
+    return path.read_bytes() if stat.S_ISREG(value.st_mode) else None
+
+
+def validate_export_type(root: Path, relative: str, mode: str, tracked: dict, placeholders: set) -> None:
+    linked = mode == "120000" or tracked.get(relative) == "120000"
+    path = safe_path(root, relative, leaf_link=linked and os.name != "nt")
+    if not linked:
+        return
+    value = path.lstat()
+    native = os.name != "nt" and stat.S_ISLNK(value.st_mode)
+    placeholder = (
+        relative in placeholders
+        and stat.S_ISREG(value.st_mode)
+        and not (getattr(value, "st_file_attributes", 0) & 0x400)
+    )
+    if mode != "120000" or tracked.get(relative) != "120000" or not (native or placeholder):
+        raise ValueError(
+            f"Unsupported Git link; tracked link or Windows core.symlinks=false placeholder required: {relative}"
+        )
 
 
 class ObjectStore:
@@ -309,15 +344,7 @@ def capture_task(task_root: Path, store: ObjectStore, repositories: list[dict], 
                 if item is None:
                     continue
                 if item["mode"] == "120000" or tracked.get(relative) == "120000":
-                    value = safe_path(root, relative).lstat()
-                    if (
-                        relative not in placeholders
-                        or not stat.S_ISREG(value.st_mode)
-                        or getattr(value, "st_file_attributes", 0) & 0x400
-                    ):
-                        raise ValueError(
-                            f"Unsupported Git link; Windows core.symlinks=false placeholder required: {relative}"
-                        )
+                    validate_export_type(root, relative, item["mode"], tracked, placeholders)
                 if item["size"] > MAX_OBJECT_BYTES:
                     raise ValueError(f"Collaboration file exceeds 64 MiB: {relative}")
                 total += item["size"]
@@ -390,21 +417,30 @@ def _build_plan(task_root: Path, baseline: dict, target: dict, store: ObjectStor
             if (
                 relative in new
                 and "120000" in {old.get(relative, {}).get("mode"), new[relative]["mode"]}
-                and (relative not in placeholders or old.get(relative, {}).get("mode") != new[relative]["mode"])
+                and (
+                    (os.name == "nt" and relative not in placeholders)
+                    or old.get(relative, {}).get("mode") != new[relative]["mode"]
+                )
             ):
                 raise ValueError(f"Git link placeholder creation or type conversion is unsupported: {relative}")
-            path = safe_path(root, relative)
-            actual = store.put(path.read_bytes()) if path.is_file() else None
+            linked = old.get(relative, {}).get("mode") == "120000"
+            path = safe_path(root, relative, leaf_link=linked and os.name != "nt")
+            raw = _file_bytes(path, link=linked)
+            actual = store.put(raw) if raw is not None else None
             expected = old.get(relative, {}).get("sha256")
             if actual != expected:
                 raise ValueError(f"Server file changed outside authorized run: {relative}")
+            if new.get(relative, {}).get("mode") == "120000":
+                target_bytes = store.read(new[relative]["sha256"])
+                if not target_bytes or b"\0" in target_bytes:
+                    raise ValueError(f"Invalid Git link target: {relative}")
             if (
                 os.name == "nt"
                 and relative in new
                 and new[relative]["mode"] != old.get(relative, {}).get("mode", "100644")
             ):
                 raise ValueError(f"Executable mode changes are unsupported on this Windows server: {relative}")
-            if relative in new and path.is_dir():
+            if relative in new and not path.is_symlink() and path.is_dir():
                 for child in path.rglob("*"):
                     nested = child.relative_to(root).as_posix()
                     safe_path(root, nested)
@@ -433,10 +469,12 @@ def _prune_empty_parents(path: Path, repository_root: Path) -> None:
 
 
 def _install_item(task_root: Path, item: dict, store: ObjectStore, *, recover: bool) -> None:
-    path = safe_path(task_root / item["repo"], item["path"])
-    actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+    linked = (item["old"] or {}).get("mode") == "120000"
+    path = safe_path(task_root / item["repo"], item["path"], leaf_link=linked and os.name != "nt")
+    current = _file_bytes(path, link=linked)
+    actual = hashlib.sha256(current).hexdigest() if current is not None else None
     if recover and actual == (item["new"] or {}).get("sha256"):
-        if item["new"] is not None and os.name != "nt":
+        if item["new"] is not None and os.name != "nt" and not linked:
             os.chmod(path, 0o755 if item["new"]["mode"] == "100755" else 0o644)
         return
     if actual != (item["old"] or {}).get("sha256"):
@@ -453,10 +491,15 @@ def _install_item(task_root: Path, item: dict, store: ObjectStore, *, recover: b
             handle.write(raw)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary, 0o755 if item["new"]["mode"] == "100755" else 0o644)
+        if item["new"]["mode"] == "120000" and os.name != "nt":
+            # Replace the link entry atomically. chmod/read_bytes would follow it.
+            os.unlink(temporary)
+            os.symlink(os.fsdecode(raw), temporary)
+        else:
+            os.chmod(temporary, 0o755 if item["new"]["mode"] == "100755" else 0o644)
         os.replace(temporary, path)
     finally:
-        if os.path.exists(temporary):
+        if os.path.lexists(temporary):
             os.unlink(temporary)
 
 

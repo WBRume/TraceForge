@@ -168,11 +168,13 @@ def _project(root: Path, repositories: list[dict], groups: dict, changed_entries
             item = changed_entries.get(repo["rel_path"] + "/" + name)
             if item is None:
                 continue
-            content.safe_path(repository_root, name)
-            if item["mode"] == "120000" and name not in content.windows_link_placeholder_paths(
-                repository_root, tracked
-            ):
-                raise ValueError("Unsupported collaboration link")
+            content.validate_export_type(
+                repository_root,
+                name,
+                item["mode"],
+                tracked,
+                content.windows_link_placeholder_paths(repository_root, tracked) if item["mode"] == "120000" else set(),
+            )
             entries[name] = item
             wanted.append(item)
         projected.append((repo, entries, paths))

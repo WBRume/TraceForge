@@ -75,33 +75,8 @@ def create_task(
         "No permission to create tasks",
     )
 
-    desc = data.description or ""
-
     try:
-        task = task_provisioning_creation.create_task_record_for_provision(
-            db,
-            current_user,
-            ws_id,
-            name=data.name,
-            requirement_id=data.requirement_id,
-            agent_model=data.agent_model.model_dump() if data.agent_model else None,
-            execution=data.execution,
-            description=desc.strip(),
-            spec_doc_path=data.spec_doc_path,
-            requirement_duration_hours=data.requirement_duration_hours,
-            skill_ids=data.skill_ids,
-            diagnosis_playbook_spec_id=data.diagnosis_playbook_spec_id,
-            task_type=data.task_type,
-            phenomenon=data.phenomenon,
-            priority=data.priority,
-            sop_auto_run=data.sop_auto_run,
-            repository_branches=[
-                {"repository_id": item.repository_id, "branch_name": item.branch_name}
-                for item in (data.repository_branches or [])
-            ]
-            or None,
-            repository_ids=list(data.repository_ids or []) or None,
-        )
+        task = task_provisioning_creation.create_task_from_request(db, current_user, ws_id, data, commit=False)
         job = provision_job_service.create_job(
             db,
             job_type=provision_job_service.ProvisionJobType.CREATE_TASK,
@@ -112,6 +87,7 @@ def create_task(
                 "workspace_id": ws_id,
                 "task_id": task.id,
                 "task_name": task.name,
+                "task_create_request": task_provisioning_creation.request_for_retry(task, data),
             },
             stage="QUEUED",
             message="Task provisioning queued",
