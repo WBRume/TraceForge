@@ -51,6 +51,33 @@ def test_cumulative_baseline_moves_only_after_remote_update_is_applied(environme
     assert (root / "api/same.txt").read_bytes() == b"preserved task output\n"
 
 
+def test_committed_review_uses_pinned_crlf_attributes_without_running_filters(environment):
+    db, task, root = environment
+    repo = root / "api"
+    (repo / ".gitattributes").write_bytes(b"*.cmd text eol=crlf\n*.dat -text eol=crlf\n")
+    (repo / "start.cmd").write_bytes(b"@echo off\nexit /b 0\n")
+    (repo / "binary.dat").write_bytes(b"\x00\nkeep\n")
+    git(repo, "add", ".gitattributes", "start.cmd", "binary.dat")
+    git(repo, "commit", "-m", "explicit checkout line endings")
+    sha = git(repo, "rev-parse", "HEAD")
+    task.task_meta_json = {**(task.task_meta_json or {}), "repository_baselines": {"api": sha}}
+    # Neither current attributes nor current output may redefine the baseline.
+    (repo / ".gitattributes").write_bytes(b"*.cmd text eol=lf filter=forbidden\n")
+    git(repo, "config", "filter.forbidden.smudge", "a-command-that-must-never-execute")
+    git(repo, "config", "filter.forbidden.required", "true")
+    (repo / "start.cmd").write_bytes(b"real agent change\r\n")
+    before = (repo / ".git" / "index").read_bytes()
+
+    baseline = review.committed_baseline(db, task, "viewer")
+    files = next(item for item in baseline["repositories"] if item["repo_slug"] == "api")["files"]
+    store = content.ObjectStore(task)
+    data = {item["path"]: store.read(item["sha256"]) for item in files}
+    assert data["start.cmd"] == b"@echo off\r\nexit /b 0\r\n"
+    assert data["binary.dat"] == b"\x00\nkeep\n"
+    assert (repo / "start.cmd").read_bytes() == b"real agent change\r\n"
+    assert (repo / ".git" / "index").read_bytes() == before
+
+
 def test_remote_update_without_a_new_turn_is_not_reported_as_round_edits(environment, monkeypatch):
     db, task, root = environment
     service._ensure_store(db, task)

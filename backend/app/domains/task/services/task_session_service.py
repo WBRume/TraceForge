@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -655,7 +656,9 @@ async def create_confirmation_reply_message(
     )
 
 
-def _load_turn_target(db: Session, task: SddTask, message_id: str) -> tuple[TaskSessionTurn, ChatMessage]:
+def _load_turn_target(
+    db: Session, task: SddTask, message_id: str, *, recovering_turn_id: str | None = None
+) -> tuple[TaskSessionTurn, ChatMessage]:
     message = db.query(ChatMessage).filter(ChatMessage.id == message_id, ChatMessage.task_id == task.id).first()
     if not message:
         raise TaskSessionUndoError("Message not found", code="MESSAGE_NOT_FOUND", status_code=404)
@@ -666,7 +669,9 @@ def _load_turn_target(db: Session, task: SddTask, message_id: str) -> tuple[Task
         raise TaskSessionUndoError(
             "Messages before the current session cannot be undone", code="UNDO_NOT_CURRENT_GENERATION"
         )
-    if turn.status != TaskSessionTurnStatus.ACTIVE:
+    if turn.status != TaskSessionTurnStatus.ACTIVE and not (
+        turn.id == recovering_turn_id and turn.status == TaskSessionTurnStatus.REVERTING
+    ):
         raise TaskSessionUndoError("This session turn has already been reverted", code="UNDO_ALREADY_REVERTED")
     if int(turn.session_revision or 0) <= int((task.task_meta_json or {}).get("repository_update_revision", -1)):
         raise TaskSessionUndoError("代码基线已更新，更新前的消息不能撤销。", code="UNDO_BEFORE_REPOSITORY_UPDATE")
@@ -781,6 +786,8 @@ async def _restore_provider_for_suffix(
     task: SddTask,
     target: TaskSessionTurn,
     suffix: list[TaskSessionTurn],
+    *,
+    recovering: bool = False,
 ) -> str | None:
     provider = str(target.provider or "").strip().lower()
     current_session_id = str(task.session_id or target.provider_session_id or "").strip() or None
@@ -811,7 +818,12 @@ async def _restore_provider_for_suffix(
                 session_id,
                 float(getattr(settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 30.0) or 30.0),
             )
-            if not await adapter.revert_message(session_id, target_user_id):
+            before = await adapter.list_messages(session_id)
+            before_ids = {str((item.get("info") or item).get("id") or "") for item in before}
+            # A crash can occur after OpenCode commits the revert but before
+            # our worktree/DB commit. Only this same fenced operation may resume.
+            already_reverted = recovering and not before_ids.intersection(set(provider_ids) | {target_user_id})
+            if not already_reverted and not await adapter.revert_message(session_id, target_user_id):
                 raise TaskSessionUndoError(
                     "OpenCode provider does not support revert", code="UNDO_PROVIDER_REVERT_FAILED"
                 )
@@ -940,6 +952,35 @@ def _redact_suffix(
                 ) from exc
 
 
+def _undo_provider_metadata(db: Session, task: SddTask, turn: TaskSessionTurn) -> dict:
+    metadata = dict(turn.provider_message_ids_json or {})
+    if turn.provider != "opencode" or metadata.get("provider_user_message_id"):
+        return metadata
+    from app.domains.ai.models.ai_job import SddAiJob
+    from app.domains.ai.services.jobs.remote_recovery import valid_checkpoint
+
+    job = db.get(SddAiJob, turn.ai_job_id) if turn.ai_job_id else None
+    checkpoint = job.provider_execution_json if job else None
+    if (
+        job
+        and job.task_id == task.id
+        and job.session_turn_id == turn.id
+        and job.session_generation == turn.session_generation
+        and job.session_revision == turn.session_revision
+        and valid_checkpoint(checkpoint)
+        and checkpoint["session_id"] == job.session_id == turn.provider_session_id == task.session_id
+    ):
+        # The stable input ID commits before submission. Unlike run-result
+        # metadata, it survives interruption, timeout and observer restarts.
+        metadata["provider_user_message_id"] = checkpoint["prompt_id"]
+        metadata["provider_message_ids"] = list(
+            dict.fromkeys([*(metadata.get("provider_message_ids") or []), checkpoint["prompt_id"]])
+        )
+    if not metadata.get("provider_user_message_id") and (task.session_id or turn.provider_session_id):
+        raise TaskSessionUndoError("OpenCode message boundary is unavailable", code="UNDO_PROVIDER_BOUNDARY_MISSING")
+    return metadata
+
+
 def _prepare_undo_sync(
     db: Session,
     *,
@@ -973,34 +1014,60 @@ def _prepare_undo_sync(
         )
         .first()
     )
-    if existing:
-        if existing.status == TaskSessionOperationStatus.REVERTED:
-            raise TaskSessionUndoError("Undo operation has already completed", code="UNDO_ALREADY_COMPLETED")
-        if existing.status == TaskSessionOperationStatus.REVERTING:
-            raise TaskSessionUndoError("Undo operation is already running", code="UNDO_OPERATION_BUSY")
-        raise TaskSessionUndoError(
-            "Previous undo operation failed; recover it before retrying",
-            code="UNDO_RECOVERY_REQUIRED",
+    recovering = bool(existing and existing.status != TaskSessionOperationStatus.REVERTED)
+    if existing and existing.status == TaskSessionOperationStatus.REVERTED:
+        raise TaskSessionUndoError("Undo operation has already completed", code="UNDO_ALREADY_COMPLETED")
+    if (
+        db.query(TaskSessionOperation.id)
+        .filter(
+            TaskSessionOperation.task_id == task.id,
+            TaskSessionOperation.operation_id != operation_id,
+            TaskSessionOperation.status.in_([TaskSessionOperationStatus.REVERTING, TaskSessionOperationStatus.FAILED]),
         )
-
-    target, target_message = _load_turn_target(db, task, message_id)
-    suffix = _suffix_turns(db, task, target)
+        .first()
+    ):
+        raise TaskSessionUndoError("Resume the pending undo operation first", code="UNDO_RECOVERY_REQUIRED")
+    target, target_message = _load_turn_target(
+        db, task, message_id, recovering_turn_id=existing.target_turn_id if recovering else None
+    )
+    if recovering:
+        if target.id != existing.target_turn_id or target.provider != "opencode":
+            raise TaskSessionUndoError("Undo recovery target does not match", code="UNDO_RECOVERY_REQUIRED")
+        suffix = (
+            db.query(TaskSessionTurn)
+            .filter(
+                TaskSessionTurn.task_id == task.id,
+                TaskSessionTurn.session_generation == target.session_generation,
+                TaskSessionTurn.turn_index >= target.turn_index,
+                TaskSessionTurn.status == TaskSessionTurnStatus.REVERTING,
+            )
+            .order_by(TaskSessionTurn.turn_index.desc())
+            .all()
+        )
+        if not suffix or any(turn.operation_id not in (None, operation_id) for turn in suffix):
+            raise TaskSessionUndoError("Undo recovery target does not match", code="UNDO_RECOVERY_REQUIRED")
+    else:
+        suffix = _suffix_turns(db, task, target)
+    # Validate the durable provider boundary before fencing or mutating anything.
+    provider_metadata = {turn.id: _undo_provider_metadata(db, task, turn) for turn in suffix}
     message_ids = _suffix_message_ids(db, task, target_message, suffix)
     from app.domains.workspace_collaboration.hooks import begin_restore
 
     begin_restore(db, task, operation_id)
-    operation = TaskSessionOperation(
+    operation = existing or TaskSessionOperation(
         task_id=task.id,
         workspace_id=task.workspace_id,
         operation_id=operation_id,
         target_turn_id=target.id,
-        status=TaskSessionOperationStatus.REVERTING,
         actor_user_id=actor_user_id,
     )
+    operation.status = TaskSessionOperationStatus.REVERTING
+    operation.error_code = operation.error_message = operation.finished_at = None
     db.add(operation)
     task.session_revision = int(getattr(task, "session_revision", 0) or 0) + 1
     for turn in suffix:
         turn.status = TaskSessionTurnStatus.REVERTING
+        turn.operation_id = operation_id
     # Persist the fence before provider files are touched.  Late worker
     # events now see a newer revision and are discarded by the engine.
     db.commit()
@@ -1011,9 +1078,7 @@ def _prepare_undo_sync(
             checkpoint_path=str(turn.checkpoint_path or ""),
             provider=str(turn.provider or ""),
             provider_session_id=str(turn.provider_session_id or "") or None,
-            provider_message_ids_json=(
-                dict(turn.provider_message_ids_json) if isinstance(turn.provider_message_ids_json, dict) else {}
-            ),
+            provider_message_ids_json=provider_metadata[turn.id],
             ai_job_id=turn.ai_job_id,
         )
 
@@ -1031,7 +1096,10 @@ def _prepare_undo_sync(
         "target_message_id": str(target_message.id),
         "restored_content": str(target_message.content),
         "operation_id": operation_id,
-        "current_backup": os.path.join(str(target.checkpoint_path), "current-worktree"),
+        "recovering": recovering,
+        "current_backup": os.path.join(
+            str(target.checkpoint_path), "current-worktree" if not recovering else f"recovery-worktree-{uuid4().hex}"
+        ),
         "checkpoint_paths": list(
             dict.fromkeys(
                 str(turn.checkpoint_path or "").strip() for turn in suffix if str(turn.checkpoint_path or "").strip()
@@ -1263,6 +1331,7 @@ async def undo_task_message(
                 task_snapshot,
                 target,
                 suffix,
+                recovering=context["recovering"],
             )
             await task_session_snapshot_service.restore_worktree(
                 str(target.checkpoint_path),

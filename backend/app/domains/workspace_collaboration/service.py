@@ -328,7 +328,9 @@ def _snapshot(db: Session, task: SddTask, state: CollaborationState, source: str
         )
         if turn:
             manifest.update(session_turn_id=turn.id, turn_index=turn.turn_index)
-            manifest["turn_created_at"] = turn.created_at.isoformat() + ("Z" if turn.created_at.tzinfo is None else "")
+            # This database timestamp follows the same contract as conversation history.
+            # A naive server-local value must not be relabeled as UTC.
+            manifest["turn_created_at"] = turn.created_at.isoformat()
             message = db.get(ChatMessage, turn.user_message_id) if turn.user_message_id else None
             if message and message.task_id == task.id:
                 title = " ".join(message.content.split())
@@ -995,10 +997,17 @@ def begin_restore(db: Session, task: SddTask, operation_id: str | None = None) -
     state = _state(db, task.id)
     if not state or not state.enabled:
         return False
-    if state.sync_phase != "READY":
+    recovering = bool(
+        operation_id
+        and state.restore_operation_id == operation_id
+        and state.sync_phase in {"SETTLING", "RECOVERY_REQUIRED"}
+    )
+    if state.sync_phase != "READY" and not recovering:
         _fail("DELIVERY_REQUIRED", "Finish current delivery before restoring task history")
     _assert_no_writer(db, task.id)
     state.sync_phase = "SETTLING"
+    state.recovery_kind = None
+    state.recovery_message = None
     state.run_id = None
     state.restore_operation_id = operation_id
     state.pending_submission_id = None

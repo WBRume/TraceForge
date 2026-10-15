@@ -192,6 +192,9 @@ async def revoke_session_share(
 
     if deleted is None:
         raise HTTPException(status_code=404, detail="Share not found")
+    from app.domains.websocket.ws.public_share_manager import public_share_ws_manager
+
+    public_share_ws_manager.revoke(share_id)
     return {"msg": "Share deleted"}
 
 

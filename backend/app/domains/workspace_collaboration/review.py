@@ -1,10 +1,11 @@
 """Read cloud results without joining collaboration or touching a local checkout."""
 
 import json
+import os
 import tempfile
 from pathlib import Path
 
-from app.core.subprocess_runner import run_git
+from app.core.subprocess_runner import GIT_REPOSITORY_ENV_VARS, run_git
 from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus
 from app.domains.task.services import task_git_snapshot_store as git_store
 
@@ -12,12 +13,54 @@ from . import content, manifest_store, service, session
 from .models import CollaborationSnapshot, CollaborationState
 
 
+def _crlf_checkout_paths(root, commit, names):
+    """Read pinned checkout attributes without running clean/smudge filters."""
+    if not names:
+        return set()
+    with tempfile.TemporaryDirectory(prefix="tf-review-attributes-") as temporary:
+        options = {
+            "cwd": str(root),
+            "env_extra": {"GIT_INDEX_FILE": str(Path(temporary) / "index"), "GIT_ATTR_NOSYSTEM": "1"},
+            "unset_env": GIT_REPOSITORY_ENV_VARS,
+            "decode_text": False,
+        }
+        loaded = run_git(["read-tree", commit], **options)
+        if loaded.returncode:
+            raise ValueError("Unable to read committed checkout attributes")
+        result = run_git(
+            ["-c", "core.attributesFile=" + os.devnull, "check-attr", "--cached", "-z", "--stdin", "text", "eol"],
+            input_data=b"\0".join(name.encode() for name in names) + b"\0",
+            **options,
+        )
+        if result.returncode:
+            raise ValueError("Unable to read committed checkout attributes")
+        values = result.stdout.rstrip(b"\0").split(b"\0")
+        attrs = {}
+        for name, attribute, value in zip(values[0::3], values[1::3], values[2::3], strict=True):
+            attrs.setdefault(name.decode(), {})[attribute] = value
+        return {
+            name for name, value in attrs.items() if value.get(b"eol") == b"crlf" and value.get(b"text") != b"unset"
+        }
+
+
+def _checkout_file(store, name, item, mapped, crlf_paths):
+    sha, size = mapped[item["git_dir"], item["oid"]][0], item["size"]
+    if name in crlf_paths and item["mode"] in {"100644", "100755"}:
+        raw = store.read(sha)
+        # Existing CR bytes and binary blobs are never normalized. Only apply
+        # the pinned, explicit LF -> CRLF checkout rule; no arbitrary filters.
+        if b"\r" not in raw and b"\0" not in raw[:8000] and b"\n" in raw:
+            raw = raw.replace(b"\n", b"\r\n")
+            sha, size = store.put(raw), len(raw)
+    return {"path": name, "sha256": sha, "size": size, "mode": item["mode"]}
+
+
 def committed_baseline(db, task, _user_id):
     """Cache the pinned remote Git tree for cumulative review, without scanning files."""
     service._check_task(task)
     repositories = service.repository_metadata(db, task)
     store = service._ensure_store(db, task)
-    key = content.digest(repositories)
+    key = content.digest(["checkout-eol-v1", repositories])
     previous = db.query(CollaborationSnapshot).filter_by(task_id=task.id, source="REVIEW_BASELINE").all()
     saved = next((row for row in previous if row.manifest_json.get("review_key") == key), None)
     if saved:
@@ -40,7 +83,8 @@ def committed_baseline(db, task, _user_id):
                 raise ValueError("Review file exceeds 64 MiB")
             scoped.append((name, item))
             public.append(item)
-        exported.append((repo, scoped))
+        crlf_paths = _crlf_checkout_paths(root, repo["base_commit_sha"], [name for name, _ in scoped])
+        exported.append((repo, scoped, crlf_paths))
     if len(public) > 100000 or sum(item["size"] for item in public) > content.MAX_MANIFEST_BYTES:
         raise ValueError("Review snapshot exceeds limits")
     mapped, _ = store.git_objects.export(public)
@@ -58,17 +102,9 @@ def committed_baseline(db, task, _user_id):
         [
             {
                 **repo,
-                "files": [
-                    {
-                        "path": name,
-                        "sha256": mapped[item["git_dir"], item["oid"]][0],
-                        "size": item["size"],
-                        "mode": item["mode"],
-                    }
-                    for name, item in scoped
-                ],
+                "files": [_checkout_file(store, name, item, mapped, crlf_paths) for name, item in scoped],
             }
-            for repo, scoped in exported
+            for repo, scoped, crlf_paths in exported
         ],
     )
     row = db.get(CollaborationSnapshot, manifest["snapshot_id"])

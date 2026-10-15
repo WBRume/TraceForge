@@ -177,10 +177,14 @@ def create_mock_case(
     cookies_json: list[dict[str, Any]] | None,
 ) -> SddApiMockRule:
     from .endpoint_service import get_endpoint
+    from .source_version_service import lock_project_source
 
+    project = lock_project_source(db, project)
     endpoint = get_endpoint(db, project, endpoint_id)
     if not endpoint:
         raise ValueError("Endpoint not found")
+    if endpoint.source_version_id != project.active_source_version_id:
+        raise ValueError("Endpoint has been updated by another user")
 
     rule = SddApiMockRule(
         project_id=project.id,
@@ -237,7 +241,16 @@ def update_mock_case(
     headers_json: dict[str, Any] | None,
     cookies_json: list[dict[str, Any]] | None,
 ) -> SddApiMockRule:
-    rule = get_mock_case(db, project, mock_case_id)
+    from .source_version_service import lock_project_source
+
+    project = lock_project_source(db, project)
+    rule = (
+        db.query(SddApiMockRule)
+        .filter_by(project_id=project.id, id=mock_case_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
     if not rule:
         raise ValueError("Mock case not found")
     if row_version is not None and rule.row_version != row_version:
@@ -271,6 +284,9 @@ def update_mock_case(
 
 
 def delete_mock_case(db: Session, project: SddApiMockProject, mock_case_id: str) -> None:
+    from .source_version_service import lock_project_source
+
+    lock_project_source(db, project)
     rule = get_mock_case(db, project, mock_case_id)
     if not rule:
         raise ValueError("Mock case not found")

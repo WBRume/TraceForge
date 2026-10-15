@@ -14,6 +14,7 @@ from .path_matcher import _normalize_path
 from .source_version_service import (
     get_source_version,
     load_oas_from_source,
+    lock_project_source,
     persist_source_version,
     resolve_active_source_id,
 )
@@ -171,6 +172,9 @@ def update_endpoint(
     project: SddApiMockProject,
     *,
     endpoint_id: str,
+    row_version: int,
+    method: str,
+    path: str,
     updater_id: str,
     operation_id: str | None,
     tag: str | None,
@@ -180,19 +184,32 @@ def update_endpoint(
     responses_json: dict[str, Any] | None,
     response_schema_json: dict[str, Any] | None,
 ) -> SddApiMockEndpoint:
+    project = lock_project_source(db, project)
     endpoint = get_endpoint(db, project, endpoint_id)
     if not endpoint:
         raise ValueError("Endpoint not found")
+    if endpoint.source_version_id != project.active_source_version_id or endpoint.row_version != row_version:
+        raise ValueError("Endpoint has been updated by another user")
 
     source = get_source_version(db, project, endpoint.source_version_id)
     if not source:
         raise ValueError("Source version not found for this endpoint")
 
     oas_payload = load_oas_from_source(source)
+    method, path = method.upper(), _normalize_path(path)
+    old_method, old_path = endpoint.method, endpoint.path
+    if (method, path) != (old_method, old_path):
+        paths = oas_payload["paths"]
+        target = paths.setdefault(path, {})
+        if method.lower() in target:
+            raise ValueError("Target endpoint has been updated by another user")
+        target[method.lower()] = paths[old_path].pop(old_method.lower())
+        if not paths[old_path]:
+            del paths[old_path]
     _apply_endpoint_update_to_source(
         oas_payload,
-        method=endpoint.method,
-        path=endpoint.path,
+        method=method,
+        path=path,
         operation_id=operation_id,
         tag=tag,
         summary=summary,
@@ -217,9 +234,10 @@ def update_endpoint(
         creator_id=updater_id,
         activate=True,
         clone_from_source_id=source.id,
+        case_endpoint_overrides={endpoint.id: (method, path)},
     )
 
-    new_endpoint = find_endpoint_by_method_path(db, project.id, new_source.id, endpoint.method, endpoint.path)
+    new_endpoint = find_endpoint_by_method_path(db, project.id, new_source.id, method, path)
     if not new_endpoint:
         raise RuntimeError("Failed to resolve updated endpoint in new source version")
 

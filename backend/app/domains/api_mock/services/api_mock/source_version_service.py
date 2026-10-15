@@ -2,6 +2,7 @@
 API MOCK Source Version Service.
 """
 
+import copy
 import os
 import tempfile
 import uuid
@@ -23,6 +24,13 @@ from .openapi_normalizer import extract_endpoints_and_entities, normalize_oas_fr
 from .path_matcher import _normalize_path
 
 logger = get_logger(__name__, category="api_mock")
+
+
+def lock_project_source(db: Session, project: SddApiMockProject, source_id: str | None = None) -> SddApiMockProject:
+    locked = db.query(SddApiMockProject).filter_by(id=project.id).populate_existing().with_for_update().one()
+    if source_id is not None and locked.active_source_version_id != source_id:
+        raise ValueError("Source has been updated by another user; reload the active version")
+    return locked
 
 
 def _endpoint_key(method: str, path: str) -> tuple[str, str]:
@@ -81,7 +89,9 @@ def persist_source_version(
     activate: bool,
     clone_from_source_id: str | None = None,
     case_endpoint_overrides: dict[str, tuple[str, str]] | None = None,
+    entity_endpoint_overrides: dict[str, tuple[str, str] | None] | None = None,
 ) -> SddApiMockSourceVersion:
+    project = lock_project_source(db, project, clone_from_source_id)
     endpoints_payload, entities_payload = extract_endpoints_and_entities(normalized_oas)
     logger.info(
         f"Persisting source version for project {project.id}. Found {len(endpoints_payload)} endpoints and {len(entities_payload)} entities."
@@ -93,6 +103,7 @@ def persist_source_version(
         id=version_id,
         project_id=project.id,
         source_type=source_type,
+        source_name=source_name,
         raw_content=raw_content,
         normalized_oas_json=normalized_oas,
         storage_path=file_path,
@@ -161,11 +172,18 @@ def persist_source_version(
                 entity_endpoint_map[old_ent.name] = endpoint_id_map[old_ent.endpoint_id]
 
     for entity in entities_payload:
+        endpoint_id = entity_endpoint_map.get(entity["name"])
+        if entity["name"] in (entity_endpoint_overrides or {}):
+            identity = entity_endpoint_overrides[entity["name"]]
+            target = build_endpoint_lookup(new_db_endpoints).get(_endpoint_key(*identity)) if identity else None
+            if identity and target is None:
+                raise ValueError("Entity endpoint is not present in the new source")
+            endpoint_id = target.id if target else None
         db.add(
             SddApiMockEntity(
                 project_id=project.id,
                 source_version_id=source_version.id,
-                endpoint_id=entity_endpoint_map.get(entity["name"]),
+                endpoint_id=endpoint_id,
                 name=entity["name"],
                 description=entity.get("description"),
             )
@@ -261,6 +279,7 @@ def save_active_document(
 
 
 def activate_source_version(db: Session, project: SddApiMockProject, source_version_id: str) -> SddApiMockSourceVersion:
+    project = lock_project_source(db, project)
     source = (
         db.query(SddApiMockSourceVersion)
         .filter(
@@ -292,7 +311,7 @@ def load_oas_from_source(source: SddApiMockSourceVersion | None) -> dict[str, An
     if not source:
         return {"openapi": "3.0.3", "paths": {}}
     if getattr(source, "normalized_oas_json", None):
-        return source.normalized_oas_json
+        return copy.deepcopy(source.normalized_oas_json)
     if source.storage_path and os.path.exists(source.storage_path):
         try:
             with open(source.storage_path, encoding="utf-8") as f:

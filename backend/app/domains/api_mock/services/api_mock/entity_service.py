@@ -12,6 +12,7 @@ from app.domains.api_mock.models.api_mock import SddApiMockEntity, SddApiMockPro
 from .source_version_service import (
     get_source_version,
     load_oas_from_source,
+    lock_project_source,
     persist_source_version,
     resolve_active_source_id,
 )
@@ -120,12 +121,17 @@ def create_entity(
     schema_json: dict[str, Any],
     endpoint_id: str | None = None,
 ) -> SddApiMockEntity:
+    project = lock_project_source(db, project)
+    endpoint_identity = None
     if endpoint_id:
         from .endpoint_service import get_endpoint
 
         endpoint = get_endpoint(db, project, endpoint_id)
         if not endpoint:
             raise ValueError("Endpoint not found")
+        if endpoint.source_version_id != project.active_source_version_id:
+            raise ValueError("Endpoint has been updated by another user")
+        endpoint_identity = (endpoint.method, endpoint.path)
         source_id = endpoint.source_version_id
     else:
         source_id = resolve_active_source_id(project)
@@ -165,6 +171,7 @@ def create_entity(
         creator_id=updater_id,
         activate=True,
         clone_from_source_id=source.id,
+        entity_endpoint_overrides={name: endpoint_identity},
     )
 
     new_entity = (
@@ -180,18 +187,6 @@ def create_entity(
     if not new_entity:
         raise RuntimeError("Failed to resolve created entity in new source version")
 
-    if endpoint_id:
-        from .endpoint_service import find_endpoint_by_method_path, get_endpoint
-
-        old_endpoint = get_endpoint(db, project, endpoint_id)
-        if old_endpoint:
-            new_endpoint = find_endpoint_by_method_path(
-                db, project.id, new_source.id, old_endpoint.method, old_endpoint.path
-            )
-            if new_endpoint:
-                new_entity.endpoint_id = new_endpoint.id
-                db.flush()
-
     return _hydrate_entity(db, project, new_entity)
 
 
@@ -200,14 +195,27 @@ def update_entity(
     project: SddApiMockProject,
     *,
     entity_id: str,
+    row_version: int,
     updater_id: str,
     name: str,
     description: str | None,
     schema_json: dict[str, Any],
+    endpoint_id: str | None = None,
 ) -> SddApiMockEntity:
+    project = lock_project_source(db, project)
     entity = get_entity(db, project, entity_id)
     if not entity:
         raise ValueError("Entity not found")
+    if entity.source_version_id != project.active_source_version_id or entity.row_version != row_version:
+        raise ValueError("Entity has been updated by another user")
+    endpoint_identity = None
+    if endpoint_id:
+        from .endpoint_service import get_endpoint
+
+        endpoint = get_endpoint(db, project, endpoint_id)
+        if not endpoint or endpoint.source_version_id != entity.source_version_id:
+            raise ValueError("Endpoint not found in the active source")
+        endpoint_identity = (endpoint.method, endpoint.path)
 
     source = get_source_version(db, project, entity.source_version_id)
     if not source:
@@ -241,6 +249,7 @@ def update_entity(
         creator_id=updater_id,
         activate=True,
         clone_from_source_id=source.id,
+        entity_endpoint_overrides={new_name: endpoint_identity},
     )
 
     new_entity = (
@@ -259,9 +268,12 @@ def update_entity(
 
 
 def delete_entity(db: Session, project: SddApiMockProject, entity_id: str, updater_id: str) -> None:
+    project = lock_project_source(db, project)
     entity = get_entity(db, project, entity_id)
     if not entity:
         raise ValueError("Entity not found")
+    if entity.source_version_id != project.active_source_version_id:
+        raise ValueError("Entity has been updated by another user")
 
     source = get_source_version(db, project, entity.source_version_id)
     if not source:

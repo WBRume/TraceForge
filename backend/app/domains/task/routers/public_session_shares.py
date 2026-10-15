@@ -342,6 +342,10 @@ async def public_share_websocket_endpoint(websocket: WebSocket, share_id: str):
 
     connection = await public_share_ws_manager.connect(websocket, share_id)
     try:
+        # Deletion may commit between initial authorization and room registration.
+        if not await run_db(_resolve):
+            connection.evict("share_revoked")
+            return
         while True:
             # 通道只下行；仅处理 resync_complete 控制帧（与通知通道同款握手）
             raw = await receive_text_until_evicted(websocket, connection)

@@ -151,6 +151,40 @@ describe('embedded local collaboration with real Git worktrees', () => {
     expect(rechecked.conflicts[0].expected_sha256).toBe(hash('new human'))
     expect(rechecked.conflict_set_id).not.toBe(pending.conflict_set_id)
   })
+  test('keeping one conflict preserves disk content and leaves an independent local edit after restart', () => {
+    const final = target()
+    for (const repo of ['api', 'web']) {
+      setFile(final, repo, 'shared.txt', 'cloud ' + repo)
+      fs.writeFileSync(path.join(worktree(repo), 'shared.txt'), 'human ' + repo)
+    }
+    const pending = deliver(final)
+    const first = runtime.execute('restore', { task_id: task, operation_id: 'keep-api', decision: 'keep', conflict_set_id: pending.conflict_set_id,
+      selected: [{ task_repository_id: 'api', path: 'shared.txt', expected_sha256: hash('human api') }] })
+    expect(first.conflicts.map((row: any) => row.task_repository_id)).toEqual(['web'])
+    expect(fs.readFileSync(path.join(worktree(), 'shared.txt'), 'utf8')).toBe('human api')
+    runtime.close(); runtime = new CollaborationRuntime(path.join(root, 'state'), () => [root])
+    const rechecked = deliver(final, 'after-keep-restart')
+    expect(rechecked.conflicts.map((row: any) => row.task_repository_id)).toEqual(['web'])
+    const ready = runtime.execute('restore', { task_id: task, operation_id: 'keep-web', decision: 'keep', conflict_set_id: rechecked.conflict_set_id,
+      selected: [{ task_repository_id: 'web', path: 'shared.txt', expected_sha256: hash('human web') }] })
+    expect(ready.state).toBe('READY')
+    expect(ready.local_changes.filter((row: any) => row.path === 'shared.txt')).toHaveLength(2)
+    const captured = runtime.execute('capture', { task_id: task })
+    expect(captured.manifest.repositories[0].files.find((row: any) => row.path === 'shared.txt').sha256).toBe(hash('human api'))
+    expect(() => runtime.execute('restore', { task_id: task, operation_id: 'repeat', decision: 'keep', conflict_set_id: rechecked.conflict_set_id,
+      selected: [{ task_repository_id: 'web', path: 'shared.txt', expected_sha256: hash('human web') }] })).toThrow('CONFIRMATION_EXPIRED')
+  }, 60_000)
+  test('keeping a conflict refuses a new save after the displayed comparison', () => {
+    const final = target(); setFile(final, 'api', 'shared.txt', 'cloud')
+    fs.writeFileSync(path.join(worktree(), 'shared.txt'), 'human')
+    const pending = deliver(final)
+    fs.writeFileSync(path.join(worktree(), 'shared.txt'), 'new human')
+    const failed = runtime.execute('restore', { task_id: task, operation_id: 'keep-stale', decision: 'keep', conflict_set_id: pending.conflict_set_id,
+      selected: [{ task_repository_id: 'api', path: 'shared.txt', expected_sha256: hash('human') }] })
+    expect(failed.state).toBe('RECOVERY_REQUIRED')
+    expect(failed.conflicts).toHaveLength(1)
+    expect(fs.readFileSync(path.join(worktree(), 'shared.txt'), 'utf8')).toBe('new human')
+  }, 60_000)
   test('selected restore refuses a changed task branch without scanning repository contents', () => {
     const final = target(); setFile(final, 'api', 'shared.txt', 'cloud')
     fs.writeFileSync(path.join(worktree(), 'shared.txt'), 'human')

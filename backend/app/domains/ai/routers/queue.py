@@ -116,8 +116,11 @@ async def _recover_orphaned_job(
     evidence: str | None,
     confirm_cleanup: bool,
 ) -> OrphanedJobRecoveryResponse:
+    from app.agents import EXECUTION_KIND_REMOTE_SESSION
+    from app.domains.ai.services.ai_job_convergence_service import evidence_from_stop_result
     from app.domains.ai.services.jobs import attempts as ai_job_attempts
     from app.domains.ai.services.jobs.publishing import broadcast_job_payload, reschedule_if_pending
+    from app.domains.ai.services.jobs.reaper import stop_remote_session
 
     try:
         if confirm_cleanup:
@@ -147,7 +150,12 @@ async def _recover_orphaned_job(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     result = None
-    if confirm_cleanup:
+    remote = adopted.get("execution_kind") == EXECUTION_KIND_REMOTE_SESSION
+    if remote:
+        # A remote session has no local PID to verify. Both administrator
+        # recovery actions require an actual provider stop acknowledgement.
+        result = await stop_remote_session(adopted)
+    elif confirm_cleanup:
         result = await process_supervisor.verify_persisted_cleanup(
             adopted.get("process_pid"),
             adopted.get("process_started_at"),
@@ -170,7 +178,13 @@ async def _recover_orphaned_job(
             if managed_result is not None and (result is None or managed_result.confirmed_dead):
                 result = managed_result
 
-    confirmed_dead = bool(result is not None and result.confirmed_dead)
+    confirmed_dead = bool(result.stop_acknowledged) if remote else bool(result is not None and result.confirmed_dead)
+    error_code = getattr(result, "failure_code" if remote else "error_code", None)
+    stop_evidence = (
+        evidence_from_stop_result(result, remote_session_started=True, execution_kind=EXECUTION_KIND_REMOTE_SESSION)
+        if remote
+        else None
+    )
     payload = await run_db(
         ai_job_attempts.finish_termination_sync,
         adopted["job_id"],
@@ -178,10 +192,11 @@ async def _recover_orphaned_job(
         confirmed_dead=confirmed_dead,
         reason=(result.error_message if result and result.error_message else reason),
         failure_code=(
-            result.error_code
-            if result and result.error_code
+            error_code
+            if error_code
             else ("MANUAL_CLEANUP_UNVERIFIED" if confirm_cleanup else "MANUAL_TERMINATION_UNCONFIRMED")
         ),
+        evidence=stop_evidence,
     )
     if payload:
         # final 判定由 payload 状态决定。
@@ -197,7 +212,7 @@ async def _recover_orphaned_job(
         task_id=adopted.get("task_id"),
         reason=reason,
         evidence=evidence,
-        failure_code=(result.error_code if result else None),
+        failure_code=error_code,
     )
     if not payload:
         raise HTTPException(status_code=409, detail="Orphaned job recovery lost its state fence")
@@ -207,7 +222,7 @@ async def _recover_orphaned_job(
             detail={
                 "message": "Process cleanup could not be verified; job remains ORPHANED",
                 "status": payload.get("status"),
-                "error_code": result.error_code if result else None,
+                "error_code": error_code,
             },
         )
     return OrphanedJobRecoveryResponse(

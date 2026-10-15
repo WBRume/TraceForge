@@ -443,11 +443,14 @@ export class CollaborationRuntime {
   private restore(payload: any) {
     const binding = this.load(payload.task_id)
     identifier(payload.operation_id)
+    const keepLocal = payload.decision === 'keep'
+    if (payload.decision && !['keep', 'accept'].includes(payload.decision)) fail('COLLABORATION_INVALID_DECISION')
     if (!binding.target || !binding.conflict_set_id || payload.conflict_set_id !== binding.conflict_set_id) fail('COLLABORATION_CONFLICT_CONFIRMATION_EXPIRED')
     const target = binding.target!
     if (!Array.isArray(payload.selected) || !payload.selected.length) fail('COLLABORATION_SELECTED_FILES_REQUIRED')
     for (const selected of payload.selected) {
       const conflict = binding.conflicts.find(file => file.task_repository_id === selected.task_repository_id && file.path === selected.path)
+      if (keepLocal && conflict?.reason === 'PATH_STRUCTURE') fail('COLLABORATION_RELATED_PATHS_REQUIRED')
       if (conflict?.related_paths?.some(name => !payload.selected.some((item: any) => item.task_repository_id === selected.task_repository_id && item.path === name))) fail('COLLABORATION_RELATED_PATHS_REQUIRED')
     }
     const selectedFiles = [...payload.selected].sort((a, b) => {
@@ -463,9 +466,16 @@ export class CollaborationRuntime {
       if (!conflict || selected.expected_sha256 !== conflict.expected_sha256) throw new Error('COLLABORATION_CONFLICT_CONFIRMATION_EXPIRED')
       const repo = binding.repositories.find(item => item.task_repository_id === selected.task_repository_id)!
       try {
-        applyFile({ state: this.state, operation_id: payload.operation_id, task_repository_id: selected.task_repository_id,
-          root: repo.local_worktree_path, expected: conflict.local, target: conflict.cloud, relative: selected.path, objects: this.objects,
-          scratch_root: this.scratch(binding, repo), context: { ...this.metadata(target), kind: 'restore', repo_slug: repo.repo_slug, branch_name: repo.branch_name } })
+        if (keepLocal) {
+          const actual = observeFile(repo, selected.path, this.objects, conflict.local?.mode)
+          if (!sameFile(actual, conflict.local)) fail('LOCAL_FILE_CHANGED_RECONFIRM')
+          updateObservation(local, selected.task_repository_id, selected.path, actual)
+        } else {
+          applyFile({ state: this.state, operation_id: payload.operation_id, task_repository_id: selected.task_repository_id,
+            root: repo.local_worktree_path, expected: conflict.local, target: conflict.cloud, relative: selected.path, objects: this.objects,
+            scratch_root: this.scratch(binding, repo), context: { ...this.metadata(target), kind: 'restore', repo_slug: repo.repo_slug, branch_name: repo.branch_name } })
+        }
+        // A kept local version is a new local edit against the acknowledged cloud version.
         binding.applied[fileKey(selected.task_repository_id, selected.path)] = conflict.cloud
         restored[fileKey(selected.task_repository_id, selected.path)] = conflict.cloud
         this.save(binding)
@@ -473,7 +483,7 @@ export class CollaborationRuntime {
         binding.errors.push(String(error)); this.save(binding); return this.status(binding)
       }
     }
-    this.verifyApplied(binding, local, restored)
+    if (!keepLocal) this.verifyApplied(binding, local, restored)
     binding.conflicts = binding.conflicts.filter(file => !Object.hasOwn(restored, fileKey(file.task_repository_id, file.path)))
     binding.conflict_set_id = binding.conflicts.length ? hash(JSON.stringify([target.snapshot_id, binding.conflicts])) : null
     if (!binding.conflicts.length && !binding.errors.length) {

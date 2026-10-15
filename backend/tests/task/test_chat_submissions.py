@@ -18,7 +18,7 @@ from app.domains.ai.services.jobs import (
 from app.domains.ai.services.jobs.executors import (
     diagnosis_summary as ai_diagnosis_summary,
 )
-from app.domains.auth.models.user import User, Workspace
+from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
 from app.domains.search.capture import install_capture
 from app.domains.search.models import SearchDocumentState, SearchOutbox
 from app.domains.search.projection import build_search_projection
@@ -197,9 +197,19 @@ async def test_recovered_send_creates_one_turn_using_existing_provider_session(t
 
 
 @pytest.fixture
-def task_db(db):
+def task_db(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app.database import Base
+
+    # Concurrent service transactions must not share StaticPool's single connection.
+    engine = create_engine(f"sqlite:///{tmp_path / 'submissions.db'}")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
     db.add(User(id="u", email="submission@test.local", hashed_password="x", display_name="User"))
     db.add(Workspace(id="w", name="Workspace", owner_id="u"))
+    db.add(WorkspaceMember(workspace_id="w", user_id="u", role=WorkspaceRole.OWNER))
     db.add(
         SddTask(
             id="t",
@@ -214,7 +224,11 @@ def task_db(db):
         )
     )
     db.commit()
-    return db
+    try:
+        yield db
+    finally:
+        db.close()
+        engine.dispose()
 
 
 def accepted(db, client_id="c", content="private prompt"):
@@ -292,10 +306,8 @@ def test_turn_freezes_model_for_execution_and_restart(task_db, monkeypatch):
 def test_model_catalogue_scope_uses_sticky_task_engine_and_checks_access(task_db):
     from fastapi import HTTPException
 
-    from app.domains.auth.models.user import WorkspaceMember
     from app.domains.task.routers.task.models import catalogue_context
 
-    task_db.add(WorkspaceMember(workspace_id="w", user_id="u"))
     task_db.get(Workspace, "w").agent_backend = "opencode"
     task_db.get(SddTask, "t").agent_backend = "dsh"
     task_db.commit()
@@ -311,10 +323,8 @@ async def test_model_catalogue_failure_keeps_persisted_model(task_db, monkeypatc
     from types import SimpleNamespace
 
     from app.agents.errors import AgentError
-    from app.domains.auth.models.user import WorkspaceMember
     from app.domains.task.routers.task import models
 
-    task_db.add(WorkspaceMember(workspace_id="w", user_id="u"))
     task_db.get(SddTask, "t").agent_backend = "dsh"
     task_db.get(SddTask, "t").task_meta_json = {"agent_model": {"backend": "dsh", "model": "private/current"}}
     task_db.commit()
@@ -338,10 +348,8 @@ async def test_model_catalogue_failure_keeps_persisted_model(task_db, monkeypatc
 async def test_opencode_creation_and_chat_share_catalogue_but_keep_session_model(task_db, monkeypatch):
     from types import SimpleNamespace
 
-    from app.domains.auth.models.user import WorkspaceMember
     from app.domains.task.routers.task import models
 
-    task_db.add(WorkspaceMember(workspace_id="w", user_id="u"))
     workspace = task_db.get(Workspace, "w")
     workspace.agent_backend = "opencode"
     workspace.project_path = "/workspace"
@@ -380,10 +388,8 @@ async def test_opencode_creation_and_chat_share_catalogue_but_keep_session_model
 def test_local_opencode_catalogue_uses_bound_resource_workspace(task_db, monkeypatch):
     from types import SimpleNamespace
 
-    from app.domains.auth.models.user import WorkspaceMember
     from app.domains.task.routers.task import models
 
-    task_db.add(WorkspaceMember(workspace_id="w", user_id="u"))
     task_db.get(Workspace, "w").agent_backend = "opencode"
     task_db.get(SddTask, "t").agent_backend = "opencode"
     task_db.commit()
@@ -773,6 +779,8 @@ async def test_cancelled_snapshot_drains_worker_and_cleans_unpublished_checkpoin
     from app.core import offload
     from app.domains.task.services import task_session_snapshot_service as snapshots
 
+    monkeypatch.setattr("app.domains.local_resource.service.task_profile", lambda task_id: None)
+
     started, finish = asyncio.Event(), asyncio.Event()
 
     async def worker(*args):
@@ -788,7 +796,7 @@ async def test_cancelled_snapshot_drains_worker_and_cleans_unpublished_checkpoin
             "/fake", [], "mock", None, workspace_id="w", workspace_name="W", task_id="t", task_name="T"
         )
     )
-    await started.wait()
+    await asyncio.wait_for(started.wait(), timeout=5)
     task.cancel()
     await asyncio.sleep(0)
     assert not task.done()
@@ -885,7 +893,8 @@ def test_http_acceptance_recovery_idempotency_and_access(task_db, monkeypatch):
     from app.domains.auth.models.user import WorkspaceMember, WorkspaceRole
     from app.domains.task.routers import task as router
 
-    task_db.add(WorkspaceMember(workspace_id="w", user_id="u", role=WorkspaceRole.DEVELOPER))
+    member = task_db.query(WorkspaceMember).filter_by(workspace_id="w", user_id="u").one()
+    member.role = WorkspaceRole.DEVELOPER
     task_db.commit()
     user = task_db.get(User, "u")
     factory = sessionmaker(bind=task_db.get_bind())
@@ -920,4 +929,32 @@ def test_http_acceptance_recovery_idempotency_and_access(task_db, monkeypatch):
         assert other.status_code == 403
         assert client.post(url, json={**payload, "client_message_id": "second"}).status_code == 409
         assert client.post(url.replace("/w/", "/other/"), json=payload).status_code == 403
+        # Revocation must cover fresh requests and durable duplicate lookup;
+        # neither HTTP path may bypass the write gate already used by WS.
+        member.role = WorkspaceRole.VIEWER
+        task_db.commit()
+        for request in (payload, {**payload, "client_message_id": "viewer-new"}):
+            denied = client.post(url, json=request)
+            assert denied.status_code == 403, denied.text
+            assert denied.json()["detail"]["code"] == "TASK_WRITE_FORBIDDEN"
+        assert client.get(state_url).status_code == 200
+        assert task_db.query(TaskChatSubmission).count() == 1
     assert task_db.query(ChatMessage).count() == task_db.query(SddAiJob).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_submission_service_rejects_readonly_actor_before_recovery_or_schedule(
+    task_db, recovery_env, monkeypatch
+):
+    member = task_db.query(WorkspaceMember).filter_by(workspace_id="w", user_id="u").one()
+    member.role = WorkspaceRole.VIEWER
+    task_db.commit()
+    recover = AsyncMock()
+    monkeypatch.setattr(service, "recover_task_attempts", recover)
+    with pytest.raises(service.SubmissionError) as exc:
+        await service.accept(task_id="t", actor_id="u", client_message_id="readonly", content="must not execute")
+    assert exc.value.status_code == 403
+    assert exc.value.code == "TASK_WRITE_FORBIDDEN"
+    recover.assert_not_awaited()
+    assert recovery_env == []
+    assert task_db.query(TaskChatSubmission).count() == task_db.query(SddAiJob).count() == 0

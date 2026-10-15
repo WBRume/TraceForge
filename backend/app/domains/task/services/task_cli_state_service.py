@@ -11,6 +11,7 @@ import re
 import shutil
 import time
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Any
 
 from sqlalchemy.orm import Session, joinedload
@@ -557,11 +558,28 @@ def _bootstrap_attempt_evidence() -> tuple[bool, bool | None]:
     return (bool(runtime.process_started), runtime.termination_confirmed_dead)
 
 
-def _bootstrap_event_handler(task_id, expected_input_revision):
+async def _create_bootstrap_provider_events(agent_backend):
+    from app.agents import current_agent_attempt, current_agent_attempt_key, current_agent_attempt_runtime
+    from app.domains.ai.services.jobs import provider_turn
+
+    runtime = current_agent_attempt_runtime()
+    call = runtime.begin_provider_call(current_agent_attempt_key()) if runtime else None
+    persist_session = partial(
+        provider_turn._persist_turn_locator, attempt=current_agent_attempt(), backend_name=agent_backend
+    )
+    events = provider_turn._TurnEvents(call, runtime, persist_session)
+    await persist_session()
+    return events
+
+
+def _bootstrap_event_handler(task_id, expected_input_revision, provider_events=None):
     ready_seen = False
 
     async def on_event(event: dict[str, Any]) -> None:
         nonlocal ready_seen
+        if provider_events is not None:
+            # Persist the locator and terminal evidence before business state.
+            await provider_events.on_event(event)
         event_type = str(event.get("type") or "")
         if event_type == "assistant":
             message = event.get("message") or {}
@@ -624,8 +642,13 @@ async def _verify_baseline_snapshot(baseline_dir, final_session_id):
 
 
 async def _finalize_bootstrap_attempt(
-    bridge, outcome, task_id, expected_input_revision, failure_message, termination_confirmed_dead
+    bridge, outcome, task_id, expected_input_revision, failure_message, termination_confirmed_dead, provider_events=None
 ):
+    from app.agents import AgentStopResult, ProviderCallState, mark_provider_call_unresolved
+    from app.domains.ai.services.jobs.attempts import close_unresolved_provider_call
+
+    call = provider_events.call if provider_events is not None else None
+    unresolved = call is not None and call.state in (ProviderCallState.STARTED, ProviderCallState.UNKNOWN)
     cleanup_confirmed = True
     # Timeout/cancellation must prove that the complete
     # CLI tree is gone before the bootstrap is reported
@@ -634,6 +657,7 @@ async def _finalize_bootstrap_attempt(
     has_local_process = bool(bridge is not None and getattr(bridge, "process", None) is not None)
     if bridge is not None and (
         getattr(bridge, "is_running", lambda: False)()
+        or (failure_message is not None and unresolved)
         or (
             has_local_process
             and getattr(bridge, "last_termination", None) is not None
@@ -642,7 +666,10 @@ async def _finalize_bootstrap_attempt(
     ):
         try:
             termination = await asyncio.shield(bridge.cancel())
-            if termination is not None:
+            if isinstance(termination, AgentStopResult) and termination.execution_kind == "REMOTE_SESSION":
+                cleanup_confirmed = termination.stop_acknowledged is True
+                close_unresolved_provider_call(call, stop_acknowledged=cleanup_confirmed)
+            elif termination is not None:
                 cleanup_confirmed = bool(termination.confirmed_dead)
                 termination_confirmed_dead = cleanup_confirmed
             elif has_local_process:
@@ -654,6 +681,7 @@ async def _finalize_bootstrap_attempt(
                 task_id,
                 cleanup_exc,
             )
+    mark_provider_call_unresolved(call)
     # Attempt-local runtime evidence is the final
     # authority for this baseline attempt's death
     # proof.  Its identity-aware aggregate already
@@ -758,12 +786,21 @@ async def _complete_bootstrap(
     agent_backend,
     session_snapshot_backend,
     termination_confirmed_dead,
+    provider_events=None,
 ):
 
     process = getattr(bridge, "process", None)
     return_code = getattr(process, "returncode", None)
     if isinstance(return_code, int) and return_code != 0:
         raise RuntimeError(f"CLI bootstrap process exited with code {return_code}")
+
+    if provider_events is not None:
+        if not provider_events.result_seen:
+            raise BootstrapStateError("Baseline provider outcome missing", failure_code="PROVIDER_OUTCOME_MISSING")
+        if provider_events.result_is_error:
+            raise BootstrapStateError(
+                provider_events.result_text or "Baseline provider returned an error", failure_code="PROVIDER_ERROR"
+            )
 
     final_session_id = str(getattr(bridge, "session_id", "") or "").strip()
     if not final_session_id:
@@ -842,11 +879,11 @@ async def _run_bootstrap(
                     # 仅 claude-code 的会话上下文是本地 project store 快照；
                     # opencode 上下文在 server 侧、dsh 无 resume，均跳过快照逻辑
                     session_snapshot_backend = agent_backend in ("claude-code", "mock")
-                    workspace_id = context["workspace_id"]
-                    task_creator_id = context["task_creator_id"]
-
-                    with bind_task_context(task_id=task_id, workspace_id=workspace_id, user_id=task_creator_id):
+                    with bind_task_context(
+                        task_id=task_id, workspace_id=context["workspace_id"], user_id=context["task_creator_id"]
+                    ):
                         bridge = None
+                        provider_events = None
                         failure_message: str | None = None
                         termination_confirmed_dead: bool | None = None
                         try:
@@ -874,7 +911,8 @@ async def _run_bootstrap(
                                 ):
                                     resume_session_id = baseline_session_id
 
-                            on_event = _bootstrap_event_handler(task_id, expected_input_revision)
+                            provider_events = await _create_bootstrap_provider_events(agent_backend)
+                            on_event = _bootstrap_event_handler(task_id, expected_input_revision, provider_events)
 
                             await bridge.start_session(
                                 prompt=_build_bootstrap_prompt(
@@ -910,6 +948,7 @@ async def _run_bootstrap(
                                 agent_backend,
                                 session_snapshot_backend,
                                 termination_confirmed_dead,
+                                provider_events,
                             )
                             return outcome
 
@@ -934,6 +973,7 @@ async def _run_bootstrap(
                                 expected_input_revision,
                                 failure_message,
                                 termination_confirmed_dead,
+                                provider_events,
                             )
 
     except LockAcquireTimeout as exc:
