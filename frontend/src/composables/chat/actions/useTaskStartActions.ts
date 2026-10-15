@@ -12,6 +12,9 @@ import type { RuntimeSkillItem } from '../types'
 export function useTaskStartActions(options: {
   getSubmissionMetadata?: () => Record<string, unknown>
   collaborationBlocked?: () => boolean
+  initializationIdentity?: () => Promise<Record<string, unknown> | undefined>
+  resetForInitialization?: (command: Record<string, any>) => Promise<unknown>
+  finishInitialization?: () => Promise<void>
   getCurrentTask: () => any
   isTaskPreStart: { value: boolean }
   isTaskProvisioning: { value: boolean }
@@ -257,6 +260,7 @@ export function useTaskStartActions(options: {
     options.engineRunning.value = true
     try {
       const payload: Record<string, unknown> = {
+        collaboration: await options.initializationIdentity?.(),
         operation_id: initOperationId.value || (initOperationId.value = crypto.randomUUID()),
         reason: reasonText || undefined,
         prompt: promptText || undefined,
@@ -265,11 +269,17 @@ export function useTaskStartActions(options: {
         payload.skill_ids = normalizedSkillIds
         payload.keep_deleted_runtime_skills = initOptions?.keepDeletedRuntimeSkills !== false
       }
-      const res = await api.post(
+      let res = await api.post(
         `/workspaces/${workspaceId}/tasks/${task.id}/initialize`,
         payload,
         { timeout: 0 },
       )
+      if (res.data?.local_reset) {
+        if (!options.resetForInitialization) throw new Error('请在连接本地代码的桌面端继续初始化。')
+        payload.local_reset_receipt = await options.resetForInitialization(res.data.local_reset)
+        res = await api.post(`/workspaces/${workspaceId}/tasks/${task.id}/initialize`, payload, { timeout: 0 })
+      }
+      if (!res.data?.job) throw new Error('初始化尚未完成，请继续初始化。')
       const job = res.data?.job
       noteTaskRunInitiated(task.id, undefined, job?.id)
       if (options.getCurrentTask()?.id !== task.id || options.getWorkspaceId() !== workspaceId) return true
@@ -311,6 +321,7 @@ export function useTaskStartActions(options: {
       return false
     } finally {
       initializingTaskId.value = ''
+      await options.finishInitialization?.()
     }
   }
 

@@ -662,6 +662,29 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     // Only a persisted PREPARING state or explicit handoff may upload local input.
     return enabled.value && (participating.value || remoteSender.value) ? { collaboration: { ...(remoteSender.value ? { request_driver_input: true } : identity), binding_id: state.value?.binding_id, lease_epoch: state.value?.lease_epoch } } : {}
   }
+  async function initializationIdentity() {
+    if (!available || !supported.value) return undefined
+    busy.value = true
+    await loadMappings()
+    const binding = await readBinding()
+    return { ...identity, binding_id: binding?.binding_id || state.value?.binding_id }
+  }
+  async function resetForInitialization(command: Record<string, any>) {
+    if (command.task_id !== options.task()?.id) throw new Error('COLLABORATION_CONTEXT_CHANGED')
+    const receipt = await native('initialize', command)
+    transportStatus = null
+    local.value = await readBinding()
+    cloud.value = input.value = null
+    lastTarget = ''; lastProgress = ''; lastHandoff = ''; lastLease = 0
+    preparationRequired.value = deliveryRetryRequired.value = false
+    participating.value = true
+    localStorage.removeItem(standaloneKey)
+    return receipt
+  }
+  async function finishInitialization() {
+    busy.value = false
+    await refresh()
+  }
   const stopMappingUpdates = onRepoPreferencesChanged(options.workspaceId(), String(auth.user?.id || ''), () => {
     mappingsDirty = true; mappingChecks.value = []
     void refresh()
@@ -673,7 +696,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     void refresh()
   }, { immediate: true })
   onScopeDispose(() => { disposed = true; generation++; clearInterval(heartbeat); clearInterval(stageClock); stopMappingUpdates(); stopLocalUpdates?.() })
-  return { reviewBaseline, reviewRunning, reviewLoading, reviewError: computed(() => baselineError.value || reviewError.value), loadReview, refreshResults, participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, onConnectionReady, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
+  return { initializationIdentity, resetForInitialization, finishInitialization, reviewBaseline, reviewRunning, reviewLoading, reviewError: computed(() => baselineError.value || reviewError.value), loadReview, refreshResults, participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, onConnectionReady, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
 }
 type Controller = ReturnType<typeof createController>
 const controllers = new Map<string, { scope: EffectScope; controller: Controller; users: number }>()
@@ -736,6 +759,9 @@ export function useLocalCollaboration(options: { workspaceId: () => string; task
     directories: computed(() => active.value?.directories.value || null), activity: computed(() => active.value?.activity.value || { direction: '', done: 0, total: 0, bytes: 0, totalBytes: 0 }),
     view: computed(() => active.value?.view.value || { page: 'files', tab: 'all', pair: 'auto', selected: '', selectedConflicts: [] as string[], conflictSetId: '' }),
     progressive: computed(() => active.value?.progressive.value || false), setProgressive: (value: boolean) => active.value?.setProgressive(value),
+    initializationIdentity: async () => active.value?.initializationIdentity(),
+    resetForInitialization: async (command: Record<string, any>) => { if (!active.value) throw new Error('COLLABORATION_CONTEXT_CHANGED'); return active.value.resetForInitialization(command) },
+    finishInitialization: async () => { await active.value?.finishInitialization() },
     refresh: async () => { await active.value?.refresh() }, enable: async () => { await active.value?.enable() },
     restore: async (selected: CollaborationConflict[], id: string, decision: 'accept' | 'keep' = 'accept') => { await active.value?.restore(selected, id, decision) },
     readText: async (hash: string) => { if (!active.value) throw new Error('COLLABORATION_CONTEXT_CHANGED'); return active.value.readText(hash) },

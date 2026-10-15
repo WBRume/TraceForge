@@ -156,6 +156,8 @@ class InitializeRequest(BaseModel):
     skill_ids: list[str] | None = None
     keep_deleted_runtime_skills: bool | None = True
     operation_id: str | None = Field(default=None, min_length=8, max_length=48, pattern=r"^[a-zA-Z0-9_-]+$")
+    collaboration: dict | None = None
+    local_reset_receipt: dict | None = None
 
 
 class TaskRuntimeSkillUsage(BaseModel):

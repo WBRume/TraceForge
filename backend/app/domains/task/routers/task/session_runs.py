@@ -105,6 +105,8 @@ async def initialize_task(
                 requested_prompt=body.prompt,
                 reason=body.reason,
                 operation_id=body.operation_id,
+                collaboration=body.collaboration,
+                local_reset_receipt=body.local_reset_receipt,
             )
     except task_session_service.TaskSessionUndoError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

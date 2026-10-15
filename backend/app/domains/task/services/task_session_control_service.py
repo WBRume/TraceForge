@@ -844,9 +844,6 @@ def prepare_initialize_sync(
     task = task_task_records_queries.get_task(db, task_id, ws_id)
     if not task:
         raise TaskSessionControlError("Task not found", status_code=404)
-    from app.domains.workspace_collaboration.control import require_ready
-
-    require_ready(db, task_id, actor_id=actor_user_id)
     _assert_no_preparing_submission(db, task_id)
     _ensure_task_not_baselined(task)
     if task.status == TaskStatus.PROVISIONING:
@@ -960,6 +957,8 @@ async def initialize_task_session(
     requested_prompt: str | None = None,
     reason: str | None = None,
     operation_id: str | None = None,
+    collaboration: dict | None = None,
+    local_reset_receipt: dict | None = None,
 ) -> dict[str, Any]:
     """Restart code and provider context as one recoverable initialization."""
     from app.domains.task.services.initialization.service import initialize
@@ -972,6 +971,8 @@ async def initialize_task_session(
             task_id=task_id,
             actor_user_id=actor_user_id,
             operation_id=operation_id,
+            collaboration=collaboration,
+            local_reset_receipt=local_reset_receipt,
             skill_ids=skill_ids,
             keep_deleted_runtime_skills=keep_deleted_runtime_skills,
             requested_prompt=requested_prompt,
