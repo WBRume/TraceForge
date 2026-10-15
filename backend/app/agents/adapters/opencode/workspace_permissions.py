@@ -34,7 +34,7 @@ def same_directory(first: str, second: str) -> bool:
     return first == second
 
 
-def workspace_permissions(directory: str) -> list[dict[str, str]]:
+def workspace_permissions(directory: str, additional_directories=()) -> list[dict[str, str]]:
     """Restrict directory access while retaining existing in-task tool permissions."""
     root = normalize_directory(directory)
     rules = [
@@ -48,4 +48,21 @@ def workspace_permissions(directory: str) -> list[dict[str, str]]:
         for action in ("read", "edit")
         for resource in ("..", "../*")
     )
+    for directory in additional_directories:
+        extra = normalize_directory(directory)
+        rules.append({"action": "external_directory", "resource": extra + "/*", "effect": "allow"})
+        paths = [extra]
+        path_module = ntpath if ntpath.splitdrive(root)[0] else posixpath
+        try:
+            paths.append(path_module.relpath(extra, root).replace("\\", "/"))
+        except ValueError:
+            pass  # Different Windows volumes have no relative path.
+        # Read/edit resources are relative to the original session directory,
+        # even when a tool receives an absolute candidate path.
+        rules.extend(
+            {"action": action, "resource": resource, "effect": "allow"}
+            for action in ("read", "edit")
+            for path in paths
+            for resource in (path, path + "/*")
+        )
     return rules

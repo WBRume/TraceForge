@@ -519,6 +519,7 @@ def _assert_no_writer(db: Session, task_id: str, *, read_only: bool = False) -> 
         .filter(
             SddAiJob.task_id == task_id,
             SddAiJob.channel == AiJobChannel.TASK_CHAT,
+            SddAiJob.id != update.get("job_id") if read_only and update.get("state") == "ADAPTING" else True,
             SddAiJob.status.in_(
                 [
                     AiJobStatus.PENDING,

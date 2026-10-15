@@ -668,6 +668,8 @@ def _load_turn_target(db: Session, task: SddTask, message_id: str) -> tuple[Task
         )
     if turn.status != TaskSessionTurnStatus.ACTIVE:
         raise TaskSessionUndoError("This session turn has already been reverted", code="UNDO_ALREADY_REVERTED")
+    if int(turn.session_revision or 0) <= int((task.task_meta_json or {}).get("repository_update_revision", -1)):
+        raise TaskSessionUndoError("代码基线已更新，更新前的消息不能撤销。", code="UNDO_BEFORE_REPOSITORY_UPDATE")
     from app.domains.workspace_asset.models.workspace_asset import SddDecision
 
     if (

@@ -140,6 +140,49 @@ async def test_resume_updates_legacy_permissions_once_before_execution():
 
 
 @pytest.mark.asyncio
+async def test_adaptation_resumes_original_directory_and_only_opens_its_candidate():
+    session = {"location": {"directory": "/tasks/task-a"}, "permissions": workspace_permissions("/tasks/task-a")}
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.path))
+        assert request.url.path == "/api/session/original-session"
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": session})
+        session["permissions"] = json.loads(request.content)["permissions"]
+        return httpx.Response(204)
+
+    adapter = OpenCodeAdapter("http://agent")
+    adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter._consume_sse = AsyncMock(return_value=({}, set()))
+    adapter._emit_run_result = AsyncMock()
+    try:
+        await adapter.run(
+            AgentRunRequest(
+                project_path="/tasks/task-a",
+                session_id="original-session",
+                provider_options={"additional_workspace_directories": ["/snapshots/candidate-a"]},
+            ),
+            AsyncMock(),
+        )
+        rules = session["permissions"]
+        assert decision(rules, "external_directory", "/snapshots/candidate-a/api/*") == "allow"
+        assert decision(rules, "external_directory", "/snapshots/candidate-b/*") == "deny"
+        assert decision(rules, "external_directory", "/tasks/task-b/*") == "deny"
+        for action in ("read", "edit"):
+            assert decision(rules, action, "../../snapshots/candidate-a/api/main.py") == "allow"
+            assert decision(rules, action, "../../snapshots/candidate-a") == "allow"
+            assert decision(rules, action, "../../snapshots/candidate-b/api/main.py") == "deny"
+        # Continuing ordinary chat closes the temporary candidate boundary.
+        await adapter.run(AgentRunRequest(project_path="/tasks/task-a", session_id="original-session"), AsyncMock())
+        assert decision(session["permissions"], "external_directory", "/snapshots/candidate-a/*") == "deny"
+        assert decision(session["permissions"], "edit", "../../snapshots/candidate-a/api/main.py") == "deny"
+        assert not any(method == "POST" for method, _ in calls)
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["wrong_directory", "missing_directory", "update_rejected"])
 async def test_invalid_binding_or_permission_update_stops_before_prompt(failure):
     calls = []

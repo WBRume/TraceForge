@@ -99,12 +99,16 @@ def summary(db, task):
     except UpdateError as exc:
         pointer = (task.task_meta_json or {}).get("repository_update", {})
         result["plan"] = {**pointer, "error": str(exc), "repositories": [], "storage_missing": True}
+    # Settling an adaptation can advance the baseline in this same request.
+    for item, row in zip(result["repositories"], rows, strict=True):
+        item["baseline"] = storage.baseline(task, row)
     return result
 
 
 def view(task, plan):
     result = {
-        key: plan.get(key) for key in ("id", "state", "version", "error", "created_at", "job_id", "agent_summary")
+        key: plan.get(key)
+        for key in ("id", "state", "version", "error", "created_at", "job_id", "agent_summary", "auto_apply")
     }
     result["repositories"] = []
     for repo in plan["repositories"]:
@@ -263,6 +267,11 @@ def apply(db, task, actor_id, operation_id, version):
     plan = current(task, operation_id, version, states=("READY", "APPLIED"))
     if plan["state"] == "APPLIED":
         return view(task, plan)
+    return apply_plan(db, task, actor_id, plan)
+
+
+def apply_plan(db, task, actor_id, plan):
+    """Install a validated manual or Agent result while holding the task lock."""
     idle(db, task)
     validate_source(db, task, plan)
     if all(repo["target"] == repo["baseline"] for repo in plan["repositories"]):
@@ -287,7 +296,7 @@ def apply(db, task, actor_id, operation_id, version):
     plan["checkpoint"] = checkpoint(task, plan)
     # Snapshot creation is a read; recheck before crossing the write boundary.
     validate_source(db, task, plan)
-    plan["state"], plan["applied_from_version"] = "APPLYING", version
+    plan["state"], plan["applied_from_version"] = "APPLYING", plan["version"]
     storage.save(db, task, plan)
     db.commit()
     try:
@@ -311,10 +320,10 @@ def apply(db, task, actor_id, operation_id, version):
                 **{r["id"]: r["target"] for r in plan["repositories"]},
             },
         }
-        # Old provider context and undo checkpoints belong to the old baseline.
-        task.session_generation = int(task.session_generation or 0) + 1
+        # Keep provider history and the visible conversation. Only old worktree
+        # undo checkpoints become invalid when the repository baseline changes.
         task.session_revision = int(task.session_revision or 0) + 1
-        task.session_id = None
+        task.task_meta_json = {**task.task_meta_json, "repository_update_revision": task.session_revision}
         state = db.get(CollaborationState, task.id)
         if state:
             from app.domains.workspace_collaboration.service import _bump

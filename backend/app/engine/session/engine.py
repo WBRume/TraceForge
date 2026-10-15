@@ -148,6 +148,7 @@ class TaskAgentEngine:
         # 事件门禁与回合级缓存（run() 时加载）
         self._gate: SessionGate | None = None
         self._session_generation: int | None = None
+        self.additional_workspace_directories: list[str] = []
         # HITL 确认登记：interaction_id -> provider_request_id
         self._pending_confirmations: dict[str, str] = {}
 
@@ -332,7 +333,7 @@ class TaskAgentEngine:
         await update_task_status(self, TaskStatus.CODING)
 
         project_path = await run_db(turn_setup.resolve_project_path_sync, self.task_id)
-        if not recovery:
+        if not recovery and not self.additional_workspace_directories:
             await run_git_job(turn_setup.materialize_task_skills_sync, self.task_id)
         self._runtime_skill_index = await run_db(turn_setup.build_runtime_skill_index_sync, self.task_id)
         env_overrides = turn_setup.build_env_overrides(
@@ -400,6 +401,7 @@ class TaskAgentEngine:
                     if self.cli.name == "opencode" and self.attempt is not None:
                         request.execution_checkpoint = dict(recovery or {})
                         request.on_execution_checkpoint = self._save_execution_checkpoint
+                    request.provider_options["additional_workspace_directories"] = self.additional_workspace_directories
                     result = await run_agent_backend_with_logging(
                         self.cli,
                         request,

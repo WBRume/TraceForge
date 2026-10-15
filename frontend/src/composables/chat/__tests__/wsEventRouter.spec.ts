@@ -90,6 +90,18 @@ const createDeps = () => {
 }
 
 describe('createTaskWsEventRouter', () => {
+  it('keeps the task conversation on repository apply and invalidates only older undo actions', () => {
+    const { deps, calls } = createDeps()
+    const invalidateUndoBeforeRevision = vi.fn()
+    const { handleWsMessage } = createTaskWsEventRouter({ ...deps, messages: { ...deps.messages, invalidateUndoBeforeRevision } })
+    const payload = { task_id:'t1', state:'APPLIED', session_id:'original-session', session_generation:2, undo_before_revision:8 }
+    handleWsMessage({ type:'task_repository_update', payload })
+    expect(calls.appliedSessionPayloads).toEqual([payload])
+    expect(invalidateUndoBeforeRevision).toHaveBeenCalledWith(8)
+    expect(calls.generationBumps).toBe(0)
+    expect(calls.removedByIds).toHaveLength(0)
+    expect(calls.cardsCleared).toBe(0)
+  })
   it('forwards collaboration notifications from the task socket without touching the conversation', () => {
     const { deps, calls } = createDeps()
     const collaborationUpdate = vi.fn()

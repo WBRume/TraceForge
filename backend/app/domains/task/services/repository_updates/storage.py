@@ -66,6 +66,7 @@ def publish(db, task, pointer):
                 "session_generation": task.session_generation,
                 "session_revision": task.session_revision,
                 "session_id": task.session_id,
+                "undo_before_revision": (task.task_meta_json or {}).get("repository_update_revision"),
             },
         )
     )
