@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useLocalAgentStore } from '@/stores/localAgent'
+import { getApiServerUrl, setApiServerUrl } from '@/utils/api'
 
 const desktopMock = vi.hoisted(() => ({
   platform: 'win32',
@@ -34,6 +35,7 @@ vi.mock('@/utils/runtime', () => ({
 
 vi.mock('@/utils/api', () => ({
   DEFAULT_SERVER_URL: 'http://localhost:8000',
+  getApiServerUrl: vi.fn(() => 'https://remote.example.com'),
   setApiServerUrl: vi.fn(),
 }))
 
@@ -86,6 +88,18 @@ describe('localAgent store workspace repo mapping', () => {
     }))
     desktopMock.git.getStatus.mockResolvedValue({ isClean: true, raw: '', entries: [], unmergedFiles: [] })
     desktopMock.config.removeRepoMapping.mockResolvedValue({ removed: true })
+  })
+
+  it('keeps the configured remote server when loading local repository settings', async () => {
+    desktopMock.config.getConfig.mockResolvedValue({ serverUrl: 'https://remote.example.com', token: null })
+    await useLocalAgentStore().loadLocalConfig()
+    expect(setApiServerUrl).toHaveBeenCalledWith('https://remote.example.com')
+    expect(setApiServerUrl).not.toHaveBeenCalledWith('http://localhost:8000')
+  })
+
+  it('persists the active server when synchronizing desktop authentication', async () => {
+    await useLocalAgentStore().syncCurrentAuthToConfig()
+    expect(desktopMock.config.setConfig).toHaveBeenCalledWith({ serverUrl: getApiServerUrl(), token: null })
   })
 
   it('clears task context before loading workspace-level repo mappings', async () => {

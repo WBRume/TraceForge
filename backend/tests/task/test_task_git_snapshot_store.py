@@ -1,5 +1,6 @@
 """Real filesystem and Git round trips for persistent snapshot indexes."""
 
+import errno
 import os
 import stat
 from pathlib import Path
@@ -122,6 +123,50 @@ def test_seed_preserves_staged_unstaged_and_source_independence(tmp_path):
     assert (root / ".git/index").read_bytes() == index
     assert not (root / "new").exists()
     assert (root / ".env").read_bytes() == b"secret-local"
+
+
+@pytest.mark.parametrize("packed", [False, True])
+def test_same_device_cross_mount_snapshot_detaches_source(tmp_path, monkeypatch, packed):
+    root = tmp_path / "task"
+    init(root)
+    write(root, "a", b"committed bytes")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "seed")
+    if packed:
+        git(root, "repack", "-a", "-d")
+    attempts = []
+
+    def cross_mount(source, destination):
+        assert Path(source).stat().st_dev == Path(destination).parent.stat().st_dev
+        attempts.append(str(source))
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(snapshots.os, "link", cross_mount)
+    first = capture(tmp_path)
+    assert attempts
+    assert any("pack-" in path for path in attempts) == packed
+    partition = first["partitions"][0]
+    assert not Path(partition["git_dir"], "objects/info/alternates").exists()
+    (root / ".git/objects").rename(tmp_path / "detached-source-objects")
+    snapshots.shadow_git(partition["git_dir"], ["fsck", "--connectivity-only", "--no-dangling", partition["tree"]])
+    entry = snapshots.entries(first)["a"]
+    assert list(snapshots.read_blobs(entry["git_dir"], [(entry["oid"], entry["size"])]))[0][1] == b"committed bytes"
+
+
+def test_snapshot_link_permission_failure_is_not_hidden(tmp_path, monkeypatch):
+    root = tmp_path / "task"
+    init(root)
+    write(root, "a", b"committed")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "seed")
+
+    def denied(*args):
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(snapshots.os, "link", denied)
+    with pytest.raises(PermissionError):
+        capture(tmp_path)
+    assert not (tmp_path / "turn-a/worktree.json").exists()
 
 
 def test_empty_non_git_and_git_init_can_be_undone_and_compensated(tmp_path):

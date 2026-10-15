@@ -1,6 +1,6 @@
 <!-- Workspace creation workflow: step 1 basic info. -->
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { isPathWithinBase, joinWorkspacePath, slugifyWorkspaceDirName } from '@/utils/workspacePath'
 
@@ -40,6 +40,16 @@ const pathScopeError = computed(() => {
 const update = (patch: Partial<WorkspaceBasicInfo>) => {
   emit('update:modelValue', { ...props.modelValue, ...patch })
 }
+
+watch(() => props.workspaceBase, (base, previousBase) => {
+  if (!base?.trim() || pathManuallyEdited.value || !props.modelValue.name.trim()) return
+  const directory = slugifyWorkspaceDirName(props.modelValue.name)
+  const previousPath = previousBase ? joinWorkspacePath(previousBase, directory) : ''
+  const currentPath = props.modelValue.project_path.trim()
+  if (!currentPath || currentPath === previousPath) {
+    update({ project_path: joinWorkspacePath(base, directory) })
+  }
+}, { immediate: true })
 
 const onNameInput = (event: Event) => {
   const name = (event.target as HTMLInputElement).value

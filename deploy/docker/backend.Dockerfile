@@ -15,12 +15,12 @@ RUN sed -i 's|deb.debian.org|mirrors.cloud.tencent.com|g' /etc/apt/sources.list.
     sed -i 's|deb.debian.org|mirrors.cloud.tencent.com|g' /etc/apt/sources.list 2>/dev/null || true
 
 # 运行时依赖：
-#  - git     : 工作区仓库 clone / worktree / skill 的 git 集成
+#  - git / openssh-client : 工作区 clone / worktree；支持挂载 SSH 凭据
 #  - nodejs  : Claude CLI 运行依赖
 #  - curl/ps : 诊断与进程树回收（process_supervisor 用 psutil）
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        git ca-certificates curl procps nodejs npm \
+        git openssh-client ca-certificates curl procps nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Claude CLI（Agent 编排要 spawn 本地子进程）

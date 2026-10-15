@@ -30,6 +30,7 @@ vi.mock('@/utils/runtime', () => ({
 
 vi.mock('@/utils/api', () => ({
   DEFAULT_SERVER_URL: 'http://localhost:8000',
+  getApiServerUrl: vi.fn(() => 'http://localhost:8000'),
   setApiServerUrl: vi.fn(),
 }))
 
