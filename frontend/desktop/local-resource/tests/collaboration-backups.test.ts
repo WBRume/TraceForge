@@ -22,7 +22,7 @@ test('returns no local backups for a cloud-only task without preparing or scanni
   expect(result).toEqual({ backup_directory:'', backup_directories:[], backups:[] })
   expect(fs.existsSync(path.join(runtime.state, 'bindings'))).toBe(false)
   expect(fs.existsSync(path.join(runtime.state, 'operations'))).toBe(false)
-  expect(() => runtime.execute('status', { task_id:'cloud-only-task' })).toThrow('ENOENT')
+  expect(() => runtime.execute('status', { task_id:'cloud-only-task' })).toThrow('COLLABORATION_BINDING_MISSING')
 })
 
 test('does not hide corrupt binding data or invalid task IDs as an empty backup list', () => {

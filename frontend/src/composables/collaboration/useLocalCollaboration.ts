@@ -100,6 +100,17 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }
   const heartbeat = setInterval(() => { void renew().catch(reason => { error.value = formatApiError(reason, t('collaboration.failed')) }) }, 10000)
 
+  function missingBinding(reason: unknown, taskId: string) {
+    const message = String(reason)
+    const missing = /ENOENT\b[^\r\n]*[\\/]collaboration[\\/]bindings[\\/]([^\\/'"\r\n]+)\.json(?:['"]|$)/i.exec(message)
+    return missing?.[1] === taskId || /\bCOLLABORATION_BINDING_MISSING\b/.test(message)
+  }
+  async function readBinding() {
+    const taskId = String(options.task()?.id)
+    try { return await native<LocalCollaborationStatus | null>('binding', { task_id: taskId, optional: true }) }
+    catch (reason) { if (missingBinding(reason, taskId)) return null; throw reason }
+  }
+
   async function loadMappings() {
     const token = generation, wsId = options.workspaceId()
     mappingsDirty = false
@@ -119,8 +130,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       nativeIdentityReady = true
     }
     if (available && !bindingMetadataLoaded) {
-      try { local.value = await native<LocalCollaborationStatus>('binding', { task_id: String(options.task()?.id) }) }
-      catch (reason) { if (!/COLLABORATION_BINDING_MISSING|ENOENT/.test(String(reason))) throw reason }
+      local.value = await readBinding()
       check(token); bindingMetadataLoaded = true
     }
   }
@@ -444,17 +454,14 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     try {
       await loadMappings(); check(token)
       if (state.value.repositories.some(repo => !mappings.value[repo.task_repository_id])) throw new Error(t('collaboration.mappingRequired'))
-      try { local.value = await native<LocalCollaborationStatus>('binding', { task_id: taskId }) } catch (reason) {
-        if (!/COLLABORATION_BINDING_MISSING|ENOENT/.test(String(reason))) throw reason
-      }
+      local.value = await readBinding()
       check(token)
       if (!local.value?.suspended || !local.value.baseline) await inspectMappings(token)
       setStage('enablingCloud')
       const operationKey = `traceforge.collaboration.enable:${options.workspaceId()}:${taskId}`
       const operationId = localStorage.getItem(operationKey) || crypto.randomUUID()
       localStorage.setItem(operationKey, operationId)
-      let previousBindingId = local.value?.binding_id
-      if (!previousBindingId) { try { local.value = await native<LocalCollaborationStatus>('status', { task_id: taskId }); previousBindingId = local.value.binding_id } catch { /* A first-time binding has no local status yet. */ } }
+      const previousBindingId = local.value?.binding_id
       check(token)
       const accepted = await remote().post('enable', { ...identity, operation_id: operationId }); check(token); state.value = accepted
       participating.value = true; receivedOnce.value = false
@@ -482,9 +489,10 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }
 
   async function readText(hash: string): Promise<string> {
-    let data: Uint8Array
-    try { data = base64Bytes((await native<{ content: string }>('read_object', { sha256: hash })).content) }
-    catch { data = new Uint8Array(await remote().object(hash)) }
+    let object: { content: string } | null = null
+    if (available) try { object = await native<{ content: string } | null>('read_object', { sha256: hash, optional: true }) }
+    catch (reason) { if (!/\bLOCAL_CONTENT_OBJECT_MISSING\b/.test(String(reason))) throw reason }
+    const data = object === null ? new Uint8Array(await remote().object(hash)) : base64Bytes(object.content)
     if (data.length > 2 * 1024 * 1024 || data.includes(0)) throw new Error(t('collaboration.binary'))
     return new TextDecoder('utf-8', { fatal: true }).decode(data)
   }
@@ -528,9 +536,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     try { return await native<typeof empty>('backups', { task_id: taskId }) }
     catch (reason) {
       // Older desktop hosts throw ENOENT instead of returning an empty backup list.
-      const message = String(reason)
-      const missing = /ENOENT\b[^\r\n]*[\\/]collaboration[\\/]bindings[\\/]([^\\/'"\r\n]+)\.json(?:['"]|$)/i.exec(message)
-      if (missing?.[1] === taskId || /\bCOLLABORATION_BINDING_MISSING\b/.test(message)) return empty
+      if (missingBinding(reason, taskId)) return empty
       throw reason
     }
   }
@@ -546,7 +552,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     try {
       await loadMappings(); check(token)
       const claimed = await remote().post('claim-driver', { ...identity, operation_id: crypto.randomUUID() }); check(token); state.value = claimed; participating.value = true; receivedOnce.value = false
-      try { local.value = await native<LocalCollaborationStatus>('binding', { task_id: String(options.task()?.id) }) } catch { local.value = null }
+      local.value = await readBinding()
       check(token); await prepareCurrentBinding(token)
       lastTarget = ''; lastProgress = ''; lastLease = 0; leaseRetryAt = 0; deliveryRetryRequired.value = false; error.value = ''
     } catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
@@ -569,7 +575,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       else if (state.value.snapshot_id) {
         if (!['DELIVERY_PENDING', 'CONFLICT_PENDING', 'RECOVERY_REQUIRED'].includes(state.value.sync_phase)) throw new Error(t('collaboration.claimDriverRequired'))
         if (preparationRequired.value || !bindingPrepared(local.value)) {
-          try { local.value = await native<LocalCollaborationStatus>('status', { task_id: String(options.task()?.id) }) } catch { /* Prepare validates and resumes only the owned binding. */ }
+          local.value = await readBinding()
           check(token); await prepareCurrentBinding(token)
         }
         lastTarget = ''; await reconcile(await snapshot(state.value.snapshot_id), token)
@@ -604,7 +610,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }
   async function resumeForDownload(token: number) {
     await loadMappings(); check(token)
-    try { local.value = await native<LocalCollaborationStatus>('binding', { task_id: String(options.task()?.id) }) } catch { local.value = null }
+    local.value = await readBinding()
     check(token)
     const repositories = local.value?.baseline && local.value?.directory_mode === 'MAPPED' ? mappedRepositories() : await inspectMappings(token)
     local.value = await native<LocalCollaborationStatus>('prepare', { ...state.value, task_id: String(options.task()?.id),
