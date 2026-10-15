@@ -8,7 +8,7 @@ import pytest
 
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import store as job_store
-from app.domains.auth.models.user import User, Workspace
+from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
 from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.session_turn import TaskSessionTurn
 from app.domains.task.models.task import SddTask, TaskStatus, TaskType
@@ -23,6 +23,7 @@ from app.domains.workspace_collaboration.models import CollaborationSnapshot, Co
 def collaboration_db(db):
     db.add(User(id="u", email="collaboration-execution@test.local", hashed_password="x", display_name="User"))
     db.add(Workspace(id="w", name="Workspace", owner_id="u"))
+    db.add(WorkspaceMember(workspace_id="w", user_id="u", role=WorkspaceRole.OWNER))
     task = SddTask(
         id="t",
         workspace_id="w",

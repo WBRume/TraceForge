@@ -207,6 +207,7 @@ def _prepare_chat_turn_sync(
     session_id: str | None,
     fresh_session: bool,
     submission_id: str | None = None,
+    initialization_id: str | None = None,
 ) -> dict[str, Any]:
     """回合准备段（线程内执行）：活跃 job 互斥 + generation/revision 推进 + backend 解析。
 
@@ -219,7 +220,7 @@ def _prepare_chat_turn_sync(
         raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
     from app.domains.task.services.chat_submission_service import assert_no_preparing_submission
 
-    assert_no_preparing_submission(db, task_id, allowed_id=submission_id)
+    assert_no_preparing_submission(db, task_id, allowed_id=submission_id, initialization_id=initialization_id)
     active_job = (
         db.query(SddAiJob)
         .filter(
@@ -295,6 +296,7 @@ def _prepare_chat_turn_sync(
         "revision": int(task.session_revision),
         "provider": provider,
         "provider_session_id": provider_session_id,
+        "initialization_id": initialization_id,
     }
 
 
@@ -404,6 +406,7 @@ def _persist_chat_turn_sync(
         commit=False,
     )
     turn.ai_job_id = job.id
+    _complete_initialization(task, prepared, job.id, checkpoint_root)
     if metadata.get("_collaboration_control") and metadata.get("pre_input_id"):
         from app.domains.task.models.pre_input import SddTaskPreInput
 
@@ -458,6 +461,13 @@ def _persist_chat_turn_sync(
     )
 
 
+def _complete_initialization(task, prepared, job_id, checkpoint):
+    if prepared.get("initialization_id"):
+        from app.domains.task.services.initialization.state import complete_with_turn
+
+        complete_with_turn(task, prepared["initialization_id"], job_id, checkpoint)
+
+
 async def create_task_chat_turn(
     *,
     task_id: str,
@@ -469,6 +479,7 @@ async def create_task_chat_turn(
     fresh_session: bool = False,
     client_message_id: str | None = None,
     skip_checkpoint: bool = False,
+    initialization_id: str | None = None,
 ) -> CreatedChatTurn:
     """Create one user message/job and, unless skipped, its pre-turn checkpoints.
 
@@ -495,6 +506,7 @@ async def create_task_chat_turn(
             session_id=session_id,
             fresh_session=fresh_session,
             submission_id=(context_json or {}).get("submission_id"),
+            initialization_id=initialization_id,
         )
     )
     prepared["actor_user_id"] = str(actor_user_id)
@@ -539,6 +551,15 @@ async def create_task_chat_turn(
             except Exception:
                 # A lost database response is not proof that commit failed.
                 # Preserve the checkpoint until the durable job can be recovered.
+                committed_or_unknown = True
+        if initialization_id:
+            from app.domains.task.services.initialization.state import current
+
+            try:
+                committed_or_unknown = await run_db_txn(
+                    lambda db: bool(current(db.get(SddTask, task_id)).get("job_id"))
+                )
+            except Exception:
                 committed_or_unknown = True
         if checkpoint_root and not committed_or_unknown:
             try:

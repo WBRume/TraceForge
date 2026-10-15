@@ -574,8 +574,6 @@ async def resume_interrupted_task(
 
     now = datetime.utcnow()
 
-    from app.domains.task.services import task_session_service
-
     message_metadata = dict(metadata_json) if isinstance(metadata_json, dict) else {}
     created = await task_session_service.create_task_chat_turn(
         task_id=task_id,
@@ -877,6 +875,7 @@ def apply_initialize_sync(
     requested_prompt: str | None = None,
     actor_user_id: str | None = None,
     reason: str | None = None,
+    initialization_id: str | None = None,
 ) -> dict[str, Any]:
     """替换 Skills、推进 session_generation、重置状态并组装首条 prompt（单事务，锁内调用）。"""
     task = task_task_records_queries.get_task(db, task_id, ws_id)
@@ -904,6 +903,20 @@ def apply_initialize_sync(
     task.interrupt_reason = None
     task.interrupted_by_id = None
     task.interrupted_at = None
+    if initialization_id:
+        from app.domains.task.services.initialization import state as initialization
+
+        operation = initialization.current(task)
+        if operation.get("id") != initialization_id:
+            raise initialization.InitializationError("初始化操作已变化。")
+        task.session_generation = operation["generation"]
+        task.task_meta_json = {
+            **(task.task_meta_json or {}),
+            "repository_update": None,
+            "repository_baselines": {repo["id"]: repo["target"] for repo in operation["repositories"]},
+            "repository_update_revision": int(task.session_revision or 0) + 1,
+            "initialization": {**operation, "state": "STARTING", "error": None},
+        }
     prompts = build_session_prompt(task, requested_prompt)
     from app.domains.workspace_collaboration import control as collaboration_control
     from app.domains.workspace_collaboration import service as collaboration
@@ -946,78 +959,23 @@ async def initialize_task_session(
     keep_deleted_runtime_skills: bool = True,
     requested_prompt: str | None = None,
     reason: str | None = None,
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
-    """重新初始化任务会话（POST /initialize 业务编排；调用方已持有任务锁）。
-
-    取消在途作业并广播 → 停旧引擎 → 恢复 attempt → 换装 Skills / 推进代际
-    → 落 init_reason 消息 → 创建新会话 turn → 入队执行。
-    """
-    run_txn = _bind_txn_runner(db, _session_bind(db))
-    await run_txn(lambda session: _require_local_actor(session, task_id, actor_user_id))
-    prepared = await run_txn(
-        lambda session: prepare_initialize_sync(session, ws_id=ws_id, task_id=task_id, actor_user_id=actor_user_id)
-    )
-    engine = get_engine(task_id)
-    if engine:
-        try:
-            await engine.stop()
-        except Exception as exc:
-            logger.exception("Failed to stop old engine before initialization: task_id={}", task_id)
-            raise TaskSessionControlError("旧引擎尚未停止，请稍后重试初始化；原会话已保留。", status_code=409) from exc
-    for old_job_id in prepared["cancelled_job_ids"]:
-        await ai_job_publishing.publish_job(old_job_id)
-
-    from app.domains.task.services.task_attempt_recovery_service import recover_task_attempts
-
-    await recover_task_attempts(task_id, run_txn=run_txn, wait_for_running=True)
+    """Restart code and provider context as one recoverable initialization."""
+    from app.domains.task.services.initialization.service import initialize
+    from app.domains.task.services.initialization.state import InitializationError
 
     try:
-        state = await run_txn(
-            lambda session: apply_initialize_sync(
-                session,
-                ws_id=ws_id,
-                task_id=task_id,
-                skill_ids=skill_ids,
-                keep_deleted_runtime_skills=keep_deleted_runtime_skills,
-                requested_prompt=requested_prompt,
-                actor_user_id=actor_user_id,
-                reason=reason,
-            )
+        return await initialize(
+            db,
+            ws_id=ws_id,
+            task_id=task_id,
+            actor_user_id=actor_user_id,
+            operation_id=operation_id,
+            skill_ids=skill_ids,
+            keep_deleted_runtime_skills=keep_deleted_runtime_skills,
+            requested_prompt=requested_prompt,
+            reason=reason,
         )
-    except ValueError as exc:
-        raise TaskSessionControlError(str(exc), status_code=int(getattr(exc, "status_code", 400))) from exc
-
-    init_reason_text = str(reason or "").strip()
-    # 同步落库 off-loop（线程内自建 session，含通知生成）
-    await run_txn(
-        lambda session: task_conversation_messages.save_chat_message(
-            session,
-            task_id,
-            ws_id,
-            actor_user_id,
-            role="system",
-            content=init_reason_text,
-            message_type="init_reason",
-        )
-    )
-    from app.domains.workspace_collaboration import control as collaboration_control
-
-    receipt = state.get("submission")
-    if receipt:
-        await collaboration_control.schedule_control(receipt)
-        return {"msg": "正在准备本轮会话", "job": None, "submission": receipt}
-    created = await task_session_service.create_task_chat_turn(
-        task_id=task_id,
-        actor_user_id=actor_user_id,
-        content=state["user_display"],
-        prompt_text=state["prompt"],
-        context_json={
-            "source": "task_initialize",
-            "fresh_session": True,
-            "initialize_reason": init_reason_text,
-        },
-        fresh_session=True,
-    )
-    await ai_job_publishing.enqueue_task_chat_job(created.job_id)
-    job_payload = await run_txn(lambda session: _serialize_job_by_id_sync(session, created.job_id))
-    return {"msg": "Task initialized", "job": job_payload}
+    except InitializationError as exc:
+        raise TaskSessionControlError(str(exc), status_code=exc.status_code) from exc

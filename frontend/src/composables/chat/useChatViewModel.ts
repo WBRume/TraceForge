@@ -1104,6 +1104,7 @@ export function useChatViewModel() {
     showInitReasonModal: startActions.showInitReasonModal,
     initPrompt: startActions.initPrompt,
     initReason: startActions.initReason,
+    initRecoveryPending: startActions.initRecoveryPending,
     initSkillOptions: startActions.initSkillOptions,
     initSkillOptionsLoading: startActions.initSkillOptionsLoading,
     initSelectedSkillIds: startActions.initSelectedSkillIds,

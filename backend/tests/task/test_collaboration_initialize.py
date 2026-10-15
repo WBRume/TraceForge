@@ -1,4 +1,4 @@
-"""Initialize uses the current actor's input and commits acceptance with the reset."""
+"""Initialization fences old local input and publishes only the clean baseline."""
 
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -12,28 +12,39 @@ from sqlalchemy.orm import sessionmaker
 from app import database
 from app.dependencies import get_current_user, get_db
 from app.domains.ai.models.ai_job import SddAiJob
-from app.domains.auth.models.user import User, WorkspaceMember, WorkspaceRole
+from app.domains.ai.services.jobs import publishing
+from app.domains.auth.models.user import User
 from app.domains.notification.models.task_awareness import TaskAwarenessEvent
-from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.models.task_repository import SddTaskRepository
 from app.domains.task.routers.task import session_runs
-from app.domains.task.services import chat_submission_service as submissions
 from app.domains.task.services import task_session_control_service as lifecycle
 from app.domains.task.services import task_session_service
+from app.domains.task.services.repository_updates.git import git
 from app.domains.workspace_collaboration import control
 from app.domains.workspace_collaboration.models import CollaborationState
 from tests.task.test_collaboration_execution import collaboration_db as collaboration_db
 
 
 @pytest.fixture
-def initialize_api(collaboration_db, monkeypatch):
+def initialize_api(collaboration_db, monkeypatch, tmp_path):
     db = collaboration_db
     db.add(User(id="other", email="initialize-other@test.local", hashed_password="x", display_name="Other"))
-    db.add(WorkspaceMember(workspace_id="w", user_id="u", role=WorkspaceRole.OWNER))
     task = db.get(SddTask, "t")
     task.session_id = "previous-session"
     task.status = TaskStatus.INTERRUPTED
+    root = tmp_path / "task"
+    root.mkdir()
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    git(upstream, "init", "-b", "release/2.x")
+    (upstream / "base.txt").write_text("base")
+    git(upstream, "add", ".")
+    git(upstream, "commit", "-m", "base")
+    git(tmp_path, "clone", str(upstream), str(root / "api"))
+    task.project_path = str(root)
+    db.get(SddTaskRepository, "api").repo_url = str(upstream)
     # A different task's failed preparation must not block this task or be reset.
     db.add(
         SddTask(
@@ -68,6 +79,13 @@ def initialize_api(collaboration_db, monkeypatch):
     monkeypatch.setattr(lifecycle, "get_engine", lambda _: None)
     scheduled = AsyncMock()
     monkeypatch.setattr(control, "schedule_control", scheduled)
+    monkeypatch.setattr(publishing, "enqueue_task_chat_job", scheduled)
+    monkeypatch.setattr("app.agents.selection.resolve_task_backend", lambda *_: "opencode")
+    monkeypatch.setattr(
+        task_session_service.task_session_snapshot_service,
+        "create_checkpoint",
+        AsyncMock(return_value={"root": str(tmp_path / "checkpoint")}),
+    )
 
     def get_session():
         with sessions() as session:
@@ -105,29 +123,17 @@ async def test_initialize_only_waits_for_its_connected_driver(initialize_api, dr
         scheduled.assert_not_awaited()
         return
     assert response.status_code == 200, response.text
-    receipt_id = response.json()["submission"]["id"]
     db.expire_all()
-    task, row = db.get(SddTask, "t"), db.get(TaskChatSubmission, receipt_id)
-    local = driver == "u" and connected
-    assert task.session_generation == state.session_generation == row.session_generation == 2
+    task = db.get(SddTask, "t")
+    job = db.get(SddAiJob, response.json()["job"]["id"])
+    assert task.session_generation == job.session_generation == 2
     assert task.session_id is None
-    assert ("collaboration" in row.metadata_json) is local
-    prepared = submissions._load_preparation(db, row.id)
-    assert (prepared is None) is local
-    if prepared:
-        assert prepared["fresh_session"] is True
-        assert prepared["prompt_text"] == "Check cloud code"
-        assert prepared["context_json"]["initialize_reason"] == "Retry"
-        assert state.input_snapshot_id == "input"
-    assert identity == (
-        state.driver_user_id,
-        state.client_id,
-        state.instance_id,
-        state.lease_epoch,
-        state.lease_expires_at,
-    )
-    assert db.query(SddAiJob).count() == 0
-    assert db.query(ChatMessage).filter_by(message_type="init_reason").count() == 1
+    assert job.session_id is None and job.context_json["fresh_session"] is True
+    assert job.prompt_text == "Check cloud code"
+    assert not state.enabled and state.input_snapshot_id is None
+    assert state.lease_epoch > identity[3] and state.binding_id != "binding"
+    assert db.query(SddAiJob).count() == 1
+    assert db.query(TaskChatSubmission).filter_by(task_id="t").count() == 0
     assert db.query(TaskAwarenessEvent).filter_by(event_type="TASK_INITIALIZED").count() == 1
     assert db.get(TaskChatSubmission, "other-pending").status == "PREPARING"
     assert db.get(SddTask, "unrelated").session_generation == 8
@@ -135,33 +141,19 @@ async def test_initialize_only_waits_for_its_connected_driver(initialize_api, dr
 
 
 @pytest.mark.asyncio
-async def test_rejected_input_rolls_back_reset_and_can_retry(initialize_api):
+async def test_old_input_is_discarded_even_if_its_digest_is_invalid(initialize_api):
     app, db, scheduled = initialize_api
     state = db.get(CollaborationState, "t")
-    state.driver_user_id = "other"
-    digest = state.repository_set_digest
-    state.repository_set_digest = "invalid"
+    state.repository_set_digest = "invalid-old-input"
     db.commit()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        rejected = await client.post("/api/workspaces/w/tasks/t/initialize", json={"prompt": "retry"})
-        assert rejected.status_code == 409, rejected.text
-        db.expire_all()
-        task = db.get(SddTask, "t")
-        assert task.session_id == "previous-session"
-        assert task.session_generation == state.session_generation == 1
-        assert task.status == TaskStatus.INTERRUPTED
-        assert state.sync_phase == "READY" and state.pending_submission_id is None
-        assert db.query(TaskChatSubmission).filter_by(task_id="t").count() == 0
-        assert db.query(TaskAwarenessEvent).filter_by(event_type="TASK_INITIALIZED").count() == 0
-        assert db.query(ChatMessage).filter_by(task_id="t").count() == 0
-        scheduled.assert_not_awaited()
-        state.repository_set_digest = digest
-        db.commit()
-        retried = await client.post("/api/workspaces/w/tasks/t/initialize", json={"prompt": "retry"})
-        assert retried.status_code == 200, retried.text
+        result = await client.post("/api/workspaces/w/tasks/t/initialize", json={"prompt": "retry"})
+        assert result.status_code == 200, result.text
     db.expire_all()
+    assert not state.enabled and state.input_snapshot_id is None
     assert db.get(SddTask, "t").session_generation == 2
-    assert submissions._load_preparation(db, retried.json()["submission"]["id"]) is not None
+    assert db.query(TaskChatSubmission).filter_by(task_id="t").count() == 0
+    scheduled.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -184,31 +176,24 @@ async def test_initialize_keeps_server_write_barriers(initialize_api, phase):
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_failure_finishes_receipt_and_allows_next_initialize(initialize_api, monkeypatch):
-    app, db, _ = initialize_api
-    state = db.get(CollaborationState, "t")
-    state.driver_user_id = "other"
-    state.lease_expires_at = datetime.utcnow() - timedelta(days=1)
-    db.commit()
-    monkeypatch.setattr("app.agents.selection.resolve_task_backend", lambda *_: "opencode")
-    capture = AsyncMock(side_effect=FileNotFoundError("deleted checkpoint"))
+async def test_checkpoint_failure_resumes_same_operation_and_generation(initialize_api, monkeypatch):
+    app, db, scheduled = initialize_api
+    capture = AsyncMock(side_effect=[FileNotFoundError("deleted checkpoint"), {"root": "clean-checkpoint"}])
     monkeypatch.setattr(task_session_service.task_session_snapshot_service, "create_checkpoint", capture)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post("/api/workspaces/w/tasks/t/initialize", json={"prompt": "failed round"})
-        assert response.status_code == 200, response.text
-        receipt_id = response.json()["submission"]["id"]
-        await submissions._run(receipt_id)
-        db.expire_all()
-        failed = db.get(TaskChatSubmission, receipt_id)
-        assert failed.status == "FAILED" and failed.active_task_id is None
-        assert failed.ai_job_id is None and failed.chat_message_id is None
-        assert state.sync_phase == "READY" and state.pending_submission_id is None
-        assert db.query(SddAiJob).count() == 0
-        assert db.query(ChatMessage).filter_by(task_id="t", role="user").count() == 0
-        capture.assert_awaited_once()
-        retried = await client.post("/api/workspaces/w/tasks/t/initialize", json={"prompt": "next round"})
+        response = await client.post(
+            "/api/workspaces/w/tasks/t/initialize", json={"prompt": "original round", "operation_id": "operation-test"}
+        )
+        assert response.status_code == 409, response.text
+        status = (await client.get("/api/workspaces/w/tasks/t/initialize")).json()["operation"]
+        assert status["id"] == "operation-test" and status["state"] == "STARTING"
+        assert "roots" not in status and "url" not in status["repositories"][0]
+        retried = await client.post(
+            "/api/workspaces/w/tasks/t/initialize", json={"prompt": "changed round", "operation_id": status["id"]}
+        )
         assert retried.status_code == 200, retried.text
     db.expire_all()
-    assert db.get(SddTask, "t").session_generation == 3
-    assert submissions._load_preparation(db, retried.json()["submission"]["id"])["content"] == "next round"
-    assert db.get(TaskChatSubmission, receipt_id).status == "FAILED"
+    assert db.get(SddTask, "t").session_generation == 2
+    assert db.query(SddAiJob).count() == 1
+    assert db.query(SddAiJob).one().prompt_text == "original round"
+    scheduled.assert_awaited_once()
