@@ -201,6 +201,7 @@ def create_task_worktree(
     task_project_path: str,
     expected_git_repo_url: str | None = None,
     checkout_details: dict | None = None,
+    checkout: bool = True,
 ) -> str:
     abs_repo_path = _to_abs_path(repo_path, label="repo_path")
     abs_task_path = _to_abs_path(task_project_path, label="task_project_path")
@@ -232,8 +233,10 @@ def create_task_worktree(
     branch_source = (
         f"origin/{base_branch}" if _remote_branch_exists(abs_repo_path, f"origin/{base_branch}") else base_branch
     )
+    if not checkout:
+        branch_source = _run_git_checked(["rev-parse", f"{branch_source}^{{commit}}"], cwd=abs_repo_path)
     _run_git_checked(
-        ["worktree", "add", "-b", task_branch, abs_task_path, branch_source],
+        ["worktree", "add", *([] if checkout else ["--no-checkout"]), "-b", task_branch, abs_task_path, branch_source],
         cwd=abs_repo_path,
         status_code=409,
     )
@@ -531,6 +534,7 @@ def create_task_worktrees(
     base_bindings: list,
     task_root: str,
     task_id: str,
+    checkout: bool = True,
 ) -> list:
     """Create one worktree per repository binding; roll back all on failure.
 
@@ -580,8 +584,18 @@ def create_task_worktrees(
                 )
 
             os.makedirs(os.path.dirname(abs_task), exist_ok=True)
+            if not checkout:
+                branch_source = _run_git_checked(["rev-parse", f"{branch_source}^{{commit}}"], cwd=abs_repo)
             _run_git_checked(
-                ["worktree", "add", "-b", task_branch, abs_task, branch_source],
+                [
+                    "worktree",
+                    "add",
+                    *([] if checkout else ["--no-checkout"]),
+                    "-b",
+                    task_branch,
+                    abs_task,
+                    branch_source,
+                ],
                 cwd=abs_repo,
                 status_code=409,
             )
@@ -604,6 +618,29 @@ def create_task_worktrees(
         raise
 
     return [task_branch] * len(normalized_bindings)
+
+
+def checkout_registered_worktree(*, repo_path: str, task_path: str, task_id: str, sha: str) -> None:
+    """Materialize a newly registered worktree, without consulting a moving remote ref.
+
+    The caller must own the provisioning lock for this task. Never use this on
+    a ready task: forced checkout is limited to its initial file materialization.
+    """
+
+    def common_dir(path: str) -> str:
+        value = _run_git_checked(["rev-parse", "--git-common-dir"], cwd=path)
+        return os.path.normcase(os.path.realpath(os.path.join(path, value)))
+
+    branch = _run_git_checked(["symbolic-ref", "--short", "HEAD"], cwd=task_path)
+    if common_dir(repo_path) != common_dir(task_path) or branch != task_branch_name(task_id):
+        raise GitWorktreeError("Registered worktree ownership has changed", status_code=409)
+    if not sha or read_repo_head_sha(task_path) != sha:
+        raise GitWorktreeError("Registered worktree HEAD differs from its pinned commit", status_code=409)
+    # Use checkout so ordinary checkout filters and post-checkout hooks still
+    # run, outside the baseline lock. The task branch already points at sha.
+    _run_git_checked(["checkout", "--force", branch, "--"], cwd=task_path, status_code=409)
+    if read_repo_head_sha(task_path) != sha:
+        raise GitWorktreeError("Checkout changed the pinned task commit", status_code=409)
 
 
 def remove_task_worktrees(

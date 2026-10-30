@@ -4,6 +4,7 @@ Provision job orchestration service.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.distributed_lock import (
     LockAcquireTimeout,
     QueueWaitCancelled,
+    lock_task_bootstrap,
     lock_workspace_repo,
     lock_workspace_repo_creation,
     queue_provision_jobs,
@@ -25,6 +27,7 @@ from app.domains.local_resource.client import ResourceError
 from app.domains.skill.services.packages import github as skill_packages_github
 from app.domains.task.services import git_worktree_service
 from app.domains.task.services.provisioning import resources as task_provisioning_resources
+from app.domains.task.services.provisioning.offload import run_provision_io
 from app.domains.task.services.provisioning.resources import ProvisionJobCancelled
 from app.domains.workflow.models.provision_job import (
     ProvisionJobStatus,
@@ -546,6 +549,23 @@ def _prepare_task_sync(*, workspace_id: str, task_id: str, job_id: str = "") -> 
         db.close()
 
 
+def _register_task_sync(*, workspace_id: str, task_id: str, job_id: str) -> None:
+    from app.domains.task.services.provisioning.worktrees import register_worktrees
+
+    _ensure_not_cancelled(job_id)
+    with SessionLocal() as db:
+        register_worktrees(db, workspace_id=workspace_id, task_id=task_id)
+
+
+def _task_is_local(task_id: str) -> bool:
+    from app.domains.local_resource.service import is_local
+    from app.domains.task.models.task import SddTask
+
+    with SessionLocal() as db:
+        task = db.get(SddTask, task_id)
+        return bool(task and is_local(task))
+
+
 def _import_skill_sync(*, creator_id: str, context: dict[str, Any]) -> dict[str, Any]:
     db = SessionLocal()
     try:
@@ -593,27 +613,32 @@ def _rollback_provision_task_sync(*, workspace_id: str, task_id: str) -> None:
         db.close()
 
 
-async def _rollback_task_resources(*, workspace_id: str, task_id: str) -> None:
+async def _rollback_task_resources(*, workspace_id: str, task_id: str, job_id: str = "") -> None:
     """任务创建失败/被取消后的终局回滚：清理磁盘资源并删除任务记录。
 
-    失败/取消发生时仓库锁已被释放，这里重新获取（best-effort）以保证
-    worktree 操作与其它任务创建互斥；拿不到锁时退化为无锁清理
-    （remove_task_worktree 只触碰 task/<task_id> 专属分支与目录，missing_ok）。
+    失败/取消发生时仓库锁已被释放，重新获取后才注销 worktree。
+    本地任务的注册/删除互斥由桌面资源服务负责。
     """
-    use_repo_lock = _workspace_uses_git(workspace_id)
+    use_repo_lock = _workspace_uses_git(workspace_id) and not _task_is_local(task_id)
     if not use_repo_lock:
-        await run_git_job(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
+        await run_provision_io(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
         return
-    try:
-        async with lock_workspace_repo(workspace_id):
-            await run_git_job(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
-    except LockAcquireTimeout:
-        task_logger.warning(
-            "Task provision rollback skipped repo lock (busy): workspace_id={}, task_id={}",
-            workspace_id,
-            task_id,
-        )
-        await run_git_job(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
+    while True:
+        try:
+            async with lock_workspace_repo(workspace_id):
+                await run_provision_io(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
+            return
+        except LockAcquireTimeout:
+            # Another task may now be fetching under the registration lock.
+            # Keep ownership of this task and wait; the normal 5s lock timeout
+            # must neither abandon cleanup nor trigger an unlocked removal.
+            if job_id:
+                mark_progress(
+                    job_id,
+                    stage="CANCELLING",
+                    progress=95,
+                    message="等待仓库操作结束后清理未完成的任务",
+                )
 
 
 def _workspace_uses_git(workspace_id: str) -> bool:
@@ -818,13 +843,31 @@ def _mark_job_cancelled(job_id: str) -> None:
 
 async def run_create_task_job(job_id: str) -> None:
     payload = _get_job_payload(job_id)
+    if not payload or not payload.get("task_id"):
+        return
+    # Separate from the agent task lock: other flows acquire workspace -> task.
+    # A duplicate dispatcher must never compensate another dispatcher's files.
+    try:
+        async with lock_task_bootstrap(str(payload["task_id"])):
+            current = _get_job_payload(job_id)
+            if not current or current["status"] == "SUCCESS":
+                return
+            if current["status"] == "FAILED" and current["stage"] != "RESOURCE_UNAVAILABLE":
+                return
+            await _run_create_task_job(job_id)
+    except LockAcquireTimeout:
+        task_logger.warning("Task creation already owned or lock lost: job_id={}", job_id)
+
+
+async def _run_create_task_job(job_id: str) -> None:
+    payload = _get_job_payload(job_id)
     if not payload:
         return
 
     creator_id = str(payload.get("creator_id") or "").strip()
     workspace_id = str(payload.get("workspace_id") or "").strip()
     task_id = str(payload.get("task_id") or "").strip()
-    use_repo_lock = _workspace_uses_git(workspace_id)
+    use_repo_lock = _workspace_uses_git(workspace_id) and not _task_is_local(task_id)
 
     # 排队等待期间也要响应取消：否则 job 会卡在队列里直到等待超时，
     # 用户点击取消没有任何效果（旧实现的“无法取消任务”）。
@@ -857,14 +900,19 @@ async def run_create_task_job(job_id: str) -> None:
                                 job_id,
                                 stage="PREPARING_WORKTREE",
                                 progress=40,
-                                message="Preparing repository worktree",
+                                message="刷新基线并登记固定提交的任务目录",
                             )
-                            result = await run_git_job(
-                                _prepare_task_sync,
+                            await run_provision_io(
+                                _register_task_sync,
                                 workspace_id=workspace_id,
                                 task_id=task_id,
                                 job_id=job_id,
                             )
+                    _ensure_not_cancelled(job_id)
+                    mark_progress(job_id, stage="PREPARING_WORKTREE", progress=55, message="检出任务文件")
+                    result = await run_provision_io(
+                        _prepare_task_sync, workspace_id=workspace_id, task_id=task_id, job_id=job_id
+                    )
                 else:
                     mark_progress(
                         job_id,
@@ -872,7 +920,7 @@ async def run_create_task_job(job_id: str) -> None:
                         progress=35,
                         message="Preparing local workspace",
                     )
-                    result = await run_git_job(
+                    result = await run_provision_io(
                         _prepare_task_sync,
                         workspace_id=workspace_id,
                         task_id=task_id,
@@ -897,8 +945,14 @@ async def run_create_task_job(job_id: str) -> None:
                 workspace_id=workspace_id,
                 job_id=job_id,
             )
+        except asyncio.CancelledError:
+            # Worker completion precedes cleanup; a cancelled executor future
+            # must never race removal against a still-running checkout.
+            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id, job_id=job_id)
+            _mark_job_cancelled(job_id)
+            raise
         except (ProvisionJobCancelled, QueueWaitCancelled):
-            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id)
+            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id, job_id=job_id)
             _mark_job_cancelled(job_id)
             audit_log(
                 action="create_task",
@@ -916,7 +970,7 @@ async def run_create_task_job(job_id: str) -> None:
             else:
                 err = "Workspace repository is busy. Please retry later."
             # Do not expose retry until the previous task's cleanup has finished.
-            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id)
+            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id, job_id=job_id)
             mark_failed(
                 job_id,
                 stage="FAILED",
@@ -951,7 +1005,7 @@ async def run_create_task_job(job_id: str) -> None:
                 error_message=str(exc),
             )
         except Exception as exc:
-            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id)
+            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id, job_id=job_id)
             mark_failed(
                 job_id,
                 stage="FAILED",

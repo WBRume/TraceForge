@@ -942,6 +942,17 @@ def delete_workspace(db: Session, workspace_id: str) -> bool:
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
         return False
+    from app.domains.task.models.task import SddTask, TaskStatus
+
+    # A locking read sees newly registered tasks even if the request's earlier
+    # permission queries established a MySQL REPEATABLE READ snapshot.
+    if (
+        db.query(SddTask.id)
+        .filter_by(workspace_id=workspace_id, status=TaskStatus.PROVISIONING)
+        .with_for_update()
+        .first()
+    ):
+        raise ValueError("工作区有正在准备的任务，请先取消创建并等待清理完成")
 
     original_project_path = str(ws.project_path or "").strip()
     configured_remote = str(ws.git_repo_url or "").strip()

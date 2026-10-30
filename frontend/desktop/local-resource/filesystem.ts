@@ -90,7 +90,7 @@ export function readCommitInfo(cwd: string, sha: string): GitCommitInfo | undefi
     return { sha: commitSha!, author_name: author_name!, author_email: author_email!, authored_at: authored_at!, committer_name: committer_name!, committer_email: committer_email!, committed_at: committed_at!, message: message.join('\0') }
   } catch { return undefined }
 }
-export interface BoundRepository extends Repository { base_commit_sha: string; base_commit?: GitCommitInfo; task_branch: string; repo_root: string }
+export interface BoundRepository extends Repository { base_commit_sha: string; base_commit?: GitCommitInfo; task_branch: string; repo_root: string; files_ready?: boolean }
 export interface Receipt { task_id: string; task_root: string; repositories_input: Repository[]; repositories: BoundRepository[] }
 export function remoteKey(value: string) {
   const scp = /^[^@/]+@([^:/]+):(.+)$/.exec(value.trim().replace(/\/$/, ''))
@@ -111,7 +111,7 @@ export function inspectRepo(localPath: string, configuredUrl: string, roots: str
   if (['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'index.lock'].some(marker => fs.existsSync(path.join(gitDir, marker)))) fail('REPOSITORY_BUSY')
   return { repo_root: actual, common_git_dir: common, matched_remote: matched!.name, remotes, head_sha: git(actual, 'rev-parse', '--verify', 'HEAD'), dirty: !!gitRaw(actual, ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], { GIT_OPTIONAL_LOCKS: '0' }).length }
 }
-export function provision(root: string, taskId: string, repos: Repository[], roots: string[], manifestFile: string): Receipt {
+export function provision(root: string, taskId: string, repos: Repository[], roots: string[], manifestFile: string, checkout = true): Receipt {
   let receipt: Receipt
   if (fs.existsSync(manifestFile)) {
     receipt = readJson(manifestFile)
@@ -133,8 +133,28 @@ export function provision(root: string, taskId: string, repos: Repository[], roo
     if (fs.existsSync(target)) {
       if (git(target, 'branch', '--show-current') !== branch || resolved(path.resolve(target, git(target, 'rev-parse', '--git-common-dir'))) !== info.common_git_dir) fail('WORKTREE_OWNERSHIP_CONFLICT')
       sha = git(target, 'rev-parse', 'HEAD')
-    } else git(info.repo_root, 'worktree', 'add', '-b', branch, target, sha)
-    receipt.repositories.push({ ...repo, base_commit_sha: sha, base_commit: readCommitInfo(target, sha), task_branch: branch, repo_root: info.repo_root })
+    } else git(info.repo_root, 'worktree', 'add', '--no-checkout', '-b', branch, target, sha)
+    receipt.repositories.push({ ...repo, base_commit_sha: sha, base_commit: readCommitInfo(target, sha), task_branch: branch, repo_root: info.repo_root, files_ready: false })
+    writeJson(manifestFile, receipt)
+  }
+  if (checkout) return checkoutProvision(root, taskId, repos, roots, manifestFile)
+  return receipt
+}
+
+export function checkoutProvision(root: string, taskId: string, repos: Repository[], roots: string[], manifestFile: string): Receipt {
+  const receipt = readJson<Receipt>(manifestFile)
+  if (receipt.task_id !== taskId || receipt.task_root !== root || JSON.stringify(receipt.repositories_input) !== JSON.stringify(repos)
+    || receipt.repositories.length !== repos.length) fail('TASK_BINDING_CONFLICT')
+  for (const repo of receipt.repositories) {
+    // Receipts from older clients describe an already materialized worktree.
+    if (repo.files_ready !== false) continue
+    const target = child(inside(root, roots), repo.rel_path)
+    const common = (directory: string) => resolved(path.resolve(directory, git(directory, 'rev-parse', '--git-common-dir')))
+    if (git(target, 'branch', '--show-current') !== repo.task_branch || common(target) !== common(inside(repo.repo_root, roots))
+      || git(target, 'rev-parse', 'HEAD') !== repo.base_commit_sha) fail('WORKTREE_OWNERSHIP_CONFLICT')
+    git(target, 'checkout', '--force', repo.task_branch, '--')
+    if (git(target, 'rev-parse', 'HEAD') !== repo.base_commit_sha) fail('WORKTREE_PINNED_COMMIT_CHANGED')
+    repo.files_ready = true
     writeJson(manifestFile, receipt)
   }
   return receipt

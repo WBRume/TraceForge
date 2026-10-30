@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { platform, type JournalDatabase } from './platform'
-import { child, fail, git, hash, inside, inspectRepo, provision, readCommitInfo, readJson, writeFiles, type Receipt } from './filesystem'
+import { child, checkoutProvision, fail, git, hash, inside, inspectRepo, provision, readCommitInfo, readJson, writeFiles, type Receipt } from './filesystem'
 import { applyPatches, generatePatches } from './patches'
 import { skills } from './content'
 import { documents } from './plan-documents'
@@ -41,7 +41,7 @@ export class Runtime {
     inside(payload.workspace_root, this.roots)
     return { repositories: (payload.repositories || []).map((repo: any) => ({ ...repo, ...inspectRepo(repo.local_path, repo.configured_git_url, this.roots) })) }
   }
-  operation(command: Operation) {
+  operation(command: Operation, phase: 'all' | 'register' | 'checkout' = 'all') {
     for (const value of [command.operation_id, command.task_id, command.resource_id]) if (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(value)) fail('INVALID_OPERATION_ID')
     const { payload_hash, ...content } = command
     const digest = hash(canonical(content))
@@ -53,7 +53,8 @@ export class Runtime {
       if (!['provision', 'release', 'initialize'].includes(command.kind)) fail('EXECUTION_UNKNOWN: 操作结果未知，请对账后重试')
     } else this.db.query('INSERT INTO operations VALUES (?,?,?,NULL)').run(command.operation_id, digest, 'RUNNING')
     try {
-      const result = this.execute(command)
+      const result = this.execute(command, phase)
+      if (phase === 'register') return { state: 'RUNNING', result }
       this.db.query("UPDATE operations SET state='SUCCEEDED',result=? WHERE id=?").run(JSON.stringify(result), command.operation_id)
       return { state: 'SUCCEEDED', result }
     } catch (error) {
@@ -61,7 +62,7 @@ export class Runtime {
       throw error
     }
   }
-  private execute(command: Operation): any {
+  private execute(command: Operation, phase: 'all' | 'register' | 'checkout'): any {
     const payload = command.payload
     const task = this.db.query('SELECT resource,root FROM tasks WHERE id=?').get(command.task_id) as { resource: string; root: string } | null
     if (task && !['repository_details', 'generate_patch'].includes(command.kind)) rejectManagedWrite(this.config.collaboration_registry_path, task.root)
@@ -74,7 +75,9 @@ export class Runtime {
       const root = child(inside(payload.workspace_root, this.roots), 'tasks/' + command.task_id)
       if (task && (task.resource !== command.resource_id || task.root !== root)) fail('TASK_BINDING_CONFLICT')
       this.db.query('INSERT OR IGNORE INTO tasks VALUES (?,?,?)').run(command.task_id, command.resource_id, root)
-      return provision(root, command.task_id, payload.repositories, this.roots, path.join(this.state, 'tasks', command.task_id + '.json'))
+      const manifest = path.join(this.state, 'tasks', command.task_id + '.json')
+      return phase === 'checkout' ? checkoutProvision(root, command.task_id, payload.repositories, this.roots, manifest)
+        : provision(root, command.task_id, payload.repositories, this.roots, manifest, phase !== 'register')
     }
     if (command.kind === 'release' && !task) return { released: true }
     if (!task || task.resource !== command.resource_id) fail('TASK_RESOURCE_BINDING_REQUIRED')
@@ -101,8 +104,11 @@ export class Runtime {
         for (const repo of receipt.repositories) {
           const target = child(root, repo.rel_path)
           if (!fs.existsSync(target)) continue
-          if (git(target, 'status', '--porcelain')) fail('WORKTREE_HAS_CHANGES: 保留未提交修改，不能删除')
-          git(repo.repo_root, 'worktree', 'remove', target)
+          if (repo.files_ready !== false && git(target, 'status', '--porcelain')) fail('WORKTREE_HAS_CHANGES: 保留未提交修改，不能删除')
+          if (git(target, 'branch', '--show-current') !== repo.task_branch) fail('WORKTREE_OWNERSHIP_CONFLICT')
+          if (repo.files_ready === false && git(target, 'rev-parse', 'HEAD') !== repo.base_commit_sha) fail('WORKTREE_OWNERSHIP_CONFLICT')
+          git(repo.repo_root, 'worktree', 'remove', ...(repo.files_ready === false ? ['--force'] : []), target)
+          git(repo.repo_root, 'branch', '-D', repo.task_branch)
         }
         return { released: true }
       default: fail('UNSUPPORTED_RESOURCE_OPERATION')

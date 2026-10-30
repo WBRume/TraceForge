@@ -4,7 +4,9 @@ import { DatabaseSync } from 'node:sqlite'
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Config } from '../desktop/local-resource/runtime'
+import { ResourceScheduler } from '../desktop/local-resource/scheduler'
 
 export async function startLocalResourceService(config: Config, options: { workerUrl?: URL; onCollaborationChanged?: (event: { task_id: string }) => void } = {}) {
   if (!config.token || config.token.length < 32 || !isAbsolute(config.state_root)
@@ -16,7 +18,10 @@ export async function startLocalResourceService(config: Config, options: { worke
   if (!existsSync(identityFile)) writeFileSync(identityFile, JSON.stringify({ host_id: randomUUID(), protocol_version: 1 }))
   const identity = JSON.parse(readFileSync(identityFile, 'utf8'))
   const workerFile = './localResourceWorker.js'
-  const worker = new Worker(options.workerUrl ?? new URL(workerFile, import.meta.url))
+  const adjacentWorker = new URL(workerFile, import.meta.url)
+  // Rollup may share this host implementation from dist-electron/chunks/.
+  const workerUrl = options.workerUrl ?? (existsSync(fileURLToPath(adjacentWorker)) ? adjacentWorker : new URL('../localResourceWorker.js', import.meta.url))
+  const workers = Array.from({ length: 3 }, () => new Worker(workerUrl))
   const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
   let failure: Error | undefined
   let stopped = false
@@ -31,26 +36,30 @@ export async function startLocalResourceService(config: Config, options: { worke
     rejectPending(error)
     void close()
   }
-  worker.on('message', ({ id, result, error, event, task_id }) => {
-    if (event === 'collaboration_changed') { if (!stopped) options.onCollaborationChanged?.({ task_id }); return }
-    const item = pending.get(id)
-    pending.delete(id)
-    if (error) item?.reject(new Error(error)); else item?.resolve(result)
-  })
-  worker.on('error', fail)
-  worker.on('exit', code => {
-    if (!stopped) fail(new Error(`Local resource worker exited (${code})`))
-  })
-  function dispatch(kind: string, payload: unknown) {
+  for (const worker of workers) {
+    worker.on('message', ({ id, result, error, event, task_id }) => {
+      if (event === 'collaboration_changed') { if (!stopped) options.onCollaborationChanged?.({ task_id }); return }
+      const item = pending.get(id)
+      pending.delete(id)
+      if (error) item?.reject(new Error(error)); else item?.resolve(result)
+    })
+    worker.on('error', fail)
+    worker.on('exit', code => {
+      if (!stopped) fail(new Error(`Local resource worker exited (${code})`))
+    })
+  }
+  function send(workerIndex: number, kind: string, payload: unknown) {
     if (failure) return Promise.reject(failure)
     if (stopped && kind !== 'shutdown') return Promise.reject(new Error('Local resource service closed'))
     return new Promise((resolve, reject) => {
       const id = randomUUID()
       pending.set(id, { resolve, reject })
-      try { worker.postMessage({ id, kind, payload }) }
+      try { workers[workerIndex].postMessage({ id, kind, payload }) }
       catch (error) { pending.delete(id); reject(error) }
     })
   }
+  const scheduler = new ResourceScheduler(send)
+  const dispatch = (kind: string, payload: unknown) => scheduler.dispatch(kind, payload)
   const digest = (value: string) => createHash('sha256').update(value).digest()
   const server = createServer(async (request, response) => {
     const send = (status: number, body: unknown) => {
@@ -95,15 +104,16 @@ export async function startLocalResourceService(config: Config, options: { worke
     closing = (async () => {
       let timer: ReturnType<typeof setTimeout> | undefined
       try {
+        if (!failure) await scheduler.drain()
         await Promise.race([
-          dispatch('shutdown', null),
+          Promise.all(workers.map((_, index) => send(index, 'shutdown', null))),
           new Promise(resolve => { timer = setTimeout(resolve, 1000) }),
         ])
       } catch { /* A failed worker is still terminated below. */ }
       finally {
         clearTimeout(timer)
         rejectPending(new Error('Local resource service closed'))
-        await worker.terminate()
+        await Promise.all(workers.map(worker => worker.terminate()))
         db?.close()
         await serverClosed
       }
@@ -111,7 +121,7 @@ export async function startLocalResourceService(config: Config, options: { worke
     return closing
   }
   try {
-    await dispatch('configure', config)
+    for (let index = 0; index < workers.length; index++) await send(index, 'configure', config)
     db = new DatabaseSync(join(config.state_root, 'journal.sqlite3'), { readOnly: true })
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)

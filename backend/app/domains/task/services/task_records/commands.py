@@ -90,9 +90,17 @@ def _archive_task_dir_into_delete_trash(task_project_path: str, workspace_projec
 
 
 def delete_task(db: Session, task_id: str, workspace_id: str) -> bool:
-    task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
+    task = (
+        db.query(SddTask)
+        .filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
     if not task:
         return False
+    if task.status == TaskStatus.PROVISIONING:
+        raise ValueError("任务正在准备，请先取消创建并等待清理完成")
 
     from app.domains.local_resource.service import is_local, release_or_defer
 

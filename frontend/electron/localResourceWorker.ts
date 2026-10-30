@@ -29,7 +29,7 @@ parentPort!.on('message', ({ id, kind, payload }) => {
     }
     const result = kind === 'inspect' ? runtime.inspect(payload)
       : kind === 'collaboration' ? await runtime.collaboration.executeAsync(payload.kind, payload.payload)
-      : kind === 'operation' ? runtime.operation(payload) : true
+      : ['operation', 'register', 'checkout'].includes(kind) ? runtime.operation(payload, kind === 'register' ? 'register' : kind === 'checkout' ? 'checkout' : 'all') : true
     parentPort!.postMessage({ id, result })
   } catch (error) {
     parentPort!.postMessage({ id, error: error instanceof Error ? error.message : String(error) })

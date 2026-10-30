@@ -39,6 +39,7 @@ def isolated_snapshot_root(tmp_path, monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "TASK_SESSION_SNAPSHOT_ROOT", str(tmp_path / "snapshots"))
+    monkeypatch.setattr(git_worktree_service, "checkout_registered_worktree", lambda **kwargs: None)
 
 
 def _seed_workspace(
@@ -97,8 +98,10 @@ def _seed_provision_job(db, *, user, workspace, task):
 def _fake_worktree_creator(job_id=None, session_factory=None):
     """模拟 git worktree 创建：真实创建任务目录，可选在创建后立刻置取消标记。"""
 
-    def _create(*, repo_path, task_id, task_project_path, expected_git_repo_url, checkout_details=None):
+    def _create(*, repo_path, task_id, task_project_path, expected_git_repo_url, checkout_details=None, checkout=True):
         os.makedirs(task_project_path, exist_ok=True)
+        if checkout_details is not None:
+            checkout_details.update(base_commit_sha="a" * 40)
         if session_factory is not None and job_id:
             with _session(session_factory) as s:
                 row = s.query(SddProvisionJob).filter(SddProvisionJob.id == job_id).first()
@@ -125,7 +128,7 @@ def test_git_failure_deletes_task_and_keeps_no_failed_record(tmp_path, monkeypat
             job = _seed_provision_job(db, user=user, workspace=workspace, task=task)
             task_id, project_path = task.id, task.project_path
 
-        def _raise_auth_error(*, repo_path, task_id, task_project_path, expected_git_repo_url, checkout_details=None):
+        def _raise_auth_error(**kwargs):
             raise git_worktree_service.GitWorktreeError("Authentication failed for 'https://git.example.com/repo.git'")
 
         monkeypatch.setattr(git_worktree_service, "create_task_worktree", _raise_auth_error)

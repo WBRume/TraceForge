@@ -60,6 +60,15 @@ def _prepare_initial_workspace_checkpoint(db: Session, ws: Workspace, task: SddT
     db.commit()
 
 
+def _load_provision_task(db: Session, workspace_id: str, task_id: str) -> SddTask:
+    task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
+    if not task:
+        raise ValueError("Task not found")
+    if task.status not in (TaskStatus.PROVISIONING, TaskStatus.PENDING):
+        raise ValueError("Task no longer provisioning")
+    return task
+
+
 def prepare_task_resources_for_provision(
     db: Session,
     *,
@@ -68,9 +77,9 @@ def prepare_task_resources_for_provision(
     cancel_check: Callable[[], bool] | None = None,
     snapshot_progress: Callable[[], None] | None = None,
 ) -> SddTask:
-    task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
-    if not task:
-        raise ValueError("Task not found")
+    task = _load_provision_task(db, workspace_id, task_id)
+    if task.status == TaskStatus.PENDING:
+        return task
 
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
@@ -94,13 +103,14 @@ def prepare_task_resources_for_provision(
             raise ProvisionJobCancelled("Task no longer provisioning")
 
     from app.domains.local_resource.service import is_local, provision_task
+    from app.domains.task.services.provisioning.worktrees import materialize_worktrees
 
     with bind_task_context(task_id=task.id, workspace_id=workspace_id, user_id=task.creator_id):
         try:
             _checkpoint()
             if is_local(task):
                 provision_task(db, task)
-            else:
+            elif not materialize_worktrees(db, task, _checkpoint):
                 task_repos = task_task_workspace_repositories.get_task_repositories(db, task.id)
                 if task_repos:
                     task_task_workspace_repositories.prepare_task_repositories(db, ws, task, task_repos)

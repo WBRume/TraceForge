@@ -5,6 +5,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { Database } from 'bun:sqlite'
 import { hash, readJson, writeJson } from './filesystem'
 import type { Config } from './runtime'
+import { ResourceScheduler } from './scheduler'
 
 export async function startServer(config: Config, options: { workerUrl?: string; onCollaborationChanged?: (event: { task_id: string }) => void } = {}) {
   if (!config.token || config.token.length < 32 || !Array.isArray(config.allowed_roots)
@@ -15,7 +16,7 @@ export async function startServer(config: Config, options: { workerUrl?: string;
   const identityFile = path.join(config.state_root, 'identity.json')
   if (!fs.existsSync(identityFile)) writeJson(identityFile, { host_id: randomUUID(), protocol_version: 1 })
   const identity = readJson(identityFile)
-  const worker = new Worker(options.workerUrl ?? new URL('./worker.ts', import.meta.url).href)
+  const workers = Array.from({ length: 3 }, () => new Worker(options.workerUrl ?? new URL('./worker.ts', import.meta.url).href))
   const pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>()
   let stopped = false
   let failure: Error | undefined
@@ -26,35 +27,39 @@ export async function startServer(config: Config, options: { workerUrl?: string;
     for (const item of pending.values()) item.reject(error)
     pending.clear()
   }
-  worker.onmessage = event => {
-    if (event.data.event === 'collaboration_changed') { if (!stopped) options.onCollaborationChanged?.({ task_id: event.data.task_id }); return }
-    const item = pending.get(event.data.id)
-    pending.delete(event.data.id)
-    if (event.data.error) item?.reject(new Error(event.data.error))
-    else item?.resolve(event.data.result)
+  for (const worker of workers) {
+    worker.onmessage = event => {
+      if (event.data.event === 'collaboration_changed') { if (!stopped) options.onCollaborationChanged?.({ task_id: event.data.task_id }); return }
+      const item = pending.get(event.data.id)
+      pending.delete(event.data.id)
+      if (event.data.error) item?.reject(new Error(event.data.error))
+      else item?.resolve(event.data.result)
+    }
+    worker.onerror = error => {
+      error.preventDefault()
+      failure = new Error(error.message)
+      rejectPending(failure)
+      void close()
+    }
+    worker.addEventListener('close', () => {
+      if (stopped) return
+      failure = new Error('Local resource worker exited')
+      rejectPending(failure)
+      void close()
+    })
   }
-  worker.onerror = error => {
-    error.preventDefault()
-    failure = new Error(error.message)
-    rejectPending(failure)
-    void close()
-  }
-  worker.addEventListener('close', () => {
-    if (stopped) return
-    failure = new Error('Local resource worker exited')
-    rejectPending(failure)
-    void close()
-  })
-  function dispatch(kind: string, payload: unknown) {
+  function send(workerIndex: number, kind: string, payload: unknown) {
     if (failure) return Promise.reject(failure)
     if (stopped && kind !== 'shutdown') return Promise.reject(new Error('Local resource service closed'))
     return new Promise<any>((resolve, reject) => {
       const id = randomUUID()
       pending.set(id, { resolve, reject })
-      try { worker.postMessage({ id, kind, payload }) }
+      try { workers[workerIndex].postMessage({ id, kind, payload }) }
       catch (error) { pending.delete(id); reject(error) }
     })
   }
+  const scheduler = new ResourceScheduler(send)
+  const dispatch = (kind: string, payload: unknown) => scheduler.dispatch(kind, payload)
   function close(): Promise<void> {
     if (closing) return closing
     stopped = true
@@ -62,8 +67,9 @@ export async function startServer(config: Config, options: { workerUrl?: string;
     closing = (async () => {
       let timer: ReturnType<typeof setTimeout> | undefined
       try {
+        if (!failure) await scheduler.drain()
         await Promise.race([
-          dispatch('shutdown', null),
+          Promise.all(workers.map((_, index) => send(index, 'shutdown', null))),
           new Promise(resolve => { timer = setTimeout(resolve, 1000) }),
         ])
       } catch { /* A failed worker is still terminated below. */ }
@@ -71,13 +77,14 @@ export async function startServer(config: Config, options: { workerUrl?: string;
         clearTimeout(timer)
         rejectPending(new Error('Local resource service closed'))
         db?.close()
-        worker.terminate()
+        for (const worker of workers) worker.terminate()
       }
     })()
     return closing
   }
   try {
-    await dispatch('configure', config)
+    // Initialize the shared WAL journal before opening the other connections.
+    for (let index = 0; index < workers.length; index++) await send(index, 'configure', config)
     db = new Database(path.join(config.state_root, 'journal.sqlite3'), { readonly: true })
     server = Bun.serve({
       hostname: config.listen_host || '127.0.0.1', port: config.port ?? 4098,
