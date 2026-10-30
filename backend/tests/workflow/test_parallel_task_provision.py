@@ -252,9 +252,7 @@ def test_cleanup_waits_past_repository_lock_timeout(scenario, monkeypatch):
 
     async def cleanup_while_busy():
         async with locks.lock_workspace_repo(workspace.id):
-            await asyncio.to_thread(
-                jobs._register_task_sync, workspace_id=workspace.id, task_id=task.id, job_id=job.id
-            )
+            await asyncio.to_thread(jobs._register_task_sync, workspace_id=workspace.id, task_id=task.id, job_id=job.id)
             cleanup = asyncio.create_task(
                 jobs._rollback_task_resources(workspace_id=workspace.id, task_id=task.id, job_id=job.id)
             )
@@ -305,7 +303,9 @@ def test_snapshot_failure_or_cancel_only_removes_its_own_task(scenario, monkeypa
 def test_duplicate_dispatch_materializes_once(scenario, monkeypatch):
     factory, workspace, source, base, create, run = scenario
     hook = base / ".git/hooks/post-checkout"
-    hook.write_text('#!/bin/sh\nprintf "1\\n" >> "$(git rev-parse --git-common-dir)/checkout-hook-count"\n', encoding="utf-8")
+    hook.write_text(
+        '#!/bin/sh\nprintf "1\\n" >> "$(git rev-parse --git-common-dir)/checkout-hook-count"\n', encoding="utf-8"
+    )
     hook.chmod(0o755)
     task, job = create()
     checkouts = []
