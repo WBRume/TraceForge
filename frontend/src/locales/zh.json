@@ -269,8 +269,19 @@
       "load_failed_title": "加载配置失败",
       "retry": "重试"
     },
-    "title": "系统设置",
-    "subtitle": "管理您的应用偏好和地区设置。",
+    "workspace_title": "工作区设置",
+    "workspace_subtitle": "管理工作区成员、Agent、计划文档与工作区 Webhook。",
+    "nav": {
+      "personal": "个人设置",
+      "workspace": "工作区设置",
+      "local": "本机环境"
+    },
+    "user": {
+      "title": "用户设置",
+      "subtitle": "管理你的语言、已连接账号、外观与个人 Webhook。",
+      "menu_label": "用户设置",
+      "back": "返回"
+    },
     "language": "语言设置",
     "language_desc": "选择您偏好使用的界面显示语言。",
     "theme": "外观偏好",

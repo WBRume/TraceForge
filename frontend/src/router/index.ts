@@ -56,6 +56,12 @@ const router = createRouter({
       component: () => import('../views/OAuthBindConfirmView.vue')
     },
     {
+      path: '/settings',
+      name: 'userSettings',
+      component: () => import('../views/UserSettingsView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/workspaces',
       name: 'workspaces',
       component: () => import('../views/WorkspaceView.vue'),

@@ -269,8 +269,19 @@
       "load_failed_title": "Failed to load directory settings",
       "retry": "Retry"
     },
-    "title": "System Settings",
-    "subtitle": "Manage your application preferences and regional settings.",
+    "workspace_title": "Workspace Settings",
+    "workspace_subtitle": "Manage workspace members, agents, plan documents, and workspace webhooks.",
+    "nav": {
+      "personal": "Personal",
+      "workspace": "Workspace",
+      "local": "Local Environment"
+    },
+    "user": {
+      "title": "User Settings",
+      "subtitle": "Manage your language, connected accounts, appearance, and personal webhook.",
+      "menu_label": "User settings",
+      "back": "Back"
+    },
     "language": "Language Settings",
     "language_desc": "Choose your preferred language for the interface.",
     "theme": "Appearance",

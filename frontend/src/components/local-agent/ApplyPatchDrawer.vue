@@ -144,7 +144,7 @@ const refreshProposal = async () => {
 
 const goToLocalSettings = () => {
   if (workspaceId.value) {
-    router.push(`/workspaces/${workspaceId.value}/settings`)
+    router.push({ path: `/workspaces/${workspaceId.value}/settings`, query: { section: 'local_dev' } })
   }
   emit('close')
 }

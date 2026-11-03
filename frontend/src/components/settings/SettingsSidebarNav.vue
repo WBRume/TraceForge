@@ -3,13 +3,21 @@ import { proxyRefs } from 'vue'
 import { ChevronRight } from '@/components/icons'
 import type { SettingsViewModel } from '@/composables/useSettingsViewModel'
 
-const props = defineProps<{ vm: SettingsViewModel }>()
+type SettingsNavGroup = {
+  title: string
+  ids: string[]
+}
+
+const props = defineProps<{
+  vm: SettingsViewModel
+  groups: SettingsNavGroup[]
+}>()
 const vm = proxyRefs(props.vm)
 </script>
 
 <template>
   <aside class="settings-sidebar glass-panel">
-    <nav v-for="group in [{ title: '个人设置', ids: ['general', 'connected_accounts', 'appearance', 'local_dev', 'local_service', 'webhook_personal'] }, { title: '工作区设置', ids: ['members', 'agent', 'plan_docs', 'webhook_workspace'] }]" :key="group.title" class="sidebar-nav">
+    <nav v-for="group in groups" :key="group.title" class="sidebar-nav">
       <h3 class="group-title">{{ group.title }}</h3>
       <button
         v-for="section in vm.settingsSections.filter(item => group.ids.includes(item.id))"
@@ -33,5 +41,3 @@ const vm = proxyRefs(props.vm)
 </template>
 
 <style scoped src="@/styles/settings/navigation.css"></style>
-
-

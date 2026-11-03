@@ -4,13 +4,13 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useAuthStore } from '@/stores/auth'
-import { Plus, Briefcase, Languages, Package, FolderKanban, GitFork } from '@/components/icons'
+import { Plus, Briefcase, Package, FolderKanban, GitFork } from '@/components/icons'
 import AppSwitcherDropdown from '@/components/AppSwitcherDropdown.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import WorkspaceCreateWorkflowDialog from '@/components/workspace/create-workflow/WorkspaceCreateWorkflowDialog.vue'
 import api from '@/utils/api'
-import UserIdentityBadge from '@/components/user/UserIdentityBadge.vue'
+import UserMenu from '@/components/user/UserMenu.vue'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 import GlobalSearchTrigger from '@/components/global-search/GlobalSearchTrigger.vue'
 
@@ -33,12 +33,6 @@ const summarize = (items: any[] | undefined, labelOf: (item: any) => string, max
 
 const productLabel = (product: any) =>
   product?.version_no ? `${product.name} (${product.version_no})` : product?.name
-
-const toggleLanguage = () => {
-  const newLang = locale.value === 'zh' ? 'en' : 'zh'
-  locale.value = newLang
-  localStorage.setItem('sdd_lang', newLang)
-}
 
 const loading = ref(true)
 const showCreateModal = ref(false)
@@ -92,10 +86,6 @@ const handleWorkspaceCreated = async (jobId: string) => {
   })
 }
 
-const logout = () => {
-  authStore.logout()
-}
-
 const handleDeleteWorkspace = (ws: any) => {
   if (!ws?.can_delete_workspace) return
   wsToDelete.value = ws
@@ -134,7 +124,7 @@ const confirmDeleteWorkspace = async () => {
         </router-link>
       </div>
       <div class="nav-links">
-        <UserIdentityBadge
+        <UserMenu
           :display-name="authStore.user?.display_name"
           :email="authStore.user?.email"
           :user-id="authStore.user?.id"
@@ -142,12 +132,6 @@ const confirmDeleteWorkspace = async () => {
           :avatar-url="authStore.user?.avatar_url"
           size="sm"
         />
-        <button class="btn-ghost" @click="logout">{{ $t('common.logout') }}</button>
-        <div class="v-divider"></div>
-        <button class="lang-switch-btn" @click="toggleLanguage" :title="$t('portal.switch_lang_title')">
-          <Languages class="w-4 h-4" />
-          <span>{{ locale === 'zh' ? 'EN' : 'ZH' }}</span>
-        </button>
         <GlobalSearchTrigger />
       </div>
     </nav>
@@ -344,20 +328,6 @@ const confirmDeleteWorkspace = async () => {
   display: flex;
   align-items: center;
   gap: 2rem;
-}
-
-.btn-ghost {
-  background: none;
-  border: none;
-  color: #475569;
-  font-weight: 600;
-  cursor: pointer;
-  padding: 0.625rem 1rem;
-  transition: color 0.2s;
-}
-
-.btn-ghost:hover {
-  color: #0ea5e9;
 }
 
 .ws-main {
@@ -655,34 +625,6 @@ const confirmDeleteWorkspace = async () => {
   padding: 10px 12px;
   font-size: 0.875rem;
 }
-.v-divider {
-  width: 1px;
-  height: 24px;
-  background-color: #e2e8f0;
-}
-
-.lang-switch-btn {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  padding: 0.5rem 0.875rem;
-  border-radius: 8px;
-  color: #475569;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-  font-size: 0.8125rem;
-  margin-left: 0.5rem;
-}
-
-.lang-switch-btn:hover {
-  background: #f1f5f9;
-  border-color: #0ea5e9;
-  color: #0ea5e9;
-}
-
 @media (max-width: 1024px) {
   .navbar { padding: 1.5rem 2rem; }
   .nav-links { gap: 1rem; }

@@ -10,7 +10,7 @@ import { useAuthStore } from '@/stores/auth'
 import api, { getApiServerUrl } from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { getSddDesktop } from '@/utils/runtime'
-import UserIdentityBadge from '@/components/user/UserIdentityBadge.vue'
+import UserMenu from '@/components/user/UserMenu.vue'
 import OAuthProviderButtons from '@/components/auth/OAuthProviderButtons.vue'
 
 const { locale, t } = useI18n()
@@ -112,10 +112,6 @@ const handleAuthSubmit = async () => {
   } finally {
     authLoading.value = false
   }
-}
-
-const handleLogout = () => {
-  authStore.logout()
 }
 
 const handleStartBuilding = () => {
@@ -239,7 +235,7 @@ onBeforeUnmount(() => {
         <router-link to="/architecture" class="nav-link">{{ $t('portal.architecture') }}</router-link>
         <div class="v-divider"></div>
         <template v-if="authStore.isAuthenticated">
-          <UserIdentityBadge
+          <UserMenu
             :display-name="authStore.user?.display_name"
             :email="authStore.user?.email"
             :user-id="authStore.user?.id"
@@ -247,7 +243,6 @@ onBeforeUnmount(() => {
             :avatar-url="authStore.user?.avatar_url"
             size="sm"
           />
-          <button class="btn-ghost" @click="handleLogout">{{ $t('common.logout') }}</button>
           <button class="btn-primary" @click="router.push('/workspaces')">{{ $t('portal.enter_workspace') }}</button>
         </template>
         <template v-else>
@@ -255,8 +250,8 @@ onBeforeUnmount(() => {
           <button class="btn-primary" @click="openAuthModal('register')">{{ $t('portal.start_building') }}</button>
         </template>
         
-        <!-- Language Switcher -->
-        <button class="lang-switch-btn" @click="toggleLanguage" :title="$t('portal.switch_lang_title')">
+        <!-- Language Switcher：登录后语言设置统一收敛到用户设置页 -->
+        <button v-if="!authStore.isAuthenticated" class="lang-switch-btn" @click="toggleLanguage" :title="$t('portal.switch_lang_title')">
           <Languages class="w-4 h-4" />
           <span>{{ locale === 'zh' ? 'EN' : 'ZH' }}</span>
         </button>

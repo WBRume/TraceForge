@@ -1,11 +1,9 @@
 <script setup lang="ts">
-import { proxyRefs } from 'vue'
+import { computed, proxyRefs } from 'vue'
+import { useI18n } from 'vue-i18n'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import LocalServiceForm from '@/components/local-resource/LocalServiceForm.vue'
 import SettingsAgentSection from '@/components/settings/SettingsAgentSection.vue'
-import SettingsAppearanceSection from '@/components/settings/SettingsAppearanceSection.vue'
-import SettingsConnectedAccountsSection from '@/components/settings/SettingsConnectedAccountsSection.vue'
-import SettingsGeneralSection from '@/components/settings/SettingsGeneralSection.vue'
 import SettingsLocalDevSection from '@/components/settings/SettingsLocalDevSection.vue'
 import SettingsMembersSection from '@/components/settings/SettingsMembersSection.vue'
 import SettingsPlanDocsSection from '@/components/settings/SettingsPlanDocsSection.vue'
@@ -13,34 +11,41 @@ import SettingsSidebarNav from '@/components/settings/SettingsSidebarNav.vue'
 import WebhookSettingsSection from '@/components/settings/WebhookSettingsSection.vue'
 import { useSettingsViewModel } from '@/composables/useSettingsViewModel'
 
-const rawVm = useSettingsViewModel()
+const WORKSPACE_SECTION_IDS = ['local_dev', 'local_service', 'members', 'agent', 'plan_docs', 'webhook_workspace']
+
+const rawVm = useSettingsViewModel({
+  sectionIds: WORKSPACE_SECTION_IDS,
+  defaultSection: 'members',
+})
 const vm = proxyRefs(rawVm)
+const { t } = useI18n()
+
+const groups = computed(() => [
+  { title: t('settings.nav.local'), ids: ['local_dev', 'local_service'] },
+  { title: t('settings.nav.workspace'), ids: ['members', 'agent', 'plan_docs', 'webhook_workspace'] },
+])
 </script>
 
 <template>
   <div class="settings-container">
     <header class="settings-header animate-slide-down">
       <div class="header-content">
-        <h1 class="title-gradient">{{ $t('settings.title') }}</h1>
-        <p class="subtitle">{{ $t('settings.subtitle') }}</p>
+        <h1 class="title-gradient">{{ $t('settings.workspace_title') }}</h1>
+        <p class="subtitle">{{ $t('settings.workspace_subtitle') }}</p>
       </div>
     </header>
 
     <div class="settings-content animate-fade-in">
       <div class="settings-layout">
-        <SettingsSidebarNav :vm="rawVm" />
+        <SettingsSidebarNav :vm="rawVm" :groups="groups" />
 
         <main class="settings-main glass-panel">
           <transition name="fade-slide" mode="out-in">
-            <SettingsGeneralSection v-if="vm.activeSection === 'general'" key="general" :vm="rawVm" />
-            <SettingsAppearanceSection v-else-if="vm.activeSection === 'appearance'" key="appearance" :vm="rawVm" />
-            <SettingsMembersSection v-else-if="vm.activeSection === 'members'" key="members" :vm="rawVm" />
-            <SettingsConnectedAccountsSection v-else-if="vm.activeSection === 'connected_accounts'" key="connected_accounts" />
-            <SettingsLocalDevSection v-else-if="vm.activeSection === 'local_dev'" key="local_dev" />
+            <SettingsLocalDevSection v-if="vm.activeSection === 'local_dev'" key="local_dev" />
             <LocalServiceForm v-else-if="vm.activeSection === 'local_service'" key="local_service" :workspace-id="vm.workspaceId" />
+            <SettingsMembersSection v-else-if="vm.activeSection === 'members'" key="members" :vm="rawVm" />
             <SettingsAgentSection v-else-if="vm.activeSection === 'agent'" key="agent" />
             <SettingsPlanDocsSection v-else-if="vm.activeSection === 'plan_docs'" key="plan_docs" :workspace-id="vm.workspaceId" />
-            <WebhookSettingsSection v-else-if="vm.activeSection === 'webhook_personal'" key="webhook_personal" scope="personal" />
             <WebhookSettingsSection v-else-if="vm.activeSection === 'webhook_workspace'" key="webhook_workspace" scope="workspace" :workspace-id="vm.workspaceId" />
           </transition>
         </main>

@@ -10,7 +10,14 @@ import { buildAvatarSvg, isSvgText } from '@/utils/avatar'
 import type { AvatarTemplateStyle } from '@/utils/avatar'
 import { createEmptyPermissions, defaultPermissionsByRole, type PermissionFlags, type PermissionKey } from '@/utils/settingsPermissions'
 
-export function useSettingsViewModel() {
+export type SettingsViewModelOptions = {
+  /** 仅暴露给当前设置页面的 section（工作区设置与用户设置各取所需） */
+  sectionIds?: string[]
+  /** 查询参数缺失或不可用时的默认 section */
+  defaultSection?: string
+}
+
+export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
 
   type WorkspaceMember = {
     id: string
@@ -82,7 +89,7 @@ export function useSettingsViewModel() {
   const authStore = useAuthStore()
   
   const currentLang = ref(locale.value)
-  const activeSection = ref<string>('general')
+  const activeSection = ref<string>(options.defaultSection || 'general')
   
   const workspaceId = computed(() => String(route.params.wsId || ''))
   
@@ -162,7 +169,7 @@ export function useSettingsViewModel() {
     { key: 'publish_api_mock' as PermissionKey, label: t('settings.members.permissions.publish_api_mock') },
   ])
   
-  const settingsSections = computed(() => [
+  const allSettingsSections = computed(() => [
     {
       id: 'general',
       icon: Languages,
@@ -205,8 +212,20 @@ export function useSettingsViewModel() {
     { id: 'webhook_workspace', icon: Link, label: 'settings.webhook.workspace_title', description: 'settings.webhook.workspace_desc', disabled: myPermissionPayload.value?.role !== 'OWNER' },
   ].filter(section => section.id !== 'local_service' || isDesktop()))
 
+  const settingsSections = computed(() => {
+    if (!options.sectionIds?.length) return allSettingsSections.value
+    return allSettingsSections.value.filter(section => options.sectionIds!.includes(section.id))
+  })
+
+  const fallbackSection = computed(() => {
+    if (options.defaultSection && settingsSections.value.some(item => item.id === options.defaultSection)) {
+      return options.defaultSection
+    }
+    return settingsSections.value[0]?.id || 'general'
+  })
+
   watch(() => route.query.section, (section) => {
-    activeSection.value = settingsSections.value.some(item => item.id === section) ? String(section) : 'general'
+    activeSection.value = settingsSections.value.some(item => item.id === section) ? String(section) : fallbackSection.value
   }, { immediate: true })
   
   const canManageMembers = computed(() => Boolean(myPermissionPayload.value?.permissions?.manage_members))
