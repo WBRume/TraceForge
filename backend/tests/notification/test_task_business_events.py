@@ -145,6 +145,46 @@ def test_business_actions_are_actor_scoped_even_when_another_member_created_the_
     assert own.id not in {item.endpoint_id for item in db.query(TaskWebhookDelivery).all()}
 
 
+@pytest.mark.parametrize("kind", ["TASK_COMPLETED", "TASK_FAILED"])
+def test_task_creator_can_be_notified_when_another_member_finishes_their_task(seeded, kind):
+    db, _, owner, workspace, task = seeded
+    actor = User(id="reviewer", email="reviewer@example.test", hashed_password="x", display_name="评审成员")
+    db.add(actor)
+    db.add(WorkspaceMember(workspace_id=workspace.id, user_id=actor.id, role=WorkspaceRole.DEVELOPER))
+    db.commit()
+    own = endpoint(db, "user:owner", user_id=owner.id, events=[kind], notify_task_creator=True)
+    capture_business(db, task, actor.id, kind, "由其他成员完成")
+    db.commit()
+    row = latest(db, kind)
+    assert row.creator_id == actor.id and task.creator_id == owner.id
+    task_webhooks.prepare_deliveries(db, row, datetime.utcnow())
+    db.commit()
+    from app.domains.notification.models.task_awareness import TaskWebhookDelivery
+
+    assert [item.endpoint_id for item in db.query(TaskWebhookDelivery).all()] == [own.id]
+
+
+@pytest.mark.parametrize("filter_matches", [True, False])
+def test_personal_webhook_can_be_limited_to_selected_workspaces(seeded, filter_matches):
+    db, _, owner, workspace, task = seeded
+    own = endpoint(
+        db,
+        "user:owner",
+        user_id=owner.id,
+        events=["TASK_COMPLETED"],
+        workspace_filter_ids=[workspace.id] if filter_matches else ["other-workspace"],
+    )
+    capture_business(db, task, owner.id, "TASK_COMPLETED", "完成")
+    db.commit()
+    row = latest(db, "TASK_COMPLETED")
+    task_webhooks.prepare_deliveries(db, row, datetime.utcnow())
+    db.commit()
+    from app.domains.notification.models.task_awareness import TaskWebhookDelivery
+
+    deliveries = db.query(TaskWebhookDelivery).all()
+    assert [item.endpoint_id for item in deliveries] == ([own.id] if filter_matches else [])
+
+
 def test_business_outbox_rolls_back_with_the_manual_state_change(seeded):
     db, _, user, _, task = seeded
     capture_business(db, task, user.id, "TASK_FAILED", "不会提交")

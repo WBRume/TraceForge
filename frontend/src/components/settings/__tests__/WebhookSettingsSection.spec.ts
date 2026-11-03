@@ -5,11 +5,23 @@ import api from '@/utils/api'
 import i18n from '@/i18n'
 
 vi.mock('@/utils/api', () => ({ default: { get: vi.fn(), put: vi.fn(), post: vi.fn() } }))
-const config = { enabled: false, url: '', delivery_location: 'server', events: ['AI_HITL_SUSPENDED', 'AI_RUN_FINISHED', 'AI_RUN_ERROR'] }
+const config = {
+  enabled: false,
+  url: '',
+  delivery_location: 'server',
+  events: ['AI_HITL_SUSPENDED', 'AI_RUN_FINISHED', 'AI_RUN_ERROR'],
+  workspace_filter_ids: [],
+  notify_task_creator: false,
+}
 const mountSection = (props: any) => mount(WebhookSettingsSection, { props, global: { plugins: [i18n] } })
 
 beforeEach(() => {
-  vi.mocked(api.get).mockResolvedValue({ data: structuredClone(config) }); vi.mocked(api.put).mockResolvedValue({ data: config })
+  vi.mocked(api.get).mockImplementation(async (url: string) => (
+    url === '/workspaces'
+      ? { data: [{ id: 'w1', name: '工作区一' }, { id: 'w2', name: '工作区二' }] }
+      : { data: structuredClone(config) }
+  ))
+  vi.mocked(api.put).mockResolvedValue({ data: config })
 })
 afterEach(() => { delete window.sddDesktop })
 
@@ -91,6 +103,33 @@ describe('webhook settings', () => {
     expect(group2Inputs.every(input => (input.element as HTMLInputElement).checked)).toBe(true)
     await batchButtons[1].trigger('click')
     expect(group2Inputs.every(input => !(input.element as HTMLInputElement).checked)).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('limits personal webhook to multiple workspaces and enables task-creator notifications', async () => {
+    const wrapper = mountSection({ scope: 'personal' })
+    await flushPromises()
+    expect(wrapper.text()).toContain('订阅工作区')
+    expect(wrapper.text()).toContain('任务创建者通知')
+    expect(wrapper.find('.workspace-multi-trigger').text()).toContain('全部工作区')
+
+    await wrapper.find('.workspace-multi-trigger').trigger('click')
+    const workspaceOptions = wrapper.findAll('.workspace-multi-option:not(.all)')
+    expect(workspaceOptions.length).toBe(2)
+    await workspaceOptions[0].find('input').setValue(true)
+    await workspaceOptions[1].find('input').setValue(true)
+    expect(wrapper.find('.workspace-multi-trigger').text()).toContain('已选 2 个工作区')
+
+    await wrapper.findAll('.scope-switch input')[0].setValue(true)
+    await wrapper.find('input[type=url]').setValue('http://127.0.0.1:9000/hook')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(api.put).toHaveBeenCalledWith('/users/me/task-webhook', expect.objectContaining({
+      workspace_filter_ids: ['w1', 'w2'],
+      notify_task_creator: true,
+      url: 'http://127.0.0.1:9000/hook',
+    }))
     wrapper.unmount()
   })
 })

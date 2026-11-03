@@ -4,13 +4,30 @@ import { useI18n } from 'vue-i18n'
 import api from '@/utils/api'
 import { Loader2, Send, Save, AlertTriangle } from '@/components/icons'
 import { formatApiError } from '@/utils/error'
+import WorkspaceMultiSelect from '@/components/settings/WorkspaceMultiSelect.vue'
 
 const props = defineProps<{ scope: 'personal' | 'workspace'; workspaceId?: string }>()
 const { t } = useI18n()
 
-type Config = { enabled: boolean; url: string; delivery_location: string; events: string[] }
-const defaults = (): Config => ({ enabled: false, url: '', delivery_location: 'server', events: ['AI_HITL_SUSPENDED', 'AI_RUN_FINISHED', 'AI_RUN_ERROR'] })
+type Config = {
+  enabled: boolean
+  url: string
+  delivery_location: string
+  events: string[]
+  workspace_filter_ids: string[]
+  notify_task_creator: boolean
+}
+type WorkspaceOption = { id: string; name: string }
+const defaults = (): Config => ({
+  enabled: false,
+  url: '',
+  delivery_location: 'server',
+  events: ['AI_HITL_SUSPENDED', 'AI_RUN_FINISHED', 'AI_RUN_ERROR'],
+  workspace_filter_ids: [],
+  notify_task_creator: false,
+})
 const config = ref(defaults())
+const workspaces = ref<WorkspaceOption[]>([])
 const busy = ref(false)
 const loading = ref(false)
 const message = ref('')
@@ -19,6 +36,34 @@ let version = 0
 
 const path = computed(() => props.scope === 'workspace' ? `/workspaces/${props.workspaceId}/task-webhook` : '/users/me/task-webhook')
 const hasDesktopNative = computed(() => Boolean(window.sddDesktop?.webhooks))
+
+const loadWorkspaces = async () => {
+  if (props.scope !== 'personal') return
+  try {
+    const { data } = await api.get('/workspaces')
+    workspaces.value = Array.isArray(data)
+      ? data.map(workspace => ({ id: String(workspace.id || ''), name: String(workspace.name || '') })).filter(workspace => workspace.id)
+      : []
+  } catch {
+    workspaces.value = []
+  }
+}
+
+const applyConfig = (data: Partial<Config> | null | undefined) => {
+  config.value = {
+    ...defaults(),
+    ...(data || {}),
+    events: Array.isArray(data?.events) ? data.events : defaults().events,
+    workspace_filter_ids: Array.isArray(data?.workspace_filter_ids) ? data.workspace_filter_ids : [],
+    notify_task_creator: Boolean(data?.notify_task_creator),
+  }
+}
+
+const requestPayload = () => ({
+  ...config.value,
+  workspace_filter_ids: props.scope === 'personal' ? config.value.workspace_filter_ids : [],
+  notify_task_creator: props.scope === 'personal' ? config.value.notify_task_creator : false,
+})
 
 const groups = computed(() => [
   {
@@ -47,13 +92,26 @@ watch(path, async current => {
   config.value = defaults(); error.value = ''; message.value = ''; loading.value = true
   try {
     const { data } = await api.get(current)
-    if (revision === version) config.value = data
+    if (revision === version) applyConfig(data)
   } catch (exc) {
     if (revision === version) error.value = formatApiError(exc, t('settings.webhook.load_failed'))
   } finally {
     if (revision === version) loading.value = false
   }
 }, { immediate: true })
+
+watch(() => props.scope, current => {
+  if (current === 'personal') void loadWorkspaces()
+}, { immediate: true })
+
+watch([workspaces, () => config.value.workspace_filter_ids], ([list, filterIds]) => {
+  if (!filterIds.length || !list.length) return
+  const allowed = new Set(list.map(workspace => workspace.id))
+  const next = filterIds.filter(id => allowed.has(id))
+  if (next.length !== filterIds.length) {
+    config.value.workspace_filter_ids = next
+  }
+}, { deep: true })
 
 const selectLocation = (location: 'server' | 'desktop') => {
   if (busy.value) return
@@ -83,10 +141,10 @@ const act = async (test = false) => {
   busy.value = true; error.value = ''; message.value = ''
   try {
     if (!test) {
-      await api.put(current, config.value)
+      await api.put(current, requestPayload())
       if (revision === version) message.value = t('settings.webhook.saved_success')
     } else {
-      const { data } = await api.post(`${current}/test`, config.value)
+      const { data } = await api.post(`${current}/test`, requestPayload())
       const result = data.request ? await window.sddDesktop?.webhooks?.send(data.request) : data
       if (revision !== version) return
       if (result?.ok) {
@@ -164,6 +222,44 @@ const act = async (test = false) => {
               {{ $t('settings.webhook.scene_desktop_desc') }}
             </p>
           </div>
+        </div>
+      </div>
+
+      <!-- 个人 Webhook 专有：工作区多选与任务创建者通知 -->
+      <div v-if="scope === 'personal'" class="personal-scope">
+        <div class="scope-option">
+          <div class="scope-option-copy">
+            <span class="scope-option-title">{{ $t('settings.webhook.workspace_filter_label') }}</span>
+            <p class="scope-option-desc">{{ $t('settings.webhook.workspace_filter_hint') }}</p>
+            <p v-if="workspaces.length === 0" class="scope-option-empty">
+              {{ $t('settings.webhook.workspace_filter_empty') }}
+            </p>
+          </div>
+        </div>
+
+        <div class="workspace-filter-select">
+          <WorkspaceMultiSelect
+            v-model="config.workspace_filter_ids"
+            :options="workspaces"
+            :disabled="busy || loading"
+            :aria-label="$t('settings.webhook.workspace_filter_label')"
+          />
+        </div>
+
+        <div class="scope-option">
+          <div class="scope-option-copy">
+            <span class="scope-option-title">{{ $t('settings.webhook.creator_notify_label') }}</span>
+            <p class="scope-option-desc">{{ $t('settings.webhook.creator_notify_hint') }}</p>
+          </div>
+          <label class="switch-toggle scope-switch">
+            <input
+              v-model="config.notify_task_creator"
+              type="checkbox"
+              :disabled="busy || loading"
+              :aria-label="$t('settings.webhook.creator_notify_label')"
+            />
+            <span class="switch-slider"></span>
+          </label>
         </div>
       </div>
 
@@ -365,6 +461,48 @@ h2 { margin: 0; font-size: 20px; font-weight: 700; color: #0f172a; }
 .scene-title { font-size: 13px; font-weight: 600; color: #0f172a; }
 .scene-badge { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; }
 .scene-desc { font-size: 12px; color: #64748b; margin: 4px 0 0; line-height: 1.5; flex: 1; }
+
+/* 个人订阅范围与任务创建者通知 */
+.personal-scope {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 18px 0;
+  padding: 14px 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+.scope-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.scope-option + .scope-option {
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+.scope-option-copy { min-width: 0; }
+.scope-option-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+}
+.scope-option-desc {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.55;
+}
+.scope-option-empty {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #b45309;
+}
+.scope-switch { flex-shrink: 0; }
+.workspace-filter-select { padding-left: 2px; }
 
 /* 工作区专属 Banner（黄色增强提示感，统一精致细边框） */
 .workspace-banner {

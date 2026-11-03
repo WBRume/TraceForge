@@ -27,6 +27,7 @@ from app.domains.notification.services.task_webhooks import (
     finish_delivery,
     post_webhook,
     validate_url,
+    workspace_user_is_member,
 )
 from app.domains.workspace.services import workspace_service
 
@@ -41,6 +42,8 @@ class EndpointInput(BaseModel):
     events: list[str] = Field(
         default_factory=lambda: DEFAULT_EVENTS.copy(), max_length=len(RUNTIME_EVENTS + BUSINESS_EVENTS)
     )
+    workspace_filter_ids: list[str] = Field(default_factory=list, max_length=50)
+    notify_task_creator: bool = False
 
     @field_validator("events")
     @classmethod
@@ -48,6 +51,19 @@ class EndpointInput(BaseModel):
         if any(item not in RUNTIME_EVENTS + BUSINESS_EVENTS for item in events):
             raise ValueError("Unsupported subscription event")
         return list(dict.fromkeys(events))
+
+
+def validate_scope_fields(db, user, body, ws_id=None):
+    """工作区端点只能是团队广播；个人端点可多选工作区并开启任务创建者通知。"""
+    body.workspace_filter_ids = list(dict.fromkeys(body.workspace_filter_ids or []))
+    if ws_id:
+        if body.workspace_filter_ids or body.notify_task_creator:
+            raise HTTPException(422, "工作区 Webhook 不支持个人订阅范围设置")
+        return
+    for workspace_id in body.workspace_filter_ids:
+        workspace = db.get(Workspace, workspace_id)
+        if not workspace or not workspace_user_is_member(db, workspace, user.id):
+            raise HTTPException(422, "指定工作区不存在或无权访问")
 
 
 def scope_endpoint(db, user, ws_id=None):
@@ -66,6 +82,8 @@ def serialize(row):
             "url": row.url,
             "delivery_location": row.delivery_location,
             "events": row.events_json,
+            "workspace_filter_ids": row.workspace_filter_ids or [],
+            "notify_task_creator": bool(row.notify_task_creator),
         }
         if row
         else EndpointInput().model_dump()
@@ -86,6 +104,7 @@ def save_endpoint(
     key, row = scope_endpoint(db, user, ws_id)
     if ws_id and body.delivery_location != "server":
         raise HTTPException(422, "工作区 Webhook 从服务端投递")
+    validate_scope_fields(db, user, body, ws_id)
     if body.url or body.enabled:
         try:
             validate_url(body.url)
@@ -94,7 +113,7 @@ def save_endpoint(
     if row is None:
         row = TaskWebhookEndpoint(scope_key=key, user_id=None if ws_id else user.id, workspace_id=ws_id)
         db.add(row)
-    for field in ("enabled", "url", "delivery_location"):
+    for field in ("enabled", "url", "delivery_location", "workspace_filter_ids", "notify_task_creator"):
         setattr(row, field, getattr(body, field))
     row.events_json = body.events
     db.commit()
@@ -108,12 +127,14 @@ def build_test_request(db, user_id, body, ws_id):
     scope_endpoint(db, user, ws_id)
     if ws_id and body.delivery_location != "server":
         raise HTTPException(422, "工作区 Webhook 从服务端投递")
+    validate_scope_fields(db, user, body, ws_id)
     try:
         validate_url(body.url)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     event_id = str(uuid4())
-    workspace = db.get(Workspace, ws_id) if ws_id else None
+    test_workspace_id = ws_id or (body.workspace_filter_ids[0] if body.workspace_filter_ids else None)
+    workspace = db.get(Workspace, test_workspace_id) if test_workspace_id else None
     payload = {
         "schema_version": 1,
         "event_id": event_id,

@@ -36,6 +36,10 @@ class TaskWebhookEndpoint(Base):
     url = Column(Text, nullable=False)
     delivery_location = Column(String(20), nullable=False, default="server")
     events_json = Column(JSON, nullable=False)
+    # 个人 Webhook 可选：仅接收列出的工作区事件；为空表示跟随账号覆盖全部工作区。
+    workspace_filter_ids = Column(JSON, nullable=True)
+    # 个人 Webhook 可选：别人完成/失败我创建的任务时，也通知任务创建者。
+    notify_task_creator = Column(Boolean, nullable=False, default=False)
     # Event timestamps are UTC. Database NOW() can use a different session zone
     # and would incorrectly exclude new events as predating this endpoint.
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

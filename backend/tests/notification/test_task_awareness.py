@@ -60,7 +60,17 @@ def latest(db, kind):
     )
 
 
-def endpoint(db, key, *, user_id=None, workspace_id=None, location="server", events=None):
+def endpoint(
+    db,
+    key,
+    *,
+    user_id=None,
+    workspace_id=None,
+    location="server",
+    events=None,
+    workspace_filter_ids=None,
+    notify_task_creator=False,
+):
     row = TaskWebhookEndpoint(
         scope_key=key,
         user_id=user_id,
@@ -69,6 +79,8 @@ def endpoint(db, key, *, user_id=None, workspace_id=None, location="server", eve
         url="https://hooks.example/secret",
         delivery_location=location,
         events_json=events or [*routes.RUNTIME_EVENTS, *routes.BUSINESS_EVENTS],
+        workspace_filter_ids=workspace_filter_ids,
+        notify_task_creator=notify_task_creator,
         created_at=datetime.utcnow() - timedelta(minutes=1),
     )
     db.add(row)
@@ -761,6 +773,23 @@ def test_settings_permissions_defaults_and_snapshot_visibility(seeded):
     )
     assert client.put("/api/users/me/task-webhook", json={"events": ["AI_RUN_INTERRUPTED"]}).status_code == 200
     assert client.put("/api/users/me/task-webhook", json={"events": ["TASK_CANCELLED"]}).status_code == 422
+    saved = client.put(
+        "/api/users/me/task-webhook",
+        json={"workspace_filter_ids": [workspace.id], "notify_task_creator": True},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["workspace_filter_ids"] == [workspace.id]
+    assert saved.json()["notify_task_creator"] is True
+    assert (
+        client.put("/api/users/me/task-webhook", json={"workspace_filter_ids": ["not-a-workspace"]}).status_code == 422
+    )
+    assert (
+        client.put(
+            f"/api/workspaces/{workspace.id}/task-webhook",
+            json={"notify_task_creator": True},
+        ).status_code
+        == 422
+    )
     assert (
         client.put(
             f"/api/workspaces/{workspace.id}/task-webhook",

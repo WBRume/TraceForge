@@ -18,9 +18,11 @@ from app.domains.notification.services.task_awareness import (
     RUNTIME_EVENTS,
     webhook_eligible,
 )
+from app.domains.task.models.task import SddTask
 
 MAX_ATTEMPTS = 3
 LEASE_SECONDS = 30
+TASK_CREATOR_EVENTS = {"TASK_COMPLETED", "TASK_FAILED"}
 
 
 def validate_url(url):
@@ -68,22 +70,36 @@ async def _post_webhook(url, body, event_id):
         return False, type(exc).__name__
 
 
+def workspace_user_is_member(db, workspace, user_id):
+    return bool(
+        workspace.owner_id == user_id
+        or db.query(WorkspaceMember.id)
+        .filter(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user_id)
+        .first()
+        is not None
+    )
+
+
 def endpoint_authorized(db, endpoint, event):
     if not endpoint.enabled or event.event_type not in (endpoint.events_json or []):
         return False
     workspace = db.get(Workspace, event.workspace_id)
     if not workspace:
         return False
-    is_member = (
-        workspace.owner_id == event.creator_id
-        or db.query(WorkspaceMember.id)
-        .filter(WorkspaceMember.workspace_id == event.workspace_id, WorkspaceMember.user_id == event.creator_id)
-        .first()
-        is not None
-    )
-    return is_member and (
-        endpoint.user_id == event.creator_id if endpoint.user_id else endpoint.workspace_id == event.workspace_id
-    )
+    if endpoint.user_id:
+        if endpoint.workspace_filter_ids and event.workspace_id not in endpoint.workspace_filter_ids:
+            return False
+        if endpoint.user_id == event.creator_id:
+            return workspace_user_is_member(db, workspace, endpoint.user_id)
+        if endpoint.notify_task_creator and event.event_type in TASK_CREATOR_EVENTS:
+            task = db.get(SddTask, event.task_id)
+            return bool(
+                task
+                and task.creator_id == endpoint.user_id
+                and workspace_user_is_member(db, workspace, endpoint.user_id)
+            )
+        return False
+    return endpoint.workspace_id == event.workspace_id and workspace_user_is_member(db, workspace, event.creator_id)
 
 
 def prepare_deliveries(db, event, now):
@@ -94,13 +110,17 @@ def prepare_deliveries(db, event, now):
     pending_hitl = event.event_type == "AI_HITL_SUSPENDED" and job and job.awareness_state == "AI_HITL_SUSPENDED"
     if not webhook_eligible(event, job, now) and not pending_hitl:
         return
-    endpoints = (
-        db.query(TaskWebhookEndpoint)
-        .filter(
-            or_(TaskWebhookEndpoint.user_id == event.creator_id, TaskWebhookEndpoint.workspace_id == event.workspace_id)
-        )
-        .all()
-    )
+    task_creator_id = None
+    if event.event_type in TASK_CREATOR_EVENTS and not event.job_id:
+        task = db.get(SddTask, event.task_id)
+        task_creator_id = task.creator_id if task else None
+    endpoint_filter = [
+        TaskWebhookEndpoint.user_id == event.creator_id,
+        TaskWebhookEndpoint.workspace_id == event.workspace_id,
+    ]
+    if task_creator_id:
+        endpoint_filter.append(TaskWebhookEndpoint.user_id == task_creator_id)
+    endpoints = db.query(TaskWebhookEndpoint).filter(or_(*endpoint_filter)).all()
     for endpoint in endpoints:
         if not endpoint_authorized(db, endpoint, event) or endpoint.created_at > event.created_at:
             continue
