@@ -108,6 +108,7 @@ const clearRootDir = () => {
 }
 
 const currentService = computed(() => services.value.find(s => s.feature === currentTarget.value))
+const configActionsEl = ref<HTMLElement | null>(null)
 
 const targetTitle = computed(() => {
   if (currentTarget.value === 'mgmt') return t('system_config.tab_mgmt_selection')
@@ -208,6 +209,7 @@ watch(() => route.params.feature, () => {
             <ArrowPathIcon class="icon-sm" :class="{ spinning: serviceLoading }" />
             {{ $t(serviceLoading ? 'feature_config.probing' : 'feature_config.refresh') }}
           </button>
+          <div ref="configActionsEl" class="config-actions" />
         </div>
       </header>
 
@@ -217,7 +219,7 @@ watch(() => route.params.feature, () => {
         <main class="detail-main-content">
           <!-- 1. Platform feature forms (Speech, Search, Diagnosis, OAuth, Agent) -->
           <div v-if="currentService" class="service-form-wrapper">
-            <FeatureConfigForm v-if="currentService.config" :config="currentService.config" @saved="onConfigSaved">
+            <FeatureConfigForm v-if="currentService.config" :config="currentService.config" :action-target="configActionsEl" @saved="onConfigSaved">
               <SearchIndexManagement
                 v-if="currentService.feature === 'search'"
                 :revision="currentService.config.revision"
@@ -237,15 +239,25 @@ watch(() => route.params.feature, () => {
                   <h3 class="setting-card-title">{{ $t('system_config.mgmt_selection_label') }}</h3>
                   <p class="setting-card-subtitle">{{ $t('system_config.mgmt_selection_desc') }}</p>
                 </div>
-                <div class="modern-toggle">
-                  <ToggleSwitch
-                    v-model="mgmtEnabled"
+                <div class="setting-card-tools">
+                  <div class="modern-toggle">
+                    <ToggleSwitch
+                      v-model="mgmtEnabled"
+                      :disabled="loadingStore || savingMgmt"
+                      :aria-label="$t('system_config.mgmt_selection_label')"
+                    />
+                    <span class="toggle-text" :class="{ on: mgmtEnabled }">
+                      {{ mgmtEnabled ? $t('system_config.state_on') : $t('system_config.state_off') }}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    class="btn-primary"
                     :disabled="loadingStore || savingMgmt"
-                    :aria-label="$t('system_config.mgmt_selection_label')"
-                  />
-                  <span class="toggle-text" :class="{ on: mgmtEnabled }">
-                    {{ mgmtEnabled ? $t('system_config.state_on') : $t('system_config.state_off') }}
-                  </span>
+                    @click="saveMgmtSelection"
+                  >
+                    {{ savingMgmt ? $t('system_config.saving') : $t('system_config.save') }}
+                  </button>
                 </div>
               </div>
 
@@ -289,18 +301,6 @@ watch(() => route.params.feature, () => {
                   </div>
                 </div>
               </div>
-
-              <footer class="setting-card-footer">
-                <span class="footer-hint">{{ $t('feature_config.form_intro') }}</span>
-                <button
-                  type="button"
-                  class="btn-primary"
-                  :disabled="loadingStore || savingMgmt"
-                  @click="saveMgmtSelection"
-                >
-                  {{ savingMgmt ? $t('system_config.saving') : $t('system_config.save') }}
-                </button>
-              </footer>
             </section>
           </div>
 
@@ -312,7 +312,17 @@ watch(() => route.params.feature, () => {
                   <h3 class="setting-card-title">{{ $t('system_config.workspace_root_label') }}</h3>
                   <p class="setting-card-subtitle">{{ $t('system_config.workspace_root_desc') }}</p>
                 </div>
-                <span class="source-tag env">WORKSPACE_ROOT_DIR</span>
+                <div class="setting-card-tools">
+                  <span class="source-tag env">WORKSPACE_ROOT_DIR</span>
+                  <button
+                    type="button"
+                    class="btn-primary"
+                    :disabled="loadingStore || savingRoot || rootDirInvalid"
+                    @click="saveRootDir"
+                  >
+                    {{ savingRoot ? $t('system_config.saving') : $t('system_config.save') }}
+                  </button>
+                </div>
               </div>
 
               <div class="field-container">
@@ -364,18 +374,6 @@ watch(() => route.params.feature, () => {
                   </div>
                 </div>
               </div>
-
-              <footer class="setting-card-footer">
-                <span class="footer-hint">{{ $t('feature_config.form_intro') }}</span>
-                <button
-                  type="button"
-                  class="btn-primary"
-                  :disabled="loadingStore || savingRoot || rootDirInvalid"
-                  @click="saveRootDir"
-                >
-                  {{ savingRoot ? $t('system_config.saving') : $t('system_config.save') }}
-                </button>
-              </footer>
             </section>
           </div>
         </main>
@@ -526,6 +524,7 @@ watch(() => route.params.feature, () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 20px;
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
 }
@@ -666,6 +665,20 @@ watch(() => route.params.feature, () => {
   color: #0284c7;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.config-actions {
+  display: flex;
+  align-items: center;
+}
+
 /* Grid Layout */
 .detail-grid {
   display: grid;
@@ -694,6 +707,7 @@ watch(() => route.params.feature, () => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: wrap;
   padding-bottom: 20px;
   border-bottom: 1px solid #f1f5f9;
   margin-bottom: 20px;
@@ -851,19 +865,12 @@ watch(() => route.params.feature, () => {
   color: #64748b;
 }
 
-.setting-card-footer {
+.setting-card-tools {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding-top: 18px;
-  border-top: 1px solid #f1f5f9;
-  margin-top: 22px;
-}
-
-.footer-hint {
-  font-size: 12px;
-  color: #64748b;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 14px;
 }
 
 /* Sidebar Diagnostic Card */

@@ -129,4 +129,23 @@ describe('inline system configuration', () => {
     await view.get('#config-tab-search').trigger('keydown', { key: 'End' })
     expect(view.get('#config-panel-root').isVisible()).toBe(true)
   })
+
+  it('renders the probe and save actions inside the supplied header target', async () => {
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    const Form = (await import('../FeatureConfigForm.vue')).default
+    const view = mount(Form, {
+      props: { config: configuration, actionTarget: target },
+      global: { plugins: [i18n], stubs: { 'el-tooltip': true } },
+    })
+    await flushPromises()
+    const buttons = [...target.querySelectorAll('button')]
+    expect(buttons.map(item => item.textContent?.trim())).toEqual(['测试连接 / 探测', '保存并应用'])
+    expect(buttons[1]!.getAttribute('form')).toBe(view.get('form').attributes('id'))
+    buttons[0]!.click()
+    await flushPromises()
+    expect(featureConfigApi.test).toHaveBeenCalledWith('speech', { revision: 4, values: {} })
+    view.unmount()
+    target.remove()
+  })
 })

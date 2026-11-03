@@ -8,7 +8,7 @@ import { useFeatureConfig } from '@/composables/useFeatureConfig'
 import type { FeatureConfig, FeatureId, FeatureField } from '@/services/featureConfigApi'
 import { formatApiError } from '@/utils/error'
 
-const props = defineProps<{ config: FeatureConfig }>()
+const props = defineProps<{ config: FeatureConfig; actionTarget?: HTMLElement | null }>()
 const emit = defineEmits<{ saved: [config: FeatureConfig, applied: boolean] }>()
 const { t } = useI18n()
 const { values, secretActions, busy, testResult, testStale, invalidSecret, error, updateSecret, setSecretAction, test, save } =
@@ -52,6 +52,7 @@ watch(() => values.provider, () => {
 })
 const canReset = computed(() => props.config.revision > 0 || props.config.fields.some(field => field.source === 'database'))
 const inputId = (key: string) => `feature-${props.config.feature}-${key}`
+const formId = computed(() => `feature-config-form-${props.config.feature}`)
 const isDiagnosisEnforcement = (field: FeatureField) => props.config.feature === 'diagnosis' && field.key === 'enforcement'
 const secretInput = (key: string, event: Event) => updateSecret(key, (event.target as HTMLInputElement).value)
 const optionLabel = (value: string) => t('feature_config.options.' + value, value)
@@ -69,8 +70,28 @@ const runSave = async (reset = false) => {
 
 <template>
   <div class="feature-configuration">
-    <form class="feature-form" @submit.prevent="runSave()">
+    <form :id="formId" class="feature-form" @submit.prevent="runSave()">
+      <Teleport :to="actionTarget ?? 'body'" :disabled="!actionTarget">
+        <div class="form-toolbar" :class="{ 'in-header': !!actionTarget }">
+          <span class="action-hint">{{ t('feature_config.form_intro') }}</span>
+          <div class="action-buttons">
+            <button type="button" class="btn-secondary" :disabled="!!busy || invalidSecret || !!config.error" @click="runTest">
+              {{ t(busy === 'test' ? 'feature_config.testing' : 'feature_config.test') }}
+            </button>
+            <button type="submit" :form="formId" class="btn-primary" :disabled="!!busy || invalidSecret || !!config.error">
+              {{ t(busy === 'save' ? 'feature_config.saving' : 'feature_config.save') }}
+            </button>
+          </div>
+        </div>
+      </Teleport>
       <p v-if="config.error" class="form-error" role="alert">{{ config.error }}</p>
+      <div v-if="testResult" class="probe-result" :class="testResult.status" role="status" aria-live="polite">
+        <strong>{{ t('feature_config.status_' + testResult.status) }}</strong>
+        <p>{{ testResult.explanation }}</p>
+        <p v-if="testResult.guidance" class="probe-guidance">{{ testResult.guidance }}</p>
+        <p v-if="testStale" class="stale-result">{{ t('feature_config.test_stale') }}</p>
+      </div>
+      <p v-if="error" class="form-error" role="alert">{{ error }}</p>
       <fieldset v-for="group in groups" :key="group.name" :disabled="!!busy" class="feature-group">
         <legend>{{ t('feature_config.groups.' + group.name) }}</legend>
         <div class="feature-fields">
@@ -139,26 +160,6 @@ const runSave = async (reset = false) => {
           </div>
         </div>
       </fieldset>
-
-      <div v-if="testResult" class="probe-result" :class="testResult.status" role="status" aria-live="polite">
-        <strong>{{ t('feature_config.status_' + testResult.status) }}</strong>
-        <p>{{ testResult.explanation }}</p>
-        <p v-if="testResult.guidance" class="probe-guidance">{{ testResult.guidance }}</p>
-        <p v-if="testStale" class="stale-result">{{ t('feature_config.test_stale') }}</p>
-      </div>
-      <p v-if="error" class="form-error" role="alert">{{ error }}</p>
-
-      <div class="form-actions">
-        <span class="action-hint">{{ t('feature_config.form_intro') }}</span>
-        <div class="action-buttons">
-          <button type="button" class="btn-secondary" :disabled="!!busy || invalidSecret || !!config.error" @click="runTest">
-            {{ t(busy === 'test' ? 'feature_config.testing' : 'feature_config.test') }}
-          </button>
-          <button type="submit" class="btn-primary" :disabled="!!busy || invalidSecret || !!config.error">
-            {{ t(busy === 'save' ? 'feature_config.saving' : 'feature_config.save') }}
-          </button>
-        </div>
-      </div>
     </form>
     <slot />
     <details class="reset-config">
@@ -291,21 +292,37 @@ const runSave = async (reset = false) => {
 
 .form-error, .stale-result { color: #b91c1c; font-size: 13px; line-height: 1.6; margin: 10px 0; }
 
-.form-actions {
+.form-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 6;
   display: flex;
   justify-content: space-between;
   align-items: center;
   flex-wrap: wrap;
-  gap: 16px;
-  margin: 24px 0;
-  padding: 18px 24px;
-  background: #ffffff;
+  gap: 12px 16px;
+  margin: 0 0 20px;
+  padding: 14px 20px;
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(8px);
   border: 1px solid #dbe4ed;
   border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06);
 }
 .action-hint { font-size: 12px; color: #64748b; }
-.action-buttons { display: flex; flex-wrap: wrap; gap: 12px; }
+.action-buttons { display: flex; flex-wrap: wrap; gap: 12px; margin-left: auto; }
+.form-toolbar.in-header {
+  position: static;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.form-toolbar.in-header .action-hint { display: none; }
+.form-toolbar.in-header .action-buttons { margin-left: 0; }
 
 .reset-config {
   margin-top: 24px;
@@ -324,9 +341,9 @@ const runSave = async (reset = false) => {
 
 @media (max-width: 650px) {
   .feature-fields { grid-template-columns: minmax(0, 1fr); }
-  .form-actions { align-items: stretch; }
-  .action-buttons { width: 100%; }
-  .action-buttons button { flex: 1; justify-content: center; }
+  .form-toolbar:not(.in-header) { position: static; align-items: stretch; }
+  .form-toolbar:not(.in-header) .action-buttons { width: 100%; margin-left: 0; }
+  .form-toolbar:not(.in-header) .action-buttons button { flex: 1; justify-content: center; }
 }
 </style>
 
