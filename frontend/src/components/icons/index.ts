@@ -126,6 +126,7 @@ import {
 } from '@heroicons/vue/24/solid'
 
 import GitBranchIconComponent from './GitBranchIcon.vue'
+import RotateCcwIconComponent from './RotateCcwIcon.vue'
 import GitPullRequestIconComponent from './GitPullRequestIcon.vue'
 import GitCommitIconComponent from './GitCommitIcon.vue'
 import GithubIconComponent from './GithubIcon.vue'
@@ -291,6 +292,9 @@ export const GitPullRequestIcon = wrapIcon(GitPullRequestIconComponent, 'GitPull
 export const GitCommitIcon = wrapIcon(GitCommitIconComponent, 'GitCommitIcon')
 export const GithubIcon = wrapIcon(GithubIconComponent, 'GithubIcon')
 
+// Custom rotation icon in Heroicons 24/outline specifications
+export const RotateCcwIcon = wrapIcon(RotateCcwIconComponent, 'RotateCcwIcon')
+
 // Converged semantic mappings from previous Lucide variants
 export const Activity = SignalIcon
 export const AlertCircle = ExclamationCircleIcon
@@ -433,7 +437,7 @@ export const Plus = PlusIcon
 export const RefreshCw = ArrowPathIcon
 export const Repeat = ArrowPathIcon
 export const Rocket = RocketLaunchIcon
-export const RotateCcw = ArrowUturnLeftIcon
+export const RotateCcw = RotateCcwIcon
 export const RotateCw = ArrowPathIcon
 export const Save = ArrowDownOnSquareIcon
 export const Scale = ScaleIcon
