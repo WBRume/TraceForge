@@ -22,6 +22,11 @@
   position: relative;
   container-name: chat-main;
   container-type: inline-size;
+  --chat-header-height: 60px;
+  --chat-overlay-inset: var(--chat-header-height);
+}
+.chat-main.is-sop {
+  --chat-overlay-inset: 0px;
 }
 .chat-main.empty-state {
   justify-content: center;
@@ -46,14 +51,13 @@
 
 /* 会话忙（撤销进行中）时头部与操作遮罩的层叠约束 */
 .chat-main.is-session-busy .chat-header {
-  position: relative;
   z-index: 50;
   pointer-events: none;
 }
 
 .session-operation-overlay {
   position: absolute;
-  inset: 60px 0 0;
+  inset: var(--chat-header-height, 60px) 0 0;
   z-index: 60;
   display: flex;
   align-items: center;
@@ -152,7 +156,7 @@
 .cli-shell-wrapper {
   flex: 1;
   min-height: 0;
-  padding: 10px var(--space-6) var(--space-6);
+  padding: calc(var(--chat-header-height, 60px) + 10px) var(--space-6) var(--space-6);
 }
 
 /* ConfirmActionModal 的 content slot 渲染在本组件作用域内，动作行样式由本组件提供 */

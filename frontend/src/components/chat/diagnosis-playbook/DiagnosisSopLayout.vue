@@ -102,7 +102,7 @@ const layoutStyle = computed(() => ({ gridTemplateColumns: `${widths.value.left}
 </template>
 <style scoped>
 .ordinary-conversation { display:flex; flex:1; min-height:0; flex-direction:column }
-.sop-layout { display:grid; flex:1; min-height:0; min-width:0; overflow:auto; background:#f8fafc }
+.sop-layout { display:grid; flex:1; min-height:0; min-width:0; overflow:auto; background:#f8fafc; padding-top: var(--chat-header-height, 0px) }
 .sop-layout.dragging { cursor:col-resize; user-select:none }
 .sop-splitter { position:relative; cursor:col-resize; touch-action:none; outline:none }
 .sop-splitter::before { content:''; position:absolute; inset:0 2px; background:#e2e8f0 }

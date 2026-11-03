@@ -206,7 +206,7 @@ watch(
     <!-- Center: Chat + Pinned Cards -->
     <section
       class="chat-main"
-      :class="{ 'is-session-busy': vm.isUndoing || vm.initializingTask }"
+      :class="{ 'is-session-busy': vm.isUndoing || vm.initializingTask, 'is-sop': sopEnabled }"
       :aria-busy="vm.isUndoing || vm.initializingTask"
       v-if="vm.currentTask"
     >
@@ -534,6 +534,11 @@ watch(
   position: relative;
 }
 
+/* 置顶卡片区同样从悬浮工具栏下方开始（非 SOP 模式） */
+.pinned-cards-area {
+  margin-top: var(--chat-overlay-inset, 0px);
+}
+
 /* ─── Chat Main ─── */
 .chat-main {
   flex: 1;
@@ -543,6 +548,14 @@ watch(
   position: relative;
   container-name: chat-main;
   container-type: inline-size;
+  /* 工具栏悬浮层高度（由 SessionHeader 的 ResizeObserver 写入），
+     用于内容首屏让位与滚动场景下的可视区内边距 */
+  --chat-header-height: 60px;
+  --chat-overlay-inset: var(--chat-header-height);
+}
+/* SOP 三栏会自行让出工具栏高度，避免二次偏移 */
+.chat-main.is-sop {
+  --chat-overlay-inset: 0px;
 }
 .chat-main.empty-state {
   justify-content: center;
@@ -573,14 +586,13 @@ watch(
 
 /* 会话忙（撤销进行中）时头部与操作遮罩的层叠约束 */
 .chat-main.is-session-busy .chat-header {
-  position: relative;
   z-index: 50;
   pointer-events: none;
 }
 
 .session-operation-overlay {
   position: absolute;
-  inset: 60px 0 0;
+  inset: var(--chat-header-height, 60px) 0 0;
   z-index: 60;
   display: flex;
   align-items: center;
@@ -679,7 +691,12 @@ watch(
 .cli-shell-wrapper {
   flex: 1;
   min-height: 0;
-  padding: 10px var(--space-6) var(--space-6);
+  padding: calc(var(--chat-header-height, 60px) + 10px) var(--space-6) var(--space-6);
+}
+
+/* 预启动提示位于悬浮工具栏下方，避免被毛玻璃遮住 */
+.spec-bootstrap-wrapper {
+  margin-top: var(--chat-overlay-inset, 0px);
 }
 
 /* ConfirmActionModal 的 content slot 渲染在本组件作用域内，动作行样式由本组件提供 */

@@ -84,7 +84,7 @@ const needsReturnLatest = computed(() => props.syncState === 'stale' || props.sy
 <style scoped>
 .reading-resume-banner-wrapper {
   position: absolute;
-  top: 10px;
+  top: calc(var(--chat-overlay-inset, 0px) + 10px);
   left: 0;
   right: 0;
   display: flex;

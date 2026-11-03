@@ -104,6 +104,19 @@ describe('ChatView diagnosis summary layout containment', () => {
     expect(layoutCss).not.toContain('.session-operation-banner')
   })
 
+  it('floats the session toolbar as a frosted overlay above the message stream', () => {
+    const headerRule = declarations(sessionHeaderSource, '.chat-header')
+    expect(headerRule).toContain('position: absolute')
+    expect(headerRule).toContain('backdrop-filter: blur(14px) saturate(1.4)')
+    expect(headerRule).toContain('background-color: rgba(248, 250, 252, 0.52)')
+    expect(declarations(chatHistoryPanelSource, '.chat-history')).toContain(
+      'padding-top: calc(var(--chat-overlay-inset, 0px) + var(--space-6))',
+    )
+    expect(declarations(chatViewSource, '.chat-main')).toContain('--chat-overlay-inset: var(--chat-header-height)')
+    expect(sessionHeaderSource).toContain('ResizeObserver')
+    expect(sessionHeaderSource).toContain("setProperty('--chat-header-height'")
+  })
+
   it('routes undo through the shared confirmation modal before calling the view model', () => {
     expect(chatViewSource).toContain('@undo-request="handleUndoRequest"')
     expect(chatViewSource).toContain('<ConfirmActionModal')

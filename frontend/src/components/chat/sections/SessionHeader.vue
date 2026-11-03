@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   Play,
@@ -41,10 +42,36 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const workspaceStore = useWorkspaceStore()
+
+// 工具栏悬浮在会话区之上，其高度决定内容首屏的让位距离。
+// 窄容器下工具栏会折行，因此用 ResizeObserver 同步真实高度，避免写死像素。
+const headerEl = ref<HTMLElement | null>(null)
+let headerObserver: ResizeObserver | null = null
+let headerHost: HTMLElement | null = null
+
+const syncHeaderHeight = () => {
+  if (!headerEl.value || !headerHost) return
+  headerHost.style.setProperty('--chat-header-height', `${Math.ceil(headerEl.value.getBoundingClientRect().height)}px`)
+}
+
+onMounted(() => {
+  headerHost = headerEl.value?.parentElement ?? null
+  if (!headerHost || !headerEl.value || typeof ResizeObserver === 'undefined') return
+  headerObserver = new ResizeObserver(syncHeaderHeight)
+  headerObserver.observe(headerEl.value)
+  syncHeaderHeight()
+})
+
+onBeforeUnmount(() => {
+  headerObserver?.disconnect()
+  headerObserver = null
+  headerHost?.style.removeProperty('--chat-header-height')
+  headerHost = null
+})
 </script>
 
 <template>
-  <header class="chat-header glass-panel">
+  <header ref="headerEl" class="chat-header glass-panel">
     <div class="header-left">
       <button
         v-if="props.showTasklistToggle"
@@ -171,6 +198,10 @@ const workspaceStore = useWorkspaceStore()
 
 <style scoped>
 .chat-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
   min-height: 60px;
   min-width: 0;
   padding: var(--space-2) var(--space-6);
@@ -181,11 +212,24 @@ const workspaceStore = useWorkspaceStore()
   gap: var(--space-4);
   border-radius: 0;
   border: none;
-  border-bottom: 1px solid rgba(0,0,0,0.05);
-  background-color: rgba(255,255,255,0.8);
-  backdrop-filter: blur(12px);
-  z-index: 10;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.5);
+  background-color: rgba(248, 250, 252, 0.52);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.46), rgba(255, 255, 255, 0.08));
+  backdrop-filter: blur(14px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.05), 0 12px 32px -20px rgba(15, 23, 42, 0.35);
+  z-index: 30;
   flex-shrink: 0;
+}
+.chat-header:hover {
+  background-color: rgba(248, 250, 252, 0.52);
+}
+/* 不支持背景滤镜时退化为高不透明度底色，保证工具栏文字可读 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .chat-header {
+    background-color: rgba(248, 250, 252, 0.96);
+    background-image: none;
+  }
 }
 .header-left {
   display: flex;

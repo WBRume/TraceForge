@@ -96,6 +96,8 @@ const { t } = useI18n()
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-6);
+  /* 悬浮工具栏下的首屏让位；滚动时气泡从毛玻璃后方穿过 */
+  padding-top: calc(var(--chat-overlay-inset, 0px) + var(--space-6));
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -155,7 +157,7 @@ const { t } = useI18n()
   100% { filter: drop-shadow(0 0 0 rgba(14, 165, 233, 0)); }
 }
 
-.history-context-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 8px 24px 0; padding: 10px 14px; border: 1px solid var(--el-color-primary-light-7); border-radius: 8px; background: var(--el-color-primary-light-9); color: var(--el-text-color-regular); font-size: 13px; }
+.history-context-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: calc(var(--chat-overlay-inset, 0px) + 8px) 24px 0; padding: 10px 14px; border: 1px solid var(--el-color-primary-light-7); border-radius: 8px; background: var(--el-color-primary-light-9); color: var(--el-text-color-regular); font-size: 13px; }
 .history-context-bar span { margin-right: auto; }
 .history-context-bar button { cursor: pointer; padding: 4px 9px; background: var(--el-bg-color); color: var(--el-color-primary); border: 1px solid var(--el-border-color); border-radius: 5px; }
 .history-context-bar button:disabled { cursor: wait; opacity: .5; }
