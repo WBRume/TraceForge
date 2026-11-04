@@ -33,7 +33,7 @@ test('embedded startup failure does not stop the desktop runtime', async () => {
     const service = await startServer(settings)
     services.push(service)
     expect(service.isRunning()).toBe(true)
-    expect((await fetch(new URL('/v1/identity', service.server.url), { headers })).status).toBe(200)
+    expect((await fetch(new URL('/v1/identity', service.server!.url), { headers })).status).toBe(200)
   }
 })
 
@@ -41,8 +41,8 @@ test('occupied ports release initialization state and leave the running service 
   const service = await startServer(config())
   services.push(service)
   const other = config()
-  await expect(startServer({ ...other, port: service.server.port })).rejects.toThrow()
-  expect((await fetch(new URL('/v1/identity', service.server.url), { headers })).status).toBe(200)
+  await expect(startServer({ ...other, port: service.server!.port })).rejects.toThrow()
+  expect((await fetch(new URL('/v1/identity', service.server!.url), { headers })).status).toBe(200)
   const retry = await startServer(other)
   services.push(retry)
   expect(retry.isRunning()).toBe(true)
@@ -52,8 +52,8 @@ test('shutdown is idempotent and releases the port and journal for restart', asy
   const settings = config()
   const service = await startServer(settings)
   services.push(service)
-  const port = service.server.port
-  const url = new URL('/v1/identity', service.server.url)
+  const port = service.server!.port
+  const url = new URL('/v1/identity', service.server!.url)
   const identity = await fetch(url, { headers }).then(response => response.json())
   await Promise.all([service.close(), service.close()])
   expect(service.isRunning()).toBe(false)
@@ -62,6 +62,25 @@ test('shutdown is idempotent and releases the port and journal for restart', asy
   services.push(restarted)
   expect(await fetch(url, { headers }).then(response => response.json())).toEqual(identity)
 })
+
+test('IPC workers ignore an occupied HTTP port and retain cached data after restart', async () => {
+  const listener = await startServer(config())
+  services.push(listener)
+  const settings = { ...config(), port: listener.server!.port }
+  const sha256 = (await import('node:crypto')).createHash('sha256').update('retained').digest('hex')
+  const object = { sha256, content: Buffer.from('retained').toString('base64') }
+  const service = await startServer(settings, { http: false })
+  services.push(service)
+  expect(service.server).toBeUndefined()
+  expect(service.isRunning()).toBe(true)
+  await service.dispatch('collaboration', { kind: 'cache_objects', payload: { objects: [object] } })
+  await Promise.all([service.close(), service.close()])
+  expect(service.isRunning()).toBe(false)
+  const restarted = await startServer(settings, { http: false })
+  services.push(restarted)
+  expect(await restarted.dispatch('collaboration', { kind: 'read_object', payload: { sha256 } })).toEqual(object)
+  expect((await fetch(new URL('/v1/identity', listener.server!.url), { headers })).status).toBe(200)
+}, 60000)
 
 test('dual repository file changes notify the desktop without polling and stop when suspended', async () => {
   const settings = config()
@@ -80,7 +99,7 @@ test('dual repository file changes notify the desktop without polling and stop w
   })
   const events: { task_id: string }[] = []
   let changeReady: (() => void) | undefined
-  const service = await startServer({ ...settings, allowed_roots: [settings.state_root] }, { onCollaborationChanged: event => { events.push(event); changeReady?.() } })
+  const service = await startServer({ ...settings, allowed_roots: [settings.state_root] }, { http: false, onCollaborationChanged: event => { events.push(event); changeReady?.() } })
   services.push(service)
   const prepared = await service.dispatch('collaboration', { kind: 'prepare', payload: { directory_mode: 'MAPPED', task_id: 'dual', binding_id: 'binding', repositories,
     session_generation: 1, session_revision: 1, repository_set_digest: 'dual', workspace_revision: 1 } })

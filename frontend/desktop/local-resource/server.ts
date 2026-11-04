@@ -7,7 +7,7 @@ import { hash, readJson, writeJson } from './filesystem'
 import type { Config } from './runtime'
 import { ResourceScheduler } from './scheduler'
 
-export async function startServer(config: Config, options: { workerUrl?: string; onCollaborationChanged?: (event: { task_id: string }) => void } = {}) {
+export async function startServer(config: Config, options: { http?: boolean; workerUrl?: string; onCollaborationChanged?: (event: { task_id: string }) => void } = {}) {
   if (!config.token || config.token.length < 32 || !Array.isArray(config.allowed_roots)
     || !path.isAbsolute(config.state_root) || config.allowed_roots.some(root => !path.isAbsolute(root))) {
     throw new Error('Config requires absolute state_root / allowed_roots and a token of at least 32 characters')
@@ -86,7 +86,7 @@ export async function startServer(config: Config, options: { workerUrl?: string;
     // Initialize the shared WAL journal before opening the other connections.
     for (let index = 0; index < workers.length; index++) await send(index, 'configure', config)
     db = new Database(path.join(config.state_root, 'journal.sqlite3'), { readonly: true })
-    server = Bun.serve({
+    if (options.http !== false) server = Bun.serve({
       hostname: config.listen_host || '127.0.0.1', port: config.port ?? 4098,
       idleTimeout: 255, maxRequestBodySize: 64 * 1024 * 1024,
       async fetch(request: Request): Promise<Response> {
@@ -100,7 +100,7 @@ export async function startServer(config: Config, options: { workerUrl?: string;
           if (request.method === 'GET' && url.pathname === '/v1/identity') {
             return Response.json({ ...identity, platform: process.platform === 'win32' ? 'nt' : 'posix',
               implementation: 'typescript', capabilities: ['provision', 'checkpoint', 'materialize',
-                'generate_patch', 'apply_patch', 'restore', 'release', 'skills', 'documents', 'roots_grant', 'repository_details', 'collaboration'] })
+                'generate_patch', 'apply_patch', 'restore', 'release', 'skills', 'documents', 'roots_grant', 'repository_details'] })
           }
           if (request.method === 'POST' && url.pathname === '/v1/roots/grant') {
             const body = await request.json() as { roots?: string[]; workspace_root?: string; repo_roots?: string[] }
@@ -127,9 +127,6 @@ export async function startServer(config: Config, options: { workerUrl?: string;
           }
           if (request.method === 'POST' && url.pathname === '/v1/operations') {
             return Response.json(await dispatch('operation', await request.json()))
-          }
-          if (request.method === 'POST' && url.pathname === '/v1/collaboration') {
-            return Response.json(await dispatch('collaboration', await request.json()))
           }
           if (request.method === 'GET' && url.pathname.startsWith('/v1/operations/')) {
             const row = db!.query('SELECT state,result FROM operations WHERE id=?')

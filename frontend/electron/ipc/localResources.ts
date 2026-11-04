@@ -143,6 +143,7 @@ export const registerLocalResourcesIpc = () => {
     return { managed: true }
   })
   ipcMain.handle('sdd:resources:ensure', async (_event, payload: { backend: string }) => {
+    if (payload.backend === 'collaboration') throw new Error('Unsupported local resource capability')
     const { resource_service_url, host_token } = await requestServices(payload, false)
     return { resource_service_url, host_token }
   })
@@ -163,19 +164,21 @@ function requestServices(payload: { backend: string }, includeAgent: boolean) {
 
 async function startServices(payload: { backend: string }, includeAgent: boolean) {
   if (!['opencode', 'dsh', 'collaboration'].includes(payload.backend) || (includeAgent && payload.backend === 'collaboration')) throw new Error('Unsupported local resource capability')
+  // Collaboration commands stay inside the desktop IPC/worker transport.
+  const http = payload.backend !== 'collaboration'
   const host = Object.values(networkInterfaces()).flat().find(address => address?.family === 'IPv4' && !address.internal)?.address || '127.0.0.1'
   const stateRoot = serviceStateRoot(payload.backend)
   await mkdir(stateRoot, { recursive: true })
   const configFile = join(stateRoot, 'host.json')
   const existing = existsSync(configFile) ? JSON.parse(await readFile(configFile, 'utf8')) : null
-  const hostPort = existing?.port || await freePort()
-  let agentPort = existing?.agent_port || await freePort()
-  while (agentPort === hostPort) agentPort = await freePort()
+  const hostPort = existing?.port || (http ? await freePort() : undefined)
+  let agentPort = existing?.agent_port || (http ? await freePort() : undefined)
+  while (http && agentPort === hostPort) agentPort = await freePort()
   const token = existing?.token || randomBytes(32).toString('hex')
   let agentToken = existing?.agent_token || randomBytes(32).toString('hex')
   const config = { state_root: stateRoot, allowed_roots: existing?.allowed_roots || [], token, listen_host: '0.0.0.0', port: hostPort, agent_port: agentPort, agent_token: agentToken, advertised_host: existing?.advertised_host || host,
     collaboration_registry_path: join(app.getPath('userData'), 'local-resources', 'collaboration-managed-roots.json') }
-  const result = () => ({ service_url: `http://${config.advertised_host}:${agentPort}`, resource_service_url: `http://${config.advertised_host}:${hostPort}`, host_token: token, agent_token: agentToken })
+  const result = () => http ? { service_url: `http://${config.advertised_host}:${agentPort}`, resource_service_url: `http://${config.advertised_host}:${hostPort}`, host_token: token, agent_token: agentToken } : {}
   const agentReady = async () => {
     if (!includeAgent) return true
     try {
@@ -200,11 +203,16 @@ async function startServices(payload: { backend: string }, includeAgent: boolean
   if (hostReady && await agentReady()) return result()
   const agentIsReady = await agentReady()
   for (const [port, ready, label] of [[hostPort, hostReady, '同机资源服务'], [agentPort, agentIsReady, payload.backend]] as const) {
-    if (ready) continue
+    if (!http || ready) continue
     const listener = createServer()
     try {
       await new Promise<void>((ok, fail) => { listener.once('error', fail); listener.listen(port, '0.0.0.0', ok) })
-    } catch { throw new Error(`${label} 端口 ${port} 已被占用，但协议或凭据检测未通过。请检查服务版本、地址与访问凭据。`) }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'EACCES') throw new Error(`${label} 无法监听端口 ${port}（EACCES）：系统拒绝访问，该端口可能被系统保留或受权限限制。`, { cause: error })
+      if (code !== 'EADDRINUSE') throw error
+      throw new Error(`${label} 端口 ${port} 已被占用，但协议或凭据检测未通过。请检查服务版本、地址与访问凭据。`, { cause: error })
+    }
     finally { if (listener.listening) await new Promise<void>(ok => listener.close(() => ok())) }
   }
   await writeFile(configFile, JSON.stringify(config), { mode: 0o600 })
@@ -215,6 +223,7 @@ async function startServices(payload: { backend: string }, includeAgent: boolean
     requireActive()
     if (!hostReady) {
       resource = await startLocalResourceService({ ...config, roots_config_path: configFile }, {
+        http,
         onCollaborationChanged: event => {
           for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('sdd:collaboration:changed', event)
         },

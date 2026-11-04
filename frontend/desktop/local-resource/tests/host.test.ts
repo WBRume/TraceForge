@@ -15,7 +15,7 @@ const body = (kind: string, payload: any, operation_id: string, task_id = 'task'
   return { ...content, payload_hash: hash(canonical(content)) }
 }
 async function post(kind: string, payload: any, key: string, task = 'task') {
-  const response = await fetch(new URL('/v1/operations', host.server.url), { method: 'POST', headers, body: JSON.stringify(body(kind, payload, key, task)) })
+  const response = await fetch(new URL('/v1/operations', host.server!.url), { method: 'POST', headers, body: JSON.stringify(body(kind, payload, key, task)) })
   return { status: response.status, data: await response.json() as any }
 }
 async function ok(kind: string, payload: any, key: string, task = 'task') {
@@ -49,7 +49,7 @@ async function repository() {
   return { source, repo }
 }
 
-describe('HTTP protocol and ownership', () => {
+describe('embedded collaboration, HTTP protocol and ownership', () => {
   test('collaboration dispatch prepares and captures through the embedded worker', async () => {
     const { source, repo } = await repository()
     const prepared = await host.dispatch('collaboration', { kind: 'prepare', payload: {
@@ -58,15 +58,14 @@ describe('HTTP protocol and ownership', () => {
     } })
     const file = path.join(prepared.repositories[0].local_worktree_path, 'code.txt')
     fs.writeFileSync(file, 'desktop edit')
-    const response = await fetch(new URL('/v1/collaboration', host.server.url), { method: 'POST', headers,
-      body: JSON.stringify({ kind: 'capture', payload: { task_id: 'sync', operation_id: 'input' } }) })
-    expect(response.status).toBe(200)
-    const captured = await response.json() as any
+    const captured = await host.dispatch('collaboration', { kind: 'capture', payload: { task_id: 'sync', operation_id: 'input' } })
     expect(captured.manifest.repositories[0].files[0].sha256).toBe(hash('desktop edit'))
     expect(fs.readFileSync(path.join(source, 'code.txt'), 'utf8')).toBe('base\n')
   }, 60_000)
   test('auth, canonical Python hash, replay, ID conflict, path and .git guards', async () => {
-    expect((await fetch(new URL('/v1/identity', host.server.url))).status).toBe(401)
+    expect((await fetch(new URL('/v1/identity', host.server!.url))).status).toBe(401)
+    const identity = await (await fetch(new URL('/v1/identity', host.server!.url), { headers })).json() as any
+    expect(identity.capabilities).not.toContain('collaboration')
     expect(canonical({ z: '中文', a: [1, true, null] })).toBe('{"a": [1, true, null], "z": "中文"}')
     const payload = { workspace_root: workspace, repositories: [] }
     expect((await post('provision', { ...payload, workspace_root: root }, 'escape')).status).toBe(409)
@@ -79,10 +78,10 @@ describe('HTTP protocol and ownership', () => {
     }
     expect(fs.existsSync(path.join(workspace, 'tasks/escape'))).toBe(false)
   })
-  test('does not expose standalone dashboard or system controls', async () => {
+  test('does not expose standalone dashboard, system controls or collaboration over HTTP', async () => {
     for (const [method, pathname] of [['GET', '/'], ['GET', '/dashboard'], ['GET', '/v1/status'],
-      ['POST', '/v1/system/open-folder'], ['POST', '/v1/system/shutdown']]) {
-      const url = new URL(pathname!, host.server.url)
+      ['POST', '/v1/system/open-folder'], ['POST', '/v1/system/shutdown'], ['POST', '/v1/collaboration']]) {
+      const url = new URL(pathname!, host.server!.url)
       expect((await fetch(url, { method })).status).toBe(401)
       expect((await fetch(url, { method, headers })).status).toBe(404)
     }
@@ -90,7 +89,7 @@ describe('HTTP protocol and ownership', () => {
   test('checks personal fork across all fetch remotes and keeps the original dirty tree', async () => {
     const { source, repo } = await repository()
     fs.writeFileSync(path.join(source, 'code.txt'), 'personal uncommitted\n')
-    const inspection = await fetch(new URL('/v1/repositories/inspect', host.server.url), { method: 'POST', headers, body: JSON.stringify({ workspace_root: workspace, repositories: [repo] }) })
+    const inspection = await fetch(new URL('/v1/repositories/inspect', host.server!.url), { method: 'POST', headers, body: JSON.stringify({ workspace_root: workspace, repositories: [repo] }) })
     expect((await inspection.json() as any).repositories[0].matched_remote).toBe('mine')
     const receipt = await ok('provision', { workspace_root: workspace, repositories: [repo] }, 'provision')
     expect(fs.readFileSync(path.join(receipt.task_root, 'repo/code.txt'), 'utf8')).toBe('base\n')
@@ -192,12 +191,12 @@ test('starts without directory grants and reloads explicit grants without restar
   const config = { state_root: path.join(root, 'state'), allowed_roots: [] as string[], token: 'x'.repeat(32), port: 0 }
   fs.writeFileSync(configPath, JSON.stringify(config))
   host = await startServer({ ...config, roots_config_path: configPath })
-  const identity = await fetch(new URL('/v1/identity', host.server.url), { headers }).then(r => r.json())
-  const inspect = () => fetch(new URL('/v1/repositories/inspect', host.server.url), { method: 'POST', headers, body: JSON.stringify({ workspace_root: workspace, repositories: [] }) })
+  const identity = await fetch(new URL('/v1/identity', host.server!.url), { headers }).then(r => r.json())
+  const inspect = () => fetch(new URL('/v1/repositories/inspect', host.server!.url), { method: 'POST', headers, body: JSON.stringify({ workspace_root: workspace, repositories: [] }) })
   expect((await inspect()).status).toBe(409)
   fs.writeFileSync(configPath, JSON.stringify({ ...config, allowed_roots: [workspace] }))
   expect((await inspect()).status).toBe(200)
-  expect(await fetch(new URL('/v1/identity', host.server.url), { headers }).then(r => r.json())).toEqual(identity)
+  expect(await fetch(new URL('/v1/identity', host.server!.url), { headers }).then(r => r.json())).toEqual(identity)
 })
 
 test('grants directory roots via authenticated API and persists to config file', async () => {
@@ -207,15 +206,15 @@ test('grants directory roots via authenticated API and persists to config file',
   fs.writeFileSync(configPath, JSON.stringify(config))
   host = await startServer({ ...config, roots_config_path: configPath })
 
-  const inspect = () => fetch(new URL('/v1/repositories/inspect', host.server.url), { method: 'POST', headers, body: JSON.stringify({ workspace_root: workspace, repositories: [] }) })
+  const inspect = () => fetch(new URL('/v1/repositories/inspect', host.server!.url), { method: 'POST', headers, body: JSON.stringify({ workspace_root: workspace, repositories: [] }) })
   expect((await inspect()).status).toBe(409)
 
   // Unauthenticated grant is rejected
-  const unauthRes = await fetch(new URL('/v1/roots/grant', host.server.url), { method: 'POST', body: JSON.stringify({ workspace_root: workspace }) })
+  const unauthRes = await fetch(new URL('/v1/roots/grant', host.server!.url), { method: 'POST', body: JSON.stringify({ workspace_root: workspace }) })
   expect(unauthRes.status).toBe(401)
 
   // Authenticated grant succeeds
-  const grantRes = await fetch(new URL('/v1/roots/grant', host.server.url), { method: 'POST', headers, body: JSON.stringify({ workspace_root: workspace }) })
+  const grantRes = await fetch(new URL('/v1/roots/grant', host.server!.url), { method: 'POST', headers, body: JSON.stringify({ workspace_root: workspace }) })
   expect(grantRes.status).toBe(200)
   const grantData = await grantRes.json()
   expect(grantData.ok).toBe(true)

@@ -53,7 +53,7 @@ export const dialog = {
   showOpenDialog: (options: unknown) => nativeRequest('select-directory', options),
   showSaveDialog: (...args: unknown[]) => nativeRequest('save-file', args.at(-1)),
 }
-export function startLocalResourceService(config: Config, options: { onCollaborationChanged?: (event: { task_id: string }) => void } = {}) {
+export function startLocalResourceService(config: Config, options: { http?: boolean; onCollaborationChanged?: (event: { task_id: string }) => void } = {}) {
   return startServer(config, { ...options, workerUrl: new URL('./worker.js', import.meta.url).href })
 }
 

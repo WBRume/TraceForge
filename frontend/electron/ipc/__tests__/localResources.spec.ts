@@ -84,12 +84,23 @@ describe('Embedded local resource lifecycle', () => {
     expect(mocks.spawn).not.toHaveBeenCalled()
     expect(mocks.fetch).not.toHaveBeenCalled()
   })
-  it('starts collaboration file capability without an Agent backend or child process', async () => {
-    const result = await mocks.handlers.get('sdd:resources:ensure')!(null, { backend: 'collaboration' })
-    expect(result).toHaveProperty('resource_service_url')
+  it.each([true, false])('executes collaboration without allocating or binding ports (legacy profile: %s)', async legacy => {
+    const { readFile } = await import('node:fs/promises')
+    if (!legacy) vi.mocked(readFile).mockResolvedValueOnce('{}')
+    mocks.createServer.mockImplementation(() => { throw new Error('Network must not be used') })
+    const dispatch = vi.fn().mockResolvedValue(null)
+    mocks.startResource.mockResolvedValue({ ...resource(), dispatch })
+    const command = { kind: 'binding', payload: { task_id: 'task', optional: true } }
+    const invoke = () => mocks.handlers.get('sdd:collaboration:execute')!(null, command)
+    expect(await invoke()).toBeNull()
+    expect(await invoke()).toBeNull()
     expect(mocks.startResource).toHaveBeenCalledOnce()
+    expect(mocks.startResource).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ http: false }))
+    expect(dispatch).toHaveBeenCalledWith('collaboration', command)
+    expect(mocks.createServer).not.toHaveBeenCalled()
     expect(mocks.spawn).not.toHaveBeenCalled()
     expect(mocks.fetch).not.toHaveBeenCalled()
+    await expect(mocks.handlers.get('sdd:resources:ensure')!(null, { backend: 'collaboration' })).rejects.toThrow('Unsupported')
     await expect(mocks.handlers.get('sdd:resources:start')!(null, { backend: 'collaboration' })).rejects.toThrow('Unsupported')
   })
   it('describes one shared desktop identity and task directories before resource startup', async () => {
@@ -171,7 +182,7 @@ describe('Embedded local resource lifecycle', () => {
     mocks.createServer.mockImplementation(() => {
       let failure: (error: Error) => void
       return { listening: false, once: (_name: string, callback: typeof failure) => { failure = callback },
-        listen: (port: number, _host: string, ready: () => void) => port === 4096 ? failure(new Error('EADDRINUSE')) : ready() }
+        listen: (port: number, _host: string, ready: () => void) => port === 4096 ? failure(Object.assign(new Error('EADDRINUSE'), { code: 'EADDRINUSE' })) : ready() }
     })
     await expect(start()).rejects.toThrow('端口 4096 已被占用')
     expect(mocks.spawn).not.toHaveBeenCalled()
@@ -182,7 +193,7 @@ describe('Embedded local resource lifecycle', () => {
     mocks.createServer.mockImplementation(() => {
       let failure: (error: Error) => void
       return { listening: false, once: (_name: string, callback: typeof failure) => { failure = callback },
-        listen: () => failure(new Error('EADDRINUSE')) }
+        listen: () => failure(Object.assign(new Error('EADDRINUSE'), { code: 'EADDRINUSE' })) }
     })
     await expect(ensure()).rejects.toThrow('端口 4098 已被占用')
     expect(mocks.fetch).not.toHaveBeenCalled()
@@ -194,6 +205,20 @@ describe('Embedded local resource lifecycle', () => {
     await Promise.all([shutdown(), shutdown()])
     expect(mocks.closeResource).toHaveBeenCalledOnce()
     await expect(ensure()).rejects.toThrow('客户端正在退出')
+  })
+
+  it.each(['EACCES', 'EADDRNOTAVAIL'])('preserves a non-occupancy bind error: %s', async code => {
+    const error = Object.assign(new Error(code), { code })
+    mocks.createServer.mockImplementation(() => {
+      let failure: (error: Error) => void
+      return { listening: false, once: (_name: string, callback: typeof failure) => { failure = callback },
+        listen: () => failure(error) }
+    })
+    if (code === 'EACCES') {
+      await expect(ensure()).rejects.toThrow('系统拒绝访问')
+      await expect(ensure()).rejects.toMatchObject({ cause: error })
+    } else await expect(ensure()).rejects.toBe(error)
+    expect(mocks.startResource).not.toHaveBeenCalled()
   })
 
   it('cleans up a service whose initialization finishes during shutdown', async () => {

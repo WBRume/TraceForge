@@ -12,7 +12,7 @@ import { canonical } from '../runtime'
 import { git, hash, inside } from '../filesystem'
 
 const roots: string[] = []
-type Host = { server: { url: URL }; close: () => Promise<void>; dispatch: (kind: string, payload: any) => Promise<any> }
+type Host = { server?: { url: URL }; close: () => Promise<void>; dispatch: (kind: string, payload: any) => Promise<any> }
 const services: Host[] = []
 const remotes: ReturnType<typeof Bun.serve>[] = []
 afterEach(async () => {
@@ -95,7 +95,7 @@ async function setup(instrument = true) {
   services.push(service)
   const repo = { repository_id: 'repo', local_path: source, configured_git_url: remote.url.toString(), branch_name: 'main', rel_path: 'repo', repo_url: remote.url.toString(), repo_name: 'repo' }
   const post = async (command: ReturnType<typeof operation>) => {
-    const response = await fetch(new URL('/v1/operations', service.server.url), { method: 'POST', headers: { Authorization: 'Bearer ' + 't'.repeat(32), 'Content-Type': 'application/json' }, body: JSON.stringify(command) })
+    const response = await fetch(new URL('/v1/operations', service.server!.url), { method: 'POST', headers: { Authorization: 'Bearer ' + 't'.repeat(32), 'Content-Type': 'application/json' }, body: JSON.stringify(command) })
     const value = await response.json() as any
     expect(response.status, JSON.stringify(value)).toBe(200)
     return value
