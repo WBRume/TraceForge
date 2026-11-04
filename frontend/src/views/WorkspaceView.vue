@@ -1,20 +1,23 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useAuthStore } from '@/stores/auth'
-import { Plus, Briefcase, Package, FolderKanban, GitFork } from '@/components/icons'
+import { Plus, Briefcase, Package, FolderKanban, GitFork, Search, X } from '@/components/icons'
 import AppSwitcherDropdown from '@/components/AppSwitcherDropdown.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import WorkspaceCreateWorkflowDialog from '@/components/workspace/create-workflow/WorkspaceCreateWorkflowDialog.vue'
+import WorkspaceAdvancedFilter from '@/components/workspace/WorkspaceAdvancedFilter.vue'
+import WorkspaceActiveFilters from '@/components/workspace/WorkspaceActiveFilters.vue'
+import { useWorkspaceFilters } from '@/composables/useWorkspaceFilters'
 import api from '@/utils/api'
 import UserMenu from '@/components/user/UserMenu.vue'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 import GlobalSearchTrigger from '@/components/global-search/GlobalSearchTrigger.vue'
 
-const { locale } = useI18n()
+const { t, locale } = useI18n()
 const router = useRouter()
 const wsStore = useWorkspaceStore()
 const authStore = useAuthStore()
@@ -41,16 +44,21 @@ const deletingWorkspace = ref(false)
 const wsToDelete = ref<any>(null)
 const searchQuery = ref('')
 
-const filteredWorkspaces = computed(() => {
-  const query = searchQuery.value.trim().toLowerCase()
-  if (!query) return wsStore.workspaces
-  return wsStore.workspaces.filter((ws: any) => {
-    const name = (ws.name || '').toLowerCase()
-    const desc = (ws.description || '').toLowerCase()
-    const proj = (ws.project?.name || ws.custom_project_name || '').toLowerCase()
-    const repos = (ws.repositories || []).map((r: any) => r.repo_name || '').join(' ').toLowerCase()
-    return name.includes(query) || desc.includes(query) || proj.includes(query) || repos.includes(query)
-  })
+const {
+  filters: workspaceFilters,
+  filtered: filteredWorkspaces,
+  projectOptions,
+  productOptions,
+  repositoryOptions,
+  ownerOptions,
+  activeFilters,
+  activeCount,
+  patchFilters,
+  clearFilter,
+  resetFilters,
+} = useWorkspaceFilters(() => wsStore.workspaces, {
+  keyword: searchQuery,
+  currentUserId: () => authStore.user?.id ?? null,
 })
 
 const getWorkspaceAvatar = (name: string) => {
@@ -142,15 +150,35 @@ const confirmDeleteWorkspace = async () => {
           <h2 class="title-gradient-small">{{ $t('workspaces.title') }}</h2>
         </div>
         <div class="ws-header-actions">
-          <div class="ws-search-wrapper">
-            <svg class="ws-search-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
+          <div class="ws-search-field">
+            <Search class="ws-search-icon" aria-hidden="true" />
             <input
               v-model="searchQuery"
-              type="text"
+              type="search"
               class="ws-search-input"
-              :placeholder="locale === 'zh' ? '过滤工作区或仓库...' : 'Filter workspaces...'"
+              :aria-label="t('workspaces.filters.search_label')"
+              :placeholder="t('workspaces.filters.search_placeholder')"
+            />
+            <button
+              v-if="searchQuery"
+              type="button"
+              class="ws-search-clear"
+              :aria-label="t('workspaces.filters.search_clear')"
+              :title="t('workspaces.filters.search_clear')"
+              @click="searchQuery = ''"
+            >
+              <X class="ws-search-clear-icon" />
+            </button>
+            <WorkspaceAdvancedFilter
+              :filters="workspaceFilters"
+              :project-options="projectOptions"
+              :product-options="productOptions"
+              :repository-options="repositoryOptions"
+              :owner-options="ownerOptions"
+              :active-count="activeCount"
+              :matched-count="filteredWorkspaces.length"
+              @patch="patchFilters"
+              @reset="resetFilters"
             />
           </div>
           <button class="btn-primary flex items-center gap-2" @click="showCreateModal = true">
@@ -158,6 +186,17 @@ const confirmDeleteWorkspace = async () => {
           </button>
         </div>
       </div>
+
+      <WorkspaceActiveFilters
+        v-if="activeCount > 0"
+        :active-filters="activeFilters"
+        :project-options="projectOptions"
+        :product-options="productOptions"
+        :repository-options="repositoryOptions"
+        :owner-options="ownerOptions"
+        @clear="clearFilter"
+        @reset="resetFilters"
+      />
 
       <div v-if="loading" class="loading-state">{{ $t('workspaces.loading') }}</div>
 
@@ -169,7 +208,10 @@ const confirmDeleteWorkspace = async () => {
       </div>
 
       <div v-else-if="filteredWorkspaces.length === 0" class="empty-state glass-panel">
-        <p class="text-muted">{{ locale === 'zh' ? '未找到符合条件的工作区' : 'No matching workspaces found' }}</p>
+        <p class="text-muted">{{ t('workspaces.filters.empty_hint') }}</p>
+        <button v-if="activeCount > 0" type="button" class="ws-empty-reset" @click="resetFilters">
+          {{ t('workspaces.filters.reset') }}
+        </button>
       </div>
 
       <div v-else class="ws-grid">
@@ -367,37 +409,97 @@ const confirmDeleteWorkspace = async () => {
   gap: 0.75rem;
 }
 
-.ws-search-wrapper {
-  position: relative;
+.ws-search-field {
   display: flex;
   align-items: center;
+  gap: 6px;
+  height: 38px;
+  width: 268px;
+  padding: 0 5px 0 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+  transition: width 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.ws-search-field:focus-within {
+  width: 300px;
+  border-color: #0284c7;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
 }
 
 .ws-search-icon {
-  position: absolute;
-  left: 0.625rem;
   width: 14px;
   height: 14px;
   color: #94a3b8;
-  pointer-events: none;
+  flex-shrink: 0;
 }
 
 .ws-search-input {
-  padding: 0.45rem 0.75rem 0.45rem 2rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  font-size: 0.8125rem;
-  background: #ffffff;
-  color: #1e293b;
-  width: 200px;
-  transition: all 0.2s ease;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
   outline: none;
+  background: transparent;
+  color: #1e293b;
+  font: inherit;
+  font-size: 0.8125rem;
 }
 
-.ws-search-input:focus {
-  border-color: #0284c7;
-  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
-  width: 230px;
+.ws-search-input::placeholder {
+  color: #94a3b8;
+}
+
+.ws-search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.ws-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: #94a3b8;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ws-search-clear:hover {
+  color: #475569;
+  background: #f1f5f9;
+}
+
+.ws-search-clear:focus-visible {
+  outline: 2px solid var(--color-primary-500, #0ea5e9);
+  outline-offset: 1px;
+}
+
+.ws-search-clear-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.ws-empty-reset {
+  margin-top: 0.75rem;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  color: #0369a1;
+  background: #ffffff;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.ws-empty-reset:hover {
+  border-color: #bae6fd;
+  background: #f0f9ff;
 }
 
 .ws-grid {
@@ -632,6 +734,8 @@ const confirmDeleteWorkspace = async () => {
     margin-top: 1.5rem;
     padding: 0 var(--space-4) var(--space-8);
   }
+  .ws-search-field { width: 220px; }
+  .ws-search-field:focus-within { width: 240px; }
 }
 
 /* Animations */

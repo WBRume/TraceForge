@@ -65,3 +65,105 @@ describe('BaseSelect keyboard access', () => {
     expect(wrapper.emitted('open')).toBeUndefined()
   })
 })
+
+describe('BaseSelect multiple mode', () => {
+  const multi = (modelValue: string[], extra = {}) => {
+    const wrapper = mount(BaseSelect, {
+      attachTo: document.body,
+      props: {
+        modelValue,
+        options,
+        multiple: true,
+        searchable: true,
+        placeholder: '全部项目',
+        selectionText: (count: number) => `已选 ${count} 项`,
+        clearText: '清除选择',
+        ...extra,
+      },
+    })
+    mounted.push(wrapper)
+    return wrapper
+  }
+
+  it('summarises the selection and flags the empty state', async () => {
+    expect(multi([]).get('.selected-text').text()).toBe('全部项目')
+    expect(multi([]).get('.selected-text').classes()).toContain('is-placeholder')
+    expect(multi(['input']).get('.selected-text').text()).toBe('Input → Cloud')
+    expect(multi(['input']).get('.selected-text').classes()).not.toContain('is-placeholder')
+
+    const many = multi(['input', 'local'])
+    expect(many.get('.selected-text').text()).toBe('已选 2 项')
+    expect(many.get('.selected-text').classes()).not.toContain('is-placeholder')
+  })
+
+  it('toggles options without closing, and marks each row as a checkbox', async () => {
+    const wrapper = multi(['local'])
+    await wrapper.get('.select-trigger').trigger('click')
+    await nextTick()
+
+    const rows = wrapper.findAll('[role="option"]')
+    expect(rows).toHaveLength(3)
+    expect(rows[0]!.attributes('aria-selected')).toBe('true')
+    expect(rows[0]!.get('.option-check').classes()).toContain('is-checked')
+    expect(rows[1]!.get('.option-check').classes()).not.toContain('is-checked')
+
+    await rows[2]!.trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([[['local', 'input']]])
+    expect(wrapper.get('.select-trigger').attributes('aria-expanded')).toBe('true')
+
+    await wrapper.setProps({ modelValue: ['local', 'input'] })
+    await rows[0]!.trigger('click')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([['input']])
+    expect(wrapper.get('.select-trigger').attributes('aria-expanded')).toBe('true')
+  })
+
+  it('keeps focus in the search box while ticking options', async () => {
+    const wrapper = multi([])
+    await wrapper.get('.select-trigger').trigger('click')
+    await nextTick()
+
+    const search = wrapper.get('input')
+    expect(document.activeElement).toBe(search.element)
+    const mousedown = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+    wrapper.findAll('[role="option"]')[0]!.element.dispatchEvent(mousedown)
+    expect(mousedown.defaultPrevented).toBe(true)
+
+    await search.setValue('Input')
+    expect(wrapper.findAll('[role="option"]')).toHaveLength(1)
+  })
+
+  it('clears every selected option from the dropdown footer', async () => {
+    const wrapper = multi(['local', 'input'])
+    await wrapper.get('.select-trigger').trigger('click')
+    await nextTick()
+
+    const clear = wrapper.get('.select-clear-all')
+    expect(clear.text()).toBe('清除选择')
+    await clear.trigger('click')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([[]])
+    expect(wrapper.get('.select-trigger').attributes('aria-expanded')).toBe('true')
+  })
+
+  it('hides the footer when nothing is selected', async () => {
+    const wrapper = multi([])
+    await wrapper.get('.select-trigger').trigger('click')
+    await nextTick()
+    expect(wrapper.find('.select-footer').exists()).toBe(false)
+  })
+
+  it('flips upwards when the viewport leaves too little room below', async () => {
+    const wrapper = multi([])
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      top: 700, bottom: 732, left: 0, right: 200, width: 200, height: 32, x: 0, y: 700, toJSON: () => ({}),
+    } as DOMRect)
+    await wrapper.get('.select-trigger').trigger('click')
+    await nextTick()
+    expect(wrapper.get('.base-select').classes()).toContain('drop-up')
+
+    vi.restoreAllMocks()
+    await wrapper.get('.select-trigger').trigger('click')
+    await wrapper.get('.select-trigger').trigger('click')
+    await nextTick()
+    expect(wrapper.get('.base-select').classes()).not.toContain('drop-up')
+  })
+})
