@@ -13,7 +13,7 @@ from workspace_collaboration.test_service import (
 )
 
 from app.domains.task.models.task_repository import SddTaskRepository
-from app.domains.workspace_collaboration import content, service
+from app.domains.workspace_collaboration import content, identity, service
 
 environment = collaboration_fixtures.environment
 
@@ -54,6 +54,7 @@ def test_dual_repo_link_roundtrip_delete_and_incremental_regular_edit(environmen
         link = next(f for f in repo.files if f.path == "linked.txt")
         assert link.mode == "120000" and store.read(link.sha256) == b"same.txt"
         link.sha256, link.size = store.put(b"binary.bin"), len(b"binary.bin")
+        link.content_sha256 = identity.content_digest(b"binary.bin")
         repo.files = [f for f in repo.files if f.path != "dangling"]
     state = service.handoff(db, task, "u", request)
     db.commit()
@@ -95,6 +96,7 @@ def test_link_install_recovery_never_follows_target_or_changes_target_mode(envir
     link = next(f for f in request.manifest.repositories[0].files if f.path == "linked.txt")
     raw = os.fsencode(outside)
     link.sha256, link.size = store.put(raw), len(raw)
+    link.content_sha256 = identity.content_digest(raw)
     baseline = service.get_snapshot(environment[0], "t", state["snapshot_id"])
     journal = store.journal
 

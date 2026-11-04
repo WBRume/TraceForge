@@ -3,8 +3,8 @@ import { changedFiles, collaborationFileKey, localFiles, manifestFiles } from '.
 import type { CollaborationManifest } from '@/types/collaboration'
 
 const snapshot = (values: [string, string, string][]): CollaborationManifest => ({
-  protocol_version: 1, snapshot_id: 's1', task_id: 'task', source: 'INITIAL', workspace_revision: 1, session_generation: 1, session_revision: 1, repository_set_digest: 'digest',
-  repositories: values.map(([repository, path, sha256]) => ({ task_repository_id: repository, repository_id: repository, repo_url: repository, repo_slug: repository, rel_path: repository, branch_name: 'main', base_commit_sha: 'sha', files: [{ path, sha256, size: 1, mode: '100644' }] })),
+  protocol_version: 2, snapshot_id: 's1', task_id: 'task', source: 'INITIAL', workspace_revision: 1, session_generation: 1, session_revision: 1, repository_set_digest: 'digest',
+  repositories: values.map(([repository, path, sha256]) => ({ task_repository_id: repository, repository_id: repository, repo_url: repository, repo_slug: repository, rel_path: repository, branch_name: 'main', base_commit_sha: 'sha', files: [{ path, sha256, content_sha256: sha256, size: 1, mode: '100644' }] })),
 })
 
 describe('collaboration comparison sources', () => {
@@ -25,5 +25,14 @@ describe('collaboration comparison sources', () => {
     const current = localFiles({ task_id: 'task', baseline, local_changes: [{ task_repository_id: 'api', path: 'index.ts', base: baseline.repositories[0]!.files[0]!, local: null }] })
     expect(current.size).toBe(0)
     expect(changedFiles(manifestFiles(baseline), current)[0]?.path).toBe('index.ts')
+  })
+  it('ignores a CRLF checkout of identical code and still reports real edits', () => {
+    const repository = snapshot([['api', 'index.ts', 'lf-bytes']])
+    const windows = snapshot([['api', 'index.ts', 'crlf-bytes']])
+    for (const manifest of [repository, windows]) manifest.repositories[0]!.files[0]!.content_sha256 = 'same-content'
+    windows.repositories[0]!.files[0]!.size = 42
+    expect(changedFiles(manifestFiles(repository), manifestFiles(windows))).toEqual([])
+    windows.repositories[0]!.files[0]!.content_sha256 = 'edited-content'
+    expect(changedFiles(manifestFiles(repository), manifestFiles(windows)).map(file => file.path)).toEqual(['index.ts'])
   })
 })

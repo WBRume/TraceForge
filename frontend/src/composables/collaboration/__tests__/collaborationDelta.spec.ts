@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { expandManifest, expandStatus, manifestDelta, statusDelta } from '../../../../shared/collaboration-delta'
 
-const base = { task_id: 'task', snapshot_id: 'base', repository_set_digest: 'set', repositories: [{ task_repository_id: 'r', branch_name: 'feature/test', base_commit_sha: 'abc', files: [{ path: 'file', sha256: 'old', size: 3, mode: '100644' }] }] }
+const base = { task_id: 'task', snapshot_id: 'base', repository_set_digest: 'set', repositories: [{ task_repository_id: 'r', branch_name: 'feature/test', base_commit_sha: 'abc', files: [{ path: 'file', sha256: 'old', content_sha256: 'old', size: 3, mode: '100644' }] }] }
 describe('collaboration delta transport', () => {
   it('a new target or preview reuses the prior baseline instead of transferring another full manifest', () => {
-    const target = { ...base, snapshot_id: 'cloud', repositories: [{ ...base.repositories[0], files: [...base.repositories[0].files, { path: 'new', sha256: 'new', size: 3, mode: '100644' }] }] }
+    const target = { ...base, snapshot_id: 'cloud', repositories: [{ ...base.repositories[0], files: [...base.repositories[0].files, { path: 'new', sha256: 'new', content_sha256: 'new', size: 3, mode: '100644' }] }] }
     const previous = { baseline: base, target: null, transport: { token: 'old-token' } }
     const wire = statusDelta(previous, { baseline: base, target, preview: target }, 'new-token', 'old-token')
     expect(wire.target.repositories[0].files.map((file: any) => file.path)).toEqual(['new'])

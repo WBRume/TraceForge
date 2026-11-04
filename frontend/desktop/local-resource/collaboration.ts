@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { expandManifest, manifestDelta, statusDelta } from '../../shared/collaboration-delta'
 import { child, fail, git, hash, inside, inspectRepo, readJson, resolved } from './filesystem'
 import { applyFile, type BackupContext } from './collaboration-write'
+import { checkoutForms, type CheckoutForm } from './content-identity'
 import { CollaborationIndex } from './collaboration-index'
 import { observeFile, updateObservation } from './collaboration-observation'
 import { prepareTaskWorktree } from './collaboration-prepare'
@@ -143,7 +144,7 @@ export class CollaborationRuntime {
       binding = { task_id: payload.task_id, binding_id: payload.binding_id, task_root: taskRoot,
         expected_repository_ids: inputs.map(repo => repo.task_repository_id),
         repositories: [], baseline: null, target: null, conflicts: [], conflict_set_id: null, applied: {}, errors: [],
-        metadata: { protocol_version: 1, task_id: payload.task_id, snapshot_id: '', workspace_revision: payload.workspace_revision ?? 0,
+        metadata: { protocol_version: 2, task_id: payload.task_id, snapshot_id: '', workspace_revision: payload.workspace_revision ?? 0,
           session_generation: payload.session_generation, session_revision: payload.session_revision,
           repository_set_digest: payload.repository_set_digest, source: 'INITIAL' } }
       this.save(binding)
@@ -193,7 +194,7 @@ export class CollaborationRuntime {
       task_root: path.join(this.state, 'mapped-tasks', payload.task_id), repositories,
       expected_repository_ids: repositories.map(repo => repo.task_repository_id), baseline: null, target: null,
       conflicts: [], conflict_set_id: null, applied: {}, errors: [],
-      metadata: { protocol_version: 1, task_id: payload.task_id, snapshot_id: '', workspace_revision: payload.workspace_revision ?? 0,
+      metadata: { protocol_version: 2, task_id: payload.task_id, snapshot_id: '', workspace_revision: payload.workspace_revision ?? 0,
         session_generation: payload.session_generation, session_revision: payload.session_revision,
         repository_set_digest: payload.repository_set_digest, source: 'INITIAL' } }
     const baseline = this.scan(binding)
@@ -319,7 +320,7 @@ export class CollaborationRuntime {
     return this.status(binding, undefined, false)
   }
   private validateTarget(binding: SyncBinding, target: SyncManifest, captured?: SyncManifest) {
-    if (target.protocol_version !== 1 || target.task_id !== binding.task_id || target.repositories.length !== binding.repositories.length) fail('COLLABORATION_TARGET_IDENTITY_MISMATCH')
+    if (target.protocol_version !== 2 || target.task_id !== binding.task_id || target.repositories.length !== binding.repositories.length) fail('COLLABORATION_TARGET_IDENTITY_MISMATCH')
     if (binding.baseline?.snapshot_id && (target.session_generation < binding.baseline.session_generation
       || target.workspace_revision < binding.baseline.workspace_revision)) fail('COLLABORATION_STALE_TARGET')
     const seen = new Set<string>()
@@ -415,6 +416,9 @@ export class CollaborationRuntime {
           if (candidate && candidate !== name) relate(name, candidate)
         }
       }
+      // Resolved once per delivery: one attribute query for the whole repository.
+      let forms: Map<string, CheckoutForm> | null = null
+      const checkout = (name: string) => (forms ??= checkoutForms(bound.local_worktree_path, [...cloud.keys()])).get(name)
       for (const name of new Set([...base.keys(), ...current.keys(), ...cloud.keys()])) {
         const key = fileKey(repo.task_repository_id, name)
         const before = Object.hasOwn(binding.applied, key) ? binding.applied[key] : base.get(name) ?? null
@@ -431,7 +435,8 @@ export class CollaborationRuntime {
         try {
           applyFile({ state: this.state, operation_id: payload.operation_id, task_repository_id: repo.task_repository_id,
             root: bound.local_worktree_path, expected: left, target: right, relative: name, objects: this.objects,
-            scratch_root: this.scratch(binding, bound), context: { ...this.metadata(target), kind: 'receive', repo_slug: repo.repo_slug, branch_name: repo.branch_name } })
+            scratch_root: this.scratch(binding, bound), checkout: checkout(name),
+            context: { ...this.metadata(target), kind: 'receive', repo_slug: repo.repo_slug, branch_name: repo.branch_name } })
           binding.applied[key] = right; this.save(binding)
           newlyApplied[key] = right
           updateObservation(local, repo.task_repository_id, name, right)
@@ -483,7 +488,12 @@ export class CollaborationRuntime {
     })
     const local = structuredClone(this.observations.get(binding.task_id) ?? this.scan(binding))
     const restored: Record<string, SyncFile | null> = {}
-    for (const repo of binding.repositories) if (selectedFiles.some(item => item.task_repository_id === repo.task_repository_id)) validateRepositoryIdentity(repo)
+    const forms = new Map<string, Map<string, CheckoutForm>>()
+    for (const repo of binding.repositories) if (selectedFiles.some(item => item.task_repository_id === repo.task_repository_id)) {
+      validateRepositoryIdentity(repo)
+      forms.set(repo.task_repository_id, checkoutForms(repo.local_worktree_path,
+        selectedFiles.filter(item => item.task_repository_id === repo.task_repository_id).map(item => item.path)))
+    }
     for (const selected of selectedFiles) {
       const conflict = binding.conflicts.find(file => file.task_repository_id === selected.task_repository_id && file.path === selected.path)
       if (!conflict || selected.expected_sha256 !== conflict.expected_sha256) throw new Error('COLLABORATION_CONFLICT_CONFIRMATION_EXPIRED')
@@ -496,7 +506,8 @@ export class CollaborationRuntime {
         } else {
           applyFile({ state: this.state, operation_id: payload.operation_id, task_repository_id: selected.task_repository_id,
             root: repo.local_worktree_path, expected: conflict.local, target: conflict.cloud, relative: selected.path, objects: this.objects,
-            scratch_root: this.scratch(binding, repo), context: { ...this.metadata(target), kind: 'restore', repo_slug: repo.repo_slug, branch_name: repo.branch_name } })
+            scratch_root: this.scratch(binding, repo), checkout: forms.get(selected.task_repository_id)?.get(selected.path),
+            context: { ...this.metadata(target), kind: 'restore', repo_slug: repo.repo_slug, branch_name: repo.branch_name } })
         }
         // A kept local version is a new local edit against the acknowledged cloud version.
         binding.applied[fileKey(selected.task_repository_id, selected.path)] = conflict.cloud

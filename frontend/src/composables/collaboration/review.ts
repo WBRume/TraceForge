@@ -25,9 +25,9 @@ export function collaborationReview(c: CollaborationContext, localAvailable: boo
     const left = kind === 'local' ? received.get(file.key) : kind === 'conflicts' && localAvailable ? local.get(file.key) : baseline.get(file.key)
     const right = kind === 'local' ? local.get(file.key) : cloud.get(file.key)
     const current = local.get(file.key)
-    const delivered = localAvailable && current?.sha256 === right?.sha256 && current?.mode === right?.mode
+    const delivered = localAvailable && current?.content_sha256 === right?.content_sha256 && current?.mode === right?.mode
     return { ...file, kind, left, right, delivered, statusLabel:scope === 'cumulative' && kind === 'cloud' ? '任务修改' : undefined,
-      change: !right ? 'D' : !left ? 'A' : left.mode !== right.mode && left.sha256 === right.sha256 ? 'T' : 'M',
+      change: !right ? 'D' : !left ? 'A' : left.mode !== right.mode && left.content_sha256 === right.content_sha256 ? 'T' : 'M',
       cloudChanged: cloudKeys.has(file.key), localChanged: localKeys.has(file.key) }
   }).sort((a, b) => a.repo_slug.localeCompare(b.repo_slug) || a.path.localeCompare(b.path))
   return { files, local, cloud, input, received, cloudKnown: Boolean(cloudManifest && baselineManifest) }

@@ -19,7 +19,7 @@ from app.domains.task.models.session_turn import TaskSessionTurn
 from app.domains.task.models.task import SddTask, TaskType
 from app.domains.task.models.task_repository import SddTaskRepository
 
-from . import content, manifest_store
+from . import content, identity, manifest_store
 from .models import CollaborationHandoff, CollaborationOperation, CollaborationSnapshot, CollaborationState
 from .schemas import DeliveryReceipt, EnableRequest, Fence, HandoffRequest, LeaseRequest
 
@@ -306,7 +306,7 @@ def _snapshot(db: Session, task: SddTask, state: CollaborationState, source: str
                 json.loads(capture_path.read_text(encoding="utf-8")),
             )
     manifest = {
-        "protocol_version": 1,
+        "protocol_version": 2,
         "snapshot_id": snapshot_id,
         "task_id": task.id,
         "workspace_revision": state.workspace_revision + (0 if source == "PROGRESS" else 1),
@@ -653,7 +653,7 @@ def _validate_manifest(
     for repo in received:
         seen = set()
         old_files = {entry["path"]: entry for entry in old_repositories[repo["task_repository_id"]]["files"]}
-        changed = [entry for entry in repo["files"] if old_files.get(entry["path"]) != entry]
+        changed = [entry for entry in repo["files"] if not identity.same_file(old_files.get(entry["path"]), entry)]
         tracked = (
             content._tracked_modes(
                 Path(task.project_path) / repo["rel_path"],
@@ -674,7 +674,7 @@ def _validate_manifest(
                 _fail("PATH_CONFLICT", "Duplicate or case-colliding input path")
             seen.add(folded)
             total += entry["size"]
-            if old_files.get(entry["path"]) == entry:
+            if identity.same_file(old_files.get(entry["path"]), entry):
                 continue
             content.validate_path(entry["path"])
             name = Path(entry["path"]).name
@@ -744,7 +744,9 @@ def handoff(db: Session, task: SddTask, user_id: str, request: HandoffRequest) -
     try:
         content.apply_manifest(Path(task.project_path), baseline, target, store, request.operation_id)
         actual = _capture(db, task, state, "HUMAN_HANDOFF", stable=True)
-        if content.digest(actual["repositories"]) != content.digest(repositories):
+        # The install applies this workspace's checkout form, so compare content
+        # identity rather than the raw bytes of either host.
+        if not identity.same_repositories(actual["repositories"], repositories):
             _fail("INPUT_CHANGED", "Server input verification did not match captured local input")
         _complete_driver_operation(state, user_id, request)
     except (ValueError, OSError, TaskSessionSnapshotError) as exc:
@@ -1165,7 +1167,7 @@ def recover_input(db: Session, task: SddTask, user_id: str, request: Fence, oper
         baseline = get_snapshot(db, task.id, state.snapshot_id)
         current = _capture(db, task, state, "PROGRESS", stable=True)
         db.delete(db.get(CollaborationSnapshot, current["snapshot_id"]))
-        if content.digest(current["repositories"]) != content.digest(baseline["repositories"]):
+        if not identity.same_repositories(current["repositories"], baseline["repositories"]):
             _fail(
                 "RECOVERY_JOURNAL_MISSING",
                 "Server content differs from its baseline and no input journal can repair it",
@@ -1183,7 +1185,7 @@ def recover_input(db: Session, task: SddTask, user_id: str, request: Fence, oper
     baseline = get_snapshot(db, task.id, state.snapshot_id)
     content.apply_manifest(Path(task.project_path), baseline, target, store, operation_id, recover=True)
     captured = _capture(db, task, state, "HUMAN_HANDOFF", stable=True)
-    if content.digest(captured["repositories"]) != journal["target_digest"]:
+    if identity.repositories_digest(captured["repositories"]) != journal["target_digest"]:
         _fail("RECOVERY_REQUIRED", "Recovered server files differ from the fixed input")
     _complete_driver_operation(state, user_id, request)
     _publish(state, captured)

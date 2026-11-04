@@ -9,7 +9,7 @@ from app.core.subprocess_runner import GIT_REPOSITORY_ENV_VARS, run_git
 from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus
 from app.domains.task.services import task_git_snapshot_store as git_store
 
-from . import content, manifest_store, service, session
+from . import content, identity, manifest_store, service, session
 from .models import CollaborationSnapshot, CollaborationState
 
 
@@ -44,15 +44,16 @@ def _crlf_checkout_paths(root, commit, names):
 
 
 def _checkout_file(store, name, item, mapped, crlf_paths):
-    sha, size = mapped[item["git_dir"], item["oid"]][0], item["size"]
+    sha, content = mapped[item["git_dir"], item["oid"]][0], mapped[item["git_dir"], item["oid"]][1]
+    size = item["size"]
     if name in crlf_paths and item["mode"] in {"100644", "100755"}:
         raw = store.read(sha)
         # Existing CR bytes and binary blobs are never normalized. Only apply
         # the pinned, explicit LF -> CRLF checkout rule; no arbitrary filters.
         if b"\r" not in raw and b"\0" not in raw[:8000] and b"\n" in raw:
             raw = raw.replace(b"\n", b"\r\n")
-            sha, size = store.put(raw), len(raw)
-    return {"path": name, "sha256": sha, "size": size, "mode": item["mode"]}
+            sha, size, content = store.put(raw), len(raw), identity.content_digest(raw)
+    return {"path": name, "sha256": sha, "content_sha256": content, "size": size, "mode": item["mode"]}
 
 
 def committed_baseline(db, task, _user_id):
@@ -60,7 +61,7 @@ def committed_baseline(db, task, _user_id):
     service._check_task(task)
     repositories = service.repository_metadata(db, task)
     store = service._ensure_store(db, task)
-    key = content.digest(["checkout-eol-v1", repositories])
+    key = content.digest(["content-identity-v2", repositories])
     previous = db.query(CollaborationSnapshot).filter_by(task_id=task.id, source="REVIEW_BASELINE").all()
     saved = next((row for row in previous if row.manifest_json.get("review_key") == key), None)
     if saved:
@@ -188,6 +189,7 @@ def _checkpoint_inventory(path, task, repositories, store):
                 {
                     "path": name,
                     "sha256": mapped[item["git_dir"], item["oid"]][0],
+                    "content_sha256": mapped[item["git_dir"], item["oid"]][1],
                     "size": item["size"],
                     "mode": item["mode"],
                 }
@@ -235,7 +237,7 @@ def changes(db, task, _user_id):
     )
     if not path:
         service._fail("REVIEW_BASELINE_UNAVAILABLE", "This turn has no recorded workspace baseline")
-    key = content.digest([path, task.session_generation, task.session_revision])
+    key = content.digest(["content-identity-v2", path, task.session_generation, task.session_revision])
     previous = db.query(CollaborationSnapshot).filter_by(task_id=task.id, source="REVIEW_INPUT").all()
     saved = next((row for row in previous if row.manifest_json.get("review_key") == key), None)
     if saved:

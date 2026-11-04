@@ -3,14 +3,15 @@ import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { child, fail, git, gitRaw, hash } from './filesystem'
 import { GitContent } from './git-content'
+import { contentHash } from './content-identity'
 
-export interface SyncFile { path: string; sha256: string; size: number; mode: '100644' | '100755' | '120000' }
+export interface SyncFile { path: string; sha256: string; content_sha256: string; size: number; mode: '100644' | '100755' | '120000' }
 export interface SyncRepository {
   task_repository_id: string; repository_id: string; repo_url: string; repo_slug: string;
   rel_path: string; branch_name: string; base_commit_sha: string; files: SyncFile[];
 }
 export interface SyncManifest {
-  protocol_version: 1; snapshot_id: string; task_id: string; workspace_revision: number;
+  protocol_version: 2; snapshot_id: string; task_id: string; workspace_revision: number;
   session_generation: number; session_revision: number; repository_set_digest: string;
   source: string; repositories: SyncRepository[];
   session_turn_id?: string; turn_index?: number; turn_title?: string; turn_created_at?: string;
@@ -56,8 +57,9 @@ export function syncPath(relative: string) {
       || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(part))) fail('INVALID_COLLABORATION_PATH')
   return relative
 }
+/** Content identity ignores line endings: a CRLF checkout of unchanged code is not a change. */
 export const sameFile = (a: SyncFile | null | undefined, b: SyncFile | null | undefined) =>
-  (!a && !b) || (!!a && !!b && a.sha256 === b.sha256 && a.mode === b.mode && a.size === b.size)
+  (!a && !b) || (!!a && !!b && a.content_sha256 === b.content_sha256 && a.mode === b.mode)
 export const fileKey = (repo: string, file: string) => repo + ':' + file
 
 export class SyncObjects {
@@ -110,7 +112,7 @@ export function localFile(root: string, relative: string, objects: SyncObjects):
   if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs
     || before.ino !== after.ino || data.length !== after.size) fail('LOCAL_FILE_CHANGING: ' + relative)
   if (data.subarray(0, 80).toString().startsWith('version https://git-lfs.github.com/spec/v1\n')) fail('COLLABORATION_LFS_CONTENT_REQUIRED: ' + relative)
-  return { path: relative, sha256: objects.put(data), size: data.length, mode: after.mode & 0o111 ? '100755' : '100644' }
+  return { path: relative, sha256: objects.put(data), content_sha256: contentHash(data), size: data.length, mode: after.mode & 0o111 ? '100755' : '100644' }
 }
 
 /** Git link placeholders stay inert regular files and must retain their original indexed type. */

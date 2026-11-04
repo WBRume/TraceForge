@@ -22,9 +22,9 @@ beforeEach(() => vi.mocked(api.get).mockResolvedValue({ data:{ repositories:[], 
 
 function fixture() {
   const repositories = ['dsh', 'repo'].map((id, index) => ({ task_repository_id: id, repository_id: id, repo_slug: id, rel_path: id, repo_url: `https://example.test/${id}.git`, branch_name: index ? 'main' : 'master', base_commit_sha: id,
-    files: [{ path: 'shared.txt', sha256: 'old', size: 3, mode: '100644' as const }] }))
-  const input: CollaborationManifest = { protocol_version: 1, snapshot_id: 'start', task_id: 'task', workspace_revision: 1, session_generation: 1, session_revision: 1, repository_set_digest: 'digest', source: 'INITIAL', repositories }
-  const cloud: CollaborationManifest = { ...input, snapshot_id: 'final', source: 'AGENT_OUTPUT', repositories: repositories.map(repo => ({ ...repo, files: [{ ...repo.files[0]!, sha256: 'agent' }] })) }
+    files: [{ path: 'shared.txt', sha256: 'old', content_sha256: 'old', size: 3, mode: '100644' as const }] }))
+  const input: CollaborationManifest = { protocol_version: 2, snapshot_id: 'start', task_id: 'task', workspace_revision: 1, session_generation: 1, session_revision: 1, repository_set_digest: 'digest', source: 'INITIAL', repositories }
+  const cloud: CollaborationManifest = { ...input, snapshot_id: 'final', source: 'AGENT_OUTPUT', repositories: repositories.map(repo => ({ ...repo, files: [{ ...repo.files[0]!, sha256: 'agent', content_sha256: 'agent' }] })) }
   const local = ref<LocalCollaborationStatus>({ task_id: 'task', directory_mode: 'MAPPED', baseline: cloud, received: cloud, manifest: cloud, state: 'READY', conflicts: [], local_changes: [], repositories: repositories.map(repo => ({ ...repo, mapped_repo_root: `G:/${repo.repo_slug}`, local_worktree_path: `G:/${repo.repo_slug}` })) })
   const state = ref<CollaborationState>({ ...cloud, enabled: true, sync_phase: 'READY', state_version: 1, lease_epoch: 1, binding_id: 'binding', input_snapshot_id: 'start', progress_snapshot_id: null, driver_connected: true, conflicts: [] })
   const model = {
@@ -57,7 +57,7 @@ describe('local collaboration presentation and review', () => {
   it('keeps unsent local edits out of cumulative task results and exposes them in the round view', async () => {
     const { controller, local, cloud } = fixture()
     local.value.manifest = { ...cloud, repositories: cloud.repositories.map(repo => ({ ...repo, files: [
-      { ...repo.files[0]!, sha256:'human' }, { path:'local-only.txt', sha256:'new', size:3, mode:'100644' },
+      { ...repo.files[0]!, sha256:'human', content_sha256:'human' }, { path:'local-only.txt', sha256:'new', content_sha256:'new', size:3, mode:'100644' },
     ] })) }
     const cumulative = collaborationReview(proxyRefs(controller), true)
     expect(cumulative.files).toHaveLength(2)
@@ -292,7 +292,7 @@ describe('local collaboration presentation and review', () => {
     expect(entry.findAll('button')).toHaveLength(1)
     expect(entry.text()).toContain('任务代码')
     expect(input.find('[role="status"]').exists()).toBe(false)
-    local.value.local_changes = [{ task_repository_id: 'dsh', path: 'extra.txt', base: null, local: { path: 'extra.txt', sha256: 'extra', size: 5, mode: '100644' } }]
+    local.value.local_changes = [{ task_repository_id: 'dsh', path: 'extra.txt', base: null, local: { path: 'extra.txt', sha256: 'extra', content_sha256: 'extra', size: 5, mode: '100644' } }]
     await entry.trigger('click')
     expect(controller.view.value.tab).toBe('local')
     expect(entry.emitted('open')).toHaveLength(1)
@@ -301,8 +301,8 @@ describe('local collaboration presentation and review', () => {
   })
   it('selects and confirms only one repository, retains selection on cancel, and never restores a running preview', async () => {
     const { controller, model, state, local, input, cloud } = fixture()
-    const conflicts = input.repositories.map((repo, index) => ({ task_repository_id: repo.task_repository_id, path: 'shared.txt', local: { ...repo.files[0]!, sha256: 'human' }, base: repo.files[0], cloud: cloud.repositories[index]!.files[0] }))
-    local.value = { ...local.value, conflicts, conflict_set_id: 'set1', manifest: { ...cloud, repositories: cloud.repositories.map(repo => ({ ...repo, files: [{ ...repo.files[0]!, sha256: 'human' }] })) } }
+    const conflicts = input.repositories.map((repo, index) => ({ task_repository_id: repo.task_repository_id, path: 'shared.txt', local: { ...repo.files[0]!, sha256: 'human', content_sha256: 'human' }, base: repo.files[0], cloud: cloud.repositories[index]!.files[0] }))
+    local.value = { ...local.value, conflicts, conflict_set_id: 'set1', manifest: { ...cloud, repositories: cloud.repositories.map(repo => ({ ...repo, files: [{ ...repo.files[0]!, sha256: 'human', content_sha256: 'human' }] })) } }
     state.value.sync_phase = 'CONFLICT_PENDING'; model.blocked.value = true
     const notice = mount(CollaborationInputStatus, { props: { controller }, global: global() })
     expect(notice.get('[role="status"]').text()).toContain('2 个文件待处理')

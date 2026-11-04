@@ -31,8 +31,8 @@ beforeEach(() => {
   mocks.desktop = true
   mocks.changed.mockReturnValue(mocks.unsubscribe)
   mocks.auth = reactive({ user: { id: crypto.randomUUID() } })
-  const repo = { task_repository_id: 'repo1', repository_id: 'r1', repo_url: 'https://example.test/api', repo_slug: 'api', rel_path: 'api', branch_name: 'release/2.x', base_commit_sha: 'commit', files: [{ path: 'auth.py', sha256: 'a'.repeat(64), size: 1, mode: '100644' as const }] }
-  manifest = { protocol_version: 1, task_id: crypto.randomUUID(), snapshot_id: 'snapshot1', workspace_revision: 1, session_generation: 1, session_revision: 1, repository_set_digest: 'digest', source: 'INITIAL', repositories: [repo] }
+  const repo = { task_repository_id: 'repo1', repository_id: 'r1', repo_url: 'https://example.test/api', repo_slug: 'api', rel_path: 'api', branch_name: 'release/2.x', base_commit_sha: 'commit', files: [{ path: 'auth.py', sha256: 'a'.repeat(64), content_sha256: 'a'.repeat(64), size: 1, mode: '100644' as const }] }
+  manifest = { protocol_version: 2, task_id: crypto.randomUUID(), snapshot_id: 'snapshot1', workspace_revision: 1, session_generation: 1, session_revision: 1, repository_set_digest: 'digest', source: 'INITIAL', repositories: [repo] }
   state = { ...manifest, enabled: false, sync_phase: 'OFF', state_version: 1, input_snapshot_id: null, progress_snapshot_id: null, lease_epoch: 1, binding_id: 'binding', conflicts: [] }
   local = { directory_mode: 'MAPPED', task_id: manifest.task_id, binding_id: 'binding', task_root: 'G:/private/task', manifest, baseline: manifest, target: manifest, repositories: [{ ...repo, local_worktree_path: 'G:/private/task/api', mapped_repo_root: 'G:/api' }], state: 'READY', conflicts: [], local_changes: [] }
   mocks.api.reviewBaseline.mockImplementation(async () => manifest)
@@ -485,7 +485,7 @@ describe('local collaboration coordinator', () => {
     const first = manifest.repositories[0]!
     const second = { ...first, task_repository_id: 'repo2', repository_id: 'r2', repo_slug: 'web', rel_path: 'web' }
     const baseline = { ...manifest, snapshot_id: '', repositories: [first, second] }
-    manifest = { ...manifest, repositories: [first, second].map((repo, i) => ({ ...repo, files: [{ ...repo.files[0]!, sha256: (i ? 'c' : 'b').repeat(64) }] })) }
+    manifest = { ...manifest, repositories: [first, second].map((repo, i) => ({ ...repo, files: [{ ...repo.files[0]!, sha256: (i ? 'c' : 'b').repeat(64), content_sha256: (i ? 'c' : 'b').repeat(64) }] })) }
     local = { ...local, baseline, manifest: baseline, target: undefined, state: 'PREPARED', repositories: baseline.repositories.map(repo => ({ ...repo, local_worktree_path: `G:/${repo.repo_slug}`, mapped_repo_root: `G:/${repo.repo_slug}` })) }
     state = { ...state, repositories: manifest.repositories, enabled: true, sync_phase: 'DELIVERY_PENDING', input_snapshot_id: manifest.snapshot_id,
       client_id: 'existing-client', instance_id: 'existing-instance', driver_user_id: mocks.auth.user!.id, driver_connected: true }
@@ -531,7 +531,7 @@ describe('local collaboration coordinator', () => {
   it('checks only changed target objects after a confirmed baseline', async () => {
     setup(); await flushPromises(); await controller.enable()
     const old = manifest
-    manifest = { ...manifest, snapshot_id: 'next-output', repositories: manifest.repositories.map(repo => ({ ...repo, files: [...repo.files, { ...repo.files[0]!, path: 'new.py', sha256: 'b'.repeat(64) }] })) }
+    manifest = { ...manifest, snapshot_id: 'next-output', repositories: manifest.repositories.map(repo => ({ ...repo, files: [...repo.files, { ...repo.files[0]!, path: 'new.py', sha256: 'b'.repeat(64), content_sha256: 'b'.repeat(64) }] })) }
     state = { ...state, snapshot_id: manifest.snapshot_id, sync_phase: 'DELIVERY_PENDING' }
     mocks.api.snapshot.mockImplementation(async () => manifestDelta(old, manifest))
     mocks.native.mockClear(); await controller.refresh()
@@ -937,7 +937,7 @@ describe('local collaboration coordinator', () => {
 
   it('finishes the immutable authoritative upload when another refresh arrives, without recapturing H', async () => {
     setup(); await flushPromises(); await controller.enable()
-    manifest = { ...manifest, repositories: manifest.repositories.map(repo => ({ ...repo, files: Array.from({ length: 8 }, (_, index) => ({ path: `${index}.py`, sha256: index.toString(16).repeat(64), size: 1, mode: '100644' as const })) })) }
+    manifest = { ...manifest, repositories: manifest.repositories.map(repo => ({ ...repo, files: Array.from({ length: 8 }, (_, index) => ({ path: `${index}.py`, sha256: index.toString(16).repeat(64), content_sha256: index.toString(16).repeat(64), size: 1, mode: '100644' as const })) })) }
     let release!: () => void
     const firstBatch = new Promise<void>(resolve => { release = resolve })
     mocks.api.upload.mockImplementation(async () => { if (mocks.api.upload.mock.calls.length <= 4) await firstBatch })

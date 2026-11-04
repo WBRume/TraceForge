@@ -38,8 +38,8 @@ export function gitEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
     'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_PREFIX'].includes(key.toUpperCase())) delete env[key]
   return { ...env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never', ...overrides }
 }
-export function gitRaw(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, check = true): Buffer {
-  const result = spawnSync('git', args, { cwd, env: gitEnvironment(env), timeout: 180_000, windowsHide: true, maxBuffer: 128 * 1024 * 1024 })
+export function gitRaw(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, check = true, input?: Buffer): Buffer {
+  const result = spawnSync('git', args, { cwd, env: gitEnvironment(env), timeout: 180_000, windowsHide: true, maxBuffer: 128 * 1024 * 1024, input })
   if (result.error) throw result.error
   if (check && result.status !== 0) fail(result.stderr.toString().trim() || 'GIT_OPERATION_FAILED')
   return result.stdout

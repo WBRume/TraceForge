@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { tmpdir } from 'node:os'
 import { CollaborationRuntime } from '../collaboration'
+import { contentHash } from '../content-identity'
 import { git, hash, resolved } from '../filesystem'
 
 let root: string, runtime: CollaborationRuntime, repositories: any[], input: any
@@ -139,7 +140,7 @@ test('uses the mapped directories for dual delivery and selected recovery withou
   for (const repo of target.repositories) {
     const raw = Buffer.from(repo.repo_slug + ':cloud\n')
     runtime.execute('cache_objects', { objects: [{ sha256: hash(raw), content: raw.toString('base64') }] })
-    repo.files[0] = { ...repo.files[0], sha256: hash(raw), size: raw.length }
+    repo.files[0] = { ...repo.files[0], sha256: hash(raw), content_sha256: contentHash(raw), size: raw.length }
   }
   for (const repo of repositories) fs.writeFileSync(path.join(repo.local_path, 'shared.txt'), repo.repo_slug + ':human\n')
   let status = await runtime.executeAsync('reconcile', { task_id: 'task', operation_id: 'final', target })
@@ -173,7 +174,7 @@ test('uses the mapped directories for dual delivery and selected recovery withou
   const second = structuredClone(target); second.snapshot_id = 'output-2'; second.workspace_revision = 3; second.session_turn_id = 'turn-2'; second.turn_index = 2
   const raw = Buffer.from('api:second round\n')
   runtime.execute('cache_objects', { objects: [{ sha256: hash(raw), content: raw.toString('base64') }] })
-  second.repositories[0].files[0] = { ...second.repositories[0].files[0], sha256: hash(raw), size: raw.length }
+  second.repositories[0].files[0] = { ...second.repositories[0].files[0], sha256: hash(raw), content_sha256: contentHash(raw), size: raw.length }
   await runtime.executeAsync('reconcile', { task_id: 'task', operation_id: 'receive-second', target: second })
   runtime.close()
   runtime = new CollaborationRuntime(path.join(root, 'private'), () => [path.join(root, 'user-repositories')])

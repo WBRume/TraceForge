@@ -15,7 +15,7 @@ from app.domains.auth.models.user import User, Workspace
 from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_repository import SddTaskRepository, TaskRepositoryState
-from app.domains.workspace_collaboration import content, service
+from app.domains.workspace_collaboration import content, identity, service
 from app.domains.workspace_collaboration.models import CollaborationState
 from app.domains.workspace_collaboration.schemas import (
     DeliveryReceipt,
@@ -150,7 +150,15 @@ def input_request(environment, state, changes=None):
         for name, raw in (changes or {}).get(repo["task_repository_id"], {}).items():
             repo["files"] = [entry for entry in repo["files"] if entry["path"] != name]
             if raw is not None:
-                repo["files"].append({"path": name, "sha256": store.put(raw), "size": len(raw), "mode": "100644"})
+                repo["files"].append(
+                    {
+                        "path": name,
+                        "sha256": store.put(raw),
+                        "content_sha256": identity.content_digest(raw),
+                        "size": len(raw),
+                        "mode": "100644",
+                    }
+                )
     return HandoffRequest(
         **fence(state), operation_id="handoff", submission_id="submission", manifest=manifest, input_cut_seq=9
     )
@@ -210,6 +218,7 @@ def test_handoff_rejects_subset_missing_objects_and_stale_fences(environment):
         service.handoff(db, task, "u", bad)
     bad = request.model_copy(deep=True)
     bad.manifest.repositories[0].files[0].sha256 = "f" * 64
+    bad.manifest.repositories[0].files[0].content_sha256 = "e" * 64
     with pytest.raises(service.CollaborationError, match="finished uploading"):
         service.handoff(db, task, "u", bad)
     bad = request.model_copy(update={"expected_workspace_revision": 99})
@@ -685,6 +694,7 @@ def test_windows_git_link_placeholder_preserves_mode_and_raw_target(environment)
     assert link.mode == "120000"
     assert content.ObjectStore("t").read(link.sha256) == b"same.txt"
     link.sha256 = content.ObjectStore("t").put(b"binary.bin")
+    link.content_sha256 = identity.content_digest(b"binary.bin")
     link.size = len(b"binary.bin")
     state = service.handoff(db, task, "u", request)
     db.commit()
@@ -710,7 +720,15 @@ def test_link_placeholder_creation_and_type_conversion_are_rejected(environment,
     if entry:
         entry.mode = mode
     else:
-        files.append(FileEntry(path=path, sha256=content.ObjectStore("t").put(b"same.txt"), size=8, mode=mode))
+        files.append(
+            FileEntry(
+                path=path,
+                sha256=content.ObjectStore("t").put(b"same.txt"),
+                content_sha256=identity.content_digest(b"same.txt"),
+                size=8,
+                mode=mode,
+            )
+        )
     with pytest.raises(service.CollaborationError, match="cannot be created or converted"):
         service.handoff(db, task, "u", request)
     assert (root / "linked.txt").read_bytes() == b"same.txt"

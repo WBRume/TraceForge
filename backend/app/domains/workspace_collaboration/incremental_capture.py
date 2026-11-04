@@ -188,6 +188,7 @@ def _project(root: Path, repositories: list[dict], groups: dict, changed_entries
             current[name] = {
                 "path": name,
                 "sha256": mapped[item["git_dir"], item["oid"]][0],
+                "content_sha256": mapped[item["git_dir"], item["oid"]][1],
                 "size": item["size"],
                 "mode": item["mode"],
             }

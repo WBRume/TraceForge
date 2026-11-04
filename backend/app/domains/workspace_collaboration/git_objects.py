@@ -13,6 +13,8 @@ from pathlib import Path
 from app.domains.task.services import task_git_snapshot_store as git_store
 from app.domains.task.services import task_snapshot_store as files
 
+from . import identity
+
 
 class GitObjects:
     def __init__(self, metadata_root: Path):
@@ -22,10 +24,15 @@ class GitObjects:
         with self.connect() as db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS objects (git_dir TEXT, oid TEXT, sha256 TEXT, size INTEGER, "
-                "PRIMARY KEY (git_dir, oid))"
+                "content_sha256 TEXT, PRIMARY KEY (git_dir, oid))"
             )
             db.execute("CREATE INDEX IF NOT EXISTS by_sha256 ON objects(sha256)")
             db.execute("CREATE INDEX IF NOT EXISTS by_oid ON objects(oid)")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(objects)")}
+            if "content_sha256" not in columns:
+                # The content digest is derived data: missing rows are rehashed
+                # from immutable blobs on next use.
+                db.execute("ALTER TABLE objects ADD COLUMN content_sha256 TEXT")
 
     @contextmanager
     def connect(self):
@@ -64,7 +71,7 @@ class GitObjects:
             raise ValueError("Collaboration Git store ownership changed")
         files.write_json(str(target), value)
 
-    def known(self, hashes: list[str]) -> dict[str, tuple[str, str, int]]:
+    def known(self, hashes: list[str]) -> dict[str, tuple[str, str, int, str | None]]:
         result = {}
         with self.connect() as db:
             for offset in range(0, len(hashes), 400):
@@ -72,47 +79,67 @@ class GitObjects:
                 if not batch:
                     continue
                 sql = (
-                    "SELECT sha256,git_dir,oid,size FROM objects WHERE sha256 IN (" + ",".join("?" for _ in batch) + ")"
+                    "SELECT sha256,git_dir,oid,size,content_sha256 FROM objects WHERE sha256 IN ("
+                    + ",".join("?" for _ in batch)
+                    + ")"
                 )
-                for sha, directory, oid, size in db.execute(sql, batch):
-                    result[sha] = (directory, oid, size)
+                for sha, directory, oid, size, content in db.execute(sql, batch):
+                    result[sha] = (directory, oid, size, content)
         return result
 
-    def register(self, entries: list[tuple[str, str, str, int]]) -> None:
+    def register(self, entries: list[tuple[str, str, str, str, int]]) -> None:
         with self.connect() as db:
-            db.executemany("INSERT OR REPLACE INTO objects(git_dir,oid,sha256,size) VALUES(?,?,?,?)", entries)
+            db.executemany(
+                "INSERT OR REPLACE INTO objects(git_dir,oid,sha256,content_sha256,size) VALUES(?,?,?,?,?)", entries
+            )
 
-    def export(self, entries: list[dict]) -> tuple[dict[tuple[str, str], tuple[str, int]], dict]:
-        """Batch-read only previously unseen immutable Git blobs."""
+    def export(self, entries: list[dict]) -> tuple[dict[tuple[str, str], tuple[str, str, int]], dict]:
+        """Batch-read only previously unseen (or unhashed) immutable Git blobs."""
         wanted = {(item["git_dir"], item["oid"]): item for item in entries}
-        mapped, known_oids = {}, {}
+        mapped, mapped_known, rehash, pending, reused = {}, {}, {}, {}, []
         with self.connect() as db:
             oids = list({oid for _, oid in wanted})
             for offset in range(0, len(oids), 400):
                 batch = oids[offset : offset + 400]
-                sql = "SELECT oid,sha256,size FROM objects WHERE oid IN (" + ",".join("?" for _ in batch) + ")"
-                for oid, sha, size in db.execute(sql, batch):
-                    known_oids[oid] = (sha, size)
-        reused = []
+                sql = (
+                    "SELECT oid,sha256,size,content_sha256 FROM objects WHERE oid IN ("
+                    + ",".join("?" for _ in batch)
+                    + ")"
+                )
+                for oid, sha, size, content in db.execute(sql, batch):
+                    mapped_known[oid] = (sha, size, content)
         for (directory, oid), item in wanted.items():
-            if oid in known_oids:
-                sha, size = known_oids[oid]
-                if size != item["size"]:
-                    raise ValueError("Git object mapping size differs")
-                mapped[directory, oid] = (sha, size)
-                reused.append((directory, oid, sha, size))
-        pending = [item for key, item in wanted.items() if key not in mapped]
+            known = mapped_known.get(oid)
+            if known is None:
+                pending[directory, oid] = item
+                continue
+            sha, size, content = known
+            if size != item["size"]:
+                raise ValueError("Git object mapping size differs")
+            if content is None:
+                # Rows written before the content digest existed are rehashed once.
+                rehash[directory, oid] = (item, sha)
+                continue
+            mapped[directory, oid] = (sha, content, size)
+            reused.append((directory, oid, sha, content, size))
         new_rows = []
         bytes_read = 0
-        for directory in {item["git_dir"] for item in pending}:
-            group = [item for item in pending if item["git_dir"] == directory]
-            for oid, raw in git_store.read_blobs(directory, [(item["oid"], item["size"]) for item in group]):
+        groups = {key[0] for key in pending} | {key[0] for key in rehash}
+        for directory in groups:
+            group = {item["oid"]: item for key, item in pending.items() if key[0] == directory}
+            group.update({item["oid"]: item for key, (item, _sha) in rehash.items() if key[0] == directory})
+            expected = {oid: sha for key, (_item, sha) in rehash.items() if key[0] == directory for oid in [key[1]]}
+            for oid, raw in git_store.read_blobs(directory, [(item["oid"], item["size"]) for item in group.values()]):
                 if raw.startswith(b"version https://git-lfs.github.com/spec/v1\n"):
                     raise ValueError("Unmaterialized Git LFS object")
                 sha = hashlib.sha256(raw).hexdigest()
-                mapped[directory, oid] = (sha, len(raw))
-                new_rows.append((directory, oid, sha, len(raw)))
+                if expected.get(oid, sha) != sha:
+                    raise ValueError("Git object mapping digest differs")
+                content = identity.content_digest(raw)
+                mapped[directory, oid] = (sha, content, len(raw))
+                new_rows.append((directory, oid, sha, content, len(raw)))
                 bytes_read += len(raw)
+
         self.register([*reused, *new_rows])
         return mapped, {"hashed_blobs": len(new_rows), "hashed_bytes": bytes_read}
 
@@ -139,7 +166,7 @@ class GitObjects:
                         stream.write(f"blob\nmark :{number}\ndata {len(raw)}\n".encode())
                         stream.write(raw)
                         stream.write(b"\n")
-                        rows.append((sha256, len(raw)))
+                        rows.append((sha256, identity.content_digest(raw), len(raw)))
                     stream.write(b"done\n")
                 if not rows:
                     return
@@ -158,12 +185,15 @@ class GitObjects:
                     )
                 marks = dict(line.split() for line in marks_path.read_text().splitlines())
                 imported = [
-                    (str(directory), marks[":" + str(number)], sha, size) for number, (sha, size) in enumerate(rows, 1)
+                    (str(directory), marks[":" + str(number)], sha, content, size)
+                    for number, (sha, content, size) in enumerate(rows, 1)
                 ]
                 git_store.shadow_git(
                     str(directory),
                     ["update-ref", "--stdin"],
-                    "".join(f"update refs/traceforge-transfer/{sha} {oid}\n" for _, oid, sha, _ in imported).encode(),
+                    "".join(
+                        f"update refs/traceforge-transfer/{sha} {oid}\n" for _, oid, sha, _content, _size in imported
+                    ).encode(),
                 )
                 self.register(imported)
 
@@ -171,17 +201,17 @@ class GitObjects:
         item = self.known([sha256]).get(sha256)
         if item is None:
             raise FileNotFoundError(sha256)
-        directory, oid, size = item
+        directory, oid, size, _content = item
         raw = next(git_store.read_blobs(directory, [(oid, size)]))[1]
         if hashlib.sha256(raw).hexdigest() != sha256:
             raise ValueError("Collaboration object checksum failed")
         return raw
 
-    def read_many(self, known: dict[str, tuple[str, str, int]]) -> dict[str, bytes]:
+    def read_many(self, known: dict[str, tuple[str, str, int, str | None]]) -> dict[str, bytes]:
         """One verified read per object directory for a bounded input batch."""
         result = {}
         groups: dict[str, dict[str, tuple[str, int]]] = {}
-        for sha, (directory, oid, size) in known.items():
+        for sha, (directory, oid, size, _content) in known.items():
             groups.setdefault(directory, {})[oid] = (sha, size)
         for directory, entries in groups.items():
             for oid, raw in git_store.read_blobs(directory, [(oid, value[1]) for oid, value in entries.items()]):
@@ -191,11 +221,12 @@ class GitObjects:
                 result[sha] = raw
         return result
 
-    def verify(self, hashes: list[str]) -> dict[str, tuple[str, str, int]]:
+    def verify(self, hashes: list[str]) -> dict[str, tuple[str, str, int, str | None]]:
         known = self.known(hashes)
         groups = {}
-        for sha, (directory, oid, size) in known.items():
+        for sha, (directory, oid, size, _content) in known.items():
             groups.setdefault(directory, {})[oid] = (sha, size)
+
         for directory, objects in groups.items():
             rows = git_store.shadow_git(
                 directory,

@@ -28,6 +28,9 @@ class Fence(LeaseRequest):
 class FileEntry(BaseModel):
     path: str = Field(min_length=1, max_length=1000)
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    # Identity of the content with line endings normalized; raw bytes above stay
+    # the transfer and filesystem form.
+    content_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     size: int = Field(ge=0, le=64 * 1024 * 1024)
     mode: Literal["100644", "100755", "120000"] = "100644"
 
@@ -49,7 +52,7 @@ class ManifestDelta(BaseModel):
 
 
 class Manifest(BaseModel):
-    protocol_version: Literal[1] = 1
+    protocol_version: Literal[2] = 2
     snapshot_id: str | None = None
     task_id: str
     workspace_revision: int = 0

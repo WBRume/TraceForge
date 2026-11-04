@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { child, fail, hash, readJson } from './filesystem'
+import { checkoutBytes, type CheckoutForm } from './content-identity'
 import { durableFile, durableJson, identifier, localFile, repositoryFileModes, sameFile, type SyncFile, type SyncManifest, SyncObjects, validateFileMode } from './collaboration-store'
 
 export type BackupContext = Pick<SyncManifest, 'task_id' | 'snapshot_id' | 'workspace_revision' | 'session_generation' | 'session_revision' | 'session_turn_id' | 'turn_index' | 'turn_title' | 'turn_created_at' | 'source'> & {
@@ -20,6 +21,8 @@ export function applyFile(options: {
   state: string; operation_id: string; task_repository_id: string; root: string;
   expected: SyncFile | null; target: SyncFile | null; relative: string; objects: SyncObjects;
   scratch_root?: string;
+  /** Write bytes in this repository's checkout form; omitted paths keep repository bytes. */
+  checkout?: CheckoutForm;
   context?: BackupContext;
   beforeMove?: () => void; afterMove?: () => void;
 }) {
@@ -89,9 +92,12 @@ export function applyFile(options: {
       if (target) {
         const data = objects.get(target.sha256)
         if (data.length !== target.size) fail('CONTENT_OBJECT_SIZE_MISMATCH')
+        // Content identity ignores line endings; the checkout form keeps this
+        // working tree consistent with the rest of the user's repository.
+        const staged = target.mode === '120000' ? data : checkoutBytes(data, options.checkout)
         fs.mkdirSync(path.dirname(destination), { recursive: true })
         if (fs.statSync(path.dirname(destination)).dev !== fs.statSync(path.dirname(record.staged)).dev) fail('COLLABORATION_NESTED_VOLUME_UNSUPPORTED')
-        durableFile(record.staged, data)
+        durableFile(record.staged, staged)
         fs.chmodSync(record.staged, target.mode === '100755' ? 0o755 : 0o644)
       }
       save('STAGED')

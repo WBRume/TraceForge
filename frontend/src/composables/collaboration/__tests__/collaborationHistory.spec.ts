@@ -9,7 +9,7 @@ const api = vi.hoisted(() => ({ humanChanges: vi.fn(), humanChange: vi.fn(), obj
 vi.mock('@/services/collaborationApi', () => ({ collaborationApi: () => api }))
 vi.mock('@/components/collaboration/CodeComparison.vue', () => ({ default: { props: ['path', 'leftHash', 'rightHash', 'leftLabel', 'rightLabel', 'readText'], template: '<div>{{path}}</div>' } }))
 const file = (repo: string) => ({ task_repository_id: repo, repo_slug: repo, branch_name: repo === 'api' ? 'release' : 'main', path: 'same.txt',
-  before: { path: 'same.txt', sha256: `${repo}-before`, size: 4, mode: '100644' }, after: { path: 'same.txt', sha256: `${repo}-after`, size: 8, mode: '100644' } })
+  before: { path: 'same.txt', sha256: `${repo}-before`, content_sha256: `${repo}-before`, size: 4, mode: '100644' }, after: { path: 'same.txt', sha256: `${repo}-after`, content_sha256: `${repo}-after`, size: 8, mode: '100644' } })
 const detail = { id: 'record', base_snapshot_id: 'base', input_snapshot_id: 'input', created_at: '2026-10-12T17:48:49', files: [file('api'), file('web')] }
 function open(handoffId?: string) {
   return mount(CollaborationHistory, { props: { workspaceId: 'w', taskId: 't', handoffId }, global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })] } })

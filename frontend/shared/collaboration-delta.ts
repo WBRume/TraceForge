@@ -1,8 +1,8 @@
 /** Delta manifests retain the full repository identity, but carry only changed paths. */
-type File = { path: string; sha256: string; size: number; mode: string }
+type File = { path: string; sha256: string; content_sha256: string; size: number; mode: string }
 type Repository = { task_repository_id: string; files: File[]; deleted?: string[] }
 type Manifest = { task_id: string; snapshot_id: string; repository_set_digest: string; repositories: Repository[]; delta?: { base_snapshot_id: string } }
-const equal = (a?: File, b?: File) => a?.sha256 === b?.sha256 && a?.mode === b?.mode && a?.size === b?.size
+const equal = (a?: File, b?: File) => a?.content_sha256 === b?.content_sha256 && a?.mode === b?.mode
 
 export function manifestDelta<T extends Manifest>(base: T, target: T): T {
   if (base.task_id !== target.task_id || base.repository_set_digest !== target.repository_set_digest) return target

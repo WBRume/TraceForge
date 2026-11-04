@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { CollaborationRuntime } from '../collaboration'
 import { applyFile } from '../collaboration-write'
 import { SyncObjects, type SyncManifest } from '../collaboration-store'
+import { contentHash } from '../content-identity'
 import { git, hash } from '../filesystem'
 import { expandManifest, expandStatus, manifestDelta } from '../../../shared/collaboration-delta'
 
@@ -40,7 +41,7 @@ function target(version = 1): SyncManifest {
 function setFile(manifest: SyncManifest, repo: string, name: string, content: string | null) {
   const repository = manifest.repositories.find(item => item.task_repository_id === repo)!
   repository.files = repository.files.filter(file => file.path !== name)
-  if (content !== null) repository.files.push({ path: name, sha256: runtime.objects.put(Buffer.from(content)), size: Buffer.byteLength(content), mode: '100644' })
+  if (content !== null) repository.files.push({ path: name, sha256: runtime.objects.put(Buffer.from(content)), content_sha256: contentHash(Buffer.from(content)), size: Buffer.byteLength(content), mode: '100644' })
 }
 function deliver(manifest: SyncManifest, operation_id = 'delivery1', preview = false) {
   return runtime.execute('reconcile', { task_id: task, operation_id, target: manifest, preview })
@@ -292,13 +293,32 @@ describe('embedded local collaboration with real Git worktrees', () => {
     expect(rebound.repositories[0].local_worktree_path).toBe(worktree())
     expect(fs.readFileSync(path.join(worktree(), 'shared.txt'), 'utf8')).toBe('edit while disabled')
   })
+  test('delivers in the local checkout form and reports no line-ending-only change', () => {
+    // A Windows checkout of the same repository keeps CRLF on disk.
+    for (const name of ['api', 'web']) git(worktree(name), 'config', 'core.autocrlf', 'true')
+    const final = target(2)
+    setFile(final, 'api', 'shared.txt', 'cloud output\n')
+    const delivered = deliver(final, 'eol-delivery')
+    expect(delivered.state).toBe('READY')
+    expect(fs.readFileSync(path.join(worktree(), 'shared.txt'), 'utf8')).toBe('cloud output\r\n')
+    expect(runtime.execute('status', { task_id: task, verify: true }).local_changes).toEqual([])
+    const captured = runtime.execute('capture', { task_id: task })
+    const entry = captured.manifest.repositories[0].files.find((file: any) => file.path === 'shared.txt')
+    expect(entry.sha256).toBe(hash('cloud output\r\n'))
+    expect(entry.content_sha256).toBe(contentHash(Buffer.from('cloud output\n')))
+    // A later round that only flips line endings is not a change either.
+    const next = target(3)
+    setFile(next, 'api', 'shared.txt', 'cloud output\n')
+    expect(deliver(next, 'eol-redelivery').state).toBe('READY')
+    expect(fs.readFileSync(path.join(worktree(), 'shared.txt'), 'utf8')).toBe('cloud output\r\n')
+  })
 })
 
 describe('no-clobber file replacement boundary', () => {
   test('captures an edit arriving between digest check and displacement and safely puts it back', () => {
     const directory = worktree(), objects = new SyncObjects(path.join(root, 'write-state'))
-    const expected = { path: 'shared.txt', sha256: objects.put(Buffer.from('base api')), size: 8, mode: '100644' as const }
-    const targetFile = { ...expected, sha256: objects.put(Buffer.from('cloud')), size: 5 }
+    const expected = { path: 'shared.txt', sha256: objects.put(Buffer.from('base api')), content_sha256: contentHash(Buffer.from('base api')), size: 8, mode: '100644' as const }
+    const targetFile = { ...expected, sha256: objects.put(Buffer.from('cloud')), content_sha256: contentHash(Buffer.from('cloud')), size: 5 }
     expect(() => applyFile({ state: path.join(root, 'write-state'), operation_id: 'race1', task_repository_id: 'api', root: directory,
       relative: 'shared.txt', expected, target: targetFile, objects,
       beforeMove: () => fs.writeFileSync(path.join(directory, 'shared.txt'), 'race edit') })).toThrow('REPLACEMENT_BOUNDARY')
@@ -307,8 +327,8 @@ describe('no-clobber file replacement boundary', () => {
   })
   test('never overwrites a destination recreated after displacement, preserving displaced backup', () => {
     const directory = worktree(), objects = new SyncObjects(path.join(root, 'write-state'))
-    const expected = { path: 'shared.txt', sha256: objects.put(Buffer.from('base api')), size: 8, mode: '100644' as const }
-    const targetFile = { ...expected, sha256: objects.put(Buffer.from('cloud')), size: 5 }
+    const expected = { path: 'shared.txt', sha256: objects.put(Buffer.from('base api')), content_sha256: contentHash(Buffer.from('base api')), size: 8, mode: '100644' as const }
+    const targetFile = { ...expected, sha256: objects.put(Buffer.from('cloud')), content_sha256: contentHash(Buffer.from('cloud')), size: 5 }
     expect(() => applyFile({ state: path.join(root, 'write-state'), operation_id: 'race2', task_repository_id: 'api', root: directory,
       relative: 'shared.txt', expected, target: targetFile, objects,
       afterMove: () => fs.writeFileSync(path.join(directory, 'shared.txt'), 'new destination') })).toThrow('REPLACEMENT_BOUNDARY')

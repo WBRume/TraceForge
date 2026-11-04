@@ -1,4 +1,4 @@
-export type CollaborationFile = { path: string; sha256: string; size: number; mode: '100644' | '100755' | '120000' }
+export type CollaborationFile = { path: string; sha256: string; content_sha256: string; size: number; mode: '100644' | '100755' | '120000' }
 export type CollaborationHumanChange = {
   id: string; delta_id: string | null; actor_name: string | null; submission_id: string | null
   created_at: string; changed_files_count: number; repository_count: number
@@ -13,7 +13,7 @@ export type CollaborationRepository = {
   rel_path: string; branch_name: string; base_commit_sha: string; files: CollaborationFile[]; deleted?: string[]
 }
 export type CollaborationManifest = {
-  protocol_version: 1; snapshot_id: string; task_id: string; workspace_revision: number
+  protocol_version: 2; snapshot_id: string; task_id: string; workspace_revision: number
   session_generation: number; session_revision: number; repository_set_digest: string
   source: string; repositories: CollaborationRepository[]
   session_turn_id?: string; turn_index?: number; turn_title?: string; turn_created_at?: string

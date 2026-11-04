@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { CollaborationRuntime } from '../collaboration'
 import { applyFile } from '../collaboration-write'
 import { type SyncManifest } from '../collaboration-store'
+import { contentHash } from '../content-identity'
 import { git, hash } from '../filesystem'
 
 let root: string, source: string, tree: string, runtime: CollaborationRuntime, prepared: any
@@ -40,7 +41,7 @@ windowsTest('round trips tracked Windows Git link text, restores conflicts and n
   expect(runtime.objects.get(placeholder.sha256).toString()).toBe('../regular.txt')
   expect(fs.lstatSync(path.join(tree, placeholder.path)).isSymbolicLink()).toBe(false)
   const cloud = target(), entry = cloud.repositories[0].files.find(file => file.path === placeholder.path)!
-  entry.sha256 = runtime.objects.put(Buffer.from('../../cloud-destination')); entry.size = 23
+  entry.sha256 = runtime.objects.put(Buffer.from('../../cloud-destination')); entry.content_sha256 = contentHash(Buffer.from('../../cloud-destination')); entry.size = 23
   fs.writeFileSync(path.join(tree, placeholder.path), '../../human-destination')
   const pending = runtime.execute('reconcile', { task_id: 'task', operation_id: 'deliver', target: cloud })
   expect(pending.state).toBe('CONFLICT_PENDING')
@@ -58,7 +59,7 @@ windowsTest('rejects injected placeholder paths, Git type conversion and manifes
   for (const name of ['regular.txt', 'new-link']) {
     const cloud = target()
     cloud.repositories[0].files = cloud.repositories[0].files.filter(file => file.path !== name)
-    cloud.repositories[0].files.push({ path: name, sha256: runtime.objects.put(Buffer.from('../outside')), size: 10, mode: '120000' })
+    cloud.repositories[0].files.push({ path: name, sha256: runtime.objects.put(Buffer.from('../outside')), content_sha256: contentHash(Buffer.from('../outside')), size: 10, mode: '120000' })
     expect(() => runtime.execute('reconcile', { task_id: 'task', operation_id: 'injected', target: cloud })).toThrow('PLACEHOLDER_TYPE_CHANGED')
   }
   const cloud = target(), placeholder = cloud.repositories[0].files.find(file => file.path === 'links/reference')!

@@ -72,7 +72,9 @@ if (!process.versions.electron) {
     incremental(runtime.execute('accept_input', { task_id: 'task', operation_id: 'fixed-input', target: accepted }))
     const target = structuredClone(accepted)
     target.snapshot_id = 'output'; target.workspace_revision = 3; target.source = 'AGENT_OUTPUT'
-    entry(target).sha256 = runtime.objects.put(Buffer.from('cloud!'))
+    const cloud = Buffer.from('cloud!')
+    entry(target).sha256 = runtime.objects.put(cloud)
+    entry(target).content_sha256 = digest(cloud)
     runtime.execute('status', { task_id: 'task' })
     write('local!')
     const pending = runtime.execute('reconcile', { task_id: 'task', operation_id: 'delivery', target })

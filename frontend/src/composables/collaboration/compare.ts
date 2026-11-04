@@ -20,6 +20,7 @@ export function localFiles(status: LocalCollaborationStatus | null) {
 export function changedFiles(left: ReturnType<typeof manifestFiles>, right: ReturnType<typeof manifestFiles>) {
   return [...new Set([...left.keys(), ...right.keys()])].filter(key => {
     const a = left.get(key), b = right.get(key)
-    return a?.sha256 !== b?.sha256 || a?.mode !== b?.mode
+    // Content identity ignores line endings: a CRLF checkout is not a change.
+    return a?.content_sha256 !== b?.content_sha256 || a?.mode !== b?.mode
   }).map(key => ({ key, ...(right.get(key) || left.get(key))! }))
 }

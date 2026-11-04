@@ -1,5 +1,6 @@
 """Version-fenced transport patches; full immutable snapshots remain the recovery source."""
 
+from . import identity
 from .content import validate_path
 
 
@@ -14,7 +15,7 @@ def between(base: dict, target: dict) -> dict:
         repositories.append(
             {
                 **repo,
-                "files": [file for name, file in current.items() if previous.get(name) != file],
+                "files": [file for name, file in current.items() if not identity.same_file(previous.get(name), file)],
                 "deleted": sorted(previous.keys() - current.keys()),
             }
         )

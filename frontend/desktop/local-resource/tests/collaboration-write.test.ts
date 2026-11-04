@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { applyFile } from '../collaboration-write'
 import { SyncObjects } from '../collaboration-store'
 import { rejectManagedWrite } from '../collaboration-guard'
+import { contentHash } from '../content-identity'
 import { hash } from '../filesystem'
 
 let root: string, objects: SyncObjects
@@ -15,8 +16,8 @@ beforeEach(() => {
 })
 afterEach(() => { fs.rmSync(root, { force: true, recursive: true }) })
 const options = () => ({ state: path.join(root, 'state'), operation_id: 'write1', task_repository_id: 'repo', root,
-  relative: 'file.txt', expected: { path: 'file.txt', sha256: objects.put(Buffer.from('before')), size: 6, mode: '100644' as const },
-  target: { path: 'file.txt', sha256: objects.put(Buffer.from('after')), size: 5, mode: '100644' as const }, objects })
+  relative: 'file.txt', expected: { path: 'file.txt', sha256: objects.put(Buffer.from('before')), content_sha256: contentHash(Buffer.from('before')), size: 6, mode: '100644' as const },
+  target: { path: 'file.txt', sha256: objects.put(Buffer.from('after')), content_sha256: contentHash(Buffer.from('after')), size: 5, mode: '100644' as const }, objects })
 
 test('resumes after displacement and never replays a completed write over later local content', () => {
   const input = { ...options(), context: { task_id: 'task', snapshot_id: 'result', workspace_revision: 3, session_generation: 1, session_revision: 2, session_turn_id: 'turn', turn_index: 2, source: 'AGENT_OUTPUT', kind: 'restore' as const, repo_slug: 'repo', branch_name: 'main' } }

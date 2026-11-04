@@ -3,9 +3,10 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { atomic, fail, hash, readJson } from './filesystem'
+import { contentHash } from './content-identity'
 import { shadowGit } from './git-snapshots'
 
-export interface GitBlob { git_dir: string; oid: string; size: number }
+export interface GitBlob { git_dir: string; oid: string; size: number; content?: string }
 export interface GitEntry extends GitBlob { path: string; mode: string }
 const validHash = (value: string) => { if (!/^[a-f0-9]{64}$/.test(value)) fail('INVALID_CONTENT_DIGEST'); return value }
 const oidHash = (data: Buffer, oid: string) => createHash(oid.length === 64 ? 'sha256' : 'sha1').update(`blob ${data.length}\0`).update(data).digest('hex')
@@ -54,19 +55,23 @@ export class GitContent {
   private register(digest: string, entry: GitBlob) { this.records[digest] = entry; this.byOid.set(entry.oid, digest) }
   registerTree(entries: GitEntry[]) {
     let count = 0, bytes = 0
-    const missing = new Map<string, GitBlob>()
+    const pending = new Map<string, GitEntry>()
     for (const entry of entries) {
       if (entry.size > 64 * 1024 * 1024) fail('COLLABORATION_FILE_TOO_LARGE: ' + entry.path)
-      if (!this.byOid.has(entry.oid)) missing.set(entry.oid, entry)
+      const digest = this.byOid.get(entry.oid)
+      if (!digest || !this.records[digest]?.content) pending.set(entry.oid, entry)
     }
-    if (entries.length) readGitBlobs(entries[0].git_dir, [...missing.values()], (entry, data) => {
+    if (pending.size) readGitBlobs(entries[0]!.git_dir, [...pending.values()], (entry, data) => {
       if (data.subarray(0, 80).toString().startsWith('version https://git-lfs.github.com/spec/v1\n')) fail('COLLABORATION_LFS_CONTENT_REQUIRED')
-      this.register(hash(data), entry); count++; bytes += data.length
+      const known = this.byOid.has(entry.oid)
+      this.register(hash(data), { git_dir: entry.git_dir, oid: entry.oid, size: entry.size, content: contentHash(data) })
+      if (!known) { count++; bytes += data.length }
     })
     const files = entries.map(entry => {
       const sha256 = this.byOid.get(entry.oid)!
-      this.register(sha256, { git_dir: entry.git_dir, oid: entry.oid, size: entry.size })
-      return { path: entry.path, mode: entry.mode, sha256, size: entry.size }
+      const content = this.records[sha256]!.content!
+      this.register(sha256, { git_dir: entry.git_dir, oid: entry.oid, size: entry.size, content })
+      return { path: entry.path, mode: entry.mode, sha256, content_sha256: content, size: entry.size }
     })
     if (entries.length) this.save()
     return { files, new_blobs: count, new_blob_bytes: bytes }
@@ -159,7 +164,7 @@ export class GitContent {
       try { shadowGit(directory, ['-c', 'core.fsync=committed', 'fast-import', '--quiet', '--done', '--export-marks=' + path.basename(marks)], undefined, input) }
       finally { fs.closeSync(input) }
       const ids = new Map(fs.readFileSync(marks, 'utf8').trim().split('\n').map(row => row.split(' ') as [string, string]))
-      const records = added.map((entry, index) => ({ digest: entry.sha256, git_dir: directory, oid: ids.get(':' + (index + 1))!, size: entry.data.length }))
+      const records = added.map((entry, index) => ({ digest: entry.sha256, git_dir: directory, oid: ids.get(':' + (index + 1))!, size: entry.data.length, content: contentHash(entry.data) }))
       shadowGit(directory, ['update-ref', '--stdin'], Buffer.from(records.map(entry => `update refs/traceforge/collaboration/objects/${entry.digest} ${entry.oid}\n`).join('')))
       for (const { digest, ...entry } of records) this.register(digest, entry)
       this.save()

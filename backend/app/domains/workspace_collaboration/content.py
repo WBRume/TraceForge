@@ -17,6 +17,8 @@ from loguru import logger
 from app.config import settings
 from app.core.subprocess_runner import GIT_REPOSITORY_ENV_VARS, run_git
 
+from . import identity
+
 MAX_OBJECT_BYTES = 64 * 1024 * 1024
 MAX_MANIFEST_BYTES = 512 * 1024 * 1024
 HASH = re.compile(r"^[a-f0-9]{64}$")
@@ -366,6 +368,7 @@ def capture_task(task_root: Path, store: ObjectStore, repositories: list[dict], 
                     {
                         "path": name,
                         "sha256": mapped[item["git_dir"], item["oid"]][0],
+                        "content_sha256": mapped[item["git_dir"], item["oid"]][1],
                         "size": item["size"],
                         "mode": item["mode"],
                     }
@@ -412,7 +415,16 @@ def _build_plan(task_root: Path, baseline: dict, target: dict, store: ObjectStor
         root = task_root / repo["rel_path"]
         old = {f["path"]: f for f in old_repos[repo["task_repository_id"]]["files"]}
         new = {f["path"]: f for f in repo["files"]}
-        changed = [name for name in sorted(set(old) | set(new)) if old.get(name) != new.get(name)]
+        # Identity ignores line endings: a CRLF checkout of unchanged code is not a change.
+        changed = [name for name in sorted(set(old) | set(new)) if not identity.same_file(old.get(name), new.get(name))]
+        forms = identity.checkout_forms(
+            root,
+            [
+                name
+                for name in changed
+                if "120000" not in {old.get(name, {}).get("mode"), new.get(name, {}).get("mode")}
+            ],
+        )
         placeholders = (
             windows_link_placeholder_paths(root)
             if any("120000" in {old.get(name, {}).get("mode"), new.get(name, {}).get("mode")} for name in changed)
@@ -431,8 +443,10 @@ def _build_plan(task_root: Path, baseline: dict, target: dict, store: ObjectStor
             linked = old.get(relative, {}).get("mode") == "120000"
             path = safe_path(root, relative, leaf_link=linked and os.name != "nt")
             raw = _file_bytes(path, link=linked)
-            actual = store.put(raw) if raw is not None else None
-            expected = old.get(relative, {}).get("sha256")
+            if raw is not None and len(raw) > MAX_OBJECT_BYTES:
+                raise ValueError(f"Collaboration file exceeds 64 MiB: {relative}")
+            actual = identity.content_digest(raw) if raw is not None else None
+            expected = (old.get(relative) or {}).get("content_sha256")
             if actual != expected:
                 raise ValueError(f"Server file changed outside authorized run: {relative}")
             if new.get(relative, {}).get("mode") == "120000":
@@ -457,6 +471,7 @@ def _build_plan(task_root: Path, baseline: dict, target: dict, store: ObjectStor
                     "path": relative,
                     "old": old.get(relative),
                     "new": new.get(relative),
+                    "checkout": forms.get(relative),
                     "status": "PENDING",
                 }
             )
@@ -477,23 +492,26 @@ def _install_item(task_root: Path, item: dict, store: ObjectStore, *, recover: b
     linked = (item["old"] or {}).get("mode") == "120000"
     path = safe_path(task_root / item["repo"], item["path"], leaf_link=linked and os.name != "nt")
     current = _file_bytes(path, link=linked)
-    actual = hashlib.sha256(current).hexdigest() if current is not None else None
-    if recover and actual == (item["new"] or {}).get("sha256"):
+    actual = identity.content_digest(current) if current is not None else None
+    if recover and actual == (item["new"] or {}).get("content_sha256"):
         if item["new"] is not None and os.name != "nt" and not linked:
             os.chmod(path, 0o755 if item["new"]["mode"] == "100755" else 0o644)
         return
-    if actual != (item["old"] or {}).get("sha256"):
+    if actual != (item["old"] or {}).get("content_sha256"):
         raise ValueError(f"Server file changed during input install: {item['path']}")
     if item["new"] is None:
         path.unlink()
         _prune_empty_parents(path, (task_root / item["repo"]).resolve())
         return
     raw = store.read(item["new"]["sha256"])
+    # Install in this workspace's own checkout form so the tree stays consistent
+    # and Git-clean; content identity already ignores the difference.
+    data = identity.checkout_bytes(raw, item.get("checkout"))
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as handle:
-            handle.write(raw)
+            handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         if item["new"]["mode"] == "120000" and os.name != "nt":
@@ -520,14 +538,14 @@ def apply_manifest(
     if existing and existing.get("status") != "COMPLETED" and not recover:
         raise ValueError("Incomplete collaboration input requires recovery")
     if existing:
-        if existing["target_digest"] != digest(target["repositories"]):
+        if existing["target_digest"] != identity.repositories_digest(target["repositories"]):
             raise ValueError("Operation was reused with different input")
         if existing["status"] == "COMPLETED":
             return
     journal = existing or {
         "status": "APPLYING",
         "operation_id": operation_id,
-        "target_digest": digest(target["repositories"]),
+        "target_digest": identity.repositories_digest(target["repositories"]),
         "target": target,
         "files": _build_plan(task_root, baseline, target, store),
     }
