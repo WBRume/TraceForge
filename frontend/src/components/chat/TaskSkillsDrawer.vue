@@ -134,6 +134,7 @@ const closeTraceInspector = () => {
     :title="$t('chat.task_skills_drawer_title')"
     v-model:level="drawerLevel"
     resizable
+    hide-close
     class="task-skills-drawer"
     @close="emit('close')"
   >

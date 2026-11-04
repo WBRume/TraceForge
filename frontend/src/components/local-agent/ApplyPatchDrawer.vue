@@ -281,7 +281,7 @@ watch(
     :class="{ 'collaboration-drawer': isCollaboration }"
     v-model:level="drawerLevel"
     resizable
-    :hide-close="!isCollaboration"
+    hide-close
     @close="emit('close')"
   >
     <template #icon>
@@ -517,9 +517,8 @@ watch(
 .collaboration-drawer :deep(.side-drawer-panel) { container-type: inline-size; }
 @container (max-width: 650px) {
   .collaboration-drawer :deep(.side-drawer-header) { flex-wrap: wrap; gap: 10px; }
-  .collaboration-drawer :deep(.side-drawer-title) { flex-basis: 100%; padding-right: 34px; }
+  .collaboration-drawer :deep(.side-drawer-title) { flex-basis: 100%; }
   .collaboration-drawer :deep(.side-drawer-actions) { flex: 1; }
-  .collaboration-drawer :deep(.side-drawer-close) { position: absolute; top: 12px; right: 18px; }
 }
 .apply-patch-drawer {
   flex: 1;
