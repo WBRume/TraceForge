@@ -7,7 +7,7 @@ import api from '@/utils/api'
 import { collaborationPresentation, openCollaborationView } from '../useCollaborationPresentation'
 import { collaborationReview } from '../review'
 import type { LocalCollaboration } from '../useLocalCollaboration'
-import type { CollaborationManifest, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
+import type { CollaborationManifest, CollaborationReviewDiff, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
 import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
 import RepositoryUpdateChanges from '@/components/collaboration/RepositoryUpdateChanges.vue'
 import CollaborationInputStatus from '@/components/collaboration/CollaborationInputStatus.vue'
@@ -27,9 +27,21 @@ function fixture() {
   const cloud: CollaborationManifest = { ...input, snapshot_id: 'final', source: 'AGENT_OUTPUT', repositories: repositories.map(repo => ({ ...repo, files: [{ ...repo.files[0]!, sha256: 'agent', content_sha256: 'agent' }] })) }
   const local = ref<LocalCollaborationStatus>({ task_id: 'task', directory_mode: 'MAPPED', baseline: cloud, received: cloud, manifest: cloud, state: 'READY', conflicts: [], local_changes: [], repositories: repositories.map(repo => ({ ...repo, mapped_repo_root: `G:/${repo.repo_slug}`, local_worktree_path: `G:/${repo.repo_slug}` })) })
   const state = ref<CollaborationState>({ ...cloud, enabled: true, sync_phase: 'READY', state_version: 1, lease_epoch: 1, binding_id: 'binding', input_snapshot_id: 'start', progress_snapshot_id: null, driver_connected: true, conflicts: [] })
+  const changeSet = (label: string): CollaborationReviewDiff => ({
+    scope: 'cumulative',
+    baseline_snapshot_id: 'start', cloud_snapshot_id: 'final', protocol_version: 2,
+    repositories: repositories.map(repo => ({ task_repository_id: repo.task_repository_id, repo_slug: repo.repo_slug, branch_name: repo.branch_name })),
+    files: repositories.map(repo => ({
+      task_repository_id: repo.task_repository_id, repo_slug: repo.repo_slug, path: 'shared.txt', change: 'M' as const,
+      left: { path: 'shared.txt', sha256: 'old', content_sha256: 'old', size: 3, mode: '100644' as const },
+      right: { path: 'shared.txt', sha256: 'agent', content_sha256: 'agent', size: 3, mode: '100644' as const, ...(label ? { sha256: label, content_sha256: label } : {}) },
+    })),
+    running: false,
+  })
   const model = {
-    reviewBaseline: ref<CollaborationManifest | null>(input),
-    loadReview: vi.fn(), reviewRunning: ref(false), reviewLoading: ref(false), reviewError: ref(''),
+    reviewDiff: ref<CollaborationReviewDiff | null>(changeSet('')),
+    roundDiff: ref<CollaborationReviewDiff | null>({ ...changeSet(''), files: [] }),
+    loadReview: vi.fn(), loadReviewRound: vi.fn(), reviewRunning: ref(false), reviewLoading: ref(false), reviewError: ref(''),
     participating: ref(true), leaving: ref(false), receivedOnce: ref(false), leave: vi.fn(), receiveOnce: vi.fn(), enable: vi.fn(), state, local, input: ref(input), cloud: ref<CollaborationManifest | null>(cloud), available: true, supported: ref(true), enabled: ref(true), driver: ref(true), remoteSender: ref(false), phase: computed(() => state.value.sync_phase),
     conflicts: computed(() => local.value.conflicts || []), error: ref(''), busy: ref(false), blocked: ref(false), loading: ref(false), preparationRequired: ref(false), mappingChecks: ref([]), mappings: ref({}),
     activity: ref({ direction: '', done: 0, total: 0, bytes: 0, totalBytes: 0 }), progressive: ref(false), operationStage: ref(''), operationSeconds: ref(0),
@@ -272,55 +284,28 @@ describe('local collaboration presentation and review', () => {
     expect(collaborationPresentation(proxyRefs(controller))).toMatchObject({ key: 'device', inputKey: '', localAvailable: false, canRestore: false })
   })
   it('retains both repositories in this-round diffs after delivery has aligned local and cloud files', () => {
-    const { controller } = fixture()
+    const { controller, model } = fixture()
+    model.roundDiff.value = { ...(model.reviewDiff.value as CollaborationReviewDiff) }
     const review = collaborationReview(proxyRefs(controller), true, 'round')
     expect(review.files).toHaveLength(2)
     expect(new Set(review.files.map(file => file.key)).size).toBe(2)
     expect(review.files.every(file => file.kind === 'cloud' && file.delivered)).toBe(true)
   })
-  it('does not render a missing cloud manifest as every file being deleted', () => {
-    const { controller, model, local } = fixture()
-    model.cloud.value = null; local.value.target = undefined
-    const review = collaborationReview(proxyRefs(controller), true)
-    expect(review.cloudKnown).toBe(false)
-    expect(review.files).toEqual([])
-  })
-  it('never compares a stale local delivery target before the cloud review arrives', () => {
-    const { controller, model, local } = fixture()
-    model.cloud.value = null
-    model.participating.value = false
-    const stale = JSON.parse(JSON.stringify(model.reviewBaseline.value)) as CollaborationManifest
-    for (const repo of stale.repositories) for (const file of repo.files) delete (file as { content_sha256?: string }).content_sha256
-    local.value.target = stale
-    const review = collaborationReview(proxyRefs(controller), true)
-    expect(review.cloudKnown).toBe(false)
-    expect(review.files).toEqual([])
-  })
-  it('keeps a stale manifest in the loading state instead of an error card or a full list', async () => {
+  it('reports an unknown cumulative review as not ready instead of every file being deleted', () => {
     const { controller, model } = fixture()
-    const stale = JSON.parse(JSON.stringify(model.reviewBaseline.value)) as CollaborationManifest
-    for (const repo of stale.repositories) for (const file of repo.files) delete (file as { content_sha256?: string }).content_sha256
-    model.reviewBaseline.value = stale
+    model.reviewDiff.value = null
+    const review = collaborationReview(proxyRefs(controller), true)
+    expect(review.cloudKnown).toBe(false)
+    expect(review.files).toEqual([])
+  })
+  it('shows a loading card, not a green check or a full list, until the change set arrives', async () => {
+    const { controller, model } = fixture()
+    model.reviewDiff.value = null
     const review = collaborationReview(proxyRefs(controller), true)
     expect(review.cloudKnown).toBe(false)
     expect(review.files).toEqual([])
     const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
     expect(panel.find('[role="alert"]').exists()).toBe(false)
-    expect(panel.find('.empty-state-icon.is-loading').exists()).toBe(true)
-    expect(panel.findAll('.file')).toHaveLength(0)
-    panel.unmount()
-  })
-  it('still compares manifests whose headers carry different protocol versions', () => {
-    const { controller, model, cloud } = fixture()
-    model.cloud.value = { ...cloud, protocol_version: 1 as unknown as 2 }
-    const review = collaborationReview(proxyRefs(controller), true)
-    expect(review.cloudKnown).toBe(true)
-    expect(review.files).toHaveLength(2)
-  })
-  it('shows a loading card, not a green check or a full list, while the baseline is missing', async () => {
-    const { controller, model } = fixture()
-    model.reviewBaseline.value = null
-    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
     const status = panel.get('[role="status"]')
     expect(status.findAll('.file')).toHaveLength(0)
     expect(panel.find('.empty-state-icon.is-loading').exists()).toBe(true)
@@ -328,17 +313,27 @@ describe('local collaboration presentation and review', () => {
     expect(panel.text()).not.toContain('任务执行成果')
     panel.unmount()
   })
+  it('shows a loading card, not a green check or a full list, while the round change set is missing', async () => {
+    const { controller, model } = fixture()
+    model.roundDiff.value = null
+    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
+    await panel.get('.diff-purpose-tabs button:nth-child(2)').trigger('click')
+    expect(panel.find('.empty-state-icon.is-loading').exists()).toBe(true)
+    expect(panel.findAll('.file')).toHaveLength(0)
+    panel.unmount()
+  })
   it('caps a runaway changed-file list so the panel cannot freeze the browser', async () => {
-    const { controller, model, input, cloud } = fixture()
-    const files = (prefix: string) => Array.from({ length: 350 }, (_, index) => ({
-      path: `file-${index}.txt`, sha256: `${prefix}-${index}`, content_sha256: `${prefix}-${index}`, size: 1, mode: '100644' as const,
-    }))
-    model.reviewBaseline.value = { ...input, repositories: input.repositories.map(repo => ({ ...repo, files: files('base') })) }
-    model.cloud.value = { ...cloud, repositories: cloud.repositories.map(repo => ({ ...repo, files: files('cloud') })) }
+    const { controller, model } = fixture()
+    const base = model.reviewDiff.value as CollaborationReviewDiff
+    model.reviewDiff.value = { ...base, files: Array.from({ length: 350 }, (_, index) => ({
+      task_repository_id: 'repo', repo_slug: 'repo', path: `file-${index}.txt`, change: 'M' as const,
+      left: { path: `file-${index}.txt`, sha256: `base-${index}`, content_sha256: `base-${index}`, size: 1, mode: '100644' as const },
+      right: { path: `file-${index}.txt`, sha256: `cloud-${index}`, content_sha256: `cloud-${index}`, size: 1, mode: '100644' as const },
+    })) }
     const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
     expect(panel.findAll('.file')).toHaveLength(300)
     expect(panel.get('.list-limit-bar').text()).toContain('仅显示前 300 个文件')
-    expect(panel.get('.list-limit-bar').text()).toContain('700')
+    expect(panel.get('.list-limit-bar').text()).toContain('350')
     panel.unmount()
   })
   it('has one entry, no routine composer notice, and opens the current local edits directly', async () => {

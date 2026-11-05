@@ -200,8 +200,68 @@ def _checkpoint_inventory(path, task, repositories, store):
     ]
 
 
-def changes(db, task, _user_id):
+def _entries(manifest: dict) -> dict[tuple[str, str], dict]:
+    return {
+        (repo["task_repository_id"], file["path"]): file for repo in manifest["repositories"] for file in repo["files"]
+    }
+
+
+def diff(db, task, user_id, scope: str = "cumulative"):
+    """Changed files between a baseline and the cloud cut.
+
+    ``scope="cumulative"`` compares the pinned remote baseline with the cloud cut;
+    ``scope="round"`` compares the input this round started from with the cloud cut.
+    Either way the payload is proportional to the change set: a two-file review no
+    longer downloads two fifteen-thousand-file manifests to discover it.
+    """
+    if scope not in {"cumulative", "round"}:
+        service._fail("REVIEW_SCOPE_INVALID", "Unknown review scope")
     service._check_task(task)
+    state = service._state(db, task.id)
+    baseline = committed_baseline(db, task, user_id) if scope == "cumulative" else _changes(db, task, user_id)["input"]
+    cloud = session.latest_snapshot(db, task, user_id, None)
+    old, new = _entries(baseline), _entries(cloud)
+    repositories = [
+        {
+            "task_repository_id": repo["task_repository_id"],
+            "repo_slug": repo["repo_slug"],
+            "branch_name": repo["branch_name"],
+        }
+        for repo in cloud["repositories"]
+    ]
+    slugs = {repo["task_repository_id"]: repo["repo_slug"] for repo in repositories}
+    files = []
+    for key in sorted(set(old) | set(new)):
+        left, right = old.get(key), new.get(key)
+        if left and right and left["content_sha256"] == right["content_sha256"] and left["mode"] == right["mode"]:
+            continue
+        task_repository_id, path = key
+        files.append(
+            {
+                "task_repository_id": task_repository_id,
+                "repo_slug": slugs.get(task_repository_id, task_repository_id),
+                "path": path,
+                "change": "D" if not right else "A" if not left else "M",
+                "left": left,
+                "right": right,
+            }
+        )
+    return {
+        "scope": scope,
+        "baseline_snapshot_id": baseline["snapshot_id"],
+        "cloud_snapshot_id": cloud["snapshot_id"],
+        "protocol_version": cloud["protocol_version"],
+        "repositories": repositories,
+        "files": files,
+        "running": bool(state and state.enabled and state.sync_phase in service.ACTIVE_PHASES),
+    }
+
+
+def changes(db, task, _user_id):
+    return _changes(db, task, _user_id)
+
+
+def _changes(db, task, _user_id):
     state = service._state(db, task.id)
     if state and state.enabled:
         cloud = session.latest_snapshot(db, task, _user_id, None)

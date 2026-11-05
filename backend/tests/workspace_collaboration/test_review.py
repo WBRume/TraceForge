@@ -199,6 +199,36 @@ def test_running_cloud_review_waits_for_final_cut_and_never_acquires_lease(envir
     assert db.get(CollaborationState, task.id) is None
 
 
+def test_cumulative_diff_returns_only_changed_files(environment):
+    db, task, root = environment
+    baseline = review.committed_baseline(db, task, "viewer")
+    db.commit()
+    (root / "api" / "added.txt").write_bytes(b"added\n")
+    result = review.diff(db, task, "viewer")
+    assert result["scope"] == "cumulative"
+    assert result["baseline_snapshot_id"] == baseline["snapshot_id"]
+    assert {(file["repo_slug"], file["path"]) for file in result["files"]} == {("api", "added.txt")}
+    entry = result["files"][0]
+    assert entry["change"] == "A" and entry["left"] is None and entry["right"]["path"] == "added.txt"
+
+
+def test_round_diff_is_empty_until_a_round_starts(environment):
+    db, task, root = environment
+    (root / "api" / "same.txt").write_bytes(b"agent edit\n")
+    result = review.diff(db, task, "viewer", "round")
+    assert result["scope"] == "round"
+    # Without an ACTIVE turn the cloud cut is this round's own input.
+    assert result["files"] == []
+    assert result["baseline_snapshot_id"] == result["cloud_snapshot_id"]
+
+
+def test_review_rejects_an_unknown_diff_scope(environment):
+    db, task, _ = environment
+    with pytest.raises(service.CollaborationError) as failure:
+        review.diff(db, task, "viewer", "everything")
+    assert failure.value.code == "REVIEW_SCOPE_INVALID"
+
+
 def test_storage_root_is_configurable_and_pinned_across_configuration_changes(environment, tmp_path, monkeypatch):
     db, task, _ = environment
     configured = tmp_path / "collaboration-data"

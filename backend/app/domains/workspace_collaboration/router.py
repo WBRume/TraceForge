@@ -98,22 +98,19 @@ async def enable(
     return await _locked(db, ws_id, task_id, user, service.enable, data)
 
 
-@router.get("/review")
-async def review_changes(
-    ws_id: str, task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+@router.get("/review/diff")
+async def review_diff(
+    ws_id: str,
+    task_id: str,
+    scope: str = "cumulative",
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     from . import review
 
-    return await _locked(db, ws_id, task_id, user, review.changes, write=False)
-
-
-@router.get("/review/baseline")
-async def review_baseline(
-    ws_id: str, task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
-    from . import review
-
-    return await _locked(db, ws_id, task_id, user, review.committed_baseline, write=False)
+    return await _locked(
+        db, ws_id, task_id, user, lambda session, task, user_id: review.diff(session, task, user_id, scope), write=False
+    )
 
 
 @router.post("/lease")

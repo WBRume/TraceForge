@@ -7,8 +7,7 @@ import { onRepoPreferencesChanged, readRepoPreferences, saveRepoPreferences } fr
 import { remoteUrlsMatch } from '@/composables/local-agent/localAgentUtils'
 import { chooseGitRemote, getLocalGitRemotes } from '@/composables/local-agent/localGitRemotes'
 import { collaborationApi, base64Bytes, bytesBase64 } from '@/services/collaborationApi'
-import { manifestComplete } from '@/composables/collaboration/compare'
-import type { CollaborationBackup, CollaborationCapture, CollaborationConflict, CollaborationManifest, CollaborationMappingCheck, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
+import type { CollaborationBackup, CollaborationCapture, CollaborationConflict, CollaborationManifest, CollaborationMappingCheck, CollaborationReviewDiff, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
 import { expandManifest, expandStatus, manifestDelta } from '../../../shared/collaboration-delta'
 
 const INSTANCE_KEY = 'traceforge.collaboration.instance'
@@ -24,15 +23,8 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const desktop = getSddDesktop()
   const state = shallowRef<CollaborationState | null>(null), local = shallowRef<LocalCollaborationStatus | null>(null)
   const input = shallowRef<CollaborationManifest | null>(null), cloud = shallowRef<CollaborationManifest | null>(null)
-  const reviewBaselines = shallowRef(new Map<string, CollaborationManifest>())
-  const baselineError = shallowRef('')
-  const repositoryKey = (repositories: CollaborationManifest['repositories'] | CollaborationState['repositories']) => JSON.stringify(repositories.map(repo => [repo.task_repository_id, repo.base_commit_sha]).sort())
-  // Publish a baseline with its matching cloud version, including during an update.
-  const reviewBaseline = computed(() => {
-    const value = reviewBaselines.value.get(repositoryKey(cloud.value?.repositories || state.value?.repositories || []))
-    // A manifest without content digests can never be compared safely.
-    return value && manifestComplete(value) ? value : null
-  })
+  // Both diff scopes are computed on the server: only changed files are transferred.
+  const reviewDiff = shallowRef<CollaborationReviewDiff | null>(null), roundDiff = shallowRef<CollaborationReviewDiff | null>(null)
   const reviewRunning = shallowRef(false), reviewLoading = shallowRef(false), reviewError = shallowRef('')
   let reviewRequested = false
   const previewConflicts = shallowRef<CollaborationConflict[]>([])
@@ -313,29 +305,22 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     } finally { if (token === generation) busy.value = false }
   }
 
-  async function fetchReview() {
+  async function loadReviewDiff(scope: 'cumulative' | 'round' = 'cumulative') {
     if (!reviewRequested || participating.value || receivedOnce.value) return
     const token = generation
-    reviewLoading.value = true; reviewError.value = ''
+    if (scope === 'cumulative') reviewLoading.value = true
     try {
-      const result = await remote().review(); check(token)
-      if (!participating.value && !receivedOnce.value) {
-        input.value = result.input; cloud.value = result.cloud; reviewRunning.value = result.running
-      }
+      const value = await remote().reviewDiff(scope); check(token)
+      if (token !== generation) return
+      if (scope === 'cumulative') { reviewDiff.value = value; reviewRunning.value = value.running }
+      else roundDiff.value = value
     } catch (reason) { if (token === generation && !participating.value && !receivedOnce.value) reviewError.value = formatApiError(reason, t('collaboration.failed')) }
-    finally { if (token === generation) reviewLoading.value = false }
+    finally { if (token === generation && scope === 'cumulative') reviewLoading.value = false }
   }
-  async function loadReviewBaseline() {
-    const key = repositoryKey(state.value?.repositories || [])
-    if (!reviewRequested || !state.value?.repositories.length || reviewBaselines.value.has(key)) return
-    const token = generation
-    try {
-      const value = await remote().reviewBaseline(); check(token)
-      // Never cache a manifest that predates content digests: comparing it would
-      // report the whole repository as changed. Ask for a rebuild instead.
-      if (!manifestComplete(value)) { baselineError.value = t('collaboration.ui.baselineStale'); return }
-      reviewBaselines.value = new Map(reviewBaselines.value).set(repositoryKey(value.repositories), value); baselineError.value = ''
-    } catch (reason) { if (token === generation) baselineError.value = formatApiError(reason, t('collaboration.failed')) }
+  /** The round view has its own change set: fetched the first time it opens. */
+  async function loadReviewRound() { await loadReviewDiff('round') }
+  async function refreshReview() {
+    await Promise.all([loadReviewDiff('cumulative'), roundDiff.value ? loadReviewDiff('round') : Promise.resolve()])
   }
   async function loadReview() { reviewRequested = true; await refresh() }
   function refreshResults() { if (reviewRequested) void refresh() }
@@ -359,7 +344,10 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     try {
       const next = await remote().state(); check(token)
       state.value = next; observedVersion = next.state_version
-      await loadReviewBaseline(); check(token)
+      // The cumulative diff is the only thing the panel waits for: start it now,
+      // in parallel with mapping checks and other refresh work below.
+      if (reviewRequested) void loadReviewDiff()
+      // The remote baseline is only needed by the round view, which fetches it on demand.
       if (participating.value && driver.value && next.sync_phase === 'PREPARING' && next.input_mode !== 'CLOUD' && next.pending_submission_id !== next.input_submission_id) preparingId = next.pending_submission_id
       // Retry only the failure report after reconnect; do not capture/upload the
       // same failed input again when the acknowledgement was lost.
@@ -370,11 +358,11 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       }
       if (mappingsDirty || (available && !nativeIdentityReady) || preparationRequired.value) await loadMappings()
       check(token); loading.value = false
-      if (!next.enabled) { preparationRequired.value = false; deliveryRetryRequired.value = false; await fetchReview(); return }
+      if (!next.enabled) { preparationRequired.value = false; deliveryRetryRequired.value = false; await refreshReview(); return }
       if (!available || !driver.value || !participating.value || leaving.value) {
         // Keep a one-time receipt and its comparison pinned to the version actually downloaded.
         if (receivedOnce.value && !participating.value) return
-        if (reviewRequested) { await fetchReview(); return }
+        if (reviewRequested) { await refreshReview(); return }
         const target = ['RUNNING', 'WAITING_HITL'].includes(next.sync_phase) ? next.progress_snapshot_id || next.snapshot_id : next.snapshot_id
         if (target && cloud.value?.snapshot_id !== target) { const manifest = await snapshot(target); check(token); cloud.value = manifest }
         if (next.input_snapshot_id && input.value?.snapshot_id !== next.input_snapshot_id) { const manifest = await snapshot(next.input_snapshot_id); check(token); input.value = manifest }
@@ -704,7 +692,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     void refresh()
   }, { immediate: true })
   onScopeDispose(() => { disposed = true; generation++; clearInterval(heartbeat); clearInterval(stageClock); stopMappingUpdates(); stopLocalUpdates?.() })
-  return { initializationIdentity, resetForInitialization, finishInitialization, reviewBaseline, reviewRunning, reviewLoading, reviewError: computed(() => baselineError.value || reviewError.value), loadReview, refreshResults, participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, onConnectionReady, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
+  return { initializationIdentity, resetForInitialization, finishInitialization, reviewDiff, roundDiff, reviewRunning, reviewLoading, reviewError, loadReview, loadReviewRound, refreshResults, participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, onConnectionReady, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
 }
 type Controller = ReturnType<typeof createController>
 const controllers = new Map<string, { scope: EffectScope; controller: Controller; users: number }>()
@@ -742,11 +730,13 @@ export function useLocalCollaboration(options: { workspaceId: () => string; task
     onCleanup(retained.release)
   }, { immediate: true })
   return {
-    reviewBaseline: computed(() => active.value?.reviewBaseline.value || null),
+    reviewDiff: computed(() => active.value?.reviewDiff.value || null),
+    roundDiff: computed(() => active.value?.roundDiff.value || null),
     reviewRunning: computed(() => active.value?.reviewRunning.value || false),
     reviewLoading: computed(() => active.value?.reviewLoading.value || false),
     reviewError: computed(() => active.value?.reviewError.value || ''),
     loadReview: async () => { await active.value?.loadReview() },
+    loadReviewRound: async () => { await active.value?.loadReviewRound() },
     refreshResults: () => active.value?.refreshResults(),
     participating: computed(() => active.value?.participating.value || false), leaving: computed(() => active.value?.leaving.value || false),
     receivedOnce: computed(() => active.value?.receivedOnce.value || false),

@@ -1,5 +1,5 @@
 import api from '@/utils/api'
-import type { CollaborationManifest, CollaborationState, CollaborationHumanChangePage, CollaborationHumanChangeDetail } from '@/types/collaboration'
+import type { CollaborationManifest, CollaborationReviewDiff, CollaborationState, CollaborationHumanChangePage, CollaborationHumanChangeDetail } from '@/types/collaboration'
 
 // Multi-repository manifests and raw objects can exceed a normal API request's
 // transfer time. Lease and state requests retain the short default timeout.
@@ -8,8 +8,9 @@ const contentRequest = { timeout: 120_000 }
 export function collaborationApi(workspaceId: string, taskId: string) {
   const path = `/workspaces/${encodeURIComponent(workspaceId)}/tasks/${encodeURIComponent(taskId)}/collaboration`
   return {
-    reviewBaseline: async (): Promise<CollaborationManifest> => (await api.get(`${path}/review/baseline`, contentRequest)).data,
-    review: async (): Promise<{ input: CollaborationManifest; cloud: CollaborationManifest; running: boolean }> => (await api.get(`${path}/review`, contentRequest)).data,
+    // Both review scopes are computed on the server; only changed files travel.
+    reviewDiff: async (scope: 'cumulative' | 'round' = 'cumulative'): Promise<CollaborationReviewDiff> =>
+      (await api.get(`${path}/review/diff`, { ...contentRequest, params: { scope } })).data,
     state: async (): Promise<CollaborationState> => (await api.get(path)).data,
     humanChanges: async (page = 1): Promise<CollaborationHumanChangePage> => (await api.get(`${path}/human-changes`, { params: { page } })).data,
     humanChange: async (id: string): Promise<CollaborationHumanChangeDetail> => (await api.get(`${path}/human-changes/${encodeURIComponent(id)}`)).data,

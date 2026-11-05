@@ -4354,7 +4354,6 @@
       "fileMode": "File mode",
       "loadingFiles": "Reading file status",
       "loadingFilesHint": "The remote baseline is resolved on first open; large repositories can take a few seconds.",
-      "baselineStale": "The cached baseline predates content digests and cannot be compared; reload the page.",
       "noLocalChanges": "No local edits waiting to be sent",
       "noAgentChanges": "No code changes this round",
       "noLocalHint": "Local edits will appear here.",

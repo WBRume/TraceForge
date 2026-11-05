@@ -45,9 +45,11 @@ const files = computed(() => review.value.files.filter(file => diffScope.value =
 function selectDiffScope(scope: 'cumulative' | 'round') {
   tab.value = 'all'
   diffScope.value = scope
+  // The round view needs both manifests; they are fetched only when it opens.
+  if (scope === 'round') void c.value.loadReviewRound()
 }
 watch(diffScope, () => { pair.value = 'auto' })
-watch(tab, value => { if (value === 'local' || value === 'conflicts') diffScope.value = 'round' }, { immediate: true })
+watch(tab, value => { if (value === 'local' || value === 'conflicts') { diffScope.value = 'round'; void c.value.loadReviewRound() } }, { immediate: true })
 
 const searchQuery = shallowRef('')
 const filteredFiles = computed(() => {

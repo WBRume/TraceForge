@@ -24,6 +24,17 @@ export type CollaborationConflict = {
   expected_sha256?: string | null; cloud_sha256?: string | null
   local?: CollaborationFile | null; base?: CollaborationFile | null; cloud?: CollaborationFile | null; reason?: string
 }
+/** Cumulative review computed on the server: only changed files travel. */
+export type CollaborationReviewDiff = {
+  scope: 'cumulative' | 'round'
+  baseline_snapshot_id: string; cloud_snapshot_id: string; protocol_version: number
+  repositories: Array<{ task_repository_id: string; repo_slug: string; branch_name: string }>
+  files: Array<{
+    task_repository_id: string; repo_slug: string; path: string; change: 'A' | 'M' | 'D' | 'T'
+    left: CollaborationFile | null; right: CollaborationFile | null
+  }>
+  running: boolean
+}
 export type CollaborationState = {
   capabilities?: { manifest_delta?: number }
   input_mode?: 'LOCAL' | 'CLOUD'

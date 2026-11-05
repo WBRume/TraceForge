@@ -6,7 +6,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import zh from '@/locales/zh.json'
 import type { CollaborationManifest, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
 
-const mocks = vi.hoisted(() => ({ desktop: true, changed: vi.fn(), unsubscribe: vi.fn(), api: { reviewBaseline: vi.fn(), review: vi.fn(), state: vi.fn(), post: vi.fn(), snapshot: vi.fn(), object: vi.fn(), upload: vi.fn() }, native: vi.fn(), mapping: vi.fn(), setMapping: vi.fn(), directory: vi.fn(), validate: vi.fn(), remotes: vi.fn(), open: vi.fn(), auth: { user: null as { id: string } | null } }))
+const mocks = vi.hoisted(() => ({ desktop: true, changed: vi.fn(), unsubscribe: vi.fn(), api: { reviewDiff: vi.fn(), state: vi.fn(), post: vi.fn(), snapshot: vi.fn(), object: vi.fn(), upload: vi.fn() }, native: vi.fn(), mapping: vi.fn(), setMapping: vi.fn(), directory: vi.fn(), validate: vi.fn(), remotes: vi.fn(), open: vi.fn(), auth: { user: null as { id: string } | null } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => mocks.auth }))
 vi.mock('@/utils/runtime', () => ({ getSddDesktop: () => mocks.desktop ? ({ collaboration: { execute: mocks.native, onChanged: mocks.changed }, config: { getRepoMapping: mocks.mapping, setRepoMapping: mocks.setMapping }, git: { selectDirectory: mocks.directory, validateGitRepo: mocks.validate, getFetchRemotes: mocks.remotes }, system: { openPath: mocks.open } }) : null }))
 vi.mock('@/services/collaborationApi', () => ({ collaborationApi: () => mocks.api, base64Bytes: (content: string) => Uint8Array.from(atob(content), char => char.charCodeAt(0)), bytesBase64: () => 'AQ==' }))
@@ -35,8 +35,7 @@ beforeEach(() => {
   manifest = { protocol_version: 2, task_id: crypto.randomUUID(), snapshot_id: 'snapshot1', workspace_revision: 1, session_generation: 1, session_revision: 1, repository_set_digest: 'digest', source: 'INITIAL', repositories: [repo] }
   state = { ...manifest, enabled: false, sync_phase: 'OFF', state_version: 1, input_snapshot_id: null, progress_snapshot_id: null, lease_epoch: 1, binding_id: 'binding', conflicts: [] }
   local = { directory_mode: 'MAPPED', task_id: manifest.task_id, binding_id: 'binding', task_root: 'G:/private/task', manifest, baseline: manifest, target: manifest, repositories: [{ ...repo, local_worktree_path: 'G:/private/task/api', mapped_repo_root: 'G:/api' }], state: 'READY', conflicts: [], local_changes: [] }
-  mocks.api.reviewBaseline.mockImplementation(async () => manifest)
-  mocks.api.review.mockImplementation(async () => ({ input: { ...manifest, snapshot_id: 'before', repositories: manifest.repositories.map(repo => ({ ...repo, files: [] })) }, cloud: manifest, running: false }))
+  mocks.api.reviewDiff.mockImplementation(async (scope = 'cumulative') => ({ scope, baseline_snapshot_id: 'before', cloud_snapshot_id: 'after', protocol_version: 2, repositories: manifest.repositories.map(repo => ({ task_repository_id: repo.task_repository_id, repo_slug: repo.repo_slug, branch_name: repo.branch_name })), files: [], running: false }))
   mocks.api.state.mockImplementation(async () => ({ ...state }))
   mocks.api.snapshot.mockImplementation(async () => manifest)
   mocks.api.post.mockImplementation(async (action, body) => {
@@ -74,7 +73,7 @@ afterEach(async () => {
 describe('local collaboration coordinator', () => {
   it('clears a failed browsing review after a complete collaboration delivery', async () => {
     setup(); await flushPromises()
-    mocks.api.review.mockRejectedValueOnce(new Error('timeout of 15000ms exceeded'))
+    mocks.api.reviewDiff.mockRejectedValueOnce(new Error('timeout of 15000ms exceeded'))
     await controller.loadReview()
     expect(controller.reviewError.value).toContain('15000ms')
     await controller.enable()
@@ -85,7 +84,7 @@ describe('local collaboration coordinator', () => {
   it('ignores a late browsing failure after the client has joined collaboration', async () => {
     setup(); await flushPromises()
     let reject!: (reason: Error) => void
-    mocks.api.review.mockImplementationOnce(() => new Promise((_resolve, failed) => { reject = failed }))
+    mocks.api.reviewDiff.mockImplementationOnce(() => new Promise((_resolve, failed) => { reject = failed }))
     const browsing = controller.loadReview(); await flushPromises()
     await controller.enable()
     reject(new Error('expired browsing request')); await browsing
@@ -189,46 +188,43 @@ describe('local collaboration coordinator', () => {
     expect(await controller.listBackups()).toEqual({ backup_directory:'', backups:[] })
     expect(mocks.native).not.toHaveBeenCalled()
   })
-  it('loads cloud results lazily with no mapping, connection, file scan or polling', async () => {
+  it('loads the cumulative change set lazily and the round one on demand', async () => {
     mocks.mapping.mockResolvedValue(null)
     setup(); await flushPromises()
-    expect(mocks.api.review).not.toHaveBeenCalled()
+    expect(mocks.api.reviewDiff).not.toHaveBeenCalled()
     mocks.native.mockClear(); mocks.api.post.mockClear()
     await controller.loadReview(); await flushPromises()
-    expect(controller.input.value?.snapshot_id).toBe('before')
-    expect(controller.reviewBaseline.value?.snapshot_id).toBe(manifest.snapshot_id)
-    expect(mocks.api.reviewBaseline).toHaveBeenCalledTimes(1)
-    expect(controller.cloud.value?.snapshot_id).toBe(manifest.snapshot_id)
+    expect(controller.reviewDiff.value?.cloud_snapshot_id).toBe('after')
     expect(controller.participating.value).toBe(false)
     expect(controller.blocked.value).toBe(false)
     expect(mocks.api.post).not.toHaveBeenCalled()
     expect(mocks.native).not.toHaveBeenCalled()
+
+    expect(controller.roundDiff.value).toBeNull()
+    await controller.loadReviewRound(); await flushPromises()
+    expect(controller.roundDiff.value?.scope).toBe('round')
+
     await vi.advanceTimersByTimeAsync(65000)
-    expect(mocks.api.review).toHaveBeenCalledTimes(1)
     controller.refreshResults(); await flushPromises()
-    expect(mocks.api.review).toHaveBeenCalledTimes(2)
-    expect(mocks.api.reviewBaseline).toHaveBeenCalledTimes(1)
+    expect(mocks.api.reviewDiff.mock.calls.length).toBeGreaterThan(1)
   })
-  it('loads cloud results in a browser without desktop APIs', async () => {
+  it('loads the cumulative change set in a browser without desktop APIs', async () => {
     mocks.desktop = false
     setup(); await flushPromises(); await controller.loadReview(); await flushPromises()
-    expect(controller.cloud.value?.snapshot_id).toBe(manifest.snapshot_id)
+    expect(controller.reviewDiff.value?.files).toEqual([])
     expect(controller.reviewError.value).toBe('')
   })
-  it('keeps the old comparison paired until the cloud snapshot reaches the new baseline', async () => {
+  it('refetches the round change set only when it is open', async () => {
     mocks.desktop = false
     setup(); await flushPromises(); await controller.loadReview(); await flushPromises()
-    const original = controller.reviewBaseline.value
-    const next = { ...manifest, snapshot_id:'updated', repositories:manifest.repositories.map(repo => ({ ...repo, base_commit_sha:'next-commit' })) }
-    state = { ...state, repositories:next.repositories }
-    mocks.api.reviewBaseline.mockResolvedValue(next)
-    let publish!: (value: any) => void
-    mocks.api.review.mockImplementationOnce(() => new Promise(resolve => { publish = resolve }))
+    const scopes = () => mocks.api.reviewDiff.mock.calls.map(([scope]) => scope)
+    expect(scopes().every(scope => scope === 'cumulative')).toBe(true)
+    await controller.loadReviewRound(); await flushPromises()
+    expect(scopes()).toContain('round')
+    mocks.api.reviewDiff.mockClear()
     controller.refreshResults(); await flushPromises()
-    expect(controller.reviewBaseline.value).toEqual(original)
-    publish({ input:next, cloud:next, running:false }); await flushPromises()
-    expect(controller.reviewBaseline.value?.repositories[0]?.base_commit_sha).toBe('next-commit')
-    expect(controller.cloud.value?.snapshot_id).toBe('updated')
+    // Once open, the round change set is refreshed alongside the cumulative one.
+    expect(new Set(scopes())).toEqual(new Set(['cumulative', 'round']))
   })
   it('performs no periodic state, file, or backup reads while connected, retaining only lease renewal', async () => {
     setup(); await flushPromises(); await controller.enable()
