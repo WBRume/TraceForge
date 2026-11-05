@@ -6,8 +6,9 @@ import { atomic, fail, hash, readJson } from './filesystem'
 import { contentHash } from './content-identity'
 import { shadowGit } from './git-snapshots'
 
-export interface GitBlob { git_dir: string; oid: string; size: number; content?: string }
+export interface GitBlob { git_dir: string; oid: string; size: number }
 export interface GitEntry extends GitBlob { path: string; mode: string }
+export interface GitRecord extends GitBlob { content: string }
 const validHash = (value: string) => { if (!/^[a-f0-9]{64}$/.test(value)) fail('INVALID_CONTENT_DIGEST'); return value }
 const oidHash = (data: Buffer, oid: string) => createHash(oid.length === 64 ? 'sha256' : 'sha1').update(`blob ${data.length}\0`).update(data).digest('hex')
 
@@ -40,54 +41,51 @@ export function readGitBlobs(directory: string, entries: GitBlob[], consume: (en
 
 export class GitContent {
   readonly state: string
-  private records: Record<string, GitBlob>
+  private records: Record<string, GitRecord>
   private byOid = new Map<string, string>()
   private destination?: string
   constructor(state: string) {
     this.state = state
     const index = path.join(state, 'git-content.json')
-    this.records = fs.existsSync(index) ? readJson(index).objects : {}
+    const saved = fs.existsSync(index) ? readJson<{ objects?: Record<string, Partial<GitRecord>> }>(index) : {}
+    // The mapping is derived from immutable Git blobs: an incomplete record is
+    // dropped and rebuilt by the next capture instead of being trusted.
+    this.records = Object.fromEntries(
+      Object.entries(saved.objects ?? {}).filter(([, entry]) => Boolean(entry.content)),
+    ) as Record<string, GitRecord>
     for (const [sha, entry] of Object.entries(this.records)) this.byOid.set(entry.oid, sha)
   }
-  private save() { atomic(path.join(this.state, 'git-content.json'), JSON.stringify({ version: 1, objects: this.records })) }
+  private save() { atomic(path.join(this.state, 'git-content.json'), JSON.stringify({ objects: this.records })) }
   preferStore(directory: string) { this.destination = directory }
-  private legacy(digest: string) { return path.join(this.state, 'objects', digest.slice(0, 2), validHash(digest)) }
-  private register(digest: string, entry: GitBlob) { this.records[digest] = entry; this.byOid.set(entry.oid, digest) }
+  private register(digest: string, entry: GitRecord) { this.records[digest] = entry; this.byOid.set(entry.oid, digest) }
   registerTree(entries: GitEntry[]) {
     let count = 0, bytes = 0
-    const pending = new Map<string, GitEntry>()
+    const missing = new Map<string, GitEntry>()
     for (const entry of entries) {
       if (entry.size > 64 * 1024 * 1024) fail('COLLABORATION_FILE_TOO_LARGE: ' + entry.path)
-      const digest = this.byOid.get(entry.oid)
-      if (!digest || !this.records[digest]?.content) pending.set(entry.oid, entry)
+      if (!this.byOid.has(entry.oid)) missing.set(entry.oid, entry)
     }
-    if (pending.size) readGitBlobs(entries[0]!.git_dir, [...pending.values()], (entry, data) => {
+    if (missing.size) readGitBlobs(entries[0]!.git_dir, [...missing.values()], (entry, data) => {
       if (data.subarray(0, 80).toString().startsWith('version https://git-lfs.github.com/spec/v1\n')) fail('COLLABORATION_LFS_CONTENT_REQUIRED')
-      const known = this.byOid.has(entry.oid)
       this.register(hash(data), { git_dir: entry.git_dir, oid: entry.oid, size: entry.size, content: contentHash(data) })
-      if (!known) { count++; bytes += data.length }
+      count++; bytes += data.length
     })
     const files = entries.map(entry => {
       const sha256 = this.byOid.get(entry.oid)!
-      const content = this.records[sha256]!.content!
+      const content = this.records[sha256]!.content
       this.register(sha256, { git_dir: entry.git_dir, oid: entry.oid, size: entry.size, content })
       return { path: entry.path, mode: entry.mode, sha256, content_sha256: content, size: entry.size }
     })
     if (entries.length) this.save()
     return { files, new_blobs: count, new_blob_bytes: bytes }
   }
-  private lookup(digest: string, migrate = true): GitBlob | undefined {
+  private lookup(digest: string): GitRecord | undefined {
     validHash(digest)
-    if (migrate && !this.records[digest] && fs.existsSync(this.legacy(digest))) {
-      const data = fs.readFileSync(this.legacy(digest))
-      if (hash(data) !== digest) fail('CORRUPT_LOCAL_CONTENT_OBJECT')
-      this.putMany([{ sha256: digest, data }])
-    }
     return this.records[digest]
   }
   file(digest: string) {
     const entry = this.lookup(digest)
-    return entry ? path.join(entry.git_dir, 'objects', entry.oid.slice(0, 2), entry.oid.slice(2)) : this.legacy(digest)
+    return entry ? path.join(entry.git_dir, 'objects', entry.oid.slice(0, 2), entry.oid.slice(2)) : fail('LOCAL_CONTENT_OBJECT_MISSING')
   }
   get(digest: string): Buffer {
     const value = this.find(digest)
@@ -105,21 +103,10 @@ export class GitContent {
     return value!
   }
   /** Git validates immutable object type/size in batches; raw bytes are verified when used. */
-  check(entries: { sha256: string; size?: number }[], migrate = true) {
-    if (migrate) {
-      let batch: { sha256: string; data: Buffer }[] = [], bytes = 0
-      for (const digest of new Set(entries.map(entry => validHash(entry.sha256)))) {
-        if (this.records[digest] || !fs.existsSync(this.legacy(digest))) continue
-        const data = fs.readFileSync(this.legacy(digest))
-        if (hash(data) !== digest) fail('CORRUPT_LOCAL_CONTENT_OBJECT')
-        batch.push({ sha256: digest, data }); bytes += data.length
-        if (bytes >= 32 * 1024 * 1024) { this.putMany(batch); batch = []; bytes = 0 }
-      }
-      if (batch.length) this.putMany(batch)
-    }
+  check(entries: { sha256: string; size?: number }[]) {
     const missing = new Set<string>(), groups = new Map<string, Map<string, { digest: string; size: number }>>()
     for (const entry of entries) {
-      const object = this.lookup(entry.sha256, false)
+      const object = this.lookup(entry.sha256)
       if (!object) { missing.add(entry.sha256); continue }
       if (entry.size !== undefined && entry.size !== object.size) fail('CONTENT_OBJECT_SIZE_MISMATCH')
       if (!groups.has(object.git_dir)) groups.set(object.git_dir, new Map())
@@ -146,7 +133,7 @@ export class GitContent {
       if (hash(entry.data) !== entry.sha256) fail('CONTENT_OBJECT_DIGEST_MISMATCH')
       if (entry.data.subarray(0, 80).toString().startsWith('version https://git-lfs.github.com/spec/v1\n')) fail('COLLABORATION_LFS_CONTENT_REQUIRED')
     }
-    const missing = new Set(this.check(entries.map(entry => ({ sha256: entry.sha256, size: entry.data.length })), false))
+    const missing = new Set(this.check(entries.map(entry => ({ sha256: entry.sha256, size: entry.data.length }))))
     const added = [...new Map(entries.filter(entry => missing.has(entry.sha256)).map(entry => [entry.sha256, entry])).values()]
     if (!added.length) return
     const directory = this.destination ?? path.join(this.state, 'transfer.git')

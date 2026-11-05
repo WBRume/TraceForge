@@ -28,7 +28,7 @@ function fixture() {
   const local = ref<LocalCollaborationStatus>({ task_id: 'task', directory_mode: 'MAPPED', baseline: cloud, received: cloud, manifest: cloud, state: 'READY', conflicts: [], local_changes: [], repositories: repositories.map(repo => ({ ...repo, mapped_repo_root: `G:/${repo.repo_slug}`, local_worktree_path: `G:/${repo.repo_slug}` })) })
   const state = ref<CollaborationState>({ ...cloud, enabled: true, sync_phase: 'READY', state_version: 1, lease_epoch: 1, binding_id: 'binding', input_snapshot_id: 'start', progress_snapshot_id: null, driver_connected: true, conflicts: [] })
   const model = {
-    reviewBaseline: ref(input),
+    reviewBaseline: ref<CollaborationManifest | null>(input),
     loadReview: vi.fn(), reviewRunning: ref(false), reviewLoading: ref(false), reviewError: ref(''),
     participating: ref(true), leaving: ref(false), receivedOnce: ref(false), leave: vi.fn(), receiveOnce: vi.fn(), enable: vi.fn(), state, local, input: ref(input), cloud: ref<CollaborationManifest | null>(cloud), available: true, supported: ref(true), enabled: ref(true), driver: ref(true), remoteSender: ref(false), phase: computed(() => state.value.sync_phase),
     conflicts: computed(() => local.value.conflicts || []), error: ref(''), busy: ref(false), blocked: ref(false), loading: ref(false), preparationRequired: ref(false), mappingChecks: ref([]), mappings: ref({}),
@@ -284,6 +284,62 @@ describe('local collaboration presentation and review', () => {
     const review = collaborationReview(proxyRefs(controller), true)
     expect(review.cloudKnown).toBe(false)
     expect(review.files).toEqual([])
+  })
+  it('never compares a stale local delivery target before the cloud review arrives', () => {
+    const { controller, model, local } = fixture()
+    model.cloud.value = null
+    model.participating.value = false
+    const stale = JSON.parse(JSON.stringify(model.reviewBaseline.value)) as CollaborationManifest
+    for (const repo of stale.repositories) for (const file of repo.files) delete (file as { content_sha256?: string }).content_sha256
+    local.value.target = stale
+    const review = collaborationReview(proxyRefs(controller), true)
+    expect(review.cloudKnown).toBe(false)
+    expect(review.files).toEqual([])
+  })
+  it('keeps a stale manifest in the loading state instead of an error card or a full list', async () => {
+    const { controller, model } = fixture()
+    const stale = JSON.parse(JSON.stringify(model.reviewBaseline.value)) as CollaborationManifest
+    for (const repo of stale.repositories) for (const file of repo.files) delete (file as { content_sha256?: string }).content_sha256
+    model.reviewBaseline.value = stale
+    const review = collaborationReview(proxyRefs(controller), true)
+    expect(review.cloudKnown).toBe(false)
+    expect(review.files).toEqual([])
+    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
+    expect(panel.find('[role="alert"]').exists()).toBe(false)
+    expect(panel.find('.empty-state-icon.is-loading').exists()).toBe(true)
+    expect(panel.findAll('.file')).toHaveLength(0)
+    panel.unmount()
+  })
+  it('still compares manifests whose headers carry different protocol versions', () => {
+    const { controller, model, cloud } = fixture()
+    model.cloud.value = { ...cloud, protocol_version: 1 as unknown as 2 }
+    const review = collaborationReview(proxyRefs(controller), true)
+    expect(review.cloudKnown).toBe(true)
+    expect(review.files).toHaveLength(2)
+  })
+  it('shows a loading card, not a green check or a full list, while the baseline is missing', async () => {
+    const { controller, model } = fixture()
+    model.reviewBaseline.value = null
+    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
+    const status = panel.get('[role="status"]')
+    expect(status.findAll('.file')).toHaveLength(0)
+    expect(panel.find('.empty-state-icon.is-loading').exists()).toBe(true)
+    expect(panel.text()).toContain('正在读取文件状态')
+    expect(panel.text()).not.toContain('任务执行成果')
+    panel.unmount()
+  })
+  it('caps a runaway changed-file list so the panel cannot freeze the browser', async () => {
+    const { controller, model, input, cloud } = fixture()
+    const files = (prefix: string) => Array.from({ length: 350 }, (_, index) => ({
+      path: `file-${index}.txt`, sha256: `${prefix}-${index}`, content_sha256: `${prefix}-${index}`, size: 1, mode: '100644' as const,
+    }))
+    model.reviewBaseline.value = { ...input, repositories: input.repositories.map(repo => ({ ...repo, files: files('base') })) }
+    model.cloud.value = { ...cloud, repositories: cloud.repositories.map(repo => ({ ...repo, files: files('cloud') })) }
+    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
+    expect(panel.findAll('.file')).toHaveLength(300)
+    expect(panel.get('.list-limit-bar').text()).toContain('仅显示前 300 个文件')
+    expect(panel.get('.list-limit-bar').text()).toContain('700')
+    panel.unmount()
   })
   it('has one entry, no routine composer notice, and opens the current local edits directly', async () => {
     const { controller, local } = fixture()

@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 
 from app.core.subprocess_runner import run_git
-from app.domains.auth.models.user import User, Workspace
+from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
 from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_repository import SddTaskRepository, TaskRepositoryState
@@ -39,6 +39,7 @@ def environment(db, tmp_path, monkeypatch):
     task_root.mkdir()
     db.add(User(id="u", email="collaboration@test.local", display_name="Driver", hashed_password="x"))
     db.add(Workspace(id="w", name="Multi repo", owner_id="u"))
+    db.add(WorkspaceMember(id="member", workspace_id="w", user_id="u", role=WorkspaceRole.OWNER))
     task = SddTask(
         id="t",
         workspace_id="w",
@@ -581,12 +582,9 @@ def test_api_authentication_and_raw_transfer(environment):
     from sqlalchemy.orm import Session
 
     from app.dependencies import get_current_user, get_db
-    from app.domains.auth.models.user import WorkspaceMember, WorkspaceRole
     from app.domains.workspace_collaboration.router import router
 
     db, _task, _ = environment
-    db.add(WorkspaceMember(id="member", workspace_id="w", user_id="u", role=WorkspaceRole.OWNER))
-    db.commit()
     bind = db.get_bind()
     app = FastAPI()
     app.include_router(router, prefix="/api")
@@ -1096,50 +1094,6 @@ def test_exact_h_checkpoint_keeps_private_scope_out_of_wire_manifest(environment
     assert ".env" not in serialized and "git_dir" not in serialized and "object_store" not in serialized
     secret_sha = hashlib.sha256(b"first secret").hexdigest()
     assert not content.ObjectStore(task.id).has(secret_sha)
-
-
-def test_legacy_raw_object_migrates_to_git_without_losing_journal(environment):
-    _db, task, _root = environment
-    store = content.ObjectStore(task.id)
-    raw = b"legacy\x00\xff\r\n"
-    sha = hashlib.sha256(raw).hexdigest()
-    path = store.path(sha)
-    path.parent.mkdir(parents=True)
-    path.write_bytes(raw)
-    store.journal("old-input", {"status": "APPLYING", "target": {"submission_id": "old"}})
-    assert store.read(sha) == raw
-    path.unlink()
-    assert content.ObjectStore(task.id).read(sha) == raw
-    assert content.ObjectStore(task.id).input_journals("old")[0]["status"] == "APPLYING"
-
-
-def test_legacy_input_batch_migrates_once_without_per_file_git_processes(environment, monkeypatch):
-    from app.domains.task.services import task_git_snapshot_store as snapshots
-
-    store = content.ObjectStore(environment[1].id)
-    entries = []
-    for number in range(32):
-        raw = f"legacy-{number}".encode() + b"\x00\xff"
-        sha = hashlib.sha256(raw).hexdigest()
-        path = store.path(sha)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(raw)
-        entries.append({"sha256": sha, "size": len(raw)})
-    commands = []
-    original = snapshots.shadow_git
-
-    def observe(directory, args, data=None, **kwargs):
-        commands.append(args)
-        return original(directory, args, data, **kwargs)
-
-    monkeypatch.setattr(snapshots, "shadow_git", observe)
-    store.validate_objects(entries)
-    assert sum("fast-import" in args for args in commands) == 1
-    assert sum("update-ref" in args for args in commands) == 1
-    assert len(commands) <= 4
-    assert len(store.git_objects.known([entry["sha256"] for entry in entries])) == 32
-    for entry in entries:
-        assert store.path(entry["sha256"]).exists()
 
 
 def test_finalization_refreshes_stale_identity_map_before_publishing(environment):

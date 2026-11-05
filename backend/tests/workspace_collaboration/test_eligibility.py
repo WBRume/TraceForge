@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.domains.auth.models.user import User, Workspace
+from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
 from app.domains.task.models.task import SddTask, TaskStatus, TaskType
 from app.domains.task.services import chat_submission_service as submissions
 from app.domains.workspace_collaboration import service, session
@@ -14,6 +14,7 @@ from app.domains.workspace_collaboration.schemas import EnableRequest
 def diagnosis_task(db):
     db.add(User(id="u", email="diagnosis-collaboration@test.local", hashed_password="x", display_name="User"))
     db.add(Workspace(id="w", name="Workspace", owner_id="u"))
+    db.add(WorkspaceMember(id="member", workspace_id="w", user_id="u", role=WorkspaceRole.OWNER))
     task = SddTask(
         id="diagnosis",
         workspace_id="w",

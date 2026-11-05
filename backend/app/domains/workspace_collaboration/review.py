@@ -61,7 +61,7 @@ def committed_baseline(db, task, _user_id):
     service._check_task(task)
     repositories = service.repository_metadata(db, task)
     store = service._ensure_store(db, task)
-    key = content.digest(["content-identity-v2", repositories])
+    key = content.digest(["content-identity", repositories])
     previous = db.query(CollaborationSnapshot).filter_by(task_id=task.id, source="REVIEW_BASELINE").all()
     saved = next((row for row in previous if row.manifest_json.get("review_key") == key), None)
     if saved:
@@ -237,7 +237,7 @@ def changes(db, task, _user_id):
     )
     if not path:
         service._fail("REVIEW_BASELINE_UNAVAILABLE", "This turn has no recorded workspace baseline")
-    key = content.digest(["content-identity-v2", path, task.session_generation, task.session_revision])
+    key = content.digest(["content-identity", path, task.session_generation, task.session_revision])
     previous = db.query(CollaborationSnapshot).filter_by(task_id=task.id, source="REVIEW_INPUT").all()
     saved = next((row for row in previous if row.manifest_json.get("review_key") == key), None)
     if saved:

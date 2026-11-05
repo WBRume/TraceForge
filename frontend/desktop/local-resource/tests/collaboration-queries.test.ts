@@ -57,7 +57,7 @@ test('optional content reads distinguish a cache miss, cached bytes and a cached
 
 test('optional content reads still reject invalid digests and corrupted cache entries', () => {
   expect(() => runtime.execute('read_object', { sha256: '../invalid', optional: true })).toThrow('INVALID_CONTENT_DIGEST')
-  const sha256 = hash('expected'), file = path.join(runtime.state, 'objects', sha256.slice(0, 2), sha256)
-  fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'corrupt')
+  const sha256 = runtime.objects.put(Buffer.from('expected')), file = runtime.objects.file(sha256)
+  fs.chmodSync(file, 0o600); fs.writeFileSync(file, 'corrupt')
   expect(() => runtime.execute('read_object', { sha256, optional: true })).toThrow('CORRUPT_LOCAL_CONTENT_OBJECT')
 })

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, proxyRefs, shallowRef, toRaw, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, GitPullRequest, GitBranch, FileText, Clock, Search, Shield } from '@/components/icons'
+import { ArrowPathIcon, Check, GitPullRequest, GitBranch, FileText, Clock, Search, Shield } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import CodeComparison from './CodeComparison.vue'
@@ -56,8 +56,13 @@ const filteredFiles = computed(() => {
   if (!query) return list
   return list.filter(item => item.path.toLowerCase().includes(query) || (item.repo_slug && item.repo_slug.toLowerCase().includes(query)))
 })
+/** A runaway list (bad data or a protocol mismatch) must never freeze the panel. */
+const REVIEW_ROW_LIMIT = 300
+const visibleFiles = computed(() => filteredFiles.value.slice(0, REVIEW_ROW_LIMIT))
+const hiddenFiles = computed(() => Math.max(0, filteredFiles.value.length - REVIEW_ROW_LIMIT))
+const reviewPending = computed(() => !review.value.cloudKnown && !c.value.reviewError)
 
-const active = computed(() => filteredFiles.value.find(file => file.key === selected.value) || files.value.find(file => file.key === selected.value))
+const active = computed(() => visibleFiles.value.find(file => file.key === selected.value) || files.value.find(file => file.key === selected.value))
 const filters = computed(() => ['all', 'cloud', 'local', ...(ui.value?.conflicts ? ['conflicts'] : [])].map(value => ({
   value, count: value === 'local' && !ui.value?.localAvailable ? '—' : value === 'all' ? review.value.files.length : review.value.files.filter(file => file.kind === value).length,
 })))
@@ -97,7 +102,7 @@ async function resolveActiveSingle(decision: 'accept' | 'keep') {
   }
 }
 
-watch(filteredFiles, rows => {
+watch(visibleFiles, rows => {
   if (!rows.some(row => row.key === selected.value)) {
     selected.value = rows[0]?.key || ''
   }
@@ -169,7 +174,7 @@ async function confirmRestore() {
       </div>
         <!-- 分段筛选条与搜索过滤 -->
         <div class="filter-bar-wrapper">
-          <span v-if="diffScope === 'cumulative'" class="result-summary">任务执行成果 <small>{{ review.files.length }} 个文件</small></span>
+          <span v-if="diffScope === 'cumulative' && !reviewPending" class="result-summary">任务执行成果 <small>{{ review.files.length }} 个文件</small></span>
           <nav v-else class="file-filters" :aria-label="t('collaboration.ui.fileSources')">
             <button v-for="item in filters" :key="item.value" type="button" :class="{ active: tab === item.value, 'is-warning': item.value === 'conflicts' }" :aria-pressed="tab === item.value" :disabled="item.value === 'local' && !ui.localAvailable" :title="item.value === 'local' && !ui.localAvailable ? t('collaboration.ui.localUnavailable') : ''" @click="tab = item.value">
               <span>{{ t(downloadOnly && item.value === 'cloud' ? 'collaboration.session.cloudChanges' : `collaboration.ui.filters.${item.value}`) }}</span>
@@ -185,9 +190,24 @@ async function confirmRestore() {
           </div>
         </div>
 
+        <!-- 列表上限提示：任何异常大的清单都不允许拖死浏览器 -->
+        <div v-if="!reviewPending && hiddenFiles" class="list-limit-bar" role="status">
+          仅显示前 {{ REVIEW_ROW_LIMIT }} 个文件（共 {{ filteredFiles.length }} 个），请用上方过滤缩小范围。
+        </div>
+
         <!-- 主内容比对区 -->
-        <div v-if="filteredFiles.length" class="file-comparison">
-          <CollaborationFiles :files="filteredFiles" :repositories="c.state?.repositories || []" :selected="selected" :checked="checked" :can-restore="ui.canRestore" :local-available="ui.localAvailable" :running="ui.running" @select="selected = $event; pair = 'auto'" @check="checkFile" />
+        <div v-if="reviewPending" class="empty-state">
+          <div class="empty-state-card" role="status" aria-live="polite">
+            <div class="empty-state-icon is-loading">
+              <ArrowPathIcon :size="22" class="spin" />
+            </div>
+            <strong>{{ t('collaboration.ui.loadingFiles') }}</strong>
+            <p>{{ t('collaboration.ui.loadingFilesHint') }}</p>
+          </div>
+        </div>
+
+        <div v-else-if="visibleFiles.length" class="file-comparison">
+          <CollaborationFiles :files="visibleFiles" :repositories="c.state?.repositories || []" :selected="selected" :checked="checked" :can-restore="ui.canRestore" :local-available="ui.localAvailable" :running="ui.running" @select="selected = $event; pair = 'auto'" @check="checkFile" />
           <div v-if="active" class="diff-workspace">
             <CodeComparison :path="`${active.repo_slug}/${active.path}`" :left-hash="comparison.left?.sha256" :right-hash="comparison.right?.sha256" :left-label="comparison.leftLabel" :right-label="comparison.rightLabel" :read-text="c.readText" :open-in-ide="ide.available" :ide-title="ide.hint(active.task_repository_id)" @ide-error="ide.error.value = $event" @open-in-ide="position => ide.open(active!.task_repository_id, active!.path, position.line, position.column)">
               <template v-if="diffScope === 'round'" #tools><BaseSelect v-model="pair" size="sm" :aria-label="t('collaboration.ui.compareVersions')" :options="[{ value: 'auto', label: t('collaboration.ui.defaultComparison') }, { value: 'local-cloud', label: t('collaboration.localCloud'), disabled: !ui.localAvailable }, { value: 'input-cloud', label: t('collaboration.inputCloud') }]" /></template>
@@ -209,13 +229,13 @@ async function confirmRestore() {
         <!-- 空状态：高品质微光卡片与操作引导 -->
         <div v-else class="empty-state">
           <div class="empty-state-card">
-            <div class="empty-state-icon" :class="{ 'is-empty-clean': !review.files.length }">
-              <Check v-if="!review.files.length && !downloadOnly" :size="24" />
+            <div class="empty-state-icon" :class="{ 'is-empty-clean': !review.files.length && !c.reviewError }">
+              <Check v-if="!review.files.length && !downloadOnly && !c.reviewError" :size="24" />
               <GitPullRequest v-else :size="24" />
             </div>
-            <strong>{{ diffScope === 'cumulative' && review.cloudKnown && tab !== 'local' ? '暂无累计修改' : t(!review.cloudKnown && !c.reviewError && tab !== 'local' ? 'collaboration.ui.loadingFiles' : tab === 'local' ? 'collaboration.ui.noLocalChanges' : downloadOnly ? 'collaboration.session.noChanges' : 'collaboration.ui.noAgentChanges') }}</strong>
-            <p>{{ diffScope === 'cumulative' && review.cloudKnown && tab !== 'local' ? '任务相对当前远端基线没有文件差异。' : t(tab === 'local' ? 'collaboration.ui.noLocalHint' : downloadOnly ? 'collaboration.session.noChangesHint' : 'collaboration.ui.noAgentHint') }}</p>
-            <div v-if="!review.files.length" class="empty-actions">
+            <strong>{{ c.reviewError || (diffScope === 'cumulative' && review.cloudKnown && tab !== 'local' ? '暂无累计修改' : t(tab === 'local' ? 'collaboration.ui.noLocalChanges' : downloadOnly ? 'collaboration.session.noChanges' : 'collaboration.ui.noAgentChanges')) }}</strong>
+            <p>{{ c.reviewError ? '请稍后重试，或到“仓库与版本”检查映射与基线。' : diffScope === 'cumulative' && review.cloudKnown && tab !== 'local' ? '任务相对当前远端基线没有文件差异。' : t(tab === 'local' ? 'collaboration.ui.noLocalHint' : downloadOnly ? 'collaboration.session.noChangesHint' : 'collaboration.ui.noAgentHint') }}</p>
+            <div v-if="!review.files.length && !c.reviewError" class="empty-actions">
               <button class="btn-secondary btn-sm" type="button" @click="c.view.page = 'settings'">查看仓库映射</button>
               <button class="btn-secondary btn-sm" type="button" @click="c.view.page = 'backups'">查看历史快照</button>
             </div>
@@ -497,6 +517,24 @@ async function confirmRestore() {
 .empty-state-icon.is-empty-clean {
   background: #ecfdf5;
   color: #059669;
+}
+/* 读取中的图标必须明显区别于“已完成”的对号 */
+.empty-state-icon.is-loading {
+  background: #eff6ff;
+  color: #0284c7;
+}
+.spin { animation: tf-spin 0.9s linear infinite; }
+@keyframes tf-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation-duration: 3s; }
+}
+.list-limit-bar {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #fffbeb;
+  color: #a66a12;
+  font-size: 11.5px;
 }
 .empty-state-card strong { font-size: 14px; font-weight: 600; color: #0f172a; }
 .empty-state-card p { font-size: 12px; color: #64748b; margin-top: 6px; line-height: 1.5; }

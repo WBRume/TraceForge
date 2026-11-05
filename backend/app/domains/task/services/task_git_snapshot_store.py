@@ -129,6 +129,8 @@ class Shadow:
         self.cold = not os.path.exists(self.directory)
 
     def run(self, args: list[str], data: bytes | None = None) -> bytes:
+        # Every setting that matters is pinned per invocation: the repository
+        # config file is never written by us, so a cold shadow costs one process.
         return shadow_git(
             self.directory,
             [
@@ -143,6 +145,8 @@ class Shadow:
                 "core.fsmonitor=false",
                 "-c",
                 "core.hooksPath=",
+                "-c",
+                "gc.auto=0",
                 *args,
             ],
             data,
@@ -163,19 +167,6 @@ class Shadow:
         fmt = git(self.source, ["rev-parse", "--show-object-format"]).decode().strip() if self.source else "sha1"
         os.makedirs(self.directory, exist_ok=True)
         self.run(["init", "--object-format=" + fmt, "."])
-        for key, value in [
-            ("core.bare", "false"),
-            ("core.worktree", self.cwd),
-            ("core.autocrlf", "false"),
-            ("core.symlinks", "true"),
-            ("core.longpaths", "true"),
-            ("core.fsmonitor", "false"),
-            ("index.version", "4"),
-            ("index.threads", "true"),
-            ("core.untrackedCache", "true"),
-            ("gc.auto", "0"),
-        ]:
-            self.run(["config", key, value])
         Path(self.directory, "info", "attributes").write_bytes(ATTRIBUTES)
         if self.source:
             objects = (

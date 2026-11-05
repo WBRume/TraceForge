@@ -330,7 +330,7 @@ def _snapshot(db: Session, task: SddTask, state: CollaborationState, source: str
             manifest.update(session_turn_id=turn.id, turn_index=turn.turn_index)
             # This database timestamp follows the same contract as conversation history.
             # A naive server-local value must not be relabeled as UTC.
-            manifest["turn_created_at"] = turn.created_at.isoformat() + ("Z" if turn.created_at.tzinfo is None else "")
+            manifest["turn_created_at"] = turn.created_at.isoformat()
             message = db.get(ChatMessage, turn.user_message_id) if turn.user_message_id else None
             if message and message.task_id == task.id:
                 title = " ".join(message.content.split())
@@ -616,7 +616,7 @@ def input_worktree_checkpoint(db: Session, task: SddTask, submission_id: str) ->
     get_snapshot(db, task.id, state.input_snapshot_id)
     path = content.ObjectStore(task).root / "snapshots" / (state.input_snapshot_id + ".json")
     if not path.exists():
-        return None  # Legacy SHA256-only input still uses a fresh full checkpoint.
+        _fail("INPUT_REQUIRED", "Full private input checkpoint is unavailable")
     payload = json.loads(path.read_text(encoding="utf-8"))["worktree"]
     if Path(payload["task_root"]).resolve() != Path(task.project_path).resolve() or not payload.get("repositories"):
         _fail("INPUT_REQUIRED", "Full private input checkpoint is unavailable")

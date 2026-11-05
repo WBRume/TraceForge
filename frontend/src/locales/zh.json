@@ -4358,6 +4358,8 @@
       "agentNotice": "显示 Agent 在本轮对该文件的修改。",
       "fileMode": "文件模式",
       "loadingFiles": "正在读取文件状态",
+      "loadingFilesHint": "首次打开会解析远端基线，文件较多时可能需要十几秒；完成后这里会显示差异。",
+      "baselineStale": "基线数据已过期，无法与云端版本安全比较，请刷新页面后重试。",
       "noLocalChanges": "没有待发送的本地修改",
       "noAgentChanges": "本轮暂无代码修改",
       "noLocalHint": "本地文件发生变化后，会显示在这里。",

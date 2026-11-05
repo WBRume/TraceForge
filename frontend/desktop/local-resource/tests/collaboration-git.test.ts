@@ -132,16 +132,6 @@ test('refuses parent junctions before capturing bytes outside the repository', (
   expect(fs.readFileSync(path.join(saved, 'other.txt'), 'utf8')).toBe('unchanged')
 }, 60_000)
 
-test('lazily migrates legacy raw objects without removing frozen captures or backup bytes', () => {
-  const digest = hash('legacy'), legacy = path.join(objects.state, 'objects', digest.slice(0, 2), digest)
-  fs.mkdirSync(path.dirname(legacy), { recursive: true }); fs.writeFileSync(legacy, 'legacy')
-  expect(objects.get(digest).toString()).toBe('legacy')
-  expect(fs.readFileSync(legacy, 'utf8')).toBe('legacy')
-  objects = new SyncObjects(objects.state)
-  expect(objects.get(digest).toString()).toBe('legacy')
-  expect(objects.git.check([{ sha256: digest, size: 6 }])).toEqual([])
-}, 60_000)
-
 test('ambient Git overrides cannot redirect private capture into the business index or object store', () => {
   const original = fs.readFileSync(path.join(directory, '.git/index')), head = git(directory, 'rev-parse', 'HEAD'), refs = git(directory, 'show-ref')
   const ambient: Record<string, string> = { GIT_DIR: path.join(directory, '.git'), GIT_WORK_TREE: directory,

@@ -24,3 +24,15 @@ export function changedFiles(left: ReturnType<typeof manifestFiles>, right: Retu
     return a?.content_sha256 !== b?.content_sha256 || a?.mode !== b?.mode
   }).map(key => ({ key, ...(right.get(key) || left.get(key))! }))
 }
+
+const completeness = new WeakMap<object, boolean>()
+/** A manifest written before content digests existed cannot be compared safely. */
+export function manifestComplete(manifest?: CollaborationManifest | null): boolean {
+  if (!manifest) return false
+  const cached = completeness.get(manifest)
+  if (cached !== undefined) return cached
+  const complete = manifest.repositories.every(repo => repo.files.every(file => Boolean(file.content_sha256)))
+  completeness.set(manifest, complete)
+  return complete
+}
+

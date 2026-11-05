@@ -212,19 +212,6 @@ def test_storage_root_is_configurable_and_pinned_across_configuration_changes(en
     assert content.ObjectStore(task).root == configured / task.id
 
 
-def test_legacy_storage_is_not_orphaned_when_configuration_changes(environment, tmp_path, monkeypatch):
-    db, task, _ = environment
-    original = service._ensure_store(db, task)
-    sha = original.put(b"legacy data")
-    task.task_meta_json = {
-        key: value for key, value in task.task_meta_json.items() if key != "collaboration_store_path"
-    }
-    db.commit()
-    monkeypatch.setattr(content.settings, "COLLABORATION_SNAPSHOT_ROOT", str(tmp_path / "next-root"))
-    assert service._ensure_store(db, task).read(sha) == b"legacy data"
-    assert Path(task.task_meta_json["collaboration_store_path"]) == original.root
-
-
 def test_diagnosis_remains_excluded(environment):
     db, task, _ = environment
     task.task_type = TaskType.DIAGNOSIS

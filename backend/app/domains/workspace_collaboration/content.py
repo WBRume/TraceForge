@@ -114,25 +114,16 @@ class ObjectStore:
         if not SAFE_ID.fullmatch(task_id):
             raise ValueError("Invalid task identity")
         self.task_id = task_id
-        legacy = Path(settings.TASK_SESSION_SNAPSHOT_ROOT) / "collaboration" / task_id
-        configured = Path(settings.COLLABORATION_SNAPSHOT_ROOT or legacy.parent) / task_id
-        # Prefer existing data over a new configuration, then pin this decision
-        # in _ensure_store. Never move or recreate an existing task's objects.
+        base = Path(settings.COLLABORATION_SNAPSHOT_ROOT or Path(settings.TASK_SESSION_SNAPSHOT_ROOT) / "collaboration")
+        # A store path is pinned on first use so a later configuration change never
+        # moves or recreates an existing task's objects.
         self.root = (
-            Path(metadata["collaboration_store_path"])
-            if metadata.get("collaboration_store_path")
-            else (legacy if legacy.exists() else configured)
+            Path(metadata["collaboration_store_path"]) if metadata.get("collaboration_store_path") else base / task_id
         )
         if root is not None:
             self.root = Path(root)
         self.git_objects = GitObjects(self.root)
         self._verified_input: dict[str, bytes] = {}
-
-    def path(self, sha256: str) -> Path:
-        """Legacy read-only CAS location; all new bytes are written to Git."""
-        if not HASH.fullmatch(sha256):
-            raise ValueError("Invalid SHA256 object identity")
-        return self.root / "objects" / sha256[:2] / sha256
 
     def bind(self, initial_checkpoint: str, task_root: str) -> None:
         configured = Path(settings.TASK_SESSION_SNAPSHOT_ROOT).resolve()
@@ -152,18 +143,13 @@ class ObjectStore:
     def read(self, sha256: str) -> bytes:
         if sha256 in self._verified_input:
             return self._verified_input[sha256]
-        legacy = self.path(sha256)
-        if sha256 not in self.git_objects.known([sha256]):
-            raw = legacy.read_bytes()
-            self.put(raw, sha256)
-            return raw
         return self.git_objects.read(sha256)
 
     def has_many(self, hashes: list[str]) -> set[str]:
         for value in hashes:
-            self.path(value)
-        known = self.git_objects.verify(hashes)
-        return set(known) | {value for value in hashes if value not in known and self.path(value).is_file()}
+            if not HASH.fullmatch(value):
+                raise ValueError("Invalid SHA256 object identity")
+        return set(self.git_objects.verify(hashes))
 
     def has(self, sha256: str) -> bool:
         return sha256 in self.has_many([sha256])
@@ -171,12 +157,9 @@ class ObjectStore:
     def validate_objects(self, entries: list[dict]) -> None:
         hashes = list({entry["sha256"] for entry in entries})
         known = self.git_objects.known(hashes)
-        missing = [value for value in hashes if value not in known]
+        missing = sorted(value for value in hashes if value not in known)
         if missing:
-            # Existing durable inputs may predate the Git-backed store. Import
-            # their legacy bytes as one pack rather than spawning Git per file.
-            self.git_objects.import_bytes((value, self.path(value).read_bytes()) for value in missing)
-            known = self.git_objects.known(hashes)
+            raise FileNotFoundError(missing[0])
         for entry in entries:
             size = known[entry["sha256"]][2]
             if size != entry["size"]:
@@ -506,7 +489,7 @@ def _install_item(task_root: Path, item: dict, store: ObjectStore, *, recover: b
     raw = store.read(item["new"]["sha256"])
     # Install in this workspace's own checkout form so the tree stays consistent
     # and Git-clean; content identity already ignores the difference.
-    data = identity.checkout_bytes(raw, item.get("checkout"))
+    data = identity.checkout_bytes(raw, item["checkout"])
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=path.parent)
     try:

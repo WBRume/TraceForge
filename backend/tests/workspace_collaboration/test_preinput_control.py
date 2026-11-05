@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app.domains.auth.models.user import User
+from app.domains.auth.models.user import User, WorkspaceMember, WorkspaceRole
 from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.workspace_collaboration import control
 from app.domains.workspace_collaboration.models import CollaborationState
@@ -21,6 +21,11 @@ environment = repository_environment
 def test_preinput_only_handoffs_from_connected_creator(environment, actor, connected, local_input):
     db, task, _ = environment
     db.add(User(id="other", email="other@test.local", display_name="Other", hashed_password="x"))
+    db.add(
+        WorkspaceMember(
+            id="other-member", workspace_id=task.workspace_id, user_id="other", role=WorkspaceRole.DEVELOPER
+        )
+    )
     acknowledge(environment, enabled(environment))
     state = db.get(CollaborationState, task.id)
     state.lease_expires_at = datetime.utcnow() + timedelta(seconds=60 if connected else -1)

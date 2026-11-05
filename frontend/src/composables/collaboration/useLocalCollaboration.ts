@@ -7,6 +7,7 @@ import { onRepoPreferencesChanged, readRepoPreferences, saveRepoPreferences } fr
 import { remoteUrlsMatch } from '@/composables/local-agent/localAgentUtils'
 import { chooseGitRemote, getLocalGitRemotes } from '@/composables/local-agent/localGitRemotes'
 import { collaborationApi, base64Bytes, bytesBase64 } from '@/services/collaborationApi'
+import { manifestComplete } from '@/composables/collaboration/compare'
 import type { CollaborationBackup, CollaborationCapture, CollaborationConflict, CollaborationManifest, CollaborationMappingCheck, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
 import { expandManifest, expandStatus, manifestDelta } from '../../../shared/collaboration-delta'
 
@@ -27,7 +28,11 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const baselineError = shallowRef('')
   const repositoryKey = (repositories: CollaborationManifest['repositories'] | CollaborationState['repositories']) => JSON.stringify(repositories.map(repo => [repo.task_repository_id, repo.base_commit_sha]).sort())
   // Publish a baseline with its matching cloud version, including during an update.
-  const reviewBaseline = computed(() => reviewBaselines.value.get(repositoryKey(cloud.value?.repositories || state.value?.repositories || [])) || null)
+  const reviewBaseline = computed(() => {
+    const value = reviewBaselines.value.get(repositoryKey(cloud.value?.repositories || state.value?.repositories || []))
+    // A manifest without content digests can never be compared safely.
+    return value && manifestComplete(value) ? value : null
+  })
   const reviewRunning = shallowRef(false), reviewLoading = shallowRef(false), reviewError = shallowRef('')
   let reviewRequested = false
   const previewConflicts = shallowRef<CollaborationConflict[]>([])
@@ -326,6 +331,9 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     const token = generation
     try {
       const value = await remote().reviewBaseline(); check(token)
+      // Never cache a manifest that predates content digests: comparing it would
+      // report the whole repository as changed. Ask for a rebuild instead.
+      if (!manifestComplete(value)) { baselineError.value = t('collaboration.ui.baselineStale'); return }
       reviewBaselines.value = new Map(reviewBaselines.value).set(repositoryKey(value.repositories), value); baselineError.value = ''
     } catch (reason) { if (token === generation) baselineError.value = formatApiError(reason, t('collaboration.failed')) }
   }

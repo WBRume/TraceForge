@@ -32,9 +32,6 @@ def store_repositories(db: Session, task_id: str, repositories: list[dict]) -> s
 
 def read_manifest(db: Session, snapshot: CollaborationSnapshot) -> dict:
     header = snapshot.manifest_json
-    # Legacy headers remain readable during migration rehearsals and imports.
-    if "repositories" in header:
-        return header
     row = db.get(CollaborationManifest, (snapshot.task_id, snapshot.content_digest))
     if row is None:
         raise ValueError("Collaboration snapshot inventory is missing")

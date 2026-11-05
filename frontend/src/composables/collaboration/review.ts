@@ -1,14 +1,21 @@
-import { changedFiles, collaborationFileKey, localFiles, manifestFiles } from './compare'
+import { changedFiles, collaborationFileKey, localFiles, manifestComplete, manifestFiles } from './compare'
 import type { CollaborationContext } from './useCollaborationPresentation'
 
 export function collaborationReview(c: CollaborationContext, localAvailable: boolean, scope: 'cumulative' | 'round' = 'cumulative') {
-  const cloudManifest = c.cloud || c.local?.target
+  // A local delivery target is only a preview of a pending cloud version. Using it
+  // before /review answers would compare a stale local manifest (no content
+  // digests) with the fresh baseline and list the whole repository as changed.
+  const cloudManifest = c.cloud || (c.participating ? c.local?.target : null)
   const inputManifest = c.input || (localAvailable ? c.local?.baseline : null)
   const baselineManifest = scope === 'cumulative' ? c.reviewBaseline : inputManifest
   const cloud = manifestFiles(cloudManifest), input = manifestFiles(inputManifest), baseline = manifestFiles(baselineManifest)
   const local = localAvailable ? localFiles(c.local) : manifestFiles(null)
   const received = manifestFiles(localAvailable ? c.local?.received || c.local?.baseline : null)
-  const cloudChanges = cloudManifest && baselineManifest ? changedFiles(baseline, cloud) : []
+  const complete = manifestComplete(cloudManifest) && manifestComplete(baselineManifest)
+  // A stale in-memory manifest (an old tab, an older page session) is simply "not
+  // ready": the pending /review answers in a moment. Never turn it into an error
+  // card, and never compare it.
+  const cloudChanges = cloudManifest && baselineManifest && complete ? changedFiles(baseline, cloud) : []
   const localChanges = localAvailable && scope === 'round' ? changedFiles(received, local) : []
   const cloudKeys = new Set(cloudChanges.map(file => file.key)), localKeys = new Set(localChanges.map(file => file.key))
   const conflicts = localAvailable && scope === 'round' ? c.conflicts : []
@@ -30,6 +37,6 @@ export function collaborationReview(c: CollaborationContext, localAvailable: boo
       change: !right ? 'D' : !left ? 'A' : left.mode !== right.mode && left.content_sha256 === right.content_sha256 ? 'T' : 'M',
       cloudChanged: cloudKeys.has(file.key), localChanged: localKeys.has(file.key) }
   }).sort((a, b) => a.repo_slug.localeCompare(b.repo_slug) || a.path.localeCompare(b.path))
-  return { files, local, cloud, input, received, cloudKnown: Boolean(cloudManifest && baselineManifest) }
+  return { files, local, cloud, input, received, cloudKnown: Boolean(cloudManifest && baselineManifest) && complete }
 }
 export type CollaborationReviewFile = ReturnType<typeof collaborationReview>['files'][number]

@@ -16,6 +16,13 @@ from app.domains.task.services import task_snapshot_store as files
 from . import identity
 
 
+def require_content(content: str | None) -> str:
+    """The store schema guarantees a content digest; a missing value means corruption."""
+    if content is None:
+        raise ValueError("Collaboration object store is corrupt: content digest is missing")
+    return content
+
+
 class GitObjects:
     def __init__(self, metadata_root: Path):
         self.root = metadata_root
@@ -24,15 +31,10 @@ class GitObjects:
         with self.connect() as db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS objects (git_dir TEXT, oid TEXT, sha256 TEXT, size INTEGER, "
-                "content_sha256 TEXT, PRIMARY KEY (git_dir, oid))"
+                "content_sha256 TEXT NOT NULL, PRIMARY KEY (git_dir, oid))"
             )
             db.execute("CREATE INDEX IF NOT EXISTS by_sha256 ON objects(sha256)")
             db.execute("CREATE INDEX IF NOT EXISTS by_oid ON objects(oid)")
-            columns = {row[1] for row in db.execute("PRAGMA table_info(objects)")}
-            if "content_sha256" not in columns:
-                # The content digest is derived data: missing rows are rehashed
-                # from immutable blobs on next use.
-                db.execute("ALTER TABLE objects ADD COLUMN content_sha256 TEXT")
 
     @contextmanager
     def connect(self):
@@ -71,7 +73,7 @@ class GitObjects:
             raise ValueError("Collaboration Git store ownership changed")
         files.write_json(str(target), value)
 
-    def known(self, hashes: list[str]) -> dict[str, tuple[str, str, int, str | None]]:
+    def known(self, hashes: list[str]) -> dict[str, tuple[str, str, int, str]]:
         result = {}
         with self.connect() as db:
             for offset in range(0, len(hashes), 400):
@@ -84,7 +86,7 @@ class GitObjects:
                     + ")"
                 )
                 for sha, directory, oid, size, content in db.execute(sql, batch):
-                    result[sha] = (directory, oid, size, content)
+                    result[sha] = (directory, oid, size, require_content(content))
         return result
 
     def register(self, entries: list[tuple[str, str, str, str, int]]) -> None:
@@ -94,9 +96,9 @@ class GitObjects:
             )
 
     def export(self, entries: list[dict]) -> tuple[dict[tuple[str, str], tuple[str, str, int]], dict]:
-        """Batch-read only previously unseen (or unhashed) immutable Git blobs."""
+        """Batch-read only previously unseen immutable Git blobs."""
         wanted = {(item["git_dir"], item["oid"]): item for item in entries}
-        mapped, mapped_known, rehash, pending, reused = {}, {}, {}, {}, []
+        mapped, mapped_known, pending, reused = {}, {}, {}, []
         with self.connect() as db:
             oids = list({oid for _, oid in wanted})
             for offset in range(0, len(oids), 400):
@@ -107,7 +109,7 @@ class GitObjects:
                     + ")"
                 )
                 for oid, sha, size, content in db.execute(sql, batch):
-                    mapped_known[oid] = (sha, size, content)
+                    mapped_known[oid] = (sha, size, require_content(content))
         for (directory, oid), item in wanted.items():
             known = mapped_known.get(oid)
             if known is None:
@@ -116,30 +118,20 @@ class GitObjects:
             sha, size, content = known
             if size != item["size"]:
                 raise ValueError("Git object mapping size differs")
-            if content is None:
-                # Rows written before the content digest existed are rehashed once.
-                rehash[directory, oid] = (item, sha)
-                continue
             mapped[directory, oid] = (sha, content, size)
             reused.append((directory, oid, sha, content, size))
         new_rows = []
         bytes_read = 0
-        groups = {key[0] for key in pending} | {key[0] for key in rehash}
-        for directory in groups:
-            group = {item["oid"]: item for key, item in pending.items() if key[0] == directory}
-            group.update({item["oid"]: item for key, (item, _sha) in rehash.items() if key[0] == directory})
-            expected = {oid: sha for key, (_item, sha) in rehash.items() if key[0] == directory for oid in [key[1]]}
-            for oid, raw in git_store.read_blobs(directory, [(item["oid"], item["size"]) for item in group.values()]):
+        for directory in {key[0] for key in pending}:
+            group = [item for key, item in pending.items() if key[0] == directory]
+            for oid, raw in git_store.read_blobs(directory, [(item["oid"], item["size"]) for item in group]):
                 if raw.startswith(b"version https://git-lfs.github.com/spec/v1\n"):
                     raise ValueError("Unmaterialized Git LFS object")
                 sha = hashlib.sha256(raw).hexdigest()
-                if expected.get(oid, sha) != sha:
-                    raise ValueError("Git object mapping digest differs")
                 content = identity.content_digest(raw)
                 mapped[directory, oid] = (sha, content, len(raw))
                 new_rows.append((directory, oid, sha, content, len(raw)))
                 bytes_read += len(raw)
-
         self.register([*reused, *new_rows])
         return mapped, {"hashed_blobs": len(new_rows), "hashed_bytes": bytes_read}
 
@@ -149,7 +141,7 @@ class GitObjects:
         self.import_bytes([(sha256, raw)])
 
     def import_bytes(self, values) -> None:
-        """Pack incoming or legacy bytes in one Git operation with bounded memory."""
+        """Pack incoming bytes in one Git operation with bounded memory."""
         shared = self.shared_root()
         with files.store_lock(str(shared)):
             directory = shared / "collaboration-transfer.git"
@@ -207,7 +199,7 @@ class GitObjects:
             raise ValueError("Collaboration object checksum failed")
         return raw
 
-    def read_many(self, known: dict[str, tuple[str, str, int, str | None]]) -> dict[str, bytes]:
+    def read_many(self, known: dict[str, tuple[str, str, int, str]]) -> dict[str, bytes]:
         """One verified read per object directory for a bounded input batch."""
         result = {}
         groups: dict[str, dict[str, tuple[str, int]]] = {}
@@ -221,7 +213,7 @@ class GitObjects:
                 result[sha] = raw
         return result
 
-    def verify(self, hashes: list[str]) -> dict[str, tuple[str, str, int, str | None]]:
+    def verify(self, hashes: list[str]) -> dict[str, tuple[str, str, int, str]]:
         known = self.known(hashes)
         groups = {}
         for sha, (directory, oid, size, _content) in known.items():
