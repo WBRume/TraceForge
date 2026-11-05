@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from app.domains.task.services import task_session_snapshot_service as snapshots
-from app.domains.workspace_collaboration import content, delta, identity, review, service
+from app.domains.workspace_collaboration import content, delta, identity, review, service, session
 from tests.workspace_collaboration.test_service import environment as repository_environment
 from tests.workspace_collaboration.test_service import git
 
@@ -41,7 +41,9 @@ def test_crlf_checkout_is_not_a_cumulative_change(environment):
     (repo / "same.txt").write_bytes(b"api baseline\r\n")
 
     baseline = review.committed_baseline(db, task, "viewer")
-    cloud = review.changes(db, task, "viewer")["cloud"]
+    cloud = session.latest_snapshot(db, task, "viewer", None)
+    # The checkout form is not a change, so the review payload stays empty.
+    assert review.diff(db, task, "viewer")["files"] == []
     old = next(
         file
         for repo in baseline["repositories"]

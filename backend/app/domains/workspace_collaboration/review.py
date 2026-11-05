@@ -218,8 +218,12 @@ def diff(db, task, user_id, scope: str = "cumulative"):
         service._fail("REVIEW_SCOPE_INVALID", "Unknown review scope")
     service._check_task(task)
     state = service._state(db, task.id)
-    baseline = committed_baseline(db, task, user_id) if scope == "cumulative" else _changes(db, task, user_id)["input"]
-    cloud = session.latest_snapshot(db, task, user_id, None)
+    if scope == "cumulative":
+        baseline = committed_baseline(db, task, user_id)
+        cloud = session.latest_snapshot(db, task, user_id, None)
+        running = bool(state and state.enabled and state.sync_phase in service.ACTIVE_PHASES)
+    else:
+        baseline, cloud, running = _round(db, task, user_id)
     old, new = _entries(baseline), _entries(cloud)
     repositories = [
         {
@@ -233,7 +237,8 @@ def diff(db, task, user_id, scope: str = "cumulative"):
     files = []
     for key in sorted(set(old) | set(new)):
         left, right = old.get(key), new.get(key)
-        if left and right and left["content_sha256"] == right["content_sha256"] and left["mode"] == right["mode"]:
+        # Identity ignores the checkout form, so a CRLF checkout is not a change.
+        if identity.same_file(left, right):
             continue
         task_repository_id, path = key
         files.append(
@@ -253,20 +258,17 @@ def diff(db, task, user_id, scope: str = "cumulative"):
         "protocol_version": cloud["protocol_version"],
         "repositories": repositories,
         "files": files,
-        "running": bool(state and state.enabled and state.sync_phase in service.ACTIVE_PHASES),
+        "running": running,
     }
 
 
-def changes(db, task, _user_id):
-    return _changes(db, task, _user_id)
-
-
-def _changes(db, task, _user_id):
+def _round(db, task, _user_id):
+    """The cut this round started from, the cloud cut and whether a round is running."""
     state = service._state(db, task.id)
     if state and state.enabled:
         cloud = session.latest_snapshot(db, task, _user_id, None)
         baseline = service.get_snapshot(db, task.id, state.input_snapshot_id or state.snapshot_id)
-        return {"input": baseline, "cloud": cloud, "running": state.sync_phase in service.ACTIVE_PHASES}
+        return baseline, cloud, state.sync_phase in service.ACTIVE_PHASES
 
     repositories = service.repository_metadata(db, task)
     store = service._ensure_store(db, task)
@@ -289,7 +291,7 @@ def _changes(db, task, _user_id):
             if exc.code != "WRITER_ACTIVE":
                 raise
         else:
-            return {"input": cloud, "cloud": cloud, "running": False}
+            return cloud, cloud, False
     path = (
         turn.worktree_snapshot_path
         if turn
@@ -320,5 +322,5 @@ def _changes(db, task, _user_id):
     except service.CollaborationError as exc:
         if exc.code != "WRITER_ACTIVE":
             raise
-        return {"input": baseline, "cloud": baseline, "running": True}
-    return {"input": baseline, "cloud": session.latest_snapshot(db, task, _user_id, None), "running": False}
+        return baseline, baseline, True
+    return baseline, session.latest_snapshot(db, task, _user_id, None), False

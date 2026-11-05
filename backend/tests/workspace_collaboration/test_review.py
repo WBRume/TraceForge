@@ -103,17 +103,21 @@ def test_remote_update_without_a_new_turn_is_not_reported_as_round_edits(environ
     task.session_revision = 1
     db.commit()
     monkeypatch.setattr(review, "_checkpoint_inventory", lambda *args: pytest.fail("No round in this generation"))
-    result = review.changes(db, task, "viewer")
-    assert result["input"] == result["cloud"]
-    assert result["running"] is False
+    round_diff = review.diff(db, task, "viewer", "round")
+    assert round_diff["files"] == []
+    assert round_diff["running"] is False
     assert db.get(CollaborationState, task.id) is None
     baseline = review.committed_baseline(db, task, "viewer")
-    store = content.ObjectStore(task)
-    for committed, current in zip(baseline["repositories"], result["cloud"]["repositories"], strict=True):
-        old = next(file for file in committed["files"] if file["path"] == "same.txt")
-        new = next(file for file in current["files"] if file["path"] == "same.txt")
-        assert store.read(old["sha256"]) == b"remote v2\n"
-        assert store.read(new["sha256"]) == b"remote v2\npreserved task output\n"
+    entry = next(file for file in review.diff(db, task, "viewer")["files"] if file["path"] == "same.txt")
+    committed = next(
+        file
+        for repo in baseline["repositories"]
+        if repo["repo_slug"] == "api"
+        for file in repo["files"]
+        if file["path"] == "same.txt"
+    )
+    assert entry["left"] == committed
+    assert content.ObjectStore(task).read(entry["right"]["sha256"]) == b"remote v2\npreserved task output\n"
 
 
 @pytest.mark.parametrize("generation", [1, 2])
@@ -156,34 +160,34 @@ def test_readonly_latest_turn_multi_repo_uses_recorded_input_without_connecting(
     (root / "api/new.txt").write_text("created\n")
     (root / "web/same.txt").unlink()
     before = {repo: git(root / repo, "status", "--porcelain") for repo in ["api", "web"]}
-    result = review.changes(db, task, "viewer")
+    result = review.diff(db, task, "viewer", "round")
     db.commit()
 
-    def by_path(manifest):
-        return {
-            (repo["repo_slug"], file["path"]): file["sha256"]
-            for repo in manifest["repositories"]
-            for file in repo["files"]
-        }
-
-    old, new = by_path(result["input"]), by_path(result["cloud"])
+    entries = {(file["repo_slug"], file["path"]): file for file in result["files"]}
+    # The change set is exactly the human edits and the Agent work; ignored paths
+    # never reach it, so private.log and .env stay invisible.
+    assert set(entries) == {
+        ("api", ".gitignore"),
+        ("api", "same.txt"),
+        ("api", "new.txt"),
+        ("web", "same.txt"),
+    }
     store = content.ObjectStore(task)
-    assert store.read(old["api", "same.txt"]) == b"human input\n"
-    assert store.read(new["api", "same.txt"]) == b"agent result\n"
-    assert ("api", "new.txt") not in old and ("api", "new.txt") in new
-    assert ("web", "same.txt") in old and ("web", "same.txt") not in new
-    assert all(path not in {".env", "private.log"} for _, path in old.keys() | new.keys())
+    assert store.read(entries["api", "same.txt"]["left"]["sha256"]) == b"human input\n"
+    assert store.read(entries["api", "same.txt"]["right"]["sha256"]) == b"agent result\n"
+    assert entries["api", "new.txt"]["change"] == "A" and entries["api", "new.txt"]["left"] is None
+    assert entries["web", "same.txt"]["change"] == "D" and entries["web", "same.txt"]["right"] is None
     assert db.get(CollaborationState, task.id) is None
     assert before == {repo: git(root / repo, "status", "--porcelain") for repo in before}
     monkeypatch.setattr(review, "_checkpoint_inventory", lambda *args: pytest.fail("Baseline must be reused"))
-    assert review.changes(db, task, "viewer")["input"]["snapshot_id"] == result["input"]["snapshot_id"]
+    assert review.diff(db, task, "viewer", "round")["baseline_snapshot_id"] == result["baseline_snapshot_id"]
 
 
 def test_active_collaboration_review_reuses_published_snapshots_without_changing_driver(environment, monkeypatch):
     db, task, _ = environment
     state = enabled(environment)
     monkeypatch.setattr(service, "_inventory", lambda *args, **kwargs: pytest.fail("No rescan for published results"))
-    assert review.changes(db, task, "viewer")["cloud"]["snapshot_id"] == state["snapshot_id"]
+    assert review.diff(db, task, "viewer")["cloud_snapshot_id"] == state["snapshot_id"]
     assert service.get_state(db, task) == state
 
 
@@ -195,7 +199,7 @@ def test_running_cloud_review_waits_for_final_cut_and_never_acquires_lease(envir
 
     monkeypatch.setattr(service, "_assert_no_writer", writer)
     monkeypatch.setattr(service, "_inventory", lambda *args, **kwargs: pytest.fail("No final scan while executing"))
-    assert review.changes(db, task, "viewer")["running"] is True
+    assert review.diff(db, task, "viewer", "round")["running"] is True
     assert db.get(CollaborationState, task.id) is None
 
 
@@ -246,5 +250,5 @@ def test_diagnosis_remains_excluded(environment):
     db, task, _ = environment
     task.task_type = TaskType.DIAGNOSIS
     with pytest.raises(service.CollaborationError) as error:
-        review.changes(db, task, "viewer")
+        review.diff(db, task, "viewer")
     assert error.value.code == "TASK_TYPE_UNSUPPORTED"
