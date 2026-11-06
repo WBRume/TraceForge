@@ -166,9 +166,17 @@ export function useChatViewModel() {
     canCreateTask: () => workspaceContext.canCreateTask.value,
     getRailFilter: () => ({ view: taskRail.view, requirementId: taskRail.selectedRequirement?.id }),
   })
+  /**
+   * 列表重载触发键 = 工作区 + 轨道视图 + 选中需求（三者才决定服务端查询范围）。
+   * 必须用标量字符串作 watch 源：每次导航后路由对象都是新实例，
+   * 数组/对象源每次求值都会产生新引用而被判定为「已变化」，
+   * 于是选中会话（只变 taskId）、改查询参数等导航都会误触发重载，
+   * 把列表重置到第一页并跳回顶部，丢失滚动位置与已加载页。
+   */
+  const taskListScope = computed(() => JSON.stringify([getWorkspaceId(), taskRail.view, taskRail.selectedRequirement?.id || '']))
   let lastWorkspaceId = getWorkspaceId()
-  watch(() => [getWorkspaceId(), taskRail.view, taskRail.selectedRequirement?.id], ([nextWsId]) => {
-    const wsId = String(nextWsId || '')
+  watch(taskListScope, () => {
+    const wsId = getWorkspaceId()
     const wsChanged = wsId !== lastWorkspaceId
     lastWorkspaceId = wsId
     void taskList.loadTasks({ reset: true, clear: wsChanged, trySelectRouteTask: false })
