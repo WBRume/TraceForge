@@ -15,6 +15,7 @@ import shutil
 import stat
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
 
@@ -444,7 +445,7 @@ class Shadow:
 
 
 def tree_entries(
-    part: dict, root: str, paths: files.ReadPhasePaths | None = None, selected: list[str] | None = None
+    part: dict, root: str, paths: Callable[[str], object] | None = None, selected: list[str] | None = None
 ) -> dict:
     paths = paths or files.ReadPhasePaths(root)
     if selected == []:
@@ -562,9 +563,9 @@ def capture(
     return payload
 
 
-def entries(payload: dict) -> dict:
+def entries(payload: dict, paths: Callable[[str], object] | None = None) -> dict:
     result = {}
-    paths = files.ReadPhasePaths(payload["task_root"])
+    paths = paths or files.ReadPhasePaths(payload["task_root"])
     for part in payload["partitions"]:
         root = os.path.abspath(payload["object_store"])
         directory = os.path.abspath(part["git_dir"])

@@ -11,7 +11,7 @@ self.onmessage = (event: MessageEvent) => {
       runtime.collaboration.index.onChanged = task_id => self.postMessage({ event: 'collaboration_changed', task_id })
       self.postMessage({ id, result: true }); return
     }
-    if (kind === 'shutdown') { runtime?.collaboration.close(); runtime?.db.close(); self.postMessage({ id, result: true }); return }
+    if (kind === 'shutdown') { await runtime?.collaboration.close(); runtime?.db.close(); self.postMessage({ id, result: true }); return }
     const result = kind === 'inspect' ? runtime.inspect(payload)
       : kind === 'collaboration' ? await runtime.collaboration.executeAsync(payload.kind, payload.payload)
       : runtime.operation(payload, kind === 'register' ? 'register' : kind === 'checkout' ? 'checkout' : 'all')

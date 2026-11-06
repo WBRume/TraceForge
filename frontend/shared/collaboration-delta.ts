@@ -42,7 +42,7 @@ export function expandManifest<T extends Manifest>(base: T | null | undefined, i
   return { ...metadata, repositories } as T
 }
 
-const fields = ['manifest', 'baseline', 'target', 'received', 'preview'] as const
+const fields = ['baseline', 'manifest', 'target', 'received', 'preview'] as const
 export function statusDelta(previous: Record<string, any> | undefined, current: Record<string, any>, token: string, baseToken?: string) {
   const bases: Record<string, string> = {}
   const result: Record<string, any> = { ...current, transport: { token, base_token: previous ? baseToken : undefined, bases } }
@@ -50,11 +50,24 @@ export function statusDelta(previous: Record<string, any> | undefined, current: 
     const base = previous[field] ? field : previous.baseline ? 'baseline' : undefined
     if (base) { result[field] = manifestDelta(previous[base], current[field]); bases[field] = base }
   }
+  if (!previous && current.baseline) {
+    // The first IPC reply needs one full baseline, not several copies of the
+    // same large inventory. Other views can refer to this reply's baseline.
+    const currentBaseline: string[] = []
+    for (const field of fields) if (field !== 'baseline' && current[field]) {
+      result[field] = manifestDelta(current.baseline, current[field]); currentBaseline.push(field)
+    }
+    result.transport.current_baseline = currentBaseline
+  }
   return result
 }
 export function expandStatus<T extends Record<string, any>>(previous: T | null | undefined, incoming: T): T {
   if (incoming.transport?.base_token && incoming.transport.base_token !== previous?.transport?.token) throw new Error('COLLABORATION_STATUS_BASE_MISMATCH')
   const result = { ...incoming }
-  for (const field of fields) if (incoming[field]) (result as Record<string, any>)[field] = expandManifest(previous?.[incoming.transport?.bases?.[field] || field], incoming[field])
+  for (const field of fields) if (incoming[field]) {
+    const base = field !== 'baseline' && incoming.transport?.current_baseline?.includes(field)
+      ? result.baseline : previous?.[incoming.transport?.bases?.[field] || field]
+    ;(result as Record<string, any>)[field] = expandManifest(base, incoming[field])
+  }
   return result
 }

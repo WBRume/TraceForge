@@ -65,6 +65,16 @@ describe('Embedded local resource lifecycle', () => {
     expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/api/info'))).toBe(true)
     expect(mocks.spawn).not.toHaveBeenCalled()
   })
+  it('transfers requested collaboration replies as JSON scalars without changing their data', async () => {
+    const value = {task_id: 'task', baseline: {repositories: [{files: [{path: '中文.ts', sha256: 'digest'}]}]}}
+    const dispatch = vi.fn().mockResolvedValue(value)
+    mocks.startResource.mockResolvedValue({...resource(), dispatch})
+    const invoke = mocks.handlers.get('sdd:collaboration:execute')!
+    const wire = await invoke(null, {kind: 'binding', payload: {task_id: 'task', json_transport: true}})
+    expect(typeof wire).toBe('string')
+    expect(JSON.parse(wire)).toEqual(value)
+    expect(await invoke(null, {kind: 'binding', payload: {task_id: 'task'}})).toEqual(value)
+  })
   it('forwards local change invalidations through the existing desktop event bridge', async () => {
     await ensure()
     mocks.startResource.mock.calls[0][1].onCollaborationChanged({ task_id: 'task-1' })

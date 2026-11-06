@@ -26,6 +26,26 @@ beforeEach(() => {
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }) })
 const capture = (changedPaths?: ReadonlySet<string>) => captureCollaborationGit(repo, objects, task, false, changedPaths)
 
+test('cold raw import rejects unresolved LFS pointers before registering content identities', () => {
+  fs.writeFileSync(path.join(directory, 'source.txt'), 'version https://git-lfs.github.com/spec/v1\noid sha256:' + 'a'.repeat(64) + '\nsize 12\n')
+  expect(() => capture()).toThrow('COLLABORATION_LFS_CONTENT_REQUIRED')
+}, 60_000)
+
+test('cold parallel reads cannot hide a restored-mtime edit or addition before the immutable cut', async () => {
+  const index = new CollaborationIndex(), originalIndex = fs.readFileSync(path.join(directory, '.git/index'))
+  try {
+    await index.prefetch(repo, task.task_id, objects)
+    const file = path.join(directory, 'source.txt'), before = fs.statSync(file)
+    fs.writeFileSync(file, 'edited'); fs.utimesSync(file, before.atime, before.mtime)
+    fs.writeFileSync(path.join(directory, 'added.txt'), 'human addition')
+    await index.flush(task.task_id)
+    const result = index.scan(repo, objects, true, false, task)
+    expect(result.files.find(file => file.path === 'source.txt')?.sha256).toBe(hash('edited'))
+    expect(result.files.find(file => file.path === 'added.txt')?.sha256).toBe(hash('human addition'))
+    expect(fs.readFileSync(path.join(directory, '.git/index'))).toEqual(originalIndex)
+  } finally { index.close() }
+}, 60_000)
+
 test('warm native journal updates only named Git paths and survives idle time, deletion and directory rename', async () => {
   const index = new CollaborationIndex()
   const watch = fs.watch
@@ -124,6 +144,19 @@ test('captures raw binary and CRLF bytes with attributes disabled, deletions and
   expect(objects.get(hash('line\r\n')).toString()).toBe('line\r\n')
 }, 60_000)
 
+test('a cold raw capture reads files hidden by source index flags and retains the source index', () => {
+  const file = path.join(directory, 'source.txt'), before = fs.statSync(file)
+  git(directory, 'update-index', '--assume-unchanged', 'source.txt')
+  git(directory, 'update-index', '--skip-worktree', 'nested/other.txt')
+  const original = fs.readFileSync(path.join(directory, '.git/index'))
+  fs.writeFileSync(file, 'AFTER!'); fs.utimesSync(file, before.atime, before.mtime)
+  fs.writeFileSync(path.join(directory, 'nested/other.txt'), 'hidden edit')
+  const result = capture()
+  expect(result.snapshot.files.find(file => file.path === 'source.txt')?.sha256).toBe(hash('AFTER!'))
+  expect(result.snapshot.files.find(file => file.path === 'nested/other.txt')?.sha256).toBe(hash('hidden edit'))
+  expect(fs.readFileSync(path.join(directory, '.git/index'))).toEqual(original)
+}, 60_000)
+
 test('refuses parent junctions before capturing bytes outside the repository', () => {
   const saved = path.join(root, 'parked')
   fs.renameSync(path.join(directory, 'nested'), saved)
@@ -152,4 +185,15 @@ test('ambient Git overrides cannot redirect private capture into the business in
   } finally {
     for (const [key, value] of Object.entries(prior)) if (value === undefined) delete process.env[key]; else process.env[key] = value
   }
+}, 60_000)
+
+// Source GC or removal must never invalidate an already captured local cut.
+test('a cold raw snapshot retains every object independently of the source store', () => {
+  git(directory, 'repack', '-a', '-d')
+  const result = capture()
+  fs.renameSync(path.join(directory, '.git/objects'), path.join(directory, '.git/parked-objects'))
+  fs.mkdirSync(path.join(directory, '.git/objects'))
+  expect(shadowGit(result.part.git_dir, ['fsck', '--connectivity-only', '--no-dangling', result.part.tree]).toString()).toBe('')
+  expect(objects.get(hash('before')).toString()).toBe('before')
+  expect(objects.get(hash('unchanged')).toString()).toBe('unchanged')
 }, 60_000)

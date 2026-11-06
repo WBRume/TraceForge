@@ -71,6 +71,69 @@ afterEach(async () => {
 })
 
 describe('local collaboration coordinator', () => {
+  it('keeps both review scopes current after joining and receiving another Agent result', async () => {
+    setup(); await flushPromises(); await controller.loadReview(); await controller.loadReviewRound()
+    await controller.enable()
+    mocks.api.reviewDiff.mockImplementation(async (scope = 'cumulative') => ({ scope, baseline_snapshot_id: 'before', cloud_snapshot_id: 'result2', protocol_version: 2, repositories: [], files: [], running: false }))
+    mocks.api.reviewDiff.mockClear()
+    await controller.refresh()
+    expect(controller.participating.value).toBe(true)
+    expect(controller.reviewDiff.value?.cloud_snapshot_id).toBe('result2')
+    expect(controller.roundDiff.value?.cloud_snapshot_id).toBe('result2')
+    expect(new Set(mocks.api.reviewDiff.mock.calls.map(([scope]) => scope))).toEqual(new Set(['cumulative', 'round']))
+  })
+  it('shares a pending review request across concurrent drawer refreshes', async () => {
+    setup(); await flushPromises()
+    let resolve!: (value: any) => void
+    mocks.api.reviewDiff.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const first = controller.loadReview(); await flushPromises()
+    const second = controller.loadReview(); await flushPromises()
+    expect(mocks.api.reviewDiff).toHaveBeenCalledTimes(1)
+    resolve({ scope: 'cumulative', baseline_snapshot_id: 'before', cloud_snapshot_id: 'after', protocol_version: 2, repositories: [], files: [], running: false })
+    await Promise.all([first, second]); await flushPromises()
+    expect(controller.reviewDiff.value?.cloud_snapshot_id).toBe('after')
+  })
+  it('hydrates JSON scalar replies from the desktop bridge before using their status', async () => {
+    const native = mocks.native.getMockImplementation()!
+    mocks.native.mockImplementation(async request => JSON.stringify(await native(request)))
+    setup(); await flushPromises(); await controller.enable()
+    expect(controller.local.value?.state).toBe('READY')
+    expect(controller.error.value).toBe('')
+  })
+  it('overlaps optional native preparation with review without blocking a disconnected drawer', async () => {
+    const native = mocks.native.getMockImplementation()!
+    mocks.native.mockImplementation(async request => request.kind === 'describe'
+      ? {...await native(request), baseline_prefetch: 1}
+      : request.kind === 'prefetch' ? new Promise(() => {}) : native(request))
+    setup(); await flushPromises()
+    await controller.loadReview()
+    expect(mocks.native).toHaveBeenCalledWith(expect.objectContaining({kind: 'prefetch'}))
+    expect(controller.reviewDiff.value?.cloud_snapshot_id).toBe('after')
+    expect(controller.blocked.value).toBe(false)
+    expect(controller.participating.value).toBe(false)
+  })
+  it('does not reuse an in-flight diff after a task output event', async () => {
+    setup(); await flushPromises()
+    let resolve!: (value: any) => void
+    mocks.api.reviewDiff.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const first = controller.loadReview(); await flushPromises()
+    controller.refreshResults()
+    resolve({ scope: 'cumulative', baseline_snapshot_id: 'before', cloud_snapshot_id: 'stale', protocol_version: 2, repositories: [], files: [], running: false })
+    await first; await flushPromises()
+    expect(mocks.api.reviewDiff).toHaveBeenCalledTimes(2)
+    expect(controller.reviewDiff.value?.cloud_snapshot_id).toBe('after')
+  })
+  it('rechecks a temporary running cut after the final completion event', async () => {
+    setup(); await flushPromises()
+    mocks.api.reviewDiff.mockResolvedValueOnce({ scope: 'cumulative', baseline_snapshot_id: 'before', cloud_snapshot_id: 'before', protocol_version: 2, repositories: [], files: [], running: true })
+    await controller.loadReview()
+    await vi.advanceTimersByTimeAsync(1000); await flushPromises()
+    expect(mocks.api.reviewDiff).toHaveBeenCalledTimes(2)
+    expect(controller.reviewRunning.value).toBe(false)
+    expect(controller.reviewDiff.value?.cloud_snapshot_id).toBe('after')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(mocks.api.reviewDiff).toHaveBeenCalledTimes(2)
+  })
   it('clears a failed browsing review after a complete collaboration delivery', async () => {
     setup(); await flushPromises()
     mocks.api.reviewDiff.mockRejectedValueOnce(new Error('timeout of 15000ms exceeded'))
@@ -876,6 +939,41 @@ describe('local collaboration coordinator', () => {
     state = { ...state, sync_phase: 'PREPARING', pending_submission_id: 'submission-delta' }
     await controller.refresh()
     expect(mocks.native).toHaveBeenCalledWith({ kind: 'capture', payload: expect.objectContaining({ manifest_delta: true }) })
+  })
+  it('accepts an already viewed handoff before receiving output after rejoining', async () => {
+    setup(); await flushPromises(); await controller.enable(); await controller.leave()
+    local = {...local, target: undefined, conflicts: []}
+    const handoff = {...manifest, snapshot_id: 'handoff2', workspace_revision: 2, source: 'HUMAN_HANDOFF' as const}
+    const final = {...manifest, snapshot_id: 'final3', workspace_revision: 3, source: 'AGENT_OUTPUT' as const}
+    state = {...state, sync_phase: 'DELIVERY_PENDING', snapshot_id: final.snapshot_id,
+      input_snapshot_id: handoff.snapshot_id, input_submission_id: 'submission2', input_mode: 'LOCAL'}
+    mocks.api.snapshot.mockImplementation(async id => id === handoff.snapshot_id ? handoff : final)
+    await controller.refresh()
+    expect(controller.input.value?.snapshot_id).toBe(handoff.snapshot_id)
+    const native = mocks.native.getMockImplementation()!
+    mocks.native.mockImplementation(async request => {
+      if (request.kind === 'accept_input') local = {...local, baseline: handoff}
+      return native(request)
+    })
+    mocks.native.mockClear()
+    await controller.claimDriver()
+    const kinds = mocks.native.mock.calls.map(([request]) => request.kind)
+    expect(kinds.indexOf('accept_input')).toBeGreaterThanOrEqual(0)
+    expect(kinds.indexOf('reconcile')).toBeGreaterThan(kinds.indexOf('accept_input'))
+    expect(mocks.native).toHaveBeenCalledWith(expect.objectContaining({kind: 'accept_input', payload: expect.objectContaining({operation_id: 'handoff:submission2'})}))
+  })
+  it('keeps pending delivery conflicts resolvable instead of accepting an older handoff over them', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    const handoff = {...manifest, snapshot_id: 'handoff2', workspace_revision: 2, source: 'HUMAN_HANDOFF' as const}
+    const final = {...manifest, snapshot_id: 'final3', workspace_revision: 3, source: 'AGENT_OUTPUT' as const}
+    local = {...local, target: final, state: 'CONFLICT_PENDING', conflicts: [{task_repository_id: 'repo1', path: 'auth.py', expected_sha256: 'a'.repeat(64)} as any]}
+    state = {...state, sync_phase: 'CONFLICT_PENDING', snapshot_id: final.snapshot_id,
+      input_snapshot_id: handoff.snapshot_id, input_submission_id: 'submission2', input_mode: 'LOCAL'}
+    mocks.api.snapshot.mockImplementation(async id => id === handoff.snapshot_id ? handoff : final)
+    mocks.native.mockClear(); await controller.refresh()
+    expect(mocks.native.mock.calls.some(([request]) => request.kind === 'accept_input')).toBe(false)
+    expect(controller.error.value).toBe('')
+    expect(controller.conflicts.value).toHaveLength(1)
   })
   it('only previews intermediate versions and never sends a final receipt for a preview', async () => {
     setup(); await flushPromises(); await controller.enable()

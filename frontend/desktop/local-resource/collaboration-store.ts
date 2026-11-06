@@ -65,17 +65,29 @@ export const fileKey = (repo: string, file: string) => repo + ':' + file
 export class SyncObjects {
   readonly state: string
   readonly git: GitContent
+  private verified?: Map<string, Buffer>
+  private verifiedBytes = 0
   constructor(state: string) { this.state = state; this.git = new GitContent(state) }
   file(digest: string) { return this.git.file(digest) }
   put(data: Uint8Array) {
     if (data.byteLength > 64 * 1024 * 1024) fail('COLLABORATION_FILE_TOO_LARGE')
     const sha256 = hash(data)
+    if (this.verified?.has(sha256)) return sha256
     this.git.putMany([{ sha256, data: Buffer.from(data) }])
     this.get(sha256)
     return sha256
   }
   get(digest: string) {
-    return this.git.get(digest)
+    const cached = this.verified?.get(digest)
+    if (cached) return cached
+    const data = this.git.get(digest)
+    if (this.verified && this.verifiedBytes + data.length <= 64 * 1024 * 1024) { this.verified.set(digest, data); this.verifiedBytes += data.length }
+    return data
+  }
+  withOperation<T>(action: () => T): T {
+    const previous = this.verified, bytes = this.verifiedBytes
+    this.verified = new Map(); this.verifiedBytes = 0
+    try { return action() } finally { this.verified = previous; this.verifiedBytes = bytes }
   }
   receive(entries: { sha256: string; content: string }[]) {
     const incoming = entries.map(entry => {

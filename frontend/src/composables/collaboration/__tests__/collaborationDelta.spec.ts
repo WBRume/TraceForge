@@ -14,6 +14,17 @@ describe('collaboration delta transport', () => {
     expect(hydrated.preview).toEqual(target)
     expect(() => expandStatus({ ...previous, transport: { token: 'lost' } }, wire)).toThrow('STATUS_BASE_MISMATCH')
   })
+  it('sends one complete inventory in the first reply and expands every local view', () => {
+    const local = { ...base, snapshot_id: 'local', repositories: [{ ...base.repositories[0], files: [...base.repositories[0].files, { path: 'extra', sha256: 'extra', content_sha256: 'extra', size: 5, mode: '100644' }] }] }
+    const wire = statusDelta(undefined, { baseline: base, manifest: local, received: base }, 'first')
+    expect(wire.baseline.repositories[0].files).toHaveLength(1)
+    expect(wire.manifest.repositories[0].files.map((file: any) => file.path)).toEqual(['extra'])
+    expect(wire.received.repositories[0].files).toEqual([])
+    const hydrated = expandStatus(null, wire)
+    expect(hydrated.baseline).toEqual(base)
+    expect(hydrated.manifest).toEqual(local)
+    expect(hydrated.received).toEqual(base)
+  })
   it('rejects a wrong base, different branch and duplicate or ambiguous paths', () => {
     const wire = manifestDelta(base, base)
     expect(() => expandManifest({ ...base, snapshot_id: 'wrong' }, wire)).toThrow('DELTA_BASE_MISMATCH')

@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { tmpdir } from 'node:os'
 import { checkoutBytes, checkoutForms, contentHash, isBinary, normalizeEol } from '../content-identity'
-import { git } from '../filesystem'
+import { git, hash } from '../filesystem'
 
 let root: string
 beforeEach(() => {
@@ -31,11 +31,16 @@ describe('content identity', () => {
     expect(checkoutBytes(Buffer.from([0, 13, 10]), 'crlf')).toEqual(Buffer.from([0, 13, 10]))
     expect(contentHash(checkoutBytes(Buffer.from('a\nb\n'), 'crlf'))).toBe(contentHash(Buffer.from('a\nb\n')))
   })
+  test('reuses a raw digest only when normalization leaves bytes unchanged', () => {
+    for (const bytes of [Buffer.from('a\nb\n'), Buffer.from('a\r\nb\r\n'), Buffer.from('a\rb'), Buffer.from([0, 13, 10])]) {
+      expect(contentHash(bytes, hash(bytes))).toBe(contentHash(bytes))
+    }
+  })
   test('honors explicit eol attributes and core.autocrlf without guessing', () => {
     fs.writeFileSync(path.join(root, '.gitattributes'), '*.cmd text eol=crlf\n*.lf text eol=lf\n*.bin -text\n')
-    expect([...checkoutForms(root, ['start.cmd', 'readme.txt', 'keep.bin', 'notes.lf'])]).toEqual([['start.cmd', 'crlf']])
+    expect([...checkoutForms(root, ['start.cmd', 'readme.txt', 'keep.bin', 'notes.lf'])]).toEqual([['notes.lf', 'lf'], ['start.cmd', 'crlf']])
     git(root, 'config', 'core.autocrlf', 'true')
-    expect([...checkoutForms(root, ['start.cmd', 'readme.txt', 'keep.bin', 'notes.lf'])]).toEqual([['readme.txt', 'crlf'], ['start.cmd', 'crlf']])
+    expect([...checkoutForms(root, ['start.cmd', 'readme.txt', 'keep.bin', 'notes.lf'])]).toEqual([['notes.lf', 'lf'], ['readme.txt', 'crlf'], ['start.cmd', 'crlf']])
     git(root, 'config', 'core.autocrlf', 'false')
     git(root, 'config', 'core.eol', 'crlf')
     expect([...checkoutForms(root, ['readme.txt'])]).toEqual([])

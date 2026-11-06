@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { atomic, fail, gitEnvironment, hash, readJson, writeJson, type Receipt } from './filesystem'
+import { contentHash } from './content-identity'
 
 const excluded = new Set(['node_modules', 'dist', 'build', 'coverage', '.next', '.nuxt', '.output', '.vite', '.cache', '.turbo', '.parcel-cache', '.svelte-kit', 'target', '.gradle', '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.nox', 'htmlcov'])
 type Policy = { excluded_dirs: string[]; excluded_suffixes: string[] }
@@ -12,7 +13,9 @@ const nul = (xs: Iterable<string>) => Buffer.from([...xs].map(x => x + '\0').joi
 function git(cwd: string, args: string[], input?: Buffer, inputFile?: number): Buffer {
   const result = spawnSync('git', args, { cwd, input, stdio: [inputFile ?? 'pipe', 'pipe', 'pipe'], windowsHide: true, timeout: 180_000, maxBuffer: 256 * 1024 * 1024, env: gitEnvironment() })
   if (result.error) throw result.error
-  if (result.status !== 0) fail(`SNAPSHOT_GIT_ERROR: ${result.stderr.toString().slice(-500)}`)
+  if (result.status === 1 && args.includes('update-index') && args.includes('--refresh')
+    && !result.stderr.toString().trim() && result.stdout.toString().includes('needs update')) fail('SNAPSHOT_FILE_CHANGED_DURING_CAPTURE')
+  if (result.status !== 0) fail(`SNAPSHOT_GIT_ERROR: ${(result.stderr.toString() || result.stdout.toString()).slice(-500)}`)
   return result.stdout
 }
 export function shadowGit(directory: string, args: string[], input?: Buffer, inputFile?: number): Buffer {
@@ -75,7 +78,9 @@ function repoState(root: string, repo: string, destination: string): Repo {
   return { repo_rel_path: relative, repo_path: repo, head, branch, git_dir: gitDir, index_path: index, index_copy: copy, index_sha256: copy ? hash(fs.readFileSync(copy)) : null }
 }
 
-export interface GitCaptureOptions { modes?: Map<string, string>; rejectLinks?: boolean; forceContent?: boolean; changedPaths?: ReadonlySet<string> }
+export interface CapturedBlob { git_dir: string; oid: string; size: number; sha256: string; content: string }
+export interface PreparedGitImport { input: number; marks: string; digests: ReadonlyMap<string, Omit<CapturedBlob, 'git_dir'>> }
+export interface GitCaptureOptions { modes?: Map<string, string>; stats?: ReadonlyMap<string, fs.Stats>; prepared?: PreparedGitImport; rejectLinks?: boolean; forceContent?: boolean; changedPaths?: ReadonlySet<string>; onBlobs?: (blobs: CapturedBlob[]) => void }
 /** Update only the journal's paths; read-tree anchors a shared rollback index to the known cut. */
 export function capturePartPaths(root: string, part: Part, existing: string[], removed: string[], options: GitCaptureOptions, retain = true): Part {
   const cwd = part.relative === '.' ? root : safe(root, part.relative)
@@ -94,16 +99,22 @@ export function capturePart(root: string, store: string, relative: string, sourc
   const directory = path.join(store, 'shadow', hash(relative).slice(0, 24))
   const run = (args: string[], input?: Buffer) => shadowGit(directory, ['--work-tree=' + cwd, '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', '-c', 'core.attributesFile=', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', ...args], input)
   const cold = !fs.existsSync(directory)
+  let sourceObjects: string | undefined
   if (cold) {
-    const format = source ? text(source, 'rev-parse', '--show-object-format') : 'sha1'
+    const sourceInfo = source ? git(source, ['rev-parse', '--show-object-format', '--path-format=absolute', '--git-path', 'objects', '--git-path', 'index']).toString().trimEnd().split('\n') : null
+    const format = sourceInfo?.[0] ?? 'sha1'
+    sourceObjects = sourceInfo?.[1]
     fs.mkdirSync(directory, { recursive: true })
     run(['init', '--object-format=' + format, '.'])
-    for (const [key, value] of Object.entries({ 'core.bare': 'false', 'core.worktree': cwd, 'core.autocrlf': 'false', 'core.symlinks': 'true', 'core.longpaths': 'true', 'core.fsmonitor': 'false', 'index.version': '4', 'index.threads': 'true', 'core.untrackedCache': 'true', 'gc.auto': '0' })) run(['config', key, value])
+    // This newly created private config has one owner. Write its settings in a
+    // single append instead of starting Git once per key for every repository.
+    const quotedRoot = '"' + cwd.replace(/[\\"\n\t\b]/g, value => ({ '\\': '\\\\', '"': '\\"', '\n': '\\n', '\t': '\\t', '\b': '\\b' })[value]!) + '"'
+    fs.appendFileSync(path.join(directory, 'config'), `\n[core]\n bare = false\n worktree = ${quotedRoot}\n autocrlf = false\n symlinks = ${options.rejectLinks && process.platform === 'win32' ? 'false' : 'true'}\n longpaths = true\n fsmonitor = false\n untrackedCache = true\n[index]\n version = 4\n threads = true\n[gc]\n auto = 0\n`)
     fs.writeFileSync(path.join(directory, 'info/attributes'), '* -text -filter -ident -working-tree-encoding -eol\n')
     if (source) {
-      const objects = text(source, 'rev-parse', '--path-format=absolute', '--git-path', 'objects')
+      const objects = sourceObjects!
       fs.writeFileSync(path.join(directory, 'objects/info/alternates'), objects.replaceAll('\\', '/') + '\n')
-      const index = text(source, 'rev-parse', '--path-format=absolute', '--git-path', 'index')
+      const index = sourceInfo![2]
       if (fs.existsSync(index)) {
         fs.copyFileSync(index, path.join(directory, 'index'))
         for (const name of fs.readdirSync(path.dirname(index))) if (name.startsWith('sharedindex.')) fs.copyFileSync(path.join(path.dirname(index), name), path.join(directory, name))
@@ -116,18 +127,17 @@ export function capturePart(root: string, store: string, relative: string, sourc
     const owner = readJson(path.join(directory, 'owner.json'))
     if (owner.root !== root || owner.relative !== relative || !fs.existsSync(path.join(directory, 'index')) || fs.existsSync(path.join(directory, 'objects/info/alternates'))) fail('SNAPSHOT_INDEX_INVALID')
   }
-  if (options.rejectLinks && process.platform === 'win32') run(['config', 'core.symlinks', 'false'])
+  if (!cold && options.rejectLinks && process.platform === 'win32') run(['config', '--replace-all', 'core.symlinks', 'false'])
   const rows = run(['ls-files', '--stage', '-z']).toString().split('\0').filter(Boolean).map(row => {
     const i = row.indexOf('\t'); return [row.slice(0, i).split(' '), row.slice(i + 1)] as const
   })
   if (rows.some(([header]) => header[2] !== '0')) fail('SNAPSHOT_INDEX_CONFLICT')
   const names = rows.map(([, name]) => name), selected = new Set(protectedPaths)
   if (cold && names.length) {
-    run(['update-index', '--no-assume-unchanged', '-z', '--stdin'], nul(names))
-    run(['update-index', '--no-skip-worktree', '-z', '--stdin'], nul(names))
+    run(['update-index', '--no-assume-unchanged', '--no-skip-worktree', '-z', '--stdin'], nul(names))
   }
   const remove = new Set(names.filter(name => !selected.has(name)))
-  if (cold && source && protectedPaths.length) {
+  if (cold && source && protectedPaths.length && !options.rejectLinks) {
     const attrs = git(source, ['check-attr', '-z', '--stdin', 'text', 'filter', 'ident', 'working-tree-encoding', 'eol'], nul(protectedPaths)).toString().split('\0')
     const conversion = new Set<string>()
     for (let i = 0; i + 2 < attrs.length; i += 3) if (!['unspecified', 'unset'].includes(attrs[i + 2])) {
@@ -145,7 +155,7 @@ export function capturePart(root: string, store: string, relative: string, sourc
     }
   }
   if (remove.size) run(['update-index', '--force-remove', '-z', '--stdin'], nul(remove))
-  const dirty = new Set(run(['diff-files', '--name-only', '-z']).toString().split('\0').filter(Boolean))
+  const dirty = cold && options.rejectLinks ? new Set<string>() : new Set(run(['diff-files', '--name-only', '-z']).toString().split('\0').filter(Boolean))
   const remaining = new Set(names.filter(name => !remove.has(name)))
   const hinted = (name: string) => {
     if (!options.changedPaths?.size) return false
@@ -153,7 +163,19 @@ export function capturePart(root: string, store: string, relative: string, sourc
     return parts.some((_, index) => options.changedPaths!.has(parts.slice(0, index + 1).join('/')))
   }
   const changed = protectedPaths.filter(name => (cold && options.rejectLinks) || dirty.has(name) || !remaining.has(name) || hinted(name))
-  if (changed.length) importBlobs(cwd, directory, changed, run, options)
+  const indexed = cold ? new Map(rows.map(([header, name]) => [name, `${header[0]} ${header[1]}`])) : undefined
+  if (cold && options.prepared && options.rejectLinks && indexed) {
+    // Reuse compressed bytes for precisely the blobs proved equal by the raw
+    // readers. This pack contains the selected cut, without repository history.
+    const reusable = protectedPaths.map(name => options.prepared!.digests.get(name)!)
+      .filter((blob, i) => indexed.get(protectedPaths[i])?.split(' ')[1] === blob.oid)
+    if (reusable.length > 500 || reusable.reduce((sum, blob) => sum + blob.size, 0) > 8 * 1024 * 1024) {
+      run(['-c', 'core.fsync=committed', 'pack-objects', '--non-empty', '--window=0', '--compression=1',
+        path.join(directory, 'objects/pack/pack').replaceAll('\\', '/')], Buffer.from([...new Set(reusable.map(blob => blob.oid))].join('\n') + '\n'))
+    }
+  }
+  const captured = options.prepared && protectedPaths.length ? importPrepared(directory, protectedPaths, run, options, indexed)
+    : changed.length ? importBlobs(cwd, directory, changed, run, options, indexed) : []
   // Windows Git uses creation time for index ctime. A restored mtime can hide a write;
   // authority may require Git itself to refresh bytes, with private attributes disabling filters.
   if (options.forceContent && protectedPaths.length) run(['add', '--renormalize', '-f', '--pathspec-from-file=-', '--pathspec-file-nul'], nul(protectedPaths))
@@ -161,9 +183,16 @@ export function capturePart(root: string, store: string, relative: string, sourc
   const tree = protectedPaths.length ? run(['write-tree']).toString().trim() : run(['hash-object', '-t', 'tree', '-w', '--stdin'], Buffer.alloc(0)).toString().trim()
   run(['update-ref', ref, tree])
   if (cold && source) {
-    const roots = [text(source, 'rev-parse', '--path-format=absolute', '--git-path', 'objects'), ...text(source, 'count-objects', '-v').split('\n').filter(line => line.startsWith('alternate: ')).map(line => line.slice(11))]
+    const roots = [sourceObjects!, ...text(source, 'count-objects', '-v').split('\n').filter(line => line.startsWith('alternate: ')).map(line => line.slice(11))]
     const target = path.join(directory, 'objects')
-    if (roots.some(root => fs.statSync(root).dev !== fs.statSync(target).dev)) run(['repack', '-a', '-d', '--window=0'])
+    if (options.rejectLinks && captured.length === protectedPaths.length) {
+      // A raw first cut already imported every blob into its own pack. Retain
+      // only the source cache-tree objects, without repacking all file bytes a
+      // second time when the desktop profile and repository use different disks.
+      const imported = new Set(captured.map(blob => blob.oid))
+      const trees = text(directory, '--git-dir=.', 'rev-list', '--objects', '--no-object-names', tree).split('\n').filter(oid => !imported.has(oid))
+      if (trees.length) run(['pack-objects', '--non-empty', '--window=0', path.join(directory, 'objects/pack/pack').replaceAll('\\', '/')], Buffer.from(trees.join('\n') + '\n'))
+    } else if (roots.some(root => fs.statSync(root).dev !== fs.statSync(target).dev)) run(['repack', '-a', '-d', '--window=0'])
     else {
       // Copied cache-tree entries can reference source trees, not just blobs.
       const needed = new Set(run(['rev-list', '--objects', '--no-object-names', tree]).toString().trim().split('\n'))
@@ -187,18 +216,55 @@ export function capturePart(root: string, store: string, relative: string, sourc
     fs.unlinkSync(path.join(directory, 'objects/info/alternates'))
     run(['fsck', '--connectivity-only', '--no-dangling', tree])
   }
+  options.onBlobs?.(captured)
   return { relative, git_dir: directory, tree, ref }
 }
 
-function importBlobs(cwd: string, directory: string, changed: string[], run: (args: string[], data?: Buffer) => Buffer, options: GitCaptureOptions = {}) {
-  const temporary = fs.mkdtempSync(path.join(directory, '.import-'))
+/** Import all stream bytes into our pack even when the seed uses alternates. */
+function importStream(directory: string, marks: string, input: number) {
+  const alternates = path.join(directory, 'objects/info/alternates')
+  const saved = fs.existsSync(alternates) ? fs.readFileSync(alternates) : undefined
+  if (saved) fs.unlinkSync(alternates)
+  try {
+    shadowGit(directory, ['-c', 'core.fsync=committed', '-c', 'core.compression=0', 'fast-import', '--quiet', '--done',
+      '--export-marks=' + path.relative(path.toNamespacedPath(directory), marks)], undefined, input)
+  } finally { if (saved) fs.writeFileSync(alternates, saved) }
+}
+
+function importPrepared(directory: string, names: string[], run: (args: string[], data?: Buffer) => Buffer, options: GitCaptureOptions, indexed?: Map<string, string>): CapturedBlob[] {
+  const prepared = options.prepared!
+  importStream(directory, prepared.marks, prepared.input)
+  const marks = new Map(fs.readFileSync(prepared.marks, 'utf8').trim().split('\n').map(line => line.split(' ') as [string, string]))
+  const updates: string[] = [], captured: CapturedBlob[] = []
+  for (const [i, name] of names.entries()) {
+    const digest = prepared.digests.get(name), oid = marks.get(':' + (i + 1)), stat = options.stats!.get(name)!
+    if (!digest || digest.oid !== oid || digest.size !== stat.size) fail('SNAPSHOT_GIT_IMPORT_MISMATCH')
+    const mode = options.modes?.get(name) ?? (process.platform !== 'win32' && (stat.mode & 0o111) ? '100755' : '100644')
+    const entry = mode + ' ' + oid
+    if (indexed?.get(name) !== entry) updates.push(entry + '\t' + name + '\0')
+    captured.push({...digest!, git_dir: directory})
+  }
+  if (updates.length) run(['update-index', '-z', '--index-info'], Buffer.from(updates.join('')))
+  return captured
+}
+
+function importBlobs(cwd: string, directory: string, changed: string[], run: (args: string[], data?: Buffer) => Buffer, options: GitCaptureOptions = {}, indexed?: Map<string, string>) {
+  const temporary = fs.mkdtempSync(path.toNamespacedPath(path.join(directory, '.import-')))
   const streamPath = path.join(temporary, 'blobs'), marksPath = path.join(temporary, 'marks'), modes: string[] = []
+  const digests: { sha256: string; content: string; size: number }[] = []
+  const remember = (data: Buffer) => {
+    if (data.subarray(0, 80).toString().startsWith('version https://git-lfs.github.com/spec/v1\n')) fail('COLLABORATION_LFS_CONTENT_REQUIRED')
+    const sha256 = hash(data); digests.push({ sha256, content: contentHash(data, sha256), size: data.length })
+  }
   try {
     const output = fs.openSync(streamPath, 'wx')
     try {
-      const buffer = Buffer.alloc(1024 * 1024)
+      const buffer = Buffer.alloc(1024 * 1024), checked = new Set<string>()
       for (let i = 0; i < changed.length; i++) {
-        const full = safe(cwd, changed[i]), before = fs.lstatSync(full)
+        const validated = options.stats?.get(changed[i])
+        const full = validated ? path.join(cwd, changed[i]) : safe(cwd, changed[i], checked)
+        const before = validated ?? fs.lstatSync(full)
+        if (options.onBlobs && before.size > 64 * 1024 * 1024) fail('COLLABORATION_FILE_TOO_LARGE')
         const link = before.isSymbolicLink() ? Buffer.from(fs.readlinkSync(full)) : null
         if (link && options.rejectLinks) fail('COLLABORATION_SYMLINK_UNSUPPORTED')
         if (!link && !before.isFile()) fail('SNAPSHOT_UNSUPPORTED_FILE')
@@ -207,21 +273,46 @@ function importBlobs(cwd: string, directory: string, changed: string[], run: (ar
         if (link) fs.writeSync(output, link)
         else {
           const source = fs.openSync(full, 'r')
-          try { let count: number; while ((count = fs.readSync(source, buffer)) > 0) fs.writeSync(output, buffer, 0, count) }
+          try {
+            // The allowlist already checked the leaf and its parents. Verify
+            // the opened identity and stability before publishing this stream.
+            if (!validated && !sameStat(before, fs.fstatSync(source))) fail('SNAPSHOT_FILE_CHANGED_DURING_CAPTURE')
+            const raw = options.onBlobs ? Buffer.allocUnsafe(before.size) : null
+            let remaining = before.size, offset = 0
+            while (remaining) {
+              const bytes = raw ?? buffer
+              const count = fs.readSync(source, bytes, raw ? offset : 0, raw ? remaining : Math.min(buffer.length, remaining), null)
+              if (!count) fail('SNAPSHOT_FILE_CHANGED_DURING_CAPTURE')
+              fs.writeSync(output, bytes, raw ? offset : 0, count); remaining -= count; offset += count
+            }
+            if (!sameStat(before, fs.fstatSync(source))) fail('SNAPSHOT_FILE_CHANGED_DURING_CAPTURE')
+            if (raw) remember(raw)
+          }
           finally { fs.closeSync(source) }
         }
-        const after = fs.lstatSync(full)
-        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || before.ino !== after.ino) fail('SNAPSHOT_FILE_CHANGED_DURING_CAPTURE')
+        if (!validated && !sameStat(before, fs.lstatSync(full))) fail('SNAPSHOT_FILE_CHANGED_DURING_CAPTURE')
         fs.writeSync(output, '\n')
       }
       fs.writeSync(output, 'done\n')
     } finally { fs.closeSync(output) }
     const input = fs.openSync(streamPath, 'r')
-    try { shadowGit(directory, ['-c', 'core.fsync=committed', 'fast-import', '--quiet', '--done', '--export-marks=' + path.relative(directory, marksPath)], undefined, input) }
+    try { importStream(directory, marksPath, input) }
     finally { fs.closeSync(input) }
     const marks = new Map(fs.readFileSync(marksPath, 'utf8').trim().split('\n').map(line => line.split(' ') as [string, string]))
-    run(['update-index', '-z', '--index-info'], Buffer.from(changed.map((name, i) => `${modes[i]} ${marks.get(':' + (i + 1))}\t${name}\0`).join('')))
+    // Keep the seeded stat entries when raw bytes and mode really match. Writing
+    // every unchanged OID back would make Git reopen the entire tree on refresh.
+    const updates = changed.flatMap((name, i) => {
+      const entry = `${modes[i]} ${marks.get(':' + (i + 1))}`
+      return indexed?.get(name) === entry ? [] : [`${entry}\t${name}\0`]
+    })
+    if (updates.length) run(['update-index', '-z', '--index-info'], Buffer.from(updates.join('')))
+    return digests.map((digest, i) => ({ ...digest, git_dir: directory, oid: marks.get(':' + (i + 1))! }))
   } finally { fs.rmSync(temporary, { recursive: true, force: true }) }
+}
+
+function sameStat(left: fs.Stats, right: fs.Stats) {
+  return left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs
+    && left.ino === right.ino && left.dev === right.dev && left.mode === right.mode
 }
 
 export function captureGitSnapshot(receipt: Receipt, destination: string, store: string, extraTracked: string[] = [], policy: Policy = defaultPolicy): GitSnapshot {

@@ -18,7 +18,7 @@ parentPort!.on('message', ({ id, kind, payload }) => {
   pending = pending.then(async () => {
   try {
     if (kind === 'shutdown') {
-      runtime?.collaboration.close()
+      await runtime?.collaboration.close()
       runtime?.db.close()
       parentPort!.postMessage({ id, result: true })
       return

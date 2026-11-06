@@ -2,13 +2,15 @@
 import { Buffer } from 'node:buffer'
 import { gitRaw, hash } from './filesystem'
 
-const BINARY_PROBE = 8000
+export const BINARY_PROBE = 8000
 
 /** Git's own heuristic: a NUL byte in the leading block makes a file binary. */
 export const isBinary = (data: Buffer) => data.subarray(0, BINARY_PROBE).includes(0)
 
 /** Repository form of text: CRLF, CR and LF all become LF. */
-export function normalizeEol(data: Buffer): Buffer {
+export function normalizeEol(data: Buffer, binaryProbe = BINARY_PROBE): Buffer {
+  // Keep the body self-contained: reader workers execute its compiled source.
+  if (data.subarray(0, binaryProbe).includes(0) || !data.includes(13)) return data
   let pairs = 0, lone = 0
   for (let index = 0; index < data.length; index++) {
     if (data[index] !== 13) continue
@@ -17,7 +19,7 @@ export function normalizeEol(data: Buffer): Buffer {
   }
   if (!pairs && !lone) return data
   // A CRLF pair loses one byte; a lone CR is replaced one for one.
-  const output = Buffer.allocUnsafe(data.length - pairs)
+  const output = (data.constructor as typeof Buffer).allocUnsafe(data.length - pairs)
   let offset = 0
   for (let index = 0; index < data.length; index++) {
     if (data[index] !== 13) { output[offset++] = data[index]!; continue }
@@ -28,7 +30,10 @@ export function normalizeEol(data: Buffer): Buffer {
 }
 
 /** Identity of the content: binary bytes as-is, text normalized to LF. */
-export const contentHash = (data: Buffer) => hash(isBinary(data) ? data : normalizeEol(data))
+export function contentHash(data: Buffer, rawSha256?: string): string {
+  const content = isBinary(data) ? data : normalizeEol(data)
+  return content === data && rawSha256 ? rawSha256 : hash(content)
+}
 
 export type CheckoutForm = 'lf' | 'crlf'
 

@@ -111,6 +111,18 @@ def safe_path(root: str, relative: str) -> str:
     return target
 
 
+def validate_relative_path(relative: str) -> str:
+    """Validate a Git tree name without consulting a mutable checkout."""
+    if (
+        not relative
+        or "\\" in relative
+        or ":" in relative
+        or any(p.lower() in {"", ".", "..", ".git"} for p in relative.split("/"))
+    ):
+        raise ValueError(f"Invalid snapshot path: {relative!r}")
+    return relative
+
+
 class ReadPhasePaths:
     """Validate shared parents once within a read-only filesystem phase.
 
@@ -124,13 +136,7 @@ class ReadPhasePaths:
         self.checked = {self.root}
 
     def __call__(self, relative: str) -> str:
-        if (
-            not relative
-            or "\\" in relative
-            or ":" in relative
-            or any(p.lower() in {"", ".", "..", ".git"} for p in relative.split("/"))
-        ):
-            raise ValueError(f"Invalid snapshot path: {relative!r}")
+        validate_relative_path(relative)
         target = os.path.abspath(os.path.join(self.root, relative))
         if os.path.commonpath([self.root, target]) != self.root:
             raise ValueError("Snapshot path escapes root")

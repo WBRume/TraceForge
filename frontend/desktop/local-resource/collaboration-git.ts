@@ -3,6 +3,7 @@ import * as path from 'node:path'
 import { hash, fail, gitRaw, readJson, writeJson } from './filesystem'
 import { capturePart, capturePartPaths, shadowGit, withSnapshotLock, type Part } from './git-snapshots'
 import { treeEntries } from './git-content'
+import type { PreparedCapture } from './collaboration-prefetch'
 import { pathsInRepository, validateRepositoryIdentity, type LocalRepository, type SyncFile, type SyncObjects, type SyncRepository } from './collaboration-store'
 
 export interface GitScanMetrics {
@@ -18,7 +19,7 @@ export function disconnectedChanges(repo: LocalRepository, snapshot: SyncReposit
   if (changed.length) {
     // Imported blobs have no stat cache yet. Porcelain diff filters these false
     // positives without writing either index; check links before it reads.
-    allowlist(repo, changed, snapshot.files)
+    captureAllowlist(repo, changed, snapshot.files)
     changed = shadowGit(part.git_dir, ['--no-optional-locks', worktree, '-c', 'diff.autoRefreshIndex=true', 'diff', '--name-only', '-z',
       '--no-renames', '--no-ext-diff', '--no-textconv']).toString().split('\0').filter(Boolean)
   }
@@ -53,10 +54,10 @@ function snapshotOwner(state: string, task: string, root: string) {
 }
 
 /** A Git-provided allowlist is checked for links, never used to maintain a custom stat cache. */
-function allowlist(repo: LocalRepository, paths?: string[], known?: SyncFile[]) {
+export function captureAllowlist(repo: LocalRepository, paths?: string[], known?: SyncFile[], inspectLeaves = true) {
   if (known) validateRepositoryIdentity(repo)
   const listed = known ? { names: paths!, modes: new Map(known.map(file => [file.path, file.mode])) } : pathsInRepository(repo, paths)
-  const existing: string[] = [], checked = new Set<string>()
+  const existing: string[] = [], checked = new Set<string>(), stats = new Map<string, fs.Stats>()
   for (const name of listed.names) {
     let directory = path.dirname(path.join(repo.local_worktree_path, name))
     while (directory !== repo.local_worktree_path && !checked.has(directory)) {
@@ -64,18 +65,19 @@ function allowlist(repo: LocalRepository, paths?: string[], known?: SyncFile[]) 
       catch (error: any) { if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error }
       checked.add(directory); directory = path.dirname(directory)
     }
+    if (!inspectLeaves) { existing.push(name); continue }
     try {
       const stat = fs.lstatSync(path.join(repo.local_worktree_path, name))
       if (stat.isSymbolicLink()) fail('COLLABORATION_SYMLINK_UNSUPPORTED')
-      if (stat.isFile()) existing.push(name)
+      if (stat.isFile()) { existing.push(name); stats.set(name, stat) }
       else if (!stat.isDirectory()) fail('COLLABORATION_UNSUPPORTED_FILE')
     } catch (error: any) { if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error }
   }
-  return { names: existing, modes: listed.modes }
+  return { names: existing, modes: listed.modes, stats }
 }
 
 export function captureCollaborationGit(repo: LocalRepository, objects: SyncObjects, task: { task_id: string; task_root: string }, verifyRaw = false,
-  changedPaths?: ReadonlySet<string>, previous?: { snapshot: SyncRepository; part: Part }) {
+  changedPaths?: ReadonlySet<string>, previous?: { snapshot: SyncRepository; part: Part }, prepared?: PreparedCapture) {
   const mapped = repo.directory_mode === 'MAPPED'
   const started = performance.now(), owner = snapshotOwner(objects.state, task.task_id + (mapped ? '-mapped' : ''), task.task_root)
   const captureRoot = mapped ? repo.local_worktree_path : task.task_root
@@ -88,21 +90,24 @@ export function captureCollaborationGit(repo: LocalRepository, objects: SyncObje
   return withSnapshotLock(owner, () => {
     const scope = previous && changedPaths ? [...changedPaths] : undefined
     const known = new Set(previous?.snapshot.files.map(file => file.path))
-    const first = allowlist(repo, scope, process.platform === 'win32' && scope?.every(name => known.has(name)) ? previous?.snapshot.files : undefined)
+    const first = prepared?.inventory ?? captureAllowlist(repo, scope, process.platform === 'win32' && scope?.every(name => known.has(name)) ? previous?.snapshot.files : undefined)
     // One immutable cut. Edits after this tree belong to the next input.
     const affected = (name: string) => scope?.some(prefix => name === prefix || name.startsWith(prefix + '/'))
     const removed = previous?.snapshot.files.filter(file => affected(file.path)).map(file => file.path) ?? []
     const existing = new Set(first.names)
+    let imported = { new_blobs: 0, new_blob_bytes: 0 }
     const part = previous ? capturePartPaths(captureRoot, previous.part, first.names, removed.filter(name => !existing.has(name)), { modes: first.modes, rejectLinks: true }, false)
       : capturePart(captureRoot, captureStore, captureRelative, repo.local_worktree_path,
       first.names, 'refs/traceforge/collaboration/current/' + hash(repo.task_repository_id),
-      { modes: first.modes, rejectLinks: true, forceContent: forced, changedPaths })
+      { modes: first.modes, stats: first.stats, prepared: prepared?.stream, rejectLinks: true, forceContent: forced, changedPaths,
+        onBlobs: blobs => { imported = objects.git.rememberCaptured(blobs) } })
     const entries = treeEntries(part.git_dir, part.tree, scope)
     if (entries.length > 100_000 || entries.reduce((total, entry) => total + entry.size, 0) > 512 * 1024 * 1024) fail('COLLABORATION_SNAPSHOT_LIMIT')
     shadowGit(part.git_dir, ['update-ref', '--stdin'], Buffer.from(
       `update ${part.ref} ${part.tree}\nupdate refs/traceforge/collaboration/trees/${part.tree} ${part.tree}\n`))
     objects.git.preferStore(part.git_dir)
     const registered = objects.git.registerTree(entries)
+    registered.new_blobs += imported.new_blobs; registered.new_blob_bytes += imported.new_blob_bytes
     const { task_repository_id, repository_id, repo_url, repo_slug, rel_path, branch_name, base_commit_sha } = repo
     const files = new Map(previous?.snapshot.files.map(file => [file.path, file]))
     for (const name of removed) files.delete(name)
@@ -113,7 +118,7 @@ export function captureCollaborationGit(repo: LocalRepository, objects: SyncObje
     const snapshot: SyncRepository = { task_repository_id, repository_id, repo_url, repo_slug, rel_path, branch_name, base_commit_sha, files: [...files.values()] }
     const metrics: GitScanMetrics = { kind: previous ? 'git-delta' : forced ? 'git-forced' : 'git', paths_checked: first.names.length, full_inventory: !previous, files_read: registered.new_blobs, bytes_read: registered.new_blob_bytes,
       files_reused: entries.length - registered.new_blobs, cas_bytes_read: 0, new_blobs: registered.new_blobs,
-      new_blob_bytes: registered.new_blob_bytes, forced_content_checks: forced ? 1 : 0, elapsed_ms: performance.now() - started }
+      new_blob_bytes: registered.new_blob_bytes, forced_content_checks: forced ? 1 : 0, elapsed_ms: performance.now() - started + (prepared?.elapsed_ms ?? 0) }
     writeJson(path.join(owner, 'collaboration', repo.task_repository_id + '.json'), { version: 1, task_root: task.task_root, ...part,
       ref: 'refs/traceforge/collaboration/trees/' + part.tree })
     return { snapshot, metrics, part }

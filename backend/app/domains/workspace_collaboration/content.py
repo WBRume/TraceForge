@@ -304,7 +304,7 @@ def capture_task(task_root: Path, store: ObjectStore, repositories: list[dict], 
         )
         # The Git tree is the immutable cut. Changed blobs are checked while
         # importing; stable publication does not require re-reading the worktree.
-        entries = git_store.entries(payload)
+        entries = git_store.entries(payload, paths=files.validate_relative_path)
         exported, public_entries = [], []
         total = 0
         for repo in repositories:

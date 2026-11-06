@@ -40,6 +40,7 @@ class GitObjects:
     def connect(self):
         connection = sqlite3.connect(self.database, timeout=30)
         try:
+            connection.execute("PRAGMA cache_size=-16384")
             with connection:
                 yield connection
         finally:
@@ -98,18 +99,19 @@ class GitObjects:
     def export(self, entries: list[dict]) -> tuple[dict[tuple[str, str], tuple[str, str, int]], dict]:
         """Batch-read only previously unseen immutable Git blobs."""
         wanted = {(item["git_dir"], item["oid"]): item for item in entries}
-        mapped, mapped_known, pending, reused = {}, {}, {}, []
+        mapped, mapped_known, pending, reused, registered = {}, {}, {}, [], set()
         with self.connect() as db:
             oids = list({oid for _, oid in wanted})
             for offset in range(0, len(oids), 400):
                 batch = oids[offset : offset + 400]
                 sql = (
-                    "SELECT oid,sha256,size,content_sha256 FROM objects WHERE oid IN ("
+                    "SELECT git_dir,oid,sha256,size,content_sha256 FROM objects WHERE oid IN ("
                     + ",".join("?" for _ in batch)
                     + ")"
                 )
-                for oid, sha, size, content in db.execute(sql, batch):
+                for directory, oid, sha, size, content in db.execute(sql, batch):
                     mapped_known[oid] = (sha, size, require_content(content))
+                    registered.add((directory, oid))
         for (directory, oid), item in wanted.items():
             known = mapped_known.get(oid)
             if known is None:
@@ -119,7 +121,8 @@ class GitObjects:
             if size != item["size"]:
                 raise ValueError("Git object mapping size differs")
             mapped[directory, oid] = (sha, content, size)
-            reused.append((directory, oid, sha, content, size))
+            if (directory, oid) not in registered:
+                reused.append((directory, oid, sha, content, size))
         new_rows = []
         bytes_read = 0
         for directory in {key[0] for key in pending}:
@@ -132,7 +135,8 @@ class GitObjects:
                 mapped[directory, oid] = (sha, content, len(raw))
                 new_rows.append((directory, oid, sha, content, len(raw)))
                 bytes_read += len(raw)
-        self.register([*reused, *new_rows])
+        if reused or new_rows:
+            self.register([*reused, *new_rows])
         return mapped, {"hashed_blobs": len(new_rows), "hashed_bytes": bytes_read}
 
     def put(self, raw: bytes, sha256: str) -> None:

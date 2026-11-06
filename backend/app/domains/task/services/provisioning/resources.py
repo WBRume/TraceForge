@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.logging import bind_task_context, get_logger
 from app.domains.auth.models.user import Workspace
 from app.domains.skill.services.runtime import materialization as skill_runtime_materialization
-from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.models.task import SddTask, TaskStatus, TaskType
 from app.domains.task.services import git_worktree_service
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 
@@ -58,6 +58,22 @@ def _prepare_initial_workspace_checkpoint(db: Session, ws: Workspace, task: SddT
     task.task_meta_json = metadata
     # Persist ownership before the next cancellation check / terminal rollback.
     db.commit()
+    if not resource.is_local(task) and task.task_type != TaskType.DIAGNOSIS:
+        # The immutable remote baseline belongs to resource preparation. Building
+        # its content identities here keeps the first code drawer from hashing
+        # a whole repository, while ordinary chat remains independent of review.
+        from app.domains.workspace_collaboration import review, session
+
+        try:
+            if task_task_workspace_repositories.get_task_repositories(db, task.id):
+                review.committed_baseline(db, task, task.creator_id)
+                # Seed the live inventory as well: the first drawer should only
+                # verify its watcher journal, not capture the whole checkout.
+                session.latest_snapshot(db, task, task.creator_id, None)
+                db.commit()
+        except Exception:
+            db.rollback()
+            logger.warning("Initial code review preparation failed", exc_info=True)
 
 
 def _load_provision_task(db: Session, workspace_id: str, task_id: str) -> SddTask:

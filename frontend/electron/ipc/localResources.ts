@@ -84,7 +84,7 @@ export const registerLocalResourcesIpc = () => {
       const workspaceRoot = mapped ? null : join(app.getPath('userData'), 'collaboration-workspaces')
       const taskRoot = taskId && workspaceRoot ? join(workspaceRoot, taskId) : null
       return clientIdentity().then(client_id => ({ client_id, instance_id: collaborationInstanceId,
-        mapped_repositories: 1,
+        mapped_repositories: 1, baseline_prefetch: 1,
         workspace_root: workspaceRoot, task_root: taskRoot, repositories: (command.payload?.repositories ?? []).map((repo: any) => ({
           task_repository_id: repo.task_repository_id, local_worktree_path: mapped ? repo.local_path || null : taskRoot ? join(taskRoot, syncPath(repo.rel_path)) : null,
         })) }))
@@ -92,10 +92,10 @@ export const registerLocalResourcesIpc = () => {
     const execute = async () => {
       await requestServices({ backend: 'collaboration' }, false)
       let managedRoots: string[] | undefined
-      if (command.kind === 'prepare' || command.kind === 'inspect_mappings') {
+      if (['prepare', 'inspect_mappings', 'prefetch'].includes(command.kind)) {
         const configFile = join(serviceStateRoot('collaboration'), 'host.json')
         const config = JSON.parse(await readFile(configFile, 'utf8'))
-        const mapped = command.kind === 'inspect_mappings' || command.payload.directory_mode === 'MAPPED'
+        const mapped = command.kind !== 'prepare' || command.payload.directory_mode === 'MAPPED'
         if (!mapped) command.payload.workspace_root ||= join(app.getPath('userData'), 'collaboration-workspaces')
         const inputs = [...(mapped ? [] : [command.payload.workspace_root]), ...command.payload.repositories.map((repo: any) => repo.local_path)]
         const grants: string[] = []
@@ -121,7 +121,8 @@ export const registerLocalResourcesIpc = () => {
         await writeFile(temporary, JSON.stringify([...new Set([...registered, ...managedRoots])]), { mode: 0o600 })
         await rename(temporary, registry)
       }
-      return result
+      // A scalar crosses contextBridge without recursively copying every file.
+      return command.payload?.json_transport === true ? JSON.stringify(result) : result
     }
     const pending = collaborationQueue.catch(() => undefined).then(execute)
     collaborationQueue = pending

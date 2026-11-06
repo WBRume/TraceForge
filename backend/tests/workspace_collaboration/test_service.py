@@ -1245,7 +1245,7 @@ def test_hot_publication_keeps_refs_and_reads_only_requested_object_mappings(env
 
     monkeypatch.setattr(GitObjects, "connect", traced_connect)
     accepted = service.handoff(db, task, "u", request)
-    lookups = [q for q in queries if q.startswith("SELECT oid,sha256,size")]
+    lookups = [q for q in queries if q.startswith("SELECT git_dir,oid,sha256,size")]
     assert lookups and all(" WHERE oid IN (" in q for q in lookups)
     store = content.ObjectStore(task.id)
     import json

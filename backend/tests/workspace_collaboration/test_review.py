@@ -13,6 +13,32 @@ from tests.workspace_collaboration.test_service import environment as repository
 environment = repository_environment
 
 
+def test_committed_review_reads_immutable_objects_without_walking_checkout_parents(environment, monkeypatch):
+    db, task, _ = environment
+    service._ensure_store(db, task)
+    monkeypatch.setattr(
+        review.snapshot_files,
+        "ReadPhasePaths",
+        lambda *_: pytest.fail("Immutable review must not traverse the checkout"),
+    )
+    baseline = review.committed_baseline(db, task, "viewer")
+    assert {repo["repo_slug"] for repo in baseline["repositories"]} == {"api", "web"}
+
+
+def test_provisioning_prepares_the_immutable_review_baseline(environment, monkeypatch):
+    from app.domains.auth.models.user import Workspace
+    from app.domains.task.services.provisioning.resources import _prepare_initial_workspace_checkpoint
+
+    db, task, _ = environment
+    _prepare_initial_workspace_checkpoint(db, db.get(Workspace, task.workspace_id), task)
+    from app.domains.workspace_collaboration.models import CollaborationSnapshot
+
+    assert db.query(CollaborationSnapshot).filter_by(task_id=task.id, source="DOWNLOAD").count() == 1
+    assert db.query(CollaborationState).filter_by(task_id=task.id).first() is None
+    monkeypatch.setattr(review.git_store, "tree_entries", lambda *args, **kwargs: pytest.fail("Already prepared"))
+    assert len(review.committed_baseline(db, task, "viewer")["repositories"]) == 2
+
+
 def test_cumulative_baseline_is_committed_code_and_cached_across_turns(environment, monkeypatch):
     db, task, root = environment
     (root / "api/same.txt").write_bytes(b"first turn output\n")
@@ -216,8 +242,25 @@ def test_cumulative_diff_returns_only_changed_files(environment):
     assert entry["change"] == "A" and entry["left"] is None and entry["right"]["path"] == "added.txt"
 
 
-def test_round_diff_is_empty_until_a_round_starts(environment):
+def test_initial_engine_output_is_reviewable_before_a_session_turn_is_recorded(environment):
     db, task, root = environment
+    service._ensure_store(db, task)
+    db.commit()
+    (root / "api" / "same.txt").write_bytes(b"bootstrap agent edit\n")
+    (root / "web" / "created.txt").write_bytes(b"bootstrap agent addition\n")
+    result = review.diff(db, task, "viewer", "round")
+    assert {(file["repo_slug"], file["path"], file["change"]) for file in result["files"]} == {
+        ("api", "same.txt", "M"),
+        ("web", "created.txt", "A"),
+    }
+    assert result["running"] is False
+    assert db.query(TaskSessionTurn).filter_by(task_id=task.id).count() == 0
+    assert db.get(CollaborationState, task.id) is None
+
+
+def test_new_generation_round_diff_is_empty_until_a_round_starts(environment):
+    db, task, root = environment
+    task.session_generation = 2
     (root / "api" / "same.txt").write_bytes(b"agent edit\n")
     result = review.diff(db, task, "viewer", "round")
     assert result["scope"] == "round"

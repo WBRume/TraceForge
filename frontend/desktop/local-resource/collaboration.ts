@@ -15,6 +15,10 @@ import {
   type SyncBinding, type SyncConflict, type SyncFile, type SyncManifest, type LocalRepository,
 } from './collaboration-store'
 
+type Occupancy = Pick<SyncBinding, 'task_id' | 'released' | 'directory_mode' | 'task_root'> & {repositories: {local_worktree_path: string}[]}
+interface BaselinePrefetch { taskId: string; context: string; work: Promise<void>; done: boolean; cancelled: boolean }
+const prefetchContext = (repos: LocalRepository[]) => JSON.stringify(repos.map(repo => [repo.task_repository_id, repo.local_worktree_path, repo.base_commit_sha, repo.task_branch]))
+
 export class CollaborationRuntime {
   readonly objects: SyncObjects
   readonly index: CollaborationIndex
@@ -22,6 +26,8 @@ export class CollaborationRuntime {
   readonly roots: () => string[]
   private readonly observations = new Map<string, SyncManifest>()
   private readonly transports = new Map<string, { token: string; status: Record<string, any> }>()
+  private prefetched?: BaselinePrefetch
+  private readonly occupancy = new Map<string, {stamp: string; value: Occupancy}>()
   constructor(state: string, roots: () => string[]) {
     this.state = state; this.roots = roots
     this.objects = new SyncObjects(state)
@@ -51,14 +57,121 @@ export class CollaborationRuntime {
     if (fs.existsSync(directory) && fs.lstatSync(directory).isSymbolicLink()) fail('COLLABORATION_BACKUP_DIRECTORY_LINKED')
     return child(root, '.traceforge-sync')
   }
-  private save(binding: SyncBinding) { durableJson(this.bindingFile(binding.task_id), binding) }
+  private occupancyStamp(file: string) {
+    const stat = fs.statSync(file, {bigint: true})
+    return `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`
+  }
+  private rememberOccupancy(file: string, binding: SyncBinding, stamp = this.occupancyStamp(file)) {
+    const {task_id, released, directory_mode, task_root} = binding
+    const value = {task_id, released, directory_mode, task_root,
+      repositories: binding.repositories.map(({local_worktree_path}) => ({local_worktree_path}))}
+    this.occupancy.set(file, {stamp, value})
+    return value
+  }
+  private save(binding: SyncBinding) {
+    const file = this.bindingFile(binding.task_id)
+    durableJson(file, binding); this.rememberOccupancy(file, binding)
+  }
+  private discardPrefetch(taskId: string) {
+    const pending = this.prefetched
+    if (pending?.taskId === taskId) {
+      pending.cancelled = true
+      if (pending.done) this.prefetched = undefined
+    }
+    this.index.clearPrefetch(taskId)
+    if (!this.findBinding(taskId)) this.index.close(taskId)
+  }
+  private async preparePreview(repositories: LocalRepository[], taskId: string, pending?: BaselinePrefetch) {
+    const budget = {remaining: 512 * 1024 * 1024}
+    let cursor = 0, cut = Promise.resolve()
+    // At most two repositories read concurrently. Serialize Git cuts, whose
+    // private indexes share a task lock, while the other readers keep working.
+    const workers = Array.from({length: Math.min(2, repositories.length)}, async () => {
+      while (cursor < repositories.length && !pending?.cancelled) {
+        const repo = repositories[cursor++]
+        await this.index.prefetch(repo, taskId, this.objects, budget)
+        cut = cut.then(async () => {
+          if (pending?.cancelled) return
+          await this.index.flush(taskId)
+          if (pending?.cancelled) return
+          this.objects.withOperation(() => this.index.scan(repo, this.objects, true, false,
+            {task_id: taskId, task_root: path.join(this.state, 'mapped-tasks', taskId)}))
+        })
+        await cut
+      }
+    })
+    const outcomes = await Promise.allSettled(workers)
+    const failure = outcomes.find(outcome => outcome.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
+    if (!pending?.cancelled) {
+      await this.index.flush(taskId)
+      if (this.index.hasChanges(taskId)) fail('SNAPSHOT_FILE_CHANGED_DURING_CAPTURE')
+    }
+  }
+  private prefetch(payload: any) {
+    if (this.findBinding(payload.task_id)) return { started: false }
+    const repositories = requireCleanMappings(payload.repositories, this.roots()), context = prefetchContext(repositories)
+    this.requireUnoccupied(payload.task_id, repositories)
+    const prior = this.prefetched
+    if (prior && prior.taskId === payload.task_id && prior.context === context && !prior.cancelled) return { started: true }
+    // One bounded stream per desktop host; rapid task navigation cannot queue reads.
+    if (prior && !prior.done) return { started: false }
+    if (prior) this.discardPrefetch(prior.taskId)
+    const pending: BaselinePrefetch = { taskId: payload.task_id, context, work: Promise.resolve(), done: false, cancelled: false }
+    this.prefetched = pending
+    pending.work = this.preparePreview(repositories, payload.task_id, pending).catch(() => this.discardPrefetch(payload.task_id)).finally(() => {
+      pending.done = true
+      if (pending.cancelled) {
+        this.index.clearPrefetch(payload.task_id)
+        if (!this.findBinding(payload.task_id)) this.index.close(payload.task_id)
+        if (this.prefetched === pending) this.prefetched = undefined
+      }
+    })
+    // Keep the single bounded stream while this task is open. Source changes
+    // and page disposal invalidate it; an idle timer must not cause a new scan
+    // when the user enables collaboration after reading a long Agent response.
+    return { started: true }
+  }
   async executeAsync(kind: string, payload: any) {
+    if (kind === 'prefetch') return this.prefetch(payload)
+    if (kind === 'discard_prefetch') { this.discardPrefetch(payload.task_id); return { discarded: true } }
+    // Preview barriers are private, short-lived source markers. Finish their
+    // drain before a foreground Git cleanliness check can observe them.
+    if (kind === 'inspect_mappings' && this.prefetched && !this.prefetched.done) await this.prefetched.work
+    const coldMapped = kind === 'prepare' && payload.directory_mode === 'MAPPED' && !this.findBinding(payload.task_id)
+    if (coldMapped) {
+      const repositories = requireCleanMappings(payload.repositories, this.roots())
+      this.requireUnoccupied(payload.task_id, repositories)
+      try {
+        const pending = this.prefetched
+        let warmed = false
+        if (pending) {
+          await pending.work
+          if (this.prefetched === pending) this.prefetched = undefined
+          warmed = pending.taskId === payload.task_id && pending.context === prefetchContext(repositories) && !pending.cancelled
+          if (!warmed) this.discardPrefetch(pending.taskId)
+        }
+        if (!warmed) await this.preparePreview(repositories, payload.task_id)
+        await this.index.flush(payload.task_id)
+        let candidate: SyncBinding | undefined
+        const result = this.execute(kind, payload, repositories, binding => { candidate = binding })
+        // No source writes have occurred. Refuse a changing cut, including
+        // same-size writes hidden by source index flags or restored mtimes.
+        await this.index.flush(payload.task_id)
+        if (this.index.hasChanges(payload.task_id)) fail('SNAPSHOT_FILE_CHANGED_DURING_CAPTURE')
+        if (candidate) this.save(candidate)
+        return result
+      } finally {
+        this.index.clearPrefetch(payload.task_id)
+        if (!this.findBinding(payload.task_id)) this.index.close(payload.task_id)
+      }
+    }
     if (['status', 'capture', 'prepare', 'reconcile', 'accept_input'].includes(kind)) await this.index.flush(payload.task_id)
     return this.execute(kind, payload)
   }
-  execute(kind: string, payload: any): any {
+  execute(kind: string, payload: any, preparedMappings?: LocalRepository[], commit?: (binding: SyncBinding) => void): any {
     if (payload.target?.delta) payload = { ...payload, target: expandManifest(this.load(payload.task_id).baseline, payload.target) }
-    const result = this.dispatch(kind, payload)
+    const result = this.objects.withOperation(() => this.dispatch(kind, payload, preparedMappings, commit))
     if (!payload.delta_transport) { if (kind === 'capture') delete result.transfer_manifest; return result }
     const status = kind === 'capture' ? result.status : result
     if (!status?.task_id || !status.state) return result
@@ -68,7 +181,7 @@ export class CollaborationRuntime {
     if (kind === 'capture') { const { transfer_manifest, ...capture } = result; return { ...capture, manifest: payload.manifest_delta === false ? result.manifest : transfer_manifest || result.manifest, status: wire } }
     return wire
   }
-  private dispatch(kind: string, payload: any): any {
+  private dispatch(kind: string, payload: any, preparedMappings?: LocalRepository[], commit?: (binding: SyncBinding) => void): any {
     this.index.beginOperation()
     if (['prepare', 'capture', 'reconcile', 'restore', 'accept_input'].includes(kind)) {
       const binding = this.findBinding(payload.task_id)
@@ -79,7 +192,7 @@ export class CollaborationRuntime {
     switch (kind) {
       case 'initialize': return this.initialize(payload)
       case 'inspect_mappings': { const { repositories: _bound, ...result } = inspectMappedRepositories(payload.repositories, this.roots()); return result }
-      case 'prepare': return this.prepare(payload)
+      case 'prepare': return this.prepare(payload, preparedMappings, commit)
       case 'release': return this.release(payload)
       case 'suspend': return this.release({ ...payload, suspend: true })
       case 'binding': return payload.optional === true ? this.findBinding(payload.task_id) : this.load(payload.task_id, true)
@@ -112,9 +225,9 @@ export class CollaborationRuntime {
     this.save(binding)
     return binding.initialization!.receipt
   }
-  private prepare(payload: any) {
+  private prepare(payload: any, preparedMappings?: LocalRepository[], commit?: (binding: SyncBinding) => void) {
     identifier(payload.task_id); identifier(payload.binding_id)
-    if (payload.directory_mode === 'MAPPED') return this.prepareMapped(payload)
+    if (payload.directory_mode === 'MAPPED') return this.prepareMapped(payload, preparedMappings, commit)
     if (!Array.isArray(payload.repositories) || !payload.repositories.length || payload.repositories.length > 100) fail('COLLABORATION_REPOSITORIES_REQUIRED')
     const taskRoot = child(inside(payload.workspace_root, this.roots()), payload.task_id)
     const inputs = payload.repositories as LocalRepository[]
@@ -171,7 +284,7 @@ export class CollaborationRuntime {
     }
     return this.status(binding)
   }
-  private prepareMapped(payload: any) {
+  private prepareMapped(payload: any, preparedMappings?: LocalRepository[], commit?: (binding: SyncBinding) => void) {
     const file = this.bindingFile(payload.task_id)
     const previous = fs.existsSync(file) ? readJson<SyncBinding>(file) : null
     if (previous?.directory_mode === 'MAPPED' && (!previous.released || previous.suspended) && previous.baseline
@@ -186,7 +299,7 @@ export class CollaborationRuntime {
       this.save(previous)
       return this.status(previous, local)
     }
-    const repositories = requireCleanMappings(payload.repositories, this.roots())
+    const repositories = preparedMappings ?? requireCleanMappings(payload.repositories, this.roots())
     this.requireUnoccupied(payload.task_id, repositories)
     if (previous && (previous.target || previous.conflicts.length || Object.keys(previous.applied).length)) fail('COLLABORATION_DELIVERY_REQUIRED')
     if (previous && !previous.released && previous.binding_id !== payload.binding_id && payload.previous_binding_id !== previous.binding_id) fail('COLLABORATION_BINDING_CONFLICT')
@@ -203,10 +316,14 @@ export class CollaborationRuntime {
     repositories.forEach(validateRepositoryIdentity)
     binding.baseline = baseline
     if (previous) durableJson(path.join(this.state, 'previous-bindings', payload.task_id + '-' + randomUUID() + '.json'), previous)
-    this.save(binding)
+    if (commit) commit(binding); else this.save(binding)
     return this.status(binding, baseline)
   }
-  close() { this.index.close() }
+  async close() {
+    const pending = this.prefetched
+    if (pending) { this.discardPrefetch(pending.taskId); await pending.work }
+    this.index.close()
+  }
   private requireUnoccupied(taskId: string, repositories: LocalRepository[]) {
     for (const other of this.bindings()) if (!other.released && other.task_id !== taskId) {
       for (const repo of repositories) for (const occupied of other.repositories) {
@@ -215,9 +332,16 @@ export class CollaborationRuntime {
       }
     }
   }
-  private bindings(): SyncBinding[] {
+  private bindings(): Occupancy[] {
     const directory = path.join(this.state, 'bindings')
-    return fs.existsSync(directory) ? fs.readdirSync(directory).filter(file => file.endsWith('.json')).map(file => readJson<SyncBinding>(path.join(directory, file))) : []
+    const files = new Set(fs.existsSync(directory) ? fs.readdirSync(directory).filter(file => file.endsWith('.json')).map(file => path.join(directory, file)) : [])
+    for (const file of this.occupancy.keys()) if (!files.has(file)) this.occupancy.delete(file)
+    return [...files].map(file => {
+      const stamp = this.occupancyStamp(file), cached = this.occupancy.get(file)
+      // Bindings are atomically replaced. Re-read external changes, but keep
+      // historical file inventories out of repeated occupancy checks and memory.
+      return cached?.stamp === stamp ? cached.value : this.rememberOccupancy(file, readJson<SyncBinding>(file), stamp)
+    })
   }
   private release(payload: any) {
     const binding = this.load(payload.task_id, true)
@@ -416,9 +540,11 @@ export class CollaborationRuntime {
           if (candidate && candidate !== name) relate(name, candidate)
         }
       }
-      // Resolved once per delivery: one attribute query for the whole repository.
+      // Resolve attributes only for changed cloud paths that may be written.
       let forms: Map<string, CheckoutForm> | null = null
-      const checkout = (name: string) => (forms ??= checkoutForms(bound.local_worktree_path, [...cloud.keys()])).get(name)
+      const checkout = (name: string) => (forms ??= checkoutForms(bound.local_worktree_path,
+        [...cloud.keys()].filter(path => !sameFile(Object.hasOwn(binding.applied, fileKey(repo.task_repository_id, path))
+          ? binding.applied[fileKey(repo.task_repository_id, path)] : base.get(path), cloud.get(path))))).get(name)
       for (const name of new Set([...base.keys(), ...current.keys(), ...cloud.keys()])) {
         const key = fileKey(repo.task_repository_id, name)
         const before = Object.hasOwn(binding.applied, key) ? binding.applied[key] : base.get(name) ?? null

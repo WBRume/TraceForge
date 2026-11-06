@@ -4,7 +4,7 @@ import * as path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { atomic, fail, hash, readJson } from './filesystem'
 import { contentHash } from './content-identity'
-import { shadowGit } from './git-snapshots'
+import { shadowGit, type CapturedBlob } from './git-snapshots'
 
 export interface GitBlob { git_dir: string; oid: string; size: number }
 export interface GitEntry extends GitBlob { path: string; mode: string }
@@ -58,6 +58,14 @@ export class GitContent {
   private save() { atomic(path.join(this.state, 'git-content.json'), JSON.stringify({ objects: this.records })) }
   preferStore(directory: string) { this.destination = directory }
   private register(digest: string, entry: GitRecord) { this.records[digest] = entry; this.byOid.set(entry.oid, digest) }
+  rememberCaptured(blobs: CapturedBlob[]) {
+    let count = 0, bytes = 0
+    for (const { sha256, ...entry } of blobs) {
+      if (!this.byOid.has(entry.oid)) { count++; bytes += entry.size }
+      this.register(sha256, entry)
+    }
+    return { new_blobs: count, new_blob_bytes: bytes }
+  }
   registerTree(entries: GitEntry[]) {
     let count = 0, bytes = 0
     const missing = new Map<string, GitEntry>()
@@ -67,7 +75,8 @@ export class GitContent {
     }
     if (missing.size) readGitBlobs(entries[0]!.git_dir, [...missing.values()], (entry, data) => {
       if (data.subarray(0, 80).toString().startsWith('version https://git-lfs.github.com/spec/v1\n')) fail('COLLABORATION_LFS_CONTENT_REQUIRED')
-      this.register(hash(data), { git_dir: entry.git_dir, oid: entry.oid, size: entry.size, content: contentHash(data) })
+      const sha256 = hash(data)
+      this.register(sha256, { git_dir: entry.git_dir, oid: entry.oid, size: entry.size, content: contentHash(data, sha256) })
       count++; bytes += data.length
     })
     const files = entries.map(entry => {

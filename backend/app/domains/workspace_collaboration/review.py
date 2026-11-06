@@ -8,6 +8,7 @@ from pathlib import Path
 from app.core.subprocess_runner import GIT_REPOSITORY_ENV_VARS, run_git
 from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus
 from app.domains.task.services import task_git_snapshot_store as git_store
+from app.domains.task.services import task_snapshot_store as snapshot_files
 
 from . import content, identity, manifest_store, service, session
 from .models import CollaborationSnapshot, CollaborationState
@@ -71,7 +72,9 @@ def committed_baseline(db, task, _user_id):
         root = Path(task.project_path) / repo["rel_path"]
         directory = content.git(root, ["rev-parse", "--absolute-git-dir"]).decode().strip()
         entries = git_store.tree_entries(
-            {"git_dir": directory, "tree": repo["base_commit_sha"], "relative": "."}, str(root)
+            {"git_dir": directory, "tree": repo["base_commit_sha"], "relative": "."},
+            str(root),
+            paths=snapshot_files.validate_relative_path,
         )
         prefix = repo["rel_path"] + "/"
         nested = [r["rel_path"][len(prefix) :] for r in repositories if r["rel_path"].startswith(prefix)]
@@ -149,7 +152,7 @@ def _checkpoint_inventory(path, task, repositories, store):
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if payload.get("version") != 4 or Path(payload["task_root"]).resolve() != Path(task.project_path).resolve():
         service._fail("REVIEW_BASELINE_UNAVAILABLE", "This task has no compatible Git baseline for comparison")
-    entries = git_store.entries(payload)
+    entries = git_store.entries(payload, paths=snapshot_files.validate_relative_path)
     tracked = set(payload.get("tracked", []))
     exported, public = [], []
     for repo in repositories:
@@ -282,7 +285,7 @@ def _round(db, task, _user_id):
         .order_by(TaskSessionTurn.turn_index.desc())
         .first()
     )
-    if not turn:
+    if not turn and (task.session_generation or 0) > 1:
         # A baseline update starts a new session generation. Until a turn starts,
         # its merged code is task output, not edits made by an Agent this round.
         try:

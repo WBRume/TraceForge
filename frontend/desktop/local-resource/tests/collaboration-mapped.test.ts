@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { tmpdir } from 'node:os'
 import { CollaborationRuntime } from '../collaboration'
+import { durableJson } from '../collaboration-store'
 import { contentHash } from '../content-identity'
 import { git, hash, resolved } from '../filesystem'
 
@@ -27,6 +28,115 @@ beforeEach(() => {
     workspace_revision: 1, session_generation: 1, session_revision: 1, repository_set_digest: 'dual' }
 }, 60_000)
 afterEach(() => { runtime.close(); fs.rmSync(root, { recursive: true, force: true }) })
+
+test('read-only drawer preparation makes no binding or source changes and is consumed on enable', async () => {
+  const indexes = repositories.map(index), heads = repositories.map(head)
+  expect(await runtime.executeAsync('prefetch', input)).toEqual({started: true})
+  expect(fs.existsSync(path.join(root, 'private/bindings/task.json'))).toBe(false)
+  await (runtime as any).prefetched.work
+  expect(fs.existsSync(path.join(root, 'private/bindings/task.json'))).toBe(false)
+  expect(repositories.map(head)).toEqual(heads)
+  repositories.forEach((repo, i) => expect(index(repo)).toEqual(indexes[i]))
+  const prepared = await runtime.executeAsync('prepare', input)
+  expect(prepared.state).toBe('PREPARED')
+  expect(prepared.scan_metrics.every((scan: any) => scan.kind === 'cached' && scan.files_read === 0)).toBe(true)
+  expect(prepared.baseline.repositories.map((repo: any) => repo.files[0].sha256)).toEqual([hash('api:base\n'), hash('web:base\n')])
+  expect(fs.readdirSync(path.join(root, 'private')).some(name => name.startsWith('.capture-'))).toBe(false)
+}, 60_000)
+
+test('an edit after background preparation refreshes the raw cut before claiming a binding', async () => {
+  const repo = repositories[0], file = path.join(repo.local_path, 'shared.txt')
+  git(repo.local_path, 'update-index', '--assume-unchanged', 'shared.txt')
+  const originalIndex = index(repo)
+  await runtime.executeAsync('prefetch', input)
+  await (runtime as any).prefetched.work
+  const before = fs.statSync(file)
+  fs.writeFileSync(file, 'api:edit\n'); fs.utimesSync(file, before.atime, before.mtime)
+  const prepared = await runtime.executeAsync('prepare', input)
+  expect(prepared.baseline.repositories[0].files[0].sha256).toBe(hash('api:edit\n'))
+  expect(index(repo)).toEqual(originalIndex)
+}, 60_000)
+
+test('foreground mapping checks cannot mistake a background watcher barrier for a user edit', async () => {
+  const flush = runtime.index.flush.bind(runtime.index)
+  let release!: () => void, reached!: () => void, first = true
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const ready = new Promise<void>(resolve => { reached = resolve })
+  const marker = path.join(repositories[0].local_path, '.traceforge-sync-barrier-test')
+  const hook = spyOn(runtime.index, 'flush').mockImplementation(async taskId => {
+    if (first) { first = false; fs.writeFileSync(marker, ''); reached(); await gate; fs.unlinkSync(marker) }
+    return flush(taskId)
+  })
+  try {
+    await runtime.executeAsync('prefetch', input); await ready
+    const inspected = runtime.executeAsync('inspect_mappings', input)
+    await Promise.resolve(); release()
+    expect((await inspected).ready).toBe(true)
+  } finally { release(); await (runtime as any).prefetched?.work; hook.mockRestore() }
+}, 60_000)
+
+test('large raw preparation retains selected Git blobs and audits hidden edits independently of the source', async () => {
+  const repo = repositories[0], large = Buffer.alloc(9 * 1024 * 1024, 97)
+  fs.writeFileSync(path.join(repo.local_path, 'large.bin'), large)
+  git(repo.local_path, 'add', 'large.bin'); git(repo.local_path, 'commit', '-m', 'large fixture')
+  repo.base_commit_sha = head(repo)
+  git(repo.local_path, 'update-index', '--assume-unchanged', 'shared.txt')
+  const originalIndex = index(repo), file = path.join(repo.local_path, 'shared.txt'), before = fs.statSync(file)
+  fs.writeFileSync(file, 'api:edit\n'); fs.utimesSync(file, before.atime, before.mtime)
+  const prepared = await runtime.executeAsync('prepare', input)
+  expect(prepared.baseline.repositories[0].files.find((file: any) => file.path === 'shared.txt').sha256).toBe(hash('api:edit\n'))
+  expect(index(repo)).toEqual(originalIndex)
+  fs.renameSync(path.join(repo.local_path, '.git/objects'), path.join(repo.local_path, '.git/parked-objects'))
+  fs.mkdirSync(path.join(repo.local_path, '.git/objects'))
+  expect(runtime.objects.get(hash(large))).toEqual(large)
+}, 60_000)
+
+test('occupancy checks observe atomic binding replacements from another process', async () => {
+  await runtime.executeAsync('prepare', input)
+  runtime.execute('suspend', {task_id: 'task', binding_id: 'binding'})
+  const file = path.join(root, 'private/bindings/task.json'), saved = JSON.parse(fs.readFileSync(file, 'utf8'))
+  durableJson(file, {...saved, released: false, suspended: false})
+  const other = {...input, task_id: 'other', binding_id: 'other-binding'}
+  await expect(runtime.executeAsync('prepare', other)).rejects.toThrow('COLLABORATION_DIRECTORY_IN_USE')
+  durableJson(file, saved)
+  expect((await runtime.executeAsync('prepare', other)).state).toBe('PREPARED')
+}, 60_000)
+
+test('discarding an unfinished preview releases its temporary streams without binding repositories', async () => {
+  await runtime.executeAsync('prefetch', input)
+  const work = (runtime as any).prefetched.work
+  await runtime.executeAsync('discard_prefetch', {task_id: 'task'})
+  await work
+  expect(fs.existsSync(path.join(root, 'private/bindings/task.json'))).toBe(false)
+  expect(fs.readdirSync(path.join(root, 'private')).some(name => name.startsWith('.capture-'))).toBe(false)
+  expect(fs.readFileSync(path.join(repositories[0].local_path, 'shared.txt'), 'utf8')).toBe('api:base\n')
+}, 60_000)
+
+test('first async prepare audits hidden raw edits without changing the source index', async () => {
+  const repo = repositories[0], file = path.join(repo.local_path, 'shared.txt'), before = fs.statSync(file)
+  git(repo.local_path, 'update-index', '--assume-unchanged', 'shared.txt')
+  const originalIndex = index(repo)
+  fs.writeFileSync(file, 'api:edit\n'); fs.utimesSync(file, before.atime, before.mtime)
+  const result = await runtime.executeAsync('prepare', input)
+  expect(result.baseline.repositories[0].files.find((file: any) => file.path === 'shared.txt').sha256).toBe(hash('api:edit\n'))
+  expect(index(repo)).toEqual(originalIndex)
+}, 60_000)
+
+test('refuses a restored-mtime write during the forced audit before committing a binding', async () => {
+  const repo = repositories[0], file = path.join(repo.local_path, 'shared.txt'), before = fs.statSync(file)
+  git(repo.local_path, 'update-index', '--assume-unchanged', 'shared.txt')
+  const originalIndex = index(repo), append = fs.appendFileSync
+  let edited = false
+  const hook = spyOn(fs, 'appendFileSync').mockImplementation(((...args: Parameters<typeof append>) => {
+    if (!edited) { edited = true; fs.writeFileSync(file, 'api:edit\n'); fs.utimesSync(file, before.atime, before.mtime) }
+    return append(...args)
+  }) as typeof append)
+  try { await expect(runtime.executeAsync('prepare', input)).rejects.toThrow('SNAPSHOT_FILE_CHANGED_DURING_CAPTURE') }
+  finally { hook.mockRestore() }
+  expect(fs.existsSync(path.join(root, 'private/bindings/task.json'))).toBe(false)
+  expect(fs.readFileSync(file, 'utf8')).toBe('api:edit\n')
+  expect(index(repo)).toEqual(originalIndex)
+}, 60_000)
 
 test('a released dual-repository task can move to new clean clones and retain the old files and snapshots', async () => {
   const first = await runtime.executeAsync('prepare', input)

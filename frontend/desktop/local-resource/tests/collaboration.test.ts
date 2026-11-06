@@ -63,7 +63,7 @@ describe('embedded local collaboration with real Git worktrees', () => {
   })
   test('delta IPC fences status, freezes input retries and falls back after renderer or worker restart', async () => {
     const base = target()
-    let current = await runtime.executeAsync('reconcile', { task_id: task, operation_id: 'init-delta', target: base, delta_transport: true })
+    let current = expandStatus(null, await runtime.executeAsync('reconcile', { task_id: task, operation_id: 'init-delta', target: base, delta_transport: true }))
     fs.writeFileSync(path.join(worktree(), 'shared.txt'), 'human delta')
     fs.unlinkSync(path.join(worktree('web'), 'deleted.txt'))
     const capture = await runtime.executeAsync('capture', { task_id: task, operation_id: 'delta-input', include_objects: false, delta_transport: true, status_token: current.transport.token })
@@ -232,7 +232,7 @@ describe('embedded local collaboration with real Git worktrees', () => {
   test('refuses traversal, duplicate repository entries and missing objects before any application', () => {
     const invalid = target(); invalid.repositories[0].files[0].path = '../escape'
     expect(() => deliver(invalid)).toThrow('INVALID_COLLABORATION_PATH')
-    const missing = target(); missing.repositories[0].files[0].sha256 = 'a'.repeat(64)
+    const missing = target(); missing.repositories[0].files[0].sha256 = 'a'.repeat(64); missing.repositories[0].files[0].content_sha256 = 'a'.repeat(64)
     expect(() => deliver(missing)).toThrow()
     const duplicate = target(); duplicate.repositories[1] = duplicate.repositories[0]
     expect(() => deliver(duplicate)).toThrow('REPOSITORY_SET_MISMATCH')
