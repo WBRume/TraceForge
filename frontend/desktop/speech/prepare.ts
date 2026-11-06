@@ -8,7 +8,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
-import { OfflineSpeechService } from './service'
+import { OfflineSpeechService } from './service.ts'
 
 const execute = promisify(execFile)
 const runtime = 'sherpa-onnx-v1.13.8-win-x64-shared-MT-Release-no-tts'

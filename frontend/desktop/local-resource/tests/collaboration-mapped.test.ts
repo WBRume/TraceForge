@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
+import { afterEach, beforeEach, expect, vi, test } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { tmpdir } from 'node:os'
@@ -6,6 +6,8 @@ import { CollaborationRuntime } from '../collaboration'
 import { durableJson } from '../collaboration-store'
 import { contentHash } from '../content-identity'
 import { git, hash, resolved } from '../filesystem'
+
+vi.mock('node:fs', async () => ({ ...await vi.importActual<typeof import('node:fs')>('node:fs') }))
 
 let root: string, runtime: CollaborationRuntime, repositories: any[], input: any
 const head = (repo: any) => git(repo.local_path, 'rev-parse', 'HEAD')
@@ -63,7 +65,7 @@ test('foreground mapping checks cannot mistake a background watcher barrier for 
   const gate = new Promise<void>(resolve => { release = resolve })
   const ready = new Promise<void>(resolve => { reached = resolve })
   const marker = path.join(repositories[0].local_path, '.traceforge-sync-barrier-test')
-  const hook = spyOn(runtime.index, 'flush').mockImplementation(async taskId => {
+  const hook = vi.spyOn(runtime.index, 'flush').mockImplementation(async taskId => {
     if (first) { first = false; fs.writeFileSync(marker, ''); reached(); await gate; fs.unlinkSync(marker) }
     return flush(taskId)
   })
@@ -125,14 +127,17 @@ test('first async prepare audits hidden raw edits without changing the source in
 test('refuses a restored-mtime write during the forced audit before committing a binding', async () => {
   const repo = repositories[0], file = path.join(repo.local_path, 'shared.txt'), before = fs.statSync(file)
   git(repo.local_path, 'update-index', '--assume-unchanged', 'shared.txt')
-  const originalIndex = index(repo), append = fs.appendFileSync
+  const originalIndex = index(repo), truncate = fs.ftruncateSync
   let edited = false
-  const hook = spyOn(fs, 'appendFileSync').mockImplementation(((...args: Parameters<typeof append>) => {
+  // The import stream is allocated after the stat pass and before Node workers
+  // read the raw bytes. Mutate at that boundary, retaining the original mtime.
+  const hook = vi.spyOn(fs, 'ftruncateSync').mockImplementation(((...args: Parameters<typeof truncate>) => {
     if (!edited) { edited = true; fs.writeFileSync(file, 'api:edit\n'); fs.utimesSync(file, before.atime, before.mtime) }
-    return append(...args)
-  }) as typeof append)
+    return truncate(...args)
+  }) as typeof truncate)
   try { await expect(runtime.executeAsync('prepare', input)).rejects.toThrow('SNAPSHOT_FILE_CHANGED_DURING_CAPTURE') }
   finally { hook.mockRestore() }
+  expect(edited).toBe(true)
   expect(fs.existsSync(path.join(root, 'private/bindings/task.json'))).toBe(false)
   expect(fs.readFileSync(file, 'utf8')).toBe('api:edit\n')
   expect(index(repo)).toEqual(originalIndex)

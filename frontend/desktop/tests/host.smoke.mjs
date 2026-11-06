@@ -8,10 +8,9 @@ import { createInterface } from 'node:readline'
 import { createServer } from 'node:net'
 import { createServer as createHttpServer } from 'node:http'
 
-const target = process.env.TAURI_ENV_TARGET_TRIPLE || execFileSync('rustc', ['--print', 'host-tuple'], { encoding: 'utf8' }).trim()
-const executable = resolve(`src-tauri/binaries/traceforge-desktop-host-${target}${process.platform === 'win32' ? '.exe' : ''}`)
+import { executable, hostArguments } from './host-runtime.mjs'
 
-test('compiled desktop host preserves config, Git, binary downloads, process events and native cancellation', { timeout: 60000 }, async () => {
+test('bundled Node desktop host preserves config, Git, binary downloads, process events and native cancellation', { timeout: 60000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'traceforge-desktop-test-'))
   const repo = join(root, 'repo')
   mkdirSync(repo)
@@ -32,7 +31,7 @@ test('compiled desktop host preserves config, Git, binary downloads, process eve
     }
   })
   await new Promise(resolve => backend.listen(0, '127.0.0.1', resolve))
-  const child = spawn(executable, [join(root, 'config'), root], {
+  const child = spawn(executable, [...hostArguments, join(root, 'config'), root], {
     windowsHide: true, stdio: 'pipe', env: { ...process.env, SDD_OAUTH_LOOPBACK_PORT: String(loopbackPort) },
   })
   const pending = new Map()
@@ -66,6 +65,7 @@ test('compiled desktop host preserves config, Git, binary downloads, process eve
     for (const reply of pending.values()) reply.reject(new Error(`Host exited: ${code}: ${stderr}`))
     pending.clear()
   })
+  const exited = new Promise(resolve => child.once('exit', resolve))
   const invoke = (channel, payload = {}) => new Promise((resolve, reject) => {
     const id = String(++sequence)
     pending.set(id, { resolve, reject })
@@ -118,7 +118,7 @@ test('compiled desktop host preserves config, Git, binary downloads, process eve
     assert.equal(stderr, '')
   } finally {
     child.stdin.end()
-    await new Promise(resolve => child.once('exit', resolve))
+    await exited
     input.close()
     await new Promise(resolve => backend.close(resolve))
     // Only this test's freshly created directory is removed.
@@ -127,11 +127,11 @@ test('compiled desktop host preserves config, Git, binary downloads, process eve
   }
 })
 
-test('compiled desktop host embeds the resource listener and shuts it down with the client', { timeout: 30000 }, async () => {
+test('bundled Node desktop host embeds the resource listener and shuts it down with the client', { timeout: 30000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'traceforge-desktop-resource-'))
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
-  const child = spawn(executable, [join(root, 'config'), root], { windowsHide: true, stdio: 'pipe' })
+  const child = spawn(executable, [...hostArguments, join(root, 'config'), root], { windowsHide: true, stdio: 'pipe' })
   const pending = new Map()
   let sequence = 0
   let stderr = ''

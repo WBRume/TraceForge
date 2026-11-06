@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, expect, test } from 'vitest'
 import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,7 +13,7 @@ test('resolves same-named files by repository and preserves unicode, spaces and 
   const first = await ideTarget(join(root, 'first'), request), second = await ideTarget(join(root, 'second'), request)
   expect(first.file).not.toBe(second.file)
   const url = vscodeUrl(second)
-  expect(url).toStartWith('vscode://file/')
+  expect(url.startsWith('vscode://file/')).toBe(true)
   expect(url).toContain('%23%20a.txt:42:3')
   const opened: string[] = []
   await launchIde({ editor: 'vscode' }, second, async value => { opened.push(value) })

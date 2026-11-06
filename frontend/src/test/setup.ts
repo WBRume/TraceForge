@@ -1,5 +1,15 @@
 import { afterEach, vi } from 'vitest'
 
+// Monaco probes clipboard commands during import; jsdom does not implement
+// this browser API, so report those commands as unsupported in unit tests.
+if (typeof document.queryCommandSupported !== 'function') {
+  Object.defineProperty(document, 'queryCommandSupported', {
+    writable: true,
+    configurable: true,
+    value: () => false,
+  })
+}
+
 class ResizeObserverMock {
   observe() {}
 

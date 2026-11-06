@@ -161,7 +161,9 @@ fn native_request(app: &tauri::AppHandle, method: &str, payload: &Value) -> Repl
             if !url.starts_with("vscode://file/") {
                 return Err("Invalid IDE URL".into());
             }
-            app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())?;
+            app.opener()
+                .open_url(url, None::<&str>)
+                .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
         "open-path" => {
@@ -179,13 +181,20 @@ fn start_bridge(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>
     let state_root = app.path().app_config_dir()?;
     std::fs::create_dir_all(&state_root)?;
     let downloads = app.path().download_dir()?;
+    let resources = app.path().resource_dir()?;
+    let host_script = resources.join("desktop-host").join("host.js");
+    if !host_script.is_file() {
+        return Err(format!("Desktop Node host is missing: {}", host_script.display()).into());
+    }
     let (mut events, child) = app
         .shell()
-        .sidecar("traceforge-desktop-host")?
+        .sidecar("traceforge-node")?
         .args([
+            "--disable-warning=ExperimentalWarning".to_owned(),
+            host_script.to_string_lossy().to_string(),
             state_root.to_string_lossy().to_string(),
             downloads.to_string_lossy().to_string(),
-            app.path().resource_dir()?.to_string_lossy().to_string(),
+            resources.to_string_lossy().to_string(),
         ])
         .spawn()?;
     *app.state::<Bridge>().child.lock().unwrap() = Some(child);

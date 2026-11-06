@@ -1,7 +1,9 @@
-import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
+import { afterEach, beforeEach, expect, vi, test } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { tmpdir } from 'node:os'
+
+vi.mock('node:fs', async () => ({ ...await vi.importActual<typeof import('node:fs')>('node:fs') }))
 import { captureCollaborationGit } from '../collaboration-git'
 import { CollaborationIndex } from '../collaboration-index'
 import { captureGitSnapshot, collectGitSnapshots, shadowGit } from '../git-snapshots'
@@ -50,7 +52,7 @@ test('warm native journal updates only named Git paths and survives idle time, d
   const index = new CollaborationIndex()
   const watch = fs.watch
   let notify: fs.WatchListener<string> | undefined
-  const watcher = spyOn(fs, 'watch').mockImplementation(((file: fs.PathLike, options: fs.WatchOptionsWithStringEncoding, listener: fs.WatchListener<string>) => {
+  const watcher = vi.spyOn(fs, 'watch').mockImplementation(((file: fs.PathLike, options: fs.WatchOptionsWithStringEncoding, listener: fs.WatchListener<string>) => {
     notify = listener
     return watch(file, options, listener)
   }) as typeof fs.watch)
@@ -77,8 +79,7 @@ test('warm native journal updates only named Git paths and survives idle time, d
     const excluded = index.scan(repo, objects, true, false, task)
     expect(index.measurements()[0].full_inventory).toBe(true)
     expect(excluded.files.map(file => file.path)).toEqual(['.gitignore'])
-    // Bun stores fs.watch's callback outside EventEmitter listeners; invoke the
-    // actual registered callback to emulate a native event with no path.
+    // Invoke the registered callback to emulate a native event with no path.
     notify!('rename', null)
     await index.flush(); index.beginOperation()
     index.scan(repo, objects, true, false, task)

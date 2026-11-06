@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-electron
+dist-desktop-host
 dist-ssr
 release
 # 临时构建校验产物（verify 脚本 / 手动 type-check 产物，非发布产物）

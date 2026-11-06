@@ -1,9 +1,10 @@
-import { afterEach, expect, test } from 'bun:test'
+import { setTimeout as sleep } from 'node:timers/promises'
+import { afterEach, expect, test } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { startServer } from '../server'
+import { startServer } from './helpers'
 import { git, resolved } from '../filesystem'
 
 const roots: string[] = []
@@ -25,11 +26,11 @@ function config() {
 }
 
 test('embedded startup failure does not stop the desktop runtime', async () => {
-  for (const script of ["throw new Error('worker crash fixture')", 'self.close()']) {
+  for (const script of ["throw new Error('worker crash fixture')", 'process.exit(0)']) {
     const settings = config()
-    const workerFile = join(settings.state_root, 'failed-worker.ts')
+    const workerFile = join(settings.state_root, 'failed-worker.mjs')
     writeFileSync(workerFile, script)
-    await expect(startServer(settings, { workerUrl: pathToFileURL(workerFile).href })).rejects.toThrow()
+    await expect(startServer(settings, { workerUrl: pathToFileURL(workerFile) })).rejects.toThrow()
     const service = await startServer(settings)
     services.push(service)
     expect(service.isRunning()).toBe(true)
@@ -47,6 +48,27 @@ test('occupied ports release initialization state and leave the running service 
   services.push(retry)
   expect(retry.isRunning()).toBe(true)
 })
+
+test('shutdown bounds an unresponsive operation and rejects its caller', async () => {
+  const settings = config()
+  const workerFile = join(settings.state_root, 'blocked-worker.mjs')
+  writeFileSync(workerFile, `
+    import { parentPort } from 'node:worker_threads';
+    import { DatabaseSync } from 'node:sqlite';
+    import { join } from 'node:path';
+    parentPort.on('message', ({ id, kind, payload }) => {
+      if (kind === 'configure') { new DatabaseSync(join(payload.state_root, 'journal.sqlite3')).close(); parentPort.postMessage({ id, result: true }); }
+    });
+  `)
+  const service = await startServer(settings, { http: false, workerUrl: pathToFileURL(workerFile) })
+  services.push(service)
+  const rejected = expect(service.dispatch('inspect', {})).rejects.toThrow('Local resource service closed')
+  const started = Date.now()
+  await service.close()
+  await rejected
+  expect(Date.now() - started).toBeLessThan(5000)
+  await expect(service.dispatch('inspect', {})).rejects.toThrow('Local resource service closed')
+}, 10000)
 
 test('shutdown is idempotent and releases the port and journal for restart', async () => {
   const settings = config()
@@ -103,7 +125,7 @@ test('dual repository file changes notify the desktop without polling and stop w
   services.push(service)
   const prepared = await service.dispatch('collaboration', { kind: 'prepare', payload: { directory_mode: 'MAPPED', task_id: 'dual', binding_id: 'binding', repositories,
     session_generation: 1, session_revision: 1, repository_set_digest: 'dual', workspace_revision: 1 } })
-  await Bun.sleep(400); events.length = 0
+  await sleep(400); events.length = 0
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => { changeReady = undefined; reject(new Error('No file change notification')) }, 5000)
     changeReady = () => { clearTimeout(timer); changeReady = undefined; resolve() }
@@ -113,13 +135,13 @@ test('dual repository file changes notify the desktop without polling and stop w
   const changed = await service.dispatch('collaboration', { kind: 'status', payload: { task_id: 'dual', background: true } })
   expect(changed.local_changes.map((file: any) => file.task_repository_id).sort()).toEqual(['api', 'web'])
   expect(changed.scan_metrics.every((scan: any) => scan.kind === 'git-delta' && scan.files_read === 1)).toBe(true)
-  await Bun.sleep(400); events.length = 0
+  await sleep(400); events.length = 0
   // Reading status uses a filesystem barrier; it must not trigger another refresh.
   await service.dispatch('collaboration', { kind: 'status', payload: { task_id: 'dual', background: true } })
-  await Bun.sleep(400)
+  await sleep(400)
   expect(events).toHaveLength(0)
   await service.dispatch('collaboration', { kind: 'suspend', payload: { task_id: 'dual', binding_id: prepared.binding_id } })
   for (const repo of repositories) writeFileSync(join(repo.local_path, 'shared.txt'), 'disconnected edit\n')
-  await Bun.sleep(400)
+  await sleep(400)
   expect(events).toHaveLength(0)
 }, 60000)

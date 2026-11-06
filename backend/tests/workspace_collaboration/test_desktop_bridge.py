@@ -26,9 +26,9 @@ def desktop(tmp_path, environment):
     repository_root = Path(__file__).resolve().parents[3]
     frontend = repository_root / "frontend"
     executable = shutil.which("node")
-    bundler = frontend / "node_modules" / "bun" / "bin" / ("bun.exe" if os.name == "nt" else "bun")
-    if not executable or not bundler.is_file():
-        pytest.skip("Node and installed frontend Bun are required for native collaboration integration")
+    bundler = frontend / "desktop" / "bundle-node.mjs"
+    if not executable or not (frontend / "node_modules" / "vite" / "package.json").is_file():
+        pytest.skip("Node and installed frontend dependencies are required for native collaboration integration")
     runtime_path = (frontend / "desktop/local-resource/collaboration.ts").as_posix()
     bridge = tmp_path / "desktop-bridge.ts"
     bridge.write_text(
@@ -42,16 +42,12 @@ def desktop(tmp_path, environment):
     )
     # Electron runs this same runtime in Node. Compile TypeScript once, retaining
     # a fresh OS process per request for the persistence/recovery assertions.
-    # Bun's Windows spawnSync adds multi-second waits to otherwise tiny Git calls.
     bundle = tmp_path / "desktop-bridge.mjs"
     build = subprocess.run(
         [
+            executable,
             str(bundler),
-            "build",
             str(bridge),
-            "--target=node",
-            "--format=esm",
-            "--outfile",
             str(bundle),
         ],
         capture_output=True,

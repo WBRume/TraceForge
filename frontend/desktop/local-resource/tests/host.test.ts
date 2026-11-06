@@ -1,15 +1,38 @@
-import '../platform-bun'
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { zstdCompressSync } from 'node:zlib'
+import { decompressFrames } from '../platform-node'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { tmpdir } from 'node:os'
-import { startServer } from '../server'
+import { startServer, serve } from './helpers'
 import { canonical } from '../runtime'
 import { git, hash, inside, remoteKey } from '../filesystem'
 import { encodeSegment, forkSession, locateSession, projectKey } from '../provider'
 
-let root: string, workspace: string, host: Awaited<ReturnType<typeof startServer>>, gitServer: ReturnType<typeof Bun.serve> | null
+let root: string, workspace: string, host: Awaited<ReturnType<typeof startServer>>, gitServer: Awaited<ReturnType<typeof serve>> | null
 const headers = { Authorization: 'Bearer ' + 'x'.repeat(32), 'Content-Type': 'application/json' }
+
+test.each([false, true])('grants roots to every Node worker and rejects volume roots, persisted=%s', async persisted => {
+  await host.close()
+  const configPath = path.join(root, 'host.json')
+  const settings = { state_root: path.join(root, 'granted-state'), allowed_roots: [], token: 'x'.repeat(32), port: 0,
+    ...(persisted ? { roots_config_path: configPath } : {}) }
+  if (persisted) fs.writeFileSync(configPath, JSON.stringify(settings))
+  host = await startServer(settings)
+  const grant = (roots: string[]) => fetch(new URL('/v1/roots/grant', host.server!.url), { method: 'POST', headers, body: JSON.stringify({ roots }) })
+  expect((await grant([path.parse(workspace).root])).status).toBe(400)
+  const granted = await grant([workspace])
+  expect(granted.status).toBe(200)
+  expect((await granted.json()).allowed_roots).toContain(fs.realpathSync(workspace))
+  const identity = await fetch(new URL('/v1/identity', host.server!.url), { headers }).then(r => r.json())
+  expect(identity.capabilities).toEqual(expect.arrayContaining(['roots_grant', 'repository_details']))
+  await Promise.all(Array.from({ length: 4 }, async () => {
+    const response = await fetch(new URL('/v1/repositories/inspect', host.server!.url), { method: 'POST', headers,
+      body: JSON.stringify({ workspace_root: workspace, repositories: [] }) })
+    expect(response.status).toBe(200)
+  }))
+  if (persisted) expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).allowed_roots).toContain(fs.realpathSync(workspace))
+})
 const body = (kind: string, payload: any, operation_id: string, task_id = 'task') => {
   const content = { task_id, resource_id: 'resource', kind, payload, operation_id }
   return { ...content, payload_hash: hash(canonical(content)) }
@@ -29,7 +52,7 @@ beforeEach(async () => {
   host = await startServer({ state_root: path.join(root, 'state'), allowed_roots: [workspace], token: 'x'.repeat(32), port: 0 })
   gitServer = null
 })
-afterEach(async () => { await host.close(); gitServer?.stop(true); fs.rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await host.close(); await gitServer?.stop(); fs.rmSync(root, { recursive: true, force: true }) })
 
 async function repository() {
   const source = path.join(workspace, 'personal'), bare = path.join(root, 'remote.git')
@@ -38,9 +61,9 @@ async function repository() {
   fs.writeFileSync(path.join(source, 'code.txt'), 'base\n')
   git(source, 'add', '.'); git(source, 'commit', '-m', 'base')
   git(root, 'clone', '--bare', source, bare); git(bare, 'update-server-info')
-  gitServer = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch(request) {
+  gitServer = await serve({ fetch(request) {
     const target = inside(path.join(bare, decodeURIComponent(new URL(request.url).pathname)), [bare])
-    return fs.existsSync(target) && fs.statSync(target).isFile() ? new Response(Bun.file(target), { headers: { 'Content-Type': 'text/plain' } }) : new Response('missing', { status: 404 })
+    return fs.existsSync(target) && fs.statSync(target).isFile() ? new Response(fs.readFileSync(target), { headers: { 'Content-Type': 'text/plain' } }) : new Response('missing', { status: 404 })
   } })
   const url = gitServer.url.toString().replace(/\/$/, '')
   git(source, 'remote', 'add', 'origin', 'https://git.example/upstream/project.git')
@@ -177,10 +200,10 @@ test.each([false, true])('DSH cold fork rewrites identity and truncates stale se
   fs.mkdirSync(directory, { recursive: true })
   const header = JSON.stringify({ type: 'session', id, cwd }) + '\n'
   const events = [JSON.stringify({ seq: 0, text: 'first' }), JSON.stringify({ seq0: 1, data: { dt: [1, 2] } }), JSON.stringify({ seq: 99 })].join('\n') + '\n'
-  fs.writeFileSync(path.join(directory, 'session.jsonl' + (compressed ? '.zstd' : '')), compressed ? Buffer.concat([Bun.zstdCompressSync(header), Bun.zstdCompressSync(events)]) : header + events)
+  fs.writeFileSync(path.join(directory, 'session.jsonl' + (compressed ? '.zstd' : '')), compressed ? Buffer.concat([zstdCompressSync(header), zstdCompressSync(events)]) : header + events)
   fs.writeFileSync(path.join(directory, 'attachment.txt'), 'attachment')
   const next = forkSession(sessions, id, cwd), file = locateSession(sessions, next)!
-  const data = fs.readFileSync(file), rows = (compressed ? Bun.zstdDecompressSync(data) : data).toString().trim().split('\n').map(line => JSON.parse(line))
+  const data = fs.readFileSync(file), rows = (compressed ? decompressFrames(data) : data).toString().trim().split('\n').map(line => JSON.parse(line))
   expect(rows).toHaveLength(3); expect(rows[0].id).toBe(next); expect(rows[0].cwd).toBe(cwd)
   expect(fs.readFileSync(path.join(path.dirname(file), 'attachment.txt'), 'utf8')).toBe('attachment')
 })

@@ -1,23 +1,22 @@
-import '../platform-bun'
-import { afterEach, expect, test } from 'bun:test'
+import { setTimeout as sleep } from 'node:timers/promises'
+import { afterEach, expect, test } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { spawn } from 'node:child_process'
-import { once } from 'node:events'
-import { createInterface } from 'node:readline'
-import { startServer } from '../server'
+import { builtinModules } from 'node:module'
+import { build } from 'vite'
+import { startServer, serve } from './helpers'
 import { canonical } from '../runtime'
 import { git, hash, inside } from '../filesystem'
 
 const roots: string[] = []
 type Host = { server?: { url: URL }; close: () => Promise<void>; dispatch: (kind: string, payload: any) => Promise<any> }
 const services: Host[] = []
-const remotes: ReturnType<typeof Bun.serve>[] = []
+const remotes: Awaited<ReturnType<typeof serve>>[] = []
 afterEach(async () => {
   for (const service of services.splice(0)) await service.close()
-  for (const remote of remotes.splice(0)) remote.stop(true)
+  for (const remote of remotes.splice(0)) await remote.stop()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 const operation = (task_id: string, kind: string, payload: any, operation_id = `${kind}-${task_id}`) => {
@@ -34,15 +33,14 @@ async function setup(instrument = true) {
   for (let index = 0; index < Number(process.env.TF_PROVISION_FILES || 200); index++) fs.writeFileSync(path.join(source, `file-${index}.txt`), `${index}:` + 'content\n'.repeat(128))
   git(source, 'add', '.'); git(source, 'commit', '-m', 'main')
   git(root, 'clone', '--bare', source, bare); git(bare, 'update-server-info')
-  const remote = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch(request) {
+  const remote = await serve({ fetch(request) {
     const file = inside(path.join(bare, decodeURIComponent(new URL(request.url).pathname)), [bare])
-    return fs.existsSync(file) && fs.statSync(file).isFile() ? new Response(Bun.file(file)) : new Response('missing', { status: 404 })
+    return fs.existsSync(file) && fs.statSync(file).isFile() ? new Response(fs.readFileSync(file)) : new Response('missing', { status: 404 })
   } }); remotes.push(remote)
   git(source, 'remote', 'add', 'origin', remote.url.toString())
   const control = path.join(root, 'control'); fs.mkdirSync(control)
   const wrapper = path.join(root, 'worker.ts')
-  const electron = process.env.TF_RESOURCE_ENGINE === 'electron'
-  const workerEntry = fileURLToPath(new URL(electron ? '../../../electron/localResourceWorker.ts' : '../worker.ts', import.meta.url)).replaceAll('\\', '/')
+  const workerEntry = fileURLToPath(new URL('../worker.ts', import.meta.url)).replaceAll('\\', '/')
   // Only the observation barriers are injected. Git, SQLite and snapshot work
   // execute unchanged in the real worker and through the authenticated HTTP API.
   fs.writeFileSync(wrapper, `
@@ -66,32 +64,13 @@ async function setup(instrument = true) {
     };
   `)
   const config = { state_root: path.join(root, 'state'), allowed_roots: [root], token: 't'.repeat(32), port: 0 }
-  let service: Host
-  if (electron) {
-    // Exercise the actual bundled Electron host with Node worker_threads/sqlite.
-    const hostScript = path.join(root, 'electron-host.mjs')
-    const output = await Bun.build({ entrypoints: [wrapper], outdir: path.join(root, 'build'), naming: 'worker.mjs', target: 'node', format: 'esm' })
-    if (!output.success) throw new Error(output.logs.join('\n'))
-    fs.writeFileSync(hostScript, `
-      import { startLocalResourceService } from ${JSON.stringify(new URL('../../../dist-electron/localResourceService.js', import.meta.url).href)};
-      const host = await startLocalResourceService(${JSON.stringify(config)}, ${instrument ? `{ workerUrl: new URL(${JSON.stringify(pathToFileURL(path.join(root, 'build/worker.mjs')).href)}) }` : '{}'});
-      console.log(JSON.stringify({ port: host.server.address().port }));
-      process.stdin.once('data', async () => { await host.close(); process.exit(0); });
-    `)
-    const child = spawn('node', [hostScript], { windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] })
-    const lines = createInterface({ input: child.stdout })
-    const [line] = await Promise.race([once(lines, 'line'), once(child, 'exit').then(() => { throw new Error('Electron host exited during startup') })])
-    const url = new URL(`http://127.0.0.1:${JSON.parse(line).port}`)
-    service = { server: { url }, close: async () => {
-      if (child.exitCode !== null) return
-      const exited = once(child, 'exit'); child.stdin.end('stop'); await exited; lines.close()
-    }, dispatch: async (kind, payload) => {
-      const response = await fetch(new URL(kind === 'operation' ? '/v1/operations' : '/v1/' + kind, url), { method: 'POST', headers: { Authorization: 'Bearer ' + config.token, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-      const result = await response.json() as any
-      if (!response.ok) throw new Error(JSON.stringify(result))
-      return result
-    } }
-  } else service = await startServer(config, instrument ? { workerUrl: pathToFileURL(wrapper).href } : {})
+  if (instrument) await build({
+    configFile: false, logLevel: 'error',
+    build: { outDir: path.join(root, 'build'), target: 'node22', minify: false,
+      lib: { entry: wrapper, formats: ['es'], fileName: () => 'worker.mjs' },
+      rollupOptions: { external: [...builtinModules, ...builtinModules.map(name => `node:${name}`)] } },
+  })
+  const service = await startServer(config, instrument ? { workerUrl: pathToFileURL(path.join(root, 'build/worker.mjs')) } : {})
   services.push(service)
   const repo = { repository_id: 'repo', local_path: source, configured_git_url: remote.url.toString(), branch_name: 'main', rel_path: 'repo', repo_url: remote.url.toString(), repo_name: 'repo' }
   const post = async (command: ReturnType<typeof operation>) => {
@@ -111,7 +90,7 @@ test('two tasks pin different main commits, overlap checkout/snapshot, and repla
   const deadline = Date.now() + 45000
   while (!fs.existsSync(path.join(control, 'checkout-a'))) {
     if (Date.now() > deadline) throw new Error('First checkout did not start')
-    await Bun.sleep(20)
+    await sleep(20)
   }
   fs.writeFileSync(path.join(source, 'remote.txt'), 'remote advance')
   git(source, 'add', '.'); git(source, 'commit', '-m', 'advance main')

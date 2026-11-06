@@ -6,6 +6,9 @@ import { registerDesktopCommands } from '../desktop/register'
 import { registerAttentionWindow } from '../desktop/attention'
 import { shutdownSpeech } from './ipc/speech'
 import { shutdownLocalServices } from './ipc/localResources'
+import { guardClosedOutputPipes } from '../desktop/stdio'
+
+guardClosedOutputPipes()
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const devServerUrl = process.env.VITE_DEV_SERVER_URL

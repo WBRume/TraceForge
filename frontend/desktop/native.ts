@@ -1,7 +1,7 @@
 // Electron supplies the native ports in development and Electron builds.
-// The Bun sidecar build substitutes tauri-native.ts at this boundary only.
+// The Tauri Node host build substitutes tauri-native.ts at this boundary only.
 export { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
-export { startLocalResourceService } from '../electron/localResourceService'
+export { startLocalResourceService } from './local-resource/server'
 export { setNativeAttention } from './attention'
 import { app } from 'electron'
 import { shell as nativeShell } from 'electron'

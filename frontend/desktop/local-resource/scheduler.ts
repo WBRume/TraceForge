@@ -1,4 +1,4 @@
-/** Shared by Bun/Tauri and Electron. Workers execute blocking Git/file I/O. */
+/** Shared by Tauri and Electron. Node workers execute blocking Git/file I/O. */
 type Dispatch = (worker: number, kind: string, payload: any) => Promise<any>
 // Profiles hosted in the same desktop process may map the same personal repo.
 const registrations = new Map<string, Promise<unknown>>()

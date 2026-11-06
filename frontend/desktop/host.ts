@@ -4,10 +4,12 @@ import { handlers, receiveNative, sender, send, shutdownNative } from './tauri-n
 import { shutdownCommands } from '../electron/ipc/process'
 import { shutdownLocalServices } from '../electron/ipc/localResources'
 import { shutdownSpeech } from '../electron/ipc/speech'
+import { guardClosedOutputPipes } from './stdio'
 
 // stdout is a protocol stream; diagnostic logging belongs on stderr.
 console.log = console.error
 console.info = console.error
+guardClosedOutputPipes()
 registerDesktopCommands()
 let shuttingDown = false
 const shutdown = async () => {
@@ -27,6 +29,7 @@ input.on('line', line => {
       if (request.kind === 'shutdown') { shutdown(); return }
       id = request.id
       if (request.kind === 'native-result') { receiveNative(request); return }
+      if (shuttingDown) throw new Error('Desktop service is shutting down')
       const handler = handlers.get(request.channel)
       if (!handler) throw new Error('Unknown desktop command')
       if (request.channel === 'sdd:download:save' && Array.isArray(request.payload?.data)) {
@@ -41,3 +44,8 @@ input.on('line', line => {
 })
 input.once('close', shutdown)
 process.once('SIGTERM', shutdown)
+process.once('SIGINT', shutdown)
+process.stdout.on('error', error => {
+  if ((error as NodeJS.ErrnoException).code === 'EPIPE') void shutdown()
+  else throw error
+})

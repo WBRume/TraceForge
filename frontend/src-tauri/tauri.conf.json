@@ -22,7 +22,8 @@
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
-    "externalBin": ["binaries/traceforge-desktop-host"],
+    "externalBin": ["binaries/traceforge-node"],
+    "resources": { "../dist-desktop-host/": "desktop-host/" },
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
       "nsis": { "installMode": "currentUser", "compression": "lzma" }

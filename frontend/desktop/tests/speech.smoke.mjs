@@ -1,23 +1,22 @@
 // Opt-in integration check; requires an offline build and prepared SenseVoice-Small assets.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn, execFileSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { once } from 'node:events'
+import { executable, hostArguments } from './host-runtime.mjs'
 
 test('compiled offline desktop host performs real inference, cancellation and shutdown cleanup', { timeout: 60000 }, async () => {
   assert.ok(process.env.TRACEFORGE_SPEECH_TEST_WAV, 'Set TRACEFORGE_SPEECH_TEST_WAV to the official SenseVoice-Small test_wavs/zh.wav')
   const wavBase64 = (await readFile(resolve(process.env.TRACEFORGE_SPEECH_TEST_WAV))).toString('base64')
-  const target = process.env.TAURI_ENV_TARGET_TRIPLE || execFileSync('rustc', ['--print', 'host-tuple'], { encoding: 'utf8' }).trim()
-  const executable = resolve(`src-tauri/binaries/traceforge-desktop-host-${target}${process.platform === 'win32' ? '.exe' : ''}`)
   const resources = resolve(process.env.TRACEFORGE_SPEECH_TEST_RESOURCE_ROOT || '.')
   const root = await mkdtemp(join(tmpdir(), 'traceforge-speech-smoke-'))
   const audioTemp = join(root, '录音 temp')
   await mkdir(audioTemp)
-  const child = spawn(executable, [join(root, 'config'), root, resources], {
+  const child = spawn(executable, [...hostArguments, join(root, 'config'), root, resources], {
     windowsHide: true, stdio: 'pipe',
     env: { ...process.env, TRACEFORGE_SPEECH_ASSETS: '', TMPDIR: audioTemp, TMP: audioTemp, TEMP: audioTemp },
   })

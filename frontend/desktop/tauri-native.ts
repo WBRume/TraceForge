@@ -1,7 +1,7 @@
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { startServer } from './local-resource/server'
-import type { Config } from './local-resource/runtime'
+import { fileURLToPath } from 'node:url'
+export { startLocalResourceService } from './local-resource/server'
 
 type Handler = (event: { sender: typeof sender }, payload: any) => unknown
 export const handlers = new Map<string, Handler>()
@@ -37,7 +37,7 @@ export const app = {
     if (name === 'downloads') return process.argv[3] || join(homedir(), 'Downloads')
     throw new Error(`Unsupported application path: ${name}`)
   },
-  getAppPath: () => dirname(process.execPath),
+  getAppPath: () => dirname(fileURLToPath(import.meta.url)),
 }
 export const speechResourcesPath = () => process.argv[4] || dirname(process.execPath)
 export const BrowserWindow = {
@@ -53,10 +53,6 @@ export const dialog = {
   showOpenDialog: (options: unknown) => nativeRequest('select-directory', options),
   showSaveDialog: (...args: unknown[]) => nativeRequest('save-file', args.at(-1)),
 }
-export function startLocalResourceService(config: Config, options: { http?: boolean; onCollaborationChanged?: (event: { task_id: string }) => void } = {}) {
-  return startServer(config, { ...options, workerUrl: new URL('./worker.js', import.meta.url).href })
-}
-
 export function shutdownNative() {
   for (const pending of pendingNative.values()) pending.reject(new Error('Desktop service closed'))
   pendingNative.clear()

@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
+      'node:sqlite': fileURLToPath(new URL('./desktop/local-resource/tests/sqlite.ts', import.meta.url)),
     },
   },
   test: {

@@ -20,8 +20,8 @@ export default defineConfig({
       entry: {
         main: resolve(__dirname, 'electron/main.ts'),
         preload: resolve(__dirname, 'electron/preload.ts'),
-        localResourceService: resolve(__dirname, 'electron/localResourceService.ts'),
-        localResourceWorker: resolve(__dirname, 'electron/localResourceWorker.ts'),
+        localResourceService: resolve(__dirname, 'desktop/local-resource/server.ts'),
+        localResourceWorker: resolve(__dirname, 'desktop/local-resource/worker.ts'),
       },
       formats: ['es'],
       fileName: (_format, entryName) => `${entryName}.js`,

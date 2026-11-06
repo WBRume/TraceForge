@@ -6,6 +6,7 @@ const { tmpdir } = require('node:os')
 const { randomBytes, createHash } = require('node:crypto')
 const { execFileSync } = require('node:child_process')
 const assert = require('node:assert/strict')
+const { zstdCompressSync, zstdDecompressSync } = require('node:zlib')
 
 app.disableHardwareAcceleration()
 app.whenReady().then(async () => {
@@ -15,7 +16,7 @@ app.whenReady().then(async () => {
     const root = mkdtempSync(join(tmpdir(), 'traceforge-electron-host-'))
     const configFile = join(root, 'host.json')
     const token = randomBytes(32).toString('hex')
-    const config = { state_root: root, allowed_roots: [], token, port: 0, listen_host: '127.0.0.1', roots_config_path: configFile }
+    const config = { state_root: root, allowed_roots: [], token, port: 0, listen_host: '127.0.0.1', roots_config_path: configFile, dsh_session_root: join(root, 'sessions') }
     writeFileSync(configFile, JSON.stringify(config))
     const crashingWorker = join(root, 'crashing-worker.mjs')
     writeFileSync(crashingWorker, "throw new Error('worker crash fixture')")
@@ -37,6 +38,8 @@ app.whenReady().then(async () => {
     const headers = { Authorization: `Bearer ${token}`, 'content-type': 'application/json' }
     const identity = await (await fetch(url + '/v1/identity', { headers })).json()
     assert.equal(identity.protocol_version, 1)
+    assert.ok(identity.capabilities.includes('roots_grant'))
+    assert.ok(identity.capabilities.includes('repository_details'))
     assert.ok(!identity.capabilities.includes('collaboration'))
     assert.equal((await fetch(url + '/v1/collaboration', { method: 'POST', headers,
       body: JSON.stringify({ kind: 'capture', payload: { task_id: 'task', operation_id: 'unused-http' } }) })).status, 404)
@@ -46,12 +49,34 @@ app.whenReady().then(async () => {
     const payload_hash = createHash('sha256').update(canonical(command)).digest('hex')
     const execute = async () => fetch(url + '/v1/operations', { method: 'POST', headers, body: JSON.stringify({ ...command, payload_hash }) })
     assert.equal((await execute()).status, 409)
-    writeFileSync(configFile, JSON.stringify({ ...config, allowed_roots: [root] }))
+    const grant = await fetch(url + '/v1/roots/grant', { method: 'POST', headers, body: JSON.stringify({ roots: [root] }) })
+    assert.equal(grant.status, 200)
+    assert.ok(readFileSync(configFile, 'utf8').includes(root.replaceAll('\\', '\\\\')))
     const provision = await (await execute()).json()
     assert.equal(provision.state, 'SUCCEEDED')
     assert.deepEqual(await (await execute()).json(), provision)
     const journal = await (await fetch(url + '/v1/operations/smoke', { headers })).json()
     assert.equal(journal.state, 'SUCCEEDED')
+    const session = join(config.dsh_session_root, 'source', 'original')
+    mkdirSync(session, { recursive: true })
+    writeFileSync(join(session, 'session.jsonl.zstd'), Buffer.concat([
+      zstdCompressSync(JSON.stringify({ type: 'session', id: 'original', cwd: root }) + '\n'),
+      zstdCompressSync(JSON.stringify({ seq: 0, text: 'event after header frame' }) + '\n'),
+    ]))
+    const fork = { ...command, operation_id: 'fork-session', kind: 'provider_fork', payload: { session_id: 'original' } }
+    const forkResponse = await fetch(url + '/v1/operations', { method: 'POST', headers,
+      body: JSON.stringify({ ...fork, payload_hash: createHash('sha256').update(canonical(fork)).digest('hex') }) })
+    const forked = await forkResponse.json()
+    assert.equal(forked.state, 'SUCCEEDED', JSON.stringify(forked))
+    const project = require('node:fs').readdirSync(config.dsh_session_root).find(name => name !== 'source')
+    const forkBytes = readFileSync(join(config.dsh_session_root, project, forked.result.session_id, 'session.jsonl.zstd'))
+    let offset = 0, sessionText = ''
+    while (offset < forkBytes.length) {
+      const decoded = zstdDecompressSync(forkBytes.subarray(offset), { info: true })
+      sessionText += decoded.buffer.toString(); offset += decoded.engine.bytesWritten
+    }
+    assert.equal(sessionText.trim().split('\n').length, 2)
+    assert.ok(sessionText.includes('event after header frame'))
     const source = join(root, 'mapped-repo')
     mkdirSync(source)
     const git = (...args) => execFileSync('git', args, { cwd: source, encoding: 'utf8', windowsHide: true }).trim()

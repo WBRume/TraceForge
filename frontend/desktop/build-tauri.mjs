@@ -18,7 +18,10 @@ try {
   speechBuild.validateSpeechAssets(speech, platform, arch)
   const speechConfig = {
     bundle: {
-      resources: speech.bundled ? { [`${speech.assetsDirectory.replaceAll('\\', '/')}/`]: 'offline-speech/' } : {},
+      resources: {
+        '../dist-desktop-host/': 'desktop-host/',
+        ...(speech.bundled ? { [`${speech.assetsDirectory.replaceAll('\\', '/')}/`]: 'offline-speech/' } : {}),
+      },
       ...(speech.mode !== 'off' ? { macOS: { infoPlist: 'Info.speech.plist' } } : {}),
     },
   }
