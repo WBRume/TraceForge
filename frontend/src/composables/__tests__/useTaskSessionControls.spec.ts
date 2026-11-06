@@ -55,13 +55,14 @@ describe('useTaskSessionControls', () => {
 
     expect(apiMock.post).toHaveBeenCalledWith('/workspaces/ws-1/tasks/task-1/interrupt', {
       reason: 'pause',
+      command_id: expect.any(String),
     })
     expect(controls.interruptingTask.value).toBe(false)
   })
 
   it('resumes an interrupted task through the resume endpoint', async () => {
     const { useTaskSessionControls } = await import('@/composables/useTaskSessionControls')
-    apiMock.post.mockResolvedValueOnce({ data: { status: 'CODING' } })
+    apiMock.post.mockResolvedValueOnce({ data: { status: 'RUNNING' } })
 
     const controls = useTaskSessionControls({ getWorkspaceId: () => 'ws-1' })
     await expect(
@@ -70,7 +71,7 @@ describe('useTaskSessionControls', () => {
         confirmContinue: false,
         clientMessageId: 'client-1',
       }),
-    ).resolves.toMatchObject({ status: 'CODING' })
+    ).resolves.toMatchObject({ status: 'RUNNING' })
 
     expect(apiMock.post).toHaveBeenCalledWith('/workspaces/ws-1/tasks/task-1/resume-interrupted', {
       prompt: 'continue here',

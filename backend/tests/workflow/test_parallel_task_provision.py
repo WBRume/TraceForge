@@ -207,7 +207,7 @@ def test_fixed_commits_checkout_and_snapshots_overlap(scenario, monkeypatch, tmp
         for task, job in ((first, job_a), (second, job_b)):
             assert jobs.get_job(db, job.id).status == ProvisionJobStatus.SUCCESS
             actual = db.get(SddTask, task.id)
-            assert actual.status == TaskStatus.PENDING
+            assert actual.status == TaskStatus.INITIALIZED
             assert Path(actual.task_meta_json["initial_workspace_checkpoint"]).exists()
             assert command(task.project_path, "status", "--porcelain") == ""
             assert (Path(task.project_path) / "file-0.txt").is_file()
@@ -293,7 +293,7 @@ def test_snapshot_failure_or_cancel_only_removes_its_own_task(scenario, monkeypa
         assert db.get(SddTask, first.id) is None
         assert jobs.get_job(db, job_a.id).stage == ("CANCELLED" if outcome == "cancel" else "FAILED")
         assert jobs.get_job(db, job_b.id).status == ProvisionJobStatus.SUCCESS
-        assert db.get(SddTask, second.id).status == TaskStatus.PENDING
+        assert db.get(SddTask, second.id).status == TaskStatus.INITIALIZED
     assert not Path(first.project_path).exists()
     assert (Path(second.project_path) / "file-0.txt").is_file()
     assert first.id not in command(base, "worktree", "list", "--porcelain")
@@ -376,5 +376,5 @@ def test_creation_batch_timing(scenario):
         with factory() as db:
             for task, job in batch:
                 assert jobs.get_job(db, job.id).status == ProvisionJobStatus.SUCCESS
-                assert db.get(SddTask, task.id).status == TaskStatus.PENDING
+                assert db.get(SddTask, task.id).status == TaskStatus.INITIALIZED
     print("CREATION_BATCH_TIMING", json.dumps(measurements))

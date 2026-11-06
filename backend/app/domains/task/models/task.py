@@ -28,18 +28,13 @@ from app.domains.auth.models.user import generate_uuid
 
 class TaskStatus(str, PyEnum):
     PROVISIONING = "PROVISIONING"  # 任务资源准备中（git worktree/clone 未完成，禁止启动会话）
-    PENDING = "PENDING"
-    BRAINSTORMING = "BRAINSTORMING"
-    PLANNING = "PLANNING"
-    CODING = "CODING"
-    TESTING = "TESTING"
-    REVIEWING = "REVIEWING"
-    DEPLOYING = "DEPLOYING"
-    DONE = "DONE"
-    FAILED = "FAILED"
-    SUSPENDED = "SUSPENDED"  # HITL 挂起
+    INITIALIZED = "INITIALIZED"
+    RUNNING = "RUNNING"
+    ROUND_COMPLETED = "ROUND_COMPLETED"
+    AWAITING_INPUT = "AWAITING_INPUT"
     INTERRUPTED = "INTERRUPTED"  # 用户临时中断，可恢复
-    BASELINED = "BASELINED"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
 
 
 class TaskType(str, PyEnum):
@@ -75,7 +70,9 @@ class SddTask(Base):
     execution_location = Column(String(16), nullable=False, default="SERVER", server_default="SERVER")
     local_resource_id = Column(String(36), nullable=True)
     git_repo_url = Column(String(500), nullable=True)
-    status = Column(Enum(TaskStatus), nullable=False, default=TaskStatus.PENDING)
+    status = Column(Enum(TaskStatus), nullable=False, default=TaskStatus.INITIALIZED)
+    status_seq = Column(BigInteger, nullable=False, default=0, server_default="0")
+    status_run_id = Column(String(36), nullable=True)
     retry_count = Column(Integer, nullable=False, default=0)
     current_phase = Column(String(50), nullable=True)
     error_message = Column(Text, nullable=True)

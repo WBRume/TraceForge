@@ -79,7 +79,7 @@ def _seed(db, *, permissions_json="[]", role=WorkspaceRole.OWNER):
         name="Share me",
         description="d",
         project_path="G:/repo",
-        status=TaskStatus.PLANNING,
+        status=TaskStatus.RUNNING,
         session_generation=1,
         session_revision=3,
     )
@@ -411,7 +411,7 @@ def test_submit_creates_no_chat_message_or_submission_or_job(owner_client):
     assert db.query(SddAiJob).count() == 0
     # 任务状态未变
     db.expire_all()
-    assert db.get(SddTask, "task-1").status == TaskStatus.PLANNING
+    assert db.get(SddTask, "task-1").status == TaskStatus.RUNNING
 
 
 # ── 5. 发起人列表 / adopt / dismiss ──

@@ -1,3 +1,4 @@
+import { taskStatusKey } from '@/utils/taskStatus'
 import { ref } from 'vue'
 import type { ContextAnnotations } from '@/composables/chat/annotations/useContextAnnotations'
 import { formatAnnotationMessage } from '@/composables/chat/annotations/contextAnnotations'
@@ -201,7 +202,7 @@ export const useChatTerminalController = (vm: ChatTerminalBridge) => {
 
   const emitStatus = () => {
     const taskName = vm.currentTask?.name || '-'
-    const taskStatus = vm.currentTask?.status || '-'
+    const taskStatus = vm.t(taskStatusKey(vm.currentTask?.status))
     const running = vm.engineRunning ? 'RUNNING' : 'IDLE'
     appendEcho('info', `task=${taskName} status=${taskStatus} engine=${running}`)
     appendEcho('info', `messages=${vm.messages.length} logs=${vm.terminalLogs.length}`)

@@ -433,7 +433,7 @@ async def clear_task_history(
             task = get_task_or_404(db, task_id, ws_id)
             ensure_task_not_baselined(task)
             engine = get_engine(task_id)
-            if (engine and engine.running) or task.status == TaskStatus.CODING:
+            if (engine and engine.running) or task.status == TaskStatus.RUNNING:
                 raise HTTPException(status_code=409, detail=TASK_RUNNING_MSG)
             try:
                 return task_conversation_history.clear_task_history(db, task_id, ws_id)

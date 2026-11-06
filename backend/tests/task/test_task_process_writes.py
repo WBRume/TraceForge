@@ -50,7 +50,7 @@ def _set_task_done(db, workspace_id, task_id):
     """Set task status to DONE so evidence can be created."""
     task = db.query(SddTask).filter(SddTask.workspace_id == workspace_id, SddTask.id == task_id).first()
     if task:
-        task.status = TaskStatus.DONE
+        task.status = TaskStatus.COMPLETED
         db.commit()
 
 

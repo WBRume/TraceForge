@@ -92,6 +92,9 @@ async def complete_task_closeout(
             except (task_closeout_service.TaskCloseoutError, WorkspaceAssetError, ResourceError) as exc:
                 _raise_closeout_error(exc)
             await _stop_active_task_session(db, ws_id, task_id, "Task completed through closeout")
+            from app.domains.task.services.task_event_publisher import wake
+
+            wake()
             return result
     except LockAcquireTimeout as exc:
         raise_task_lock_conflict(exc, message="Task is busy. Please retry later.")
@@ -126,6 +129,9 @@ async def fail_task_closeout(
             except (task_closeout_service.TaskCloseoutError, WorkspaceAssetError, ResourceError) as exc:
                 _raise_closeout_error(exc)
             await _stop_active_task_session(db, ws_id, task_id, "Task failed through closeout")
+            from app.domains.task.services.task_event_publisher import wake
+
+            wake()
             return result
     except LockAcquireTimeout as exc:
         raise_task_lock_conflict(exc, message="Task is busy. Please retry later.")

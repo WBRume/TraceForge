@@ -48,7 +48,7 @@ def db_session(session_factory):
         db.close()
 
 
-def _seed(db, *, task_status=TaskStatus.CODING):
+def _seed(db, *, task_status=TaskStatus.RUNNING):
     owner = User(id="u-owner", email="owner@example.com", hashed_password="x", display_name="Owner")
     member = User(id="u-member", email="member@example.com", hashed_password="x", display_name="Member")
     expert = User(id="u-expert", email="expert@example.com", hashed_password="x", display_name="Expert")
@@ -192,7 +192,7 @@ def test_create_rejects_duplicate_and_non_member_mention(db_session):
 
 def test_create_rejects_terminal_task(db_session):
     db = db_session
-    _seed(db, task_status=TaskStatus.DONE)
+    _seed(db, task_status=TaskStatus.COMPLETED)
     with pytest.raises(pre_input_service.PreInputError):
         _create()
 

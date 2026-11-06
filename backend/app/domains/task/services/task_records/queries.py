@@ -52,7 +52,7 @@ def list_tasks(
         )
 
     # 准备中的任务不在任务列表展示：进度由创建人的全局浮窗跟踪，
-    # 任务就绪（PENDING）后才会出现在列表中。
+    # 任务就绪（INITIALIZED）后才会出现在列表中。
     query = query.filter(SddTask.status != TaskStatus.PROVISIONING)
 
     if status_filter:

@@ -52,7 +52,7 @@ def _seed(SessionLocal):
             creator_id="user-1",
             name="T",
             project_path="G:/tmp/t",
-            status="CODING",
+            status="RUNNING",
             session_revision=3,
         )
         job = SddAiJob(

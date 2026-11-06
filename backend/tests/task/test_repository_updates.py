@@ -38,7 +38,7 @@ def env(db, tmp_path, monkeypatch):
         name="Update test",
         project_path=str(root),
         execution_location="SERVER",
-        status=TaskStatus.CODING,
+        status=TaskStatus.ROUND_COMPLETED,
         session_generation=1,
         session_revision=0,
         session_id="existing-task-session",
@@ -288,6 +288,12 @@ def test_agent_adaptation_applies_automatically_only_with_upfront_consent(env, a
     )
     db.commit()
     assert plan["state"] == "ADAPTING"
+    assert task.status == TaskStatus.RUNNING
+    assert task.status_run_id == plan["job_id"]
+    from app.domains.task.models.task_status_event import TaskStatusEvent
+
+    audit = db.query(TaskStatusEvent).filter_by(task_id=task.id).order_by(TaskStatusEvent.status_seq).all()
+    assert [row.trigger for row in audit] == ["INPUT_SUBMITTED", "BIND_EXECUTION"]
     from app.domains.workspace_collaboration.service import CollaborationError, _assert_no_writer
 
     _assert_no_writer(db, task.id, read_only=True)

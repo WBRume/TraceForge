@@ -38,7 +38,8 @@ from tests.workspace_asset.test_workspace_asset_boundary import (  # noqa: E402
 
 def _seed_baselined_task(db, workspace_id: str, task_id: str):
     user, workspace, task = _seed_workspace(db, workspace_id=workspace_id, task_id=task_id)
-    task.status = TaskStatus.BASELINED
+    task.status = TaskStatus.COMPLETED
+    task.baselined_at = datetime.utcnow()
     task.baseline_version = 1
     requirement = SddRequirement(
         id=f"req-{task_id}",
@@ -91,7 +92,7 @@ def _seed_baselined_task(db, workspace_id: str, task_id: str):
     )
     snapshot = {
         "version": 1,
-        "task": {"id": task.id, "status": "DONE"},
+        "task": {"id": task.id, "status": "COMPLETED"},
         "summary": {"id": summary.id, "final_status": "VERIFIED"},
         "evidence_ids": [evidence.id],
         "review_ids": [review.id],
@@ -130,7 +131,7 @@ def test_baselined_task_blocks_writes_but_allows_final_workflow_reads():
         assert workflow.status_code == 200, workflow.text
         body = workflow.json()
         assert body["readonly"] is True
-        assert body["task"]["status"] == "BASELINED"
+        assert body["task"]["status"] == "COMPLETED"
         assert body["baseline"]["version"] == 1
         assert body["available_actions"] == []
 
@@ -169,6 +170,6 @@ def test_baselined_task_blocks_writes_but_allows_final_workflow_reads():
 
         detail = client.get("/api/workspaces/ws-baseline-lock/workspace-assets/tasks/task-baseline-lock")
         assert detail.status_code == 200, detail.text
-        assert detail.json()["task"]["status"] == "BASELINED"
+        assert detail.json()["task"]["status"] == "COMPLETED"
     finally:
         engine.dispose()

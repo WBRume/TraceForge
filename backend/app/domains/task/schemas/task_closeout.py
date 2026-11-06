@@ -108,6 +108,9 @@ class FailTaskCloseoutRequest(BaseModel):
 
 
 class TaskCloseoutResponse(BaseModel):
+    status_seq: str
+    session_generation: int = 0
+    session_revision: int = 0
     confirmed_server_snapshot_id: str | None = None
     business_state: Literal["TASK_IN_PROGRESS", "TASK_COMPLETED", "TASK_FAILED"] = "TASK_IN_PROGRESS"
     task_id: str

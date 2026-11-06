@@ -140,7 +140,9 @@ def test_initialize_then_stop_native_question_twice_after_release_disconnect(tas
                 assert remote.running
                 assert transport.values == {}
 
-                stopped = await client.post("/api/workspaces/ws-1/tasks/task-1/interrupt")
+                stopped = await client.post(
+                    "/api/workspaces/ws-1/tasks/task-1/interrupt", json={"command_id": f"stop:{remote.interrupts}"}
+                )
                 assert stopped.status_code == 200, stopped.text
                 assert stopped.json()["status"] == "INTERRUPTED"
                 assert stopped.json()["job"]["status"] == "INTERRUPTED"
@@ -169,7 +171,9 @@ def test_stop_preserves_another_owner_and_uses_an_operation_conflict_message(tas
 
     async def run():
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.post("/api/workspaces/ws-1/tasks/task-1/interrupt")
+            response = await client.post(
+                "/api/workspaces/ws-1/tasks/task-1/interrupt", json={"command_id": f"stop:{remote.interrupts}"}
+            )
             assert response.status_code == 409
             assert response.json()["detail"] == TASK_BUSY_MSG
             assert "initialized" not in response.json()["detail"]

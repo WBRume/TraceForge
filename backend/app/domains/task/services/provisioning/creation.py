@@ -10,8 +10,9 @@ from app.domains.auth.models.user import User, Workspace, generate_uuid
 from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.skill.services.packages import storage as skill_storage_service
 from app.domains.skill.services.runtime import bindings as skill_runtime_bindings
-from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.models.task import SddTask
 from app.domains.task.schemas.task import TaskCreate
+from app.domains.task.services import status_machine as sm
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 from app.domains.workspace_asset.models.workspace_asset import SddRequirement, SddTaskRequirement
 
@@ -148,7 +149,6 @@ def create_task_record_for_provision(
         spec_doc_path=spec_doc_path,
         requirement_duration_hours=requirement_duration_hours,
         # 创建即进入准备态：git worktree/clone 未完成前禁止启动任务会话
-        status=TaskStatus.PROVISIONING,
         current_phase="PREPARING",
         error_message=None,
     )
@@ -158,7 +158,7 @@ def create_task_record_for_provision(
             from app.agents.model_selection import apply_task_selection
 
             apply_task_selection(db, task, agent_model)
-        db.add(task)
+        sm.initialize(db, task)
         db.flush()
 
         if requirement:

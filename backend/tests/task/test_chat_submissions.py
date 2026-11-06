@@ -217,7 +217,7 @@ def task_db(tmp_path):
             creator_id="u",
             name="Task",
             project_path="/tmp/task",
-            status=TaskStatus.CODING,
+            status=TaskStatus.RUNNING,
             agent_backend="mock",
             session_generation=1,
             session_revision=0,

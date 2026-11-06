@@ -19,10 +19,11 @@ export function usePinnedCards(options: {
 
   const canInteract = (card: HitlCard) => {
     const task = options.getCurrentTask()
-    if (!task || ['INTERRUPTED', 'DONE', 'FAILED', 'BASELINED'].includes(String(task.status))) return false
+    if (!task || ['INTERRUPTED', 'COMPLETED', 'FAILED', 'BASELINED'].includes(String(task.status))) return false
     if (card.session_generation == null || task.session_generation == null
       || Number(card.session_generation) !== Number(task.session_generation)) return false
-    return options.getJobs().some(job => job.id === card.job_id && isJobExecuting(job.status)
+    return options.getJobs().some(job => job.id === card.job_id && (isJobExecuting(job.status)
+      || (card.delivery_mode === 'turn' && job.status === 'SUCCESS' && task.status === 'AWAITING_INPUT'))
       && (job.session_generation == null || Number(job.session_generation) === Number(task.session_generation)))
   }
   // 历史中的问题不代表仍可回答；仅当前会话中仍执行的所属作业可以展示交互。
@@ -65,6 +66,7 @@ export function usePinnedCards(options: {
     if (!['SUCCESS', 'FAILED', 'CANCELLED', 'REVERTED', 'INTERRUPTED'].includes(status)) return
     for (const card of cards.value) {
       if (card.type !== 'hitl' || card.job_id !== jobId || card.answered) continue
+      if (status === 'SUCCESS' && card.delivery_mode === 'turn') continue
       card.answered = true
       if (card.answer) continue
       if (status === 'FAILED') card.answer = t('chat.hitl_answer_failed')
@@ -106,6 +108,7 @@ export function usePinnedCards(options: {
         interaction_id: interactionId,
         message_id: String(message.id),
         hitl_type: String(confirmation.kind || 'text'),
+        delivery_mode: confirmation.delivery_mode,
         prompt: String(message.content || ''),
         options: Array.isArray(confirmation.options) ? confirmation.options : [],
         fields: Array.isArray(confirmation.fields) ? confirmation.fields : [],

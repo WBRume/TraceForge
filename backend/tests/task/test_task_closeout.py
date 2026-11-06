@@ -54,7 +54,7 @@ def test_complete_closeout_allows_no_evidence():
         )
         assert response.status_code == 200
         payload = response.json()
-        assert payload["status"] == "DONE"
+        assert payload["status"] == "COMPLETED"
         assert payload["evidence_ids"] == []
 
         with _session(SessionLocal) as db:
@@ -62,7 +62,7 @@ def test_complete_closeout_allows_no_evidence():
             evidence = db.query(SddEvidence).filter(SddEvidence.task_id == "task-closeout-none").all()
             summary = db.query(SddTaskFinalSummary).filter(SddTaskFinalSummary.task_id == "task-closeout-none").one()
             assert task is not None
-            assert task.status == TaskStatus.DONE
+            assert task.status == TaskStatus.COMPLETED
             assert evidence == []
             assert summary.final_status.value == "PARTIAL"
     finally:
@@ -98,7 +98,7 @@ def test_complete_closeout_records_evidence_summary_and_done_status():
         )
         assert response.status_code == 200
         payload = response.json()
-        assert payload["status"] == "DONE"
+        assert payload["status"] == "COMPLETED"
         assert payload["evidence_ids"]
 
         with _session(SessionLocal) as db:
@@ -108,13 +108,13 @@ def test_complete_closeout_records_evidence_summary_and_done_status():
             summary = db.query(SddTaskFinalSummary).filter(SddTaskFinalSummary.task_id == "task-closeout").one()
             detail_task = get_task_detail(db, "ws-closeout", "task-closeout")
             assert task is not None
-            assert task.status == TaskStatus.DONE
+            assert task.status == TaskStatus.COMPLETED
             assert evidence.source_ref == "abc1234"
             assert review.status.value == "RESOLVED"
             assert review.review_type == "EXPERT_FINAL_REVIEW"
             assert summary.final_status.value == "PARTIAL"
             assert detail_task is not None
-            assert detail_task.task.status == "DONE"
+            assert detail_task.task.status == "COMPLETED"
             assert detail_task.process_summary.coverage_status != "verified"
 
         old_complete = client.post("/api/workspaces/ws-closeout/tasks/task-closeout/complete")
@@ -212,13 +212,17 @@ def test_diagnosis_completion_links_leaf_requirement_and_rejects_parent_before_w
         payload["requirement_id"] = "foreign-or-missing"
         assert client.post(endpoint, json=payload).status_code == 404
         with _session(sessions) as db:
-            assert db.get(SddTask, task.id).status != TaskStatus.DONE
+            assert db.get(SddTask, task.id).status != TaskStatus.COMPLETED
             assert db.query(SddTaskRequirement).count() == 0
             assert db.query(SddTaskFinalSummary).count() == 0
         payload["requirement_id"] = "leaf"
-        assert client.post(endpoint, json=payload).status_code == 200
+        first = client.post(endpoint, json=payload)
+        assert first.status_code == 200
+        duplicate = client.post(endpoint, json=payload)
+        assert duplicate.status_code == 200
+        assert duplicate.json() == first.json()
         with _session(sessions) as db:
-            assert db.get(SddTask, task.id).status == TaskStatus.DONE
+            assert db.get(SddTask, task.id).status == TaskStatus.COMPLETED
             assert db.query(SddTaskRequirement).one().requirement_id == "leaf"
             assert db.query(SddRequirementAuditLog).one().source_metadata_json["created_from"] == "task_closeout"
         detail = client.get(f"/api/workspaces/{workspace.id}/workspace-assets/requirements/leaf").json()

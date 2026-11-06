@@ -40,3 +40,29 @@ jobs:
         run: node --test frontend/scripts/tests/check-file-lines.cases.mjs
       - name: Check Vue project file lines
         run: node frontend/scripts/check-file-lines.mjs
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+      - name: Test task status projection and transport ordering
+        working-directory: frontend
+        run: npx vitest run src/utils/__tests__/taskStatusProjection.spec.ts src/composables/chat/__tests__/wsEventRouter.spec.ts
+
+  task-status-machine:
+    name: Task transition matrix and event ordering
+    runs-on: windows-latest
+    env:
+      DB_PASSWORD: isolated-test-password
+      JWT_SECRET_KEY: isolated-task-status-test-key
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: Install backend test dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Test every transition, duplicate, stale event, rollback and ordered delivery
+        run: python -m pytest tests/task/test_status_machine.py tests/websocket/test_ws_room_hub_replay.py -q

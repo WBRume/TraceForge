@@ -41,7 +41,7 @@ def _seed_bootstrap(db, *, status=TaskCliBootstrapStatus.PENDING):
         creator_id=user.id,
         name="Task",
         project_path="G:/tmp/task-1",
-        status=TaskStatus.PENDING,
+        status=TaskStatus.INITIALIZED,
     )
     record = SddTaskCliBootstrap(
         workspace_id=workspace.id,

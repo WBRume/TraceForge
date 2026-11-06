@@ -3,9 +3,9 @@
 """
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PlainSerializer, model_validator
 
 from app.agents.model_selection import ModelSelection
 from app.domains.local_resource.schemas import TaskExecutionInput
@@ -90,6 +90,7 @@ class TaskResponse(BaseModel):
     local_resource_id: str | None = None
     git_repo_url: str | None = None
     status: str
+    status_seq: Annotated[int, PlainSerializer(str, return_type=str)] = 0
     retry_count: int
     current_phase: str | None = None
     error_message: str | None = None
@@ -127,6 +128,7 @@ class TaskFollowResponse(BaseModel):
 class TaskStartRequest(BaseModel):
     """启动任务时的额外参数"""
 
+    command_id: str = Field(min_length=1, max_length=128)
     prompt: str | None = None
     operator_context: dict | None = None
     # 问题定位任务主开关：自动执行全流程（None = 保持任务现有偏好）
@@ -134,6 +136,8 @@ class TaskStartRequest(BaseModel):
 
 
 class TaskInterruptRequest(BaseModel):
+    command_id: str = Field(min_length=1, max_length=128)
+    expected_status_seq: int | None = None
     reason: str | None = None
 
 

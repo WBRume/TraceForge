@@ -50,13 +50,13 @@ def _add_task(
 
 def test_overview_uses_live_task_status_for_success_rate(db: Session):
     workspace = _make_workspace(db)
-    _add_task(db, workspace.id, "t-done", TaskStatus.DONE)
-    _add_task(db, workspace.id, "t-baselined", TaskStatus.BASELINED)
+    _add_task(db, workspace.id, "t-done", TaskStatus.COMPLETED)
+    _add_task(db, workspace.id, "t-baselined", TaskStatus.COMPLETED)
     _add_task(db, workspace.id, "t-failed", TaskStatus.FAILED)
-    _add_task(db, workspace.id, "t-coding", TaskStatus.CODING)
-    _add_task(db, workspace.id, "t-suspended", TaskStatus.SUSPENDED)
+    _add_task(db, workspace.id, "t-coding", TaskStatus.RUNNING)
+    _add_task(db, workspace.id, "t-suspended", TaskStatus.AWAITING_INPUT)
     _add_task(db, workspace.id, "t-provisioning", TaskStatus.PROVISIONING)
-    _add_task(db, workspace.id, "t-pending", TaskStatus.PENDING)
+    _add_task(db, workspace.id, "t-pending", TaskStatus.INITIALIZED)
 
     overview = dashboard_service.get_overview(db, workspace.id)
 
@@ -127,7 +127,7 @@ def test_retry_heatmap_returns_dense_seven_day_series(db: Session):
         db,
         workspace.id,
         "t-today",
-        TaskStatus.CODING,
+        TaskStatus.RUNNING,
         retry_count=2,
         created_at=now,
     )

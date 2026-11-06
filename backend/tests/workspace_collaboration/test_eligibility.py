@@ -22,7 +22,7 @@ def diagnosis_task(db):
         name="Investigate the issue",
         task_type=TaskType.DIAGNOSIS,
         execution_location="SERVER",
-        status=TaskStatus.CODING,
+        status=TaskStatus.RUNNING,
         session_generation=1,
         session_revision=0,
     )

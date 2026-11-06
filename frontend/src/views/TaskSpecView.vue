@@ -20,7 +20,7 @@ const taskStatus = ref('')
 const docReadonly = computed(() => {
   if (!taskId.value) return true
   if (!taskStatus.value) return false
-  return taskStatus.value !== 'PENDING'
+  return taskStatus.value !== 'INITIALIZED'
 })
 
 const loadTaskStatus = async () => {

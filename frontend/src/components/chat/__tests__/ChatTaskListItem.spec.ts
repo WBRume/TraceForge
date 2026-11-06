@@ -3,6 +3,8 @@ import { mount } from '@vue/test-utils'
 import { Star, StarSolid } from '@/components/icons'
 import ChatTaskListItem from '@/components/chat/ChatTaskListItem.vue'
 
+vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
+
 vi.mock('@/components/DeleteActionButton.vue', () => ({
   default: {
     name: 'DeleteActionButton',
@@ -42,7 +44,7 @@ describe('ChatTaskListItem', () => {
 
     expect(wrapper.find('.task-name').text()).toBe(task.name)
     expect(wrapper.find('.task-state-row').text()).toContain('task_types.diagnosis_short')
-    expect(wrapper.find('.task-state-row').text()).toContain('INTERRUPTED')
+    expect(wrapper.find('.task-state-row').text()).toContain('chat.status.INTERRUPTED')
     expect(wrapper.find('.task-meta').text()).toContain('xfc')
     expect(wrapper.find('.task-select').attributes('aria-current')).toBe('page')
   })

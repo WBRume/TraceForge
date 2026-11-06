@@ -40,7 +40,11 @@ def source(task, relative):
 def idle(db, task, *, ignore_job_id=None):
     if task.execution_location != "SERVER" or str(getattr(task.task_type, "value", task.task_type)) != "DEVELOPMENT":
         raise UpdateError("仅云端开发任务支持更新任务代码。")
-    if str(getattr(task.status, "value", task.status)) in {"PROVISIONING", "BASELINED"}:
+    if task.baselined_at is not None or str(getattr(task.status, "value", task.status)) in {
+        "PROVISIONING",
+        "COMPLETED",
+        "FAILED",
+    }:
         raise UpdateError("当前任务状态不能更新代码。")
     query = db.query(SddAiJob.id).filter(SddAiJob.task_id == task.id, SddAiJob.status.in_(BLOCKING))
     if ignore_job_id:

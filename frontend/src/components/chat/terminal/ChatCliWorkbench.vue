@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { taskStatusKey } from '@/utils/taskStatus'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { useChatTerminalController, type ChatTerminalBridge } from '@/composables/chat-terminal/useChatTerminalController'
@@ -91,7 +92,7 @@ onBeforeUnmount(() => {
     <header class="cli-toolbar">
       <div class="cli-toolbar-left">
         <h3 class="cli-title">{{ vm.t('chat.cli_title') }}</h3>
-        <span class="cli-status">{{ vm.currentTask?.status || '-' }}</span>
+        <span class="cli-status">{{ $t(taskStatusKey(vm.currentTask?.status)) }}</span>
       </div>
       <div class="cli-shortcuts">
         <button class="chip-btn chip-query" @click="useQuickCommand('/help')">/help</button>

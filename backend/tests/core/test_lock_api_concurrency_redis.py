@@ -118,7 +118,7 @@ def test_start_task_endpoint_double_click_only_one_success(monkeypatch: pytest.M
         name="stress-task",
         description="run stress scenario",
         spec_doc_path=None,
-        status=TaskStatus.PENDING,
+        status=TaskStatus.INITIALIZED,
         error_message=None,
     )
     monkeypatch.setattr(

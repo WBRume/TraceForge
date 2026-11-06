@@ -42,7 +42,7 @@ def enqueue(db, task, user_id):
     verify_workspace_permission(
         task.workspace_id, user_id, db, WorkspacePermission.CREATE_TASK, "No permission to continue diagnosis"
     )
-    if str(getattr(task.status, "value", task.status)) not in {"CODING", "TESTING", "REVIEWING"}:
+    if str(getattr(task.status, "value", task.status)) not in {"RUNNING", "ROUND_COMPLETED", "AWAITING_INPUT"}:
         raise PlaybookError("TASK_NOT_EXECUTABLE", status=409)
     state = sop.snapshot(task)
     if state["completed"] or active(db, task):

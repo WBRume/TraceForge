@@ -82,7 +82,7 @@ def _build_db(repo_path: str):
         name="Task",
         project_path=repo_path,
         git_repo_url=workspace.git_repo_url,
-        status=TaskStatus.PENDING,
+        status=TaskStatus.INITIALIZED,
     )
     db.add_all([user, other, workspace, member, task])
     db.commit()

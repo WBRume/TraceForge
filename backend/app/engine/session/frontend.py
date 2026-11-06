@@ -193,6 +193,8 @@ class FrontendFeed:
             WSStatusPayload(
                 task_id=self._owner.task_id,
                 status=status,
+                session_generation=getattr(self._owner, "session_generation", None),
+                session_revision=getattr(self._owner, "session_revision", None),
                 message=message,
                 job_id=self._owner.current_job_id,
                 **kwargs,
@@ -210,6 +212,8 @@ class FrontendFeed:
             WSResultPayload(
                 task_id=self._owner.task_id,
                 success=success,
+                session_generation=getattr(self._owner, "session_generation", None),
+                session_revision=getattr(self._owner, "session_revision", None),
                 result=result,
                 job_id=self._owner.current_job_id,
                 duration_ms=duration_ms,
@@ -397,6 +401,10 @@ class FrontendFeed:
             return payload
         finally:
             db.close()
+
+    def load_status_sequence_sync(self) -> int:
+        with SessionLocal() as db:
+            return int(db.query(SddTask.status_seq).filter_by(id=self._owner.task_id).scalar() or 0)
 
     def load_session_generation_sync(self) -> int | None:
         """线程内执行：读取任务当前 session generation（run() 起点）。"""

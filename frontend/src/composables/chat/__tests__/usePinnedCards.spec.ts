@@ -14,7 +14,7 @@ const confirmationMessage = (id: string, interactionId: string, kind = 'text') =
 })
 
 const createStore = (getMessages: () => any[]) => {
-  const task = ref({ status: 'CODING', session_generation: 1 })
+  const task = ref({ status: 'RUNNING', session_generation: 1 })
   const jobs = ref<any[]>([{ id: 'j1', status: 'RUNNING', session_generation: 1 }])
   const store = usePinnedCards({ getMessages, getJobs: () => jobs.value, getCurrentTask: () => task.value })
   return { store, task, jobs }
@@ -141,7 +141,7 @@ describe('usePinnedCards', () => {
     store.syncConfirmationCards()
     store.markAnsweredForJob('j1', 'INTERRUPTED')
     store.clear()
-    task.value = { status: 'CODING', session_generation: 2 }
+    task.value = { status: 'RUNNING', session_generation: 2 }
     jobs.value = [{ id: 'j2', status: 'RUNNING', session_generation: 2 }]
     store.syncConfirmationCards()
     expect(store.activeHitlCards.value).toHaveLength(0)

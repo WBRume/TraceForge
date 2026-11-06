@@ -106,7 +106,7 @@ def validate_reply_sync(db: Session, task_id: str, interaction_id: str, message_
             not job
             or job.task_id != task_id
             or job.status not in {"RUNNING", "WAITING_HITL"}
-            or task.status in {"INTERRUPTED", "DONE", "FAILED", "BASELINED"}
+            or task.status in {"INTERRUPTED", "COMPLETED", "FAILED", "BASELINED"}
         ):
             raise ConfirmationClosedError("The execution owning this question has ended.")
     return {"delivery_mode": mode, "job_id": confirmation.get("job_id"), "context": question_context(parent)}

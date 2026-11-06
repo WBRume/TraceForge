@@ -12,6 +12,9 @@ import asyncio
 from datetime import datetime, timedelta
 from uuid import uuid4
 
+from sqlalchemy import exists
+from sqlalchemy.orm import aliased
+
 from app.config import settings
 from app.core.logging import get_logger
 from app.core.offload import run_db_txn
@@ -42,10 +45,20 @@ def _backoff_seconds(attempts: int) -> float:
 
 def _pending_sync(db, now: datetime):
     """Lease one page of pending rows for this process; returns scalar tuples."""
+    earlier = aliased(TaskEventOutbox)
     rows = (
         db.query(TaskEventOutbox)
-        .filter(TaskEventOutbox.status == "pending", TaskEventOutbox.available_at <= now)
+        .filter(
+            TaskEventOutbox.status == "pending",
+            TaskEventOutbox.available_at <= now,
+            ~exists().where(
+                earlier.task_id == TaskEventOutbox.task_id,
+                earlier.id < TaskEventOutbox.id,
+                earlier.status != "published",
+            ),
+        )
         .order_by(TaskEventOutbox.id)
+        .with_for_update(skip_locked=True)
         .limit(_BATCH_LIMIT)
         .all()
     )
@@ -119,6 +132,7 @@ async def publish_once() -> int:
                         "workspace_collaboration_update",
                         "task_repository_update",
                         "chat_message",
+                        "task_status_changed",
                     }
                     else "chat_submission_update",
                     payload=payload,
@@ -162,7 +176,10 @@ async def run_publisher() -> None:
             pass
         _WAKE.clear()
         try:
-            await publish_once()
+            # Drain committed successors immediately while keeping per-task order.
+            for _ in range(_BATCH_LIMIT):
+                if not await publish_once():
+                    break
             await run_db_txn(lambda db: _reclaim_sync(db, datetime.utcnow()))
         except asyncio.CancelledError:
             raise

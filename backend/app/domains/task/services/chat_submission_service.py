@@ -26,8 +26,9 @@ from app.core.offload import run_db, run_db_txn
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.chat_submission import TaskChatSubmission
-from app.domains.task.models.task import SddTask
+from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_event_outbox import TaskEventOutbox
+from app.domains.task.services import status_machine as sm
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.task_attempt_recovery_service import BLOCKING, recover_task_attempts
 
@@ -131,7 +132,7 @@ def assert_no_preparing_submission(db, task_id, allowed_id=None, *, initializati
         raise SubmissionError("当前消息正在准备，请等待完成")
 
 
-def _existing_submission_sync(db, task_id, actor_id, client_id, content, metadata):
+def _existing_submission_sync(db, task_id, actor_id, client_id, content, metadata, *, allow_recovered_interrupt=False):
     task = db.query(SddTask).filter(SddTask.id == task_id).with_for_update().one_or_none()
     if task is None:
         raise SubmissionError("Task not found", "TASK_NOT_FOUND", 404)
@@ -165,19 +166,20 @@ def _existing_submission_sync(db, task_id, actor_id, client_id, content, metadat
             raise SubmissionError("相同消息标识不能用于不同内容", "MESSAGE_CONFLICT")
         return serialize(previous)
     if str(getattr(task.status, "value", task.status)) in {
-        "PENDING",
+        "INITIALIZED",
         "PROVISIONING",
-        "DONE",
+        "COMPLETED",
         "FAILED",
         "BASELINED",
-        "INTERRUPTED",
-    }:
+    } or (task.status == "INTERRUPTED" and not allow_recovered_interrupt):
         raise SubmissionError("当前任务状态不允许发送普通消息")
     return None
 
 
-def _accept_sync(db, task_id, actor_id, client_id, content, metadata):
-    previous = _existing_submission_sync(db, task_id, actor_id, client_id, content, metadata)
+def _accept_sync(db, task_id, actor_id, client_id, content, metadata, *, after_recovery=False):
+    previous = _existing_submission_sync(
+        db, task_id, actor_id, client_id, content, metadata, allow_recovered_interrupt=after_recovery
+    )
     if previous is not None:
         return previous
     task = db.get(SddTask, task_id)
@@ -227,6 +229,14 @@ def _accept_sync(db, task_id, actor_id, client_id, content, metadata):
         raise SubmissionError(str(exc), "MODEL_SELECTION_INVALID", 422) from exc
     # Preserve the caller's exact metadata/hash for durable duplicate detection.
     # The task preference is frozen into the job when preparing this receipt.
+    if after_recovery and task.status == "INTERRUPTED":
+        # This same send requested continuation before recovery stopped a stale
+        # attempt. All blockers were checked above; retain its session/context.
+        sm.dispatch(db, task, sm.Trigger.RESUME, event_key=f"recovered-input:{client_id}", actor_id=actor_id)
+        task.error_message = None
+        task.interrupt_reason = None
+        task.interrupted_by_id = None
+        task.interrupted_at = None
     row = TaskChatSubmission(
         task_id=task_id,
         workspace_id=task.workspace_id,
@@ -243,6 +253,8 @@ def _accept_sync(db, task_id, actor_id, client_id, content, metadata):
     )
     db.add(row)
     db.flush()
+    if task.status in {TaskStatus.ROUND_COMPLETED, TaskStatus.AWAITING_INPUT}:
+        sm.dispatch(db, task, sm.Trigger.INPUT_SUBMITTED, event_key=f"input:{row.id}", actor_id=actor_id)
     from app.domains.workspace_collaboration.hooks import request_input
 
     request_input(db, task, row)
@@ -273,12 +285,14 @@ async def accept(*, task_id, actor_id, client_message_id, content, metadata=None
                     await run_db_txn(lambda db: _reconcile_sync(db, task_id=task_id))
                     try:
                         receipt = await run_db_txn(
-                            lambda db: _accept_sync(db, task_id, actor_id, client_id, text, clean)
+                            lambda db: _accept_sync(db, task_id, actor_id, client_id, text, clean, after_recovery=True)
                         )
                     except IntegrityError as exc:
                         try:
                             receipt = await run_db_txn(
-                                lambda db: _accept_sync(db, task_id, actor_id, client_id, text, clean)
+                                lambda db: _accept_sync(
+                                    db, task_id, actor_id, client_id, text, clean, after_recovery=True
+                                )
                             )
                         except IntegrityError:
                             raise SubmissionError("当前消息正在准备或执行，请稍后重试") from exc
@@ -296,7 +310,7 @@ def _load_preparation(db, submission_id):
     task = db.get(SddTask, row.task_id)
     if (
         not task
-        or str(getattr(task.status, "value", task.status)) in {"DONE", "FAILED", "BASELINED", "INTERRUPTED"}
+        or str(getattr(task.status, "value", task.status)) in {"COMPLETED", "FAILED", "BASELINED", "INTERRUPTED"}
         or (int(task.session_generation or 0), int(task.session_revision or 0))
         != (row.session_generation, row.session_revision)
     ):
@@ -539,7 +553,7 @@ def build_session_state(db, task_id, *, actor_id, client_message_ids=None):
 
     ordered = task_conversation_history.sort_chat_messages(list(messages.values()))
     return {
-        "task_id": task_id,
+        **sm.snapshot(task),
         "session_generation": int(task.session_generation or 0),
         "session_revision": int(task.session_revision or 0),
         "receipts": [serialize(row) for row in receipts.values()],

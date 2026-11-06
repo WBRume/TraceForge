@@ -1,3 +1,4 @@
+import { applyTaskStatusSnapshot } from '@/utils/taskStatusProjection'
 import { computed } from 'vue'
 import { nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -95,7 +96,7 @@ export function useMessageActions(options: {
       options.engineResetThinking()
       options.engineRunning.value = false
       if (options.getCurrentTask()) {
-        options.getCurrentTask().status = 'CODING'
+        applyTaskStatusSnapshot(options.getCurrentTask(), payload?.task_snapshot)
         options.getCurrentTask().session_generation = Number(payload?.session_generation || options.getCurrentTask().session_generation || 0)
       }
       options.restoreComposer(String(payload?.restored_content ?? msg.content ?? ''))

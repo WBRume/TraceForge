@@ -315,7 +315,7 @@ def _seed_second_workspace(db, user, ws_id="ws-rag-b", task_id="task-rag-b", nam
         name="Implement checkout B",
         description="Task process boundary",
         project_path="G:/repo",
-        status=TaskStatus.PLANNING,
+        status=TaskStatus.RUNNING,
     )
     db.add_all([ws_b, member_b, task_b])
     db.commit()

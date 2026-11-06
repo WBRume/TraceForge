@@ -49,7 +49,7 @@ def _ensure_spec_editable(asset) -> None:
     task = getattr(asset, "task", None)
     if not task:
         return
-    if task.status != TaskStatus.PENDING:
+    if task.status != TaskStatus.INITIALIZED:
         raise ReviewError(
             status_code=409,
             detail="Task engine already started, requirement document is read-only",

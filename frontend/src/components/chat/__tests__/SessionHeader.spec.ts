@@ -5,6 +5,7 @@ import { createPinia } from 'pinia'
 import SessionHeader from '@/components/chat/sections/SessionHeader.vue'
 import zh from '@/locales/zh.json'
 import en from '@/locales/en.json'
+import { TASK_STATUSES } from '@/utils/taskStatus'
 
 vi.mock('@/components/DeleteActionButton.vue', () => ({
   default: {
@@ -29,7 +30,7 @@ const i18n = createI18n({
 
 const createMockVm = (overrides: Record<string, any> = {}): any => ({
   route: { params: { wsId: 'w1', taskId: 't1' } },
-  currentTask: { id: 't1', name: '你是什么大模型', status: 'CODING' },
+  currentTask: { id: 't1', name: '你是什么大模型', status: 'RUNNING' },
   isLocalTask: false,
   localResourceStatus: 'online',
   localResourceLabel: '本地资源在线',
@@ -53,10 +54,29 @@ const createMockVm = (overrides: Record<string, any> = {}): any => ({
   ...overrides,
 })
 
+describe('collaboration status badges', () => {
+  for (const locale of ['zh', 'en'] as const) {
+    it.each(TASK_STATUSES)(`${locale}: localizes %s without exposing the enum`, status => {
+      const messages = { zh, en }
+      const wrapper = mount(SessionHeader, {
+        props: { vm: createMockVm({ currentTask: { id: 't1', name: '状态验证', status } }) },
+        global: { plugins: [createPinia(), createI18n({ legacy: false, locale, messages })] },
+      })
+      const badge = wrapper.get('[data-testid="session-task-status"]')
+      expect(badge.text()).toBe('')
+      expect(badge.attributes('title')).toBe(messages[locale].chat.status[status])
+      expect(badge.attributes('aria-label')).toBe(messages[locale].chat.status[status])
+      expect(badge.attributes('data-status')).toBe(status)
+      expect(badge.find('svg').exists()).toBe(true)
+      wrapper.unmount()
+    })
+  }
+})
+
 describe('SessionHeader local resource badge', () => {
   it('has no local collaboration or patch entry for diagnosis tasks', () => {
     const wrapper = mount(SessionHeader, {
-      props: { vm: createMockVm({ currentTask: { id: 'diagnosis', name: '定位任务', task_type: 'DIAGNOSIS', status: 'CODING' }, isDiagnosisTask: true, hidePatchWorkflows: true, collaboration: { supported: { value: false } } }) },
+      props: { vm: createMockVm({ currentTask: { id: 'diagnosis', name: '定位任务', task_type: 'DIAGNOSIS', status: 'RUNNING' }, isDiagnosisTask: true, hidePatchWorkflows: true, collaboration: { supported: { value: false } } }) },
       global: { plugins: [i18n, createPinia()] },
     })
     expect(wrapper.find('.collaboration-entry').exists()).toBe(false)
@@ -71,13 +91,13 @@ describe('SessionHeader local resource badge', () => {
     expect(wrapper.findAll('button').some(button => button.text().includes('钉在窗口中'))).toBe(true)
     expect(wrapper.findAll('button').some(button => button.text() === '取消任务')).toBe(false)
     await wrapper.setProps({ vm: createMockVm({ currentTask: { id: 't1', name: '静态任务', status: 'INTERRUPTED', business_state: 'TASK_IN_PROGRESS' } }) })
-    expect(wrapper.find('.badge.interrupted').text()).toBe('INTERRUPTED')
+    expect(wrapper.get('[data-testid="session-task-status"]').attributes('aria-label')).toBe('已中断')
     expect(wrapper.findAll('button').some(button => button.text() === '取消任务')).toBe(false)
     wrapper.unmount()
   })
   it('offers requirement linking only for completed diagnosis tasks with permission', async () => {
     const wrapper = mount(SessionHeader, {
-      props: { vm: createMockVm({ currentTask: { id: 't1', name: '定位任务', status: 'DONE' }, isDiagnosisTask: true }) },
+      props: { vm: createMockVm({ currentTask: { id: 't1', name: '定位任务', status: 'COMPLETED' }, isDiagnosisTask: true }) },
       global: { plugins: [i18n, createPinia()] },
     })
     const entry = wrapper.findAll('button').find(button => button.text() === '关联需求')!
@@ -85,9 +105,9 @@ describe('SessionHeader local resource badge', () => {
     expect(wrapper.emitted('link-requirement')).toHaveLength(1)
     await wrapper.setProps({ vm: createMockVm({ currentTask: { id: 't1', name: '定位任务', status: 'RUNNING' }, isDiagnosisTask: true }) })
     expect(wrapper.text()).not.toContain('关联需求')
-    await wrapper.setProps({ vm: createMockVm({ currentTask: { id: 't1', name: '定位任务', status: 'DONE' }, isDiagnosisTask: false }) })
+    await wrapper.setProps({ vm: createMockVm({ currentTask: { id: 't1', name: '定位任务', status: 'COMPLETED' }, isDiagnosisTask: false }) })
     expect(wrapper.text()).not.toContain('关联需求')
-    await wrapper.setProps({ vm: createMockVm({ currentTask: { id: 't1', name: '定位任务', status: 'DONE' }, isDiagnosisTask: true, canManageTaskStatus: false }) })
+    await wrapper.setProps({ vm: createMockVm({ currentTask: { id: 't1', name: '定位任务', status: 'COMPLETED' }, isDiagnosisTask: true, canManageTaskStatus: false }) })
     expect(wrapper.text()).not.toContain('关联需求')
     wrapper.unmount()
   })

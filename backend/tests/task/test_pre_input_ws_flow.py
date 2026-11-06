@@ -78,7 +78,7 @@ def _seed(db, project_path: str):
         creator_id=owner.id,
         name="Task",
         project_path=project_path,
-        status=TaskStatus.CODING,
+        status=TaskStatus.RUNNING,
     )
     rows = [owner, member, workspace, task]
     for user in (owner, member):

@@ -31,7 +31,7 @@ export function useSessionState(options: {
   loadHistory: (taskId: string, reset?: boolean) => Promise<void>
   loadActivePreInput: (taskId: string) => Promise<boolean>
   onSessionGenerationBump: () => void
-  syncTaskStatus: (status: string) => void
+  applyTaskStatusSnapshot: (snapshot: any) => void
   reloadSpecBootstrap: (taskId: string) => void
   hasTaskSpecification: (task: any) => boolean
 }) {
@@ -249,10 +249,8 @@ export function useSessionState(options: {
     if (String(payload?.task_id || '') !== String(task.id)) return
     if (payload?.session_generation != null
       && Number(payload.session_generation) < Number(task.session_generation || 0)) return
-    const status = String(payload?.status || '').trim()
-    if (status) {
-      options.syncTaskStatus(status)
-    }
+    if (payload?.session_revision != null) task.session_revision = Math.max(Number(task.session_revision || 0), Number(payload.session_revision))
+    options.applyTaskStatusSnapshot(payload)
     if (payload?.session_id !== undefined) {
       task.session_id = payload.session_id
     }

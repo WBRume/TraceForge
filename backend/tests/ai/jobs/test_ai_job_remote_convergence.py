@@ -632,7 +632,7 @@ def test_first_task_revision_preserves_session_and_finalizes_remote_result(monke
             workspace_id="ws-1",
             creator_id="user-1",
             name="First turn",
-            status=TaskStatus.CODING,
+            status=TaskStatus.RUNNING,
             session_revision=0,
         )
         db.add(task)

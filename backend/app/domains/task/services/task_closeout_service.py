@@ -20,6 +20,7 @@ from app.domains.task.schemas.task_closeout import (
     FailTaskCloseoutRequest,
     TaskCloseoutResponse,
 )
+from app.domains.task.services import status_machine as sm
 from app.domains.workspace_asset.models.workspace_asset import (
     RequirementAuditAction,
     SddRequirement,
@@ -65,9 +66,9 @@ def _get_open_task(db: Session, workspace_id: str, task_id: str) -> SddTask:
     task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
     if not task:
         raise TaskCloseoutError("Task not found", status_code=404)
-    if task.status == TaskStatus.BASELINED:
+    if task.baselined_at is not None:
         raise TaskCloseoutError("Task is BASELINED and locked for changes", status_code=403)
-    if task.status in {TaskStatus.DONE, TaskStatus.FAILED}:
+    if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
         raise TaskCloseoutError("Task is already closed", status_code=409)
     from app.domains.task.services.task_session_control_service import TaskSessionControlError
     from app.domains.workspace_collaboration.control import require_ready
@@ -193,8 +194,19 @@ def _failure_evidence_payloads(payload: FailTaskCloseoutRequest, task_type: Task
     return evidence
 
 
-def _finalize_task(db: Session, task: SddTask, *, status: TaskStatus, message: str, metric_value: float) -> None:
-    task.status = status
+def _finalize_task(
+    db: Session,
+    task: SddTask,
+    *,
+    trigger: sm.Trigger,
+    actor_id: str,
+    message: str,
+    metric_value: float,
+    content: dict,
+    result_fields: dict,
+) -> TaskCloseoutResponse:
+    key = f"closeout:{trigger.value}"
+    sm.dispatch(db, task, trigger, event_key=key, actor_id=actor_id, reason=message, content=content)
     task.error_message = _short(message)
     task.session_id = None
     task.interrupt_reason = None
@@ -207,8 +219,11 @@ def _finalize_task(db: Session, task: SddTask, *, status: TaskStatus, message: s
             metric_value=metric_value,
         )
     )
+    result = TaskCloseoutResponse(**sm.snapshot(task), **result_fields)
+    sm.remember_command_result(db, task.id, key, result.model_dump(mode="json"))
     db.commit()
     db.refresh(task)
+    return result
 
 
 def _bind_closeout_snapshot(db, task, payload, evidence_payloads):
@@ -228,6 +243,19 @@ def complete_task_closeout(
     actor_id: str,
     payload: CompleteTaskCloseoutRequest,
 ) -> TaskCloseoutResponse:
+    previous = sm.receipt(db, task_id, "closeout:COMPLETE")
+    if previous:
+        task = db.query(SddTask).filter_by(id=task_id, workspace_id=workspace_id).one()
+        sm.dispatch(
+            db,
+            task,
+            sm.Trigger.COMPLETE,
+            event_key="closeout:COMPLETE",
+            actor_id=actor_id,
+            reason=payload.completion_summary,
+            content=payload.model_dump(mode="json"),
+        )
+        return TaskCloseoutResponse(**previous)
     task = _get_open_task(db, workspace_id, task_id)
     from app.domains.local_resource.service import require_operation
 
@@ -302,20 +330,26 @@ def complete_task_closeout(
     from app.domains.notification.services.task_awareness import capture_business
 
     capture_business(db, task, actor_id, "TASK_COMPLETED", payload.completion_summary)
-    _finalize_task(db, task, status=TaskStatus.DONE, message=payload.completion_summary, metric_value=1.0)
+    result = _finalize_task(
+        db,
+        task,
+        trigger=sm.Trigger.COMPLETE,
+        actor_id=actor_id,
+        message=payload.completion_summary,
+        metric_value=1.0,
+        content=payload.model_dump(mode="json"),
+        result_fields={
+            "business_state": "TASK_COMPLETED",
+            "evidence_ids": evidence_ids,
+            "final_summary_id": final_summary_id,
+            "confirmed_server_snapshot_id": snapshot_id,
+        },
+    )
     from app.domains.workspace_asset.services.task_final_workflow.review_service import ensure_expert_review_for_task
 
     ensure_expert_review_for_task(db, task, actor_id)
     db.commit()
-    return TaskCloseoutResponse(
-        task_id=task_id,
-        workspace_id=workspace_id,
-        status="DONE",
-        business_state="TASK_COMPLETED",
-        evidence_ids=evidence_ids,
-        final_summary_id=final_summary_id,
-        confirmed_server_snapshot_id=snapshot_id,
-    )
+    return result
 
 
 def fail_task_closeout(
@@ -325,6 +359,19 @@ def fail_task_closeout(
     actor_id: str,
     payload: FailTaskCloseoutRequest,
 ) -> TaskCloseoutResponse:
+    previous = sm.receipt(db, task_id, "closeout:FAIL")
+    if previous:
+        task = db.query(SddTask).filter_by(id=task_id, workspace_id=workspace_id).one()
+        sm.dispatch(
+            db,
+            task,
+            sm.Trigger.FAIL,
+            event_key="closeout:FAIL",
+            actor_id=actor_id,
+            reason=payload.failure_summary,
+            content=payload.model_dump(mode="json"),
+        )
+        return TaskCloseoutResponse(**previous)
     task = _get_open_task(db, workspace_id, task_id)
     from app.domains.local_resource.service import require_operation
 
@@ -364,13 +411,18 @@ def fail_task_closeout(
     from app.domains.notification.services.task_awareness import capture_business
 
     capture_business(db, task, actor_id, "TASK_FAILED", payload.failure_summary)
-    _finalize_task(db, task, status=TaskStatus.FAILED, message=payload.failure_summary, metric_value=0.0)
-    return TaskCloseoutResponse(
-        task_id=task_id,
-        workspace_id=workspace_id,
-        status="FAILED",
-        business_state="TASK_FAILED",
-        evidence_ids=evidence_ids,
-        final_summary_id=final_summary_id,
-        confirmed_server_snapshot_id=snapshot_id,
+    return _finalize_task(
+        db,
+        task,
+        trigger=sm.Trigger.FAIL,
+        actor_id=actor_id,
+        message=payload.failure_summary,
+        metric_value=0.0,
+        content=payload.model_dump(mode="json"),
+        result_fields={
+            "business_state": "TASK_FAILED",
+            "evidence_ids": evidence_ids,
+            "final_summary_id": final_summary_id,
+            "confirmed_server_snapshot_id": snapshot_id,
+        },
     )

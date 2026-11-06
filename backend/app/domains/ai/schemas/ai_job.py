@@ -12,6 +12,7 @@ class AiJobResponse(BaseModel):
     id: str
     workspace_id: str
     task_id: str | None = None
+    task_snapshot: dict[str, Any] | None = None
     asset_id: str | None = None
     thread_id: str | None = None
     channel: str

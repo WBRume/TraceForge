@@ -41,7 +41,7 @@ def environment(tmp_path, monkeypatch):
     with factory() as db:
         user, ws, task = _seed_workspace(db)
         task.project_path = str(root)
-        task.status = TaskStatus.CODING
+        task.status = TaskStatus.RUNNING
         task.session_id = "old-provider-session"
         task.session_generation = 2
         for name, upstream in zip(("a", "b"), upstreams, strict=True):

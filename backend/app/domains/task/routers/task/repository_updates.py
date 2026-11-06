@@ -10,9 +10,9 @@ from starlette.concurrency import run_in_threadpool
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import User, WorkspacePermission
-from app.domains.task.models.task import TaskStatus
 from app.domains.task.services.repository_updates import service
 from app.domains.task.services.repository_updates.git import UpdateError
+from app.domains.task.services.status_policy import is_terminal
 from app.domains.workspace.services import workspace_service
 from app.domains.workspace_collaboration.router import _task
 
@@ -75,7 +75,8 @@ async def get(ws_id: str, task_id: str, user: User = Depends(get_current_user), 
     def summary(tx, task, actor):
         return {
             **service.summary(tx, task),
-            "can_update": task.status != TaskStatus.BASELINED
+            "can_update": task.baselined_at is None
+            and not is_terminal(task.status)
             and workspace_service.user_has_permission(tx, ws_id, actor, WorkspacePermission.START_TASK),
         }
 

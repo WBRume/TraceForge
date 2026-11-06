@@ -23,4 +23,5 @@ from app.domains.task.models import task as _task_models  # noqa: F401
 from app.domains.task.models import task_cli_bootstrap as _task_cli_bootstrap_models  # noqa: F401
 from app.domains.task.models import task_event_outbox as _task_event_outbox_models  # noqa: F401
 from app.domains.task.models import task_repository as _task_repo_models  # noqa: F401
+from app.domains.task.models import task_status_event as _task_status_event_models  # noqa: F401
 from app.domains.task.models import test_result as _test_result_models  # noqa: F401

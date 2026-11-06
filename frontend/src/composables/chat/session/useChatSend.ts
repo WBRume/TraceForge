@@ -45,6 +45,7 @@ export function useChatSend(options: {
   }
   noteSentTime: (clientMessageId: string) => void
   findHitlCard: (cardId: string) => HitlCard | undefined
+  getPendingConfirmation?: () => HitlCard | undefined
   engine: {
     engineRunning: { value: boolean }
   }
@@ -90,6 +91,13 @@ export function useChatSend(options: {
     sendOptions: { displayContent?: string; metadata?: Record<string, any> } = {},
   ): Promise<boolean> => {
     if (options.isInitializing?.()) return false
+    if (options.task.isTerminalStatus.value || options.task.isTaskProvisioning.value) return false
+    const confirmation = options.task.getCurrentTask()?.status === 'AWAITING_INPUT' ? options.getPendingConfirmation?.() : undefined
+    if (confirmation && !sendOptions.metadata?.interaction_id) {
+      sendOptions = { ...sendOptions, metadata: { ...sendOptions.metadata,
+        interaction_id: confirmation.interaction_id, reply_to_message_id: confirmation.message_id,
+        confirmation_value: content, job_id: confirmation.job_id } }
+    }
     if (!sendOptions.metadata?.interaction_id && options.collaborationBlocked?.()) {
       ElMessage.warning(t('collaboration.blocked'))
       return false

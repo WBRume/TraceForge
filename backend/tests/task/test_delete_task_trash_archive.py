@@ -46,7 +46,7 @@ class DeleteTaskTrashArchiveTest(unittest.TestCase):
                 name=task_name,
                 project_path=task_path,
                 git_repo_url=git_repo_url,
-                status=TaskStatus.PLANNING,
+                status=TaskStatus.RUNNING,
             )
             db.add_all([user, workspace, task])
             db.commit()

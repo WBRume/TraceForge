@@ -8,6 +8,8 @@ export type ChatAiJobStatus = 'PENDING' | 'RUNNING' | 'WAITING_HITL' | 'INTERRUP
 export type ChatAiJob = {
   id: string
   task_id?: string | null
+  task_snapshot?: import('@/utils/taskStatusProjection').TaskStatusSnapshot | null
+  session_revision?: number | null
   creator_id?: string
   status: ChatAiJobStatus
   progress: number
@@ -39,7 +41,7 @@ export type SpecDrawerLevel = 0 | 1 | 2 | 3
 export type OpenSpecDrawerLevel = 1 | 2 | 3
 export type SpecDrawerTab = 'spec_doc' | 'plan_docs' | 'diag_docs' | 'diag_code'
 
-export type TaskSessionFilter = 'ALL' | 'DONE' | 'FAILED'
+export type TaskSessionFilter = 'ALL' | 'INITIALIZED' | 'RUNNING' | 'ROUND_COMPLETED' | 'AWAITING_INPUT' | 'INTERRUPTED' | 'COMPLETED' | 'FAILED'
 export type TaskRelationFilter = 'created_by_me' | 'mentioned_me' | 'messaged_by_me' | 'followed_by_me'
 export type TaskTypeFilterValue = 'ALL' | 'DEVELOPMENT' | 'DIAGNOSIS'
 export type TaskListFilters = {
@@ -108,6 +110,7 @@ export type HitlCard = {
   interaction_id: string
   message_id: string
   hitl_type: string
+  delivery_mode?: 'live' | 'turn'
   prompt: string
   options: any[]
   fields?: ConfirmationField[]

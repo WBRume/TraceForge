@@ -52,7 +52,7 @@ def initialize_api(collaboration_db, monkeypatch, tmp_path):
             creator_id="u",
             name="Failed preparation",
             project_path="/other",
-            status=TaskStatus.CODING,
+            status=TaskStatus.RUNNING,
             session_generation=8,
             session_revision=9,
         )

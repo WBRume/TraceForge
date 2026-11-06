@@ -26,7 +26,7 @@ describe('TaskFinalWorkflowEntryPanel', () => {
             id: 'task-1',
             workspace_id: 'ws-1',
             name: 'Final workflow task',
-            status: 'DONE',
+            status: 'COMPLETED',
             requirement_count: 1,
             spec_count: 0,
             plan_count: 0,

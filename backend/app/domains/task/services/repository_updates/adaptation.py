@@ -5,6 +5,7 @@ from uuid import uuid4
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs.constants import queue_key_for_task
 from app.domains.task.models.task import SddTask
+from app.domains.task.services import status_machine as sm
 
 from . import git, service, storage
 from .git import UpdateError
@@ -23,6 +24,7 @@ def create(db, task, actor_id, operation_id, version, instruction, *, auto_apply
     # Keep the merge preview intact. Adaptation starts in fresh, independent
     # clones at each pinned remote commit, never in the task's original path.
     attempt_id = str(uuid4())
+    sm.dispatch(db, task, sm.Trigger.INPUT_SUBMITTED, event_key=f"adapt-input:{attempt_id}", actor_id=actor_id)
     root = storage.directory(task, operation_id) / "adaptations" / attempt_id
     root.mkdir(parents=True)
     for repo in plan["repositories"]:
@@ -108,6 +110,7 @@ def create(db, task, actor_id, operation_id, version, instruction, *, auto_apply
     )
     db.add(job)
     db.flush()
+    sm.dispatch(db, task, sm.Trigger.BIND_EXECUTION, event_key=f"bind:{job.id}", actor_id=actor_id, job_id=job.id)
     plan["state"], plan["job_id"], plan["error"] = "ADAPTING", job.id, None
     plan["auto_apply"] = auto_apply
     storage.save(db, task, plan)

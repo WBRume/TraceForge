@@ -47,7 +47,7 @@ def _seed_task(db):
         creator_id=user.id,
         name="Task",
         project_path="G:/tmp/task-1",
-        status="CODING",
+        status="RUNNING",
     )
     db.add_all([user, workspace, task])
     db.commit()

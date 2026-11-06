@@ -7,6 +7,7 @@
 
 import os
 import sys
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -84,7 +85,7 @@ def test_load_start_context_rejects_running_or_interrupted_task(db_env):
     with _session(db_env) as db:
         _user, _ws, task = _seed_workspace(db, workspace_id="ws-guard", task_id="task-guard")
 
-        task.status = TaskStatus.CODING
+        task.status = TaskStatus.RUNNING
         db.commit()
         with pytest.raises(task_session_control_service.TaskSessionControlError) as exc:
             task_session_control_service.load_start_task_context_sync(db, ws_id="ws-guard", task_id="task-guard")
@@ -100,7 +101,8 @@ def test_load_start_context_rejects_running_or_interrupted_task(db_env):
 def test_load_start_context_rejects_baselined_task(db_env):
     with _session(db_env) as db:
         _user, _ws, task = _seed_workspace(db, workspace_id="ws-base", task_id="task-base")
-        task.status = TaskStatus.BASELINED
+        task.status = TaskStatus.COMPLETED
+        task.baselined_at = datetime.utcnow()
         db.commit()
         with pytest.raises(task_session_control_service.TaskSessionControlError) as exc:
             task_session_control_service.load_start_task_context_sync(db, ws_id="ws-base", task_id="task-base")
@@ -117,7 +119,7 @@ def test_load_start_context_rejects_unknown_task(db_env):
 def test_load_start_context_allows_pending_task(db_env):
     with _session(db_env) as db:
         _user, _ws, task = _seed_workspace(db, workspace_id="ws-ok", task_id="task-ok")
-        task.status = TaskStatus.PENDING
+        task.status = TaskStatus.INITIALIZED
         task.description = "准备就绪"
         db.commit()
         state = task_session_control_service.load_start_task_context_sync(db, ws_id="ws-ok", task_id="task-ok")
@@ -181,7 +183,7 @@ def test_apply_initialize_bumps_generation_and_builds_prompt(db_env):
         )
 
         assert state["user_display"] == "重新开始"
-        assert task.status == TaskStatus.CODING
+        assert task.status == TaskStatus.RUNNING
         assert task.retry_count == 2
         assert task.session_generation == 3
         assert task.session_id is None

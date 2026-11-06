@@ -79,7 +79,7 @@ def test_created_task_starts_in_provisioning_and_prepare_moves_to_pending(tmp_pa
                 workspace_id=workspace.id,
                 task_id=task.id,
             )
-            assert prepared.status == TaskStatus.PENDING.value
+            assert prepared.status == TaskStatus.INITIALIZED.value
             assert os.path.exists(prepared.project_path)
     finally:
         engine.dispose()
@@ -108,7 +108,7 @@ def test_start_task_persists_user_initial_prompt_and_links_job(tmp_path, monkeyp
     try:
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-start", task_id="task-start")
-            task.status = TaskStatus.PENDING.value
+            task.status = TaskStatus.INITIALIZED.value
             task.project_path = str(tmp_path)
             task.description = "backend task description"
             db.commit()
@@ -147,7 +147,7 @@ def test_start_task_persists_sop_auto_run_main_switch(tmp_path, monkeypatch):
     try:
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-sop", task_id="task-sop")
-            task.status = TaskStatus.PENDING.value
+            task.status = TaskStatus.INITIALIZED.value
             task.project_path = str(tmp_path)
             db.commit()
             ws_id, task_id = workspace.id, task.id

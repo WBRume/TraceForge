@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { taskStatusKey } from '@/utils/taskStatus'
 import { computed, shallowRef } from 'vue'
 import { GitBranch, History, Link2Off, MessageSquare, Scissors } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
@@ -129,7 +130,7 @@ function submitLink() {
           >
             <span>
               <strong>{{ link.task_name || link.task_id }}</strong>
-              <small>{{ link.relation_type }} · {{ link.task_status }} · {{ link.current_phase || t('workspace_assets.requirements.detail.phase_pending') }}</small>
+              <small>{{ link.relation_type }} · {{ t(taskStatusKey(link.task_status)) }} · {{ link.current_phase || t('workspace_assets.requirements.detail.phase_pending') }}</small>
             </span>
             <button type="button" class="icon-action" @click.prevent="emit('unlink', link.task_id)" :title="t('workspace_assets.requirements.actions.unlink_task')">
               <Link2Off :size="15" />

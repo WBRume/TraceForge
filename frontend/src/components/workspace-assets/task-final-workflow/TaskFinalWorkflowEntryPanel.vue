@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { taskStatusKey } from '@/utils/taskStatus'
 import { computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
@@ -71,11 +72,6 @@ function stepDesc(step: TaskFinalWorkflowStep) {
   return te(detailKey) ? t(detailKey, { count: step.blocking_count ?? 0 }) : step.detail
 }
 
-function statusLabel(status: string | null | undefined) {
-  const normalized = String(status || 'UNKNOWN').toUpperCase()
-  const key = `${baseKey}.status.${normalized.toLowerCase().replace(/-/g, '_')}`
-  return te(key) ? t(key) : normalized
-}
 
 watch(
   () => [props.workspaceId, props.taskId] as const,
@@ -131,8 +127,8 @@ defineExpose({ refresh, workflowStatus })
         <div class="strip-item">
           <span class="strip-label">{{ t(`${baseKey}.fields.task`) }}</span>
           <span class="strip-value font-bold text-slate-800">
-            <span class="status-dot" :class="workflow.task.status === 'DONE' ? 'is-done' : 'is-coding'"></span>
-            {{ statusLabel(workflow.task.status) }}
+            <span class="status-dot" :class="workflow.task.status === 'COMPLETED' ? 'is-done' : 'is-coding'"></span>
+            {{ t(taskStatusKey(workflow.task.status)) }}
           </span>
         </div>
         <div class="strip-item">

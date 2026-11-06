@@ -1,6 +1,7 @@
 import { shallowRef } from 'vue'
 
 import api from '@/utils/api'
+import { generateClientMessageId } from './chat/shared/messageIdentity'
 
 type WorkspaceIdGetter = () => string
 
@@ -30,12 +31,17 @@ export function useTaskSessionControls(options: UseTaskSessionControlsOptions) {
     return `/workspaces/${wsId}/tasks/${taskId}/${action}`
   }
 
+  const pendingInterrupts = new Map<string, string>()
   const interruptTask = async (taskId: string, reason?: string) => {
+    const commandId = pendingInterrupts.get(taskId) || generateClientMessageId()
+    pendingInterrupts.set(taskId, commandId)
     interruptingTask.value = true
     try {
       const res = await api.post(taskUrl(taskId, 'interrupt'), {
         reason: String(reason || '').trim() || undefined,
+        command_id: commandId,
       })
+      pendingInterrupts.delete(taskId)
       return res.data
     } finally {
       interruptingTask.value = false

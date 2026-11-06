@@ -140,7 +140,7 @@ async def initialize(
                 session, session.get(SddTask, task_id), actor_user_id, collaboration
             )
         )
-        await _stop_previous(run, ws_id, task_id, actor_user_id)
+        await _stop_previous(run, ws_id, task_id, actor_user_id, db)
         operation = await run(
             lambda session: _begin(session, ws_id, task_id, actor_user_id, operation_id, request, collaboration)
         )
@@ -210,7 +210,29 @@ async def initialize(
     return {"msg": "Task initialized", "operation_id": identifier, "job": job}
 
 
-async def _stop_previous(run, ws_id, task_id, actor_id):
+async def _stop_previous(run, ws_id, task_id, actor_id, db):
+    # A running remote attempt can still be creating its session. Persist its
+    # stop locator before fencing the writer, as the interrupt path does.
+    await control._wait_for_remote_attempt_start(run, task_id)
+    await run(
+        lambda session: control.prepare_initialize_sync(
+            session,
+            ws_id=ws_id,
+            task_id=task_id,
+            actor_user_id=actor_id,
+            cancel_jobs=False,
+        )
+    )
+    if await run(lambda session: control._initialize_has_active_jobs_sync(session, task_id=task_id)):
+        # Reuse the stop acknowledgement/finalizer path. Cancelling the job and
+        # dropping engine.stop()'s remote ACK can otherwise strand it ORPHANED.
+        await control.interrupt_task(
+            db,
+            task_id=task_id,
+            workspace_id=ws_id,
+            actor_user_id=actor_id,
+            reason="Task initialized with a fresh session",
+        )
     prepared = await run(
         lambda db: control.prepare_initialize_sync(db, ws_id=ws_id, task_id=task_id, actor_user_id=actor_id)
     )

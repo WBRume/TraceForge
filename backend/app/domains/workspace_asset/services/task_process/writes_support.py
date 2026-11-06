@@ -45,7 +45,7 @@ def get_task_or_error(db: Session, workspace_id: str, task_id: str) -> SddTask:
 
 
 def ensure_task_not_baselined(task: SddTask) -> None:
-    if enum_value(task.status) == TaskStatus.BASELINED.value:
+    if task.baselined_at is not None:
         raise WorkspaceAssetError(
             "Task is BASELINED and locked for process changes.",
             status_code=403,
@@ -161,25 +161,19 @@ def validate_evidence_source(
 
 
 _RUNNING_STATUSES = {
-    TaskStatus.PENDING,
-    TaskStatus.BRAINSTORMING,
-    TaskStatus.PLANNING,
-    TaskStatus.CODING,
-    TaskStatus.TESTING,
-    TaskStatus.REVIEWING,
-    TaskStatus.DEPLOYING,
-    TaskStatus.SUSPENDED,
+    TaskStatus.INITIALIZED,
+    TaskStatus.RUNNING,
+    TaskStatus.ROUND_COMPLETED,
+    TaskStatus.AWAITING_INPUT,
     TaskStatus.INTERRUPTED,
 }
 
 
 def validate_evidence_for_phase(task_status: TaskStatus, evidence_type: EvidenceType) -> None:
-    """Running tasks cannot have evidence; DONE allows CODE/BUSINESS/HUMAN_CONFIRMATION; FAILED allows FAILURE/RUNTIME/AI."""
-    if task_status == TaskStatus.BASELINED:
-        raise WorkspaceAssetError("Task is BASELINED and locked for process changes.", status_code=403)
+    """Running tasks cannot have evidence; COMPLETED allows CODE/BUSINESS/HUMAN_CONFIRMATION; FAILED allows FAILURE/RUNTIME/AI."""
     if task_status in _RUNNING_STATUSES:
         raise WorkspaceAssetError(
-            "Evidence can only be created after task reaches DONE or FAILED status.",
+            "Evidence can only be created after task reaches COMPLETED or FAILED status.",
             status_code=422,
         )
     if task_status == TaskStatus.FAILED and evidence_type not in (

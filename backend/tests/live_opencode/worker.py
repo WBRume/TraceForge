@@ -82,7 +82,7 @@ def seed(root, config, factory):
             workspace_id=workspace.id,
             creator_id=user.id,
             name=config["case"],
-            status=TaskStatus.CODING,
+            status=TaskStatus.RUNNING,
             project_path=str(root / "work"),
             session_revision=0,
             session_generation=1,

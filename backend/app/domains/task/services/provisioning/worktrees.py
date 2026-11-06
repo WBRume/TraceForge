@@ -24,7 +24,7 @@ def register_worktrees(db: Session, *, workspace_id: str, task_id: str) -> None:
     workspace = db.get(Workspace, workspace_id)
     if workspace is None:
         raise ValueError("Workspace not found")
-    if task.status == TaskStatus.PENDING:
+    if task.status == TaskStatus.INITIALIZED:
         return  # Re-delivery after readiness was committed, before job success.
     if task.status != TaskStatus.PROVISIONING:
         raise ValueError("Task no longer provisioning")

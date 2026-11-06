@@ -1,4 +1,4 @@
-"""Change task status, following and trash lifecycle."""
+"""Task following and trash lifecycle. Status belongs to status_machine."""
 
 import os
 import shutil
@@ -43,15 +43,6 @@ def set_task_following(
         db.delete(row)
     db.commit()
     return following
-
-
-def update_task_status(db: Session, task: SddTask, status: TaskStatus, error_message: str | None = None) -> SddTask:
-    task.status = status
-    if error_message:
-        task.error_message = error_message
-    db.commit()
-    db.refresh(task)
-    return task
 
 
 DELETE_TRASH_DIR_NAME = ".delete"

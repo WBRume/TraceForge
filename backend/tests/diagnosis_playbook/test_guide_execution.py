@@ -12,7 +12,7 @@ from tests.diagnosis_playbook.test_guide_session import hypotheses, setup
 
 def configured(db):
     task, user = setup(db)
-    task.status = TaskStatus.CODING
+    task.status = TaskStatus.RUNNING
     task.session_generation = 1
     db.commit()
     return task, user

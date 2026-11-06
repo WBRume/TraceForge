@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { reactive, watch } from 'vue'
+import { computed, reactive, watch } from 'vue'
+import { TASK_STATUSES, taskStatusKey } from '@/utils/taskStatus'
 import { useI18n } from 'vue-i18n'
 import BaseSelect from '@/components/BaseSelect.vue'
 import type { TaskListQuery, TaskSummary, TaskListSummaryStats } from '@/types/workspaceAssets'
@@ -31,7 +32,7 @@ const filters = reactive({
   page_size: props.pageSize || 20,
 })
 
-const statusOptions = ['PENDING', 'RUNNING', 'DONE', 'FAILED'].map(opt => ({ label: opt, value: opt }))
+const statusOptions = computed(() => TASK_STATUSES.map(value => ({ label: t(taskStatusKey(value)), value })))
 const phaseOptions = [
   'REQUIREMENT_CLARIFICATION',
   'AI_SOLUTION',
@@ -100,7 +101,8 @@ function handlePageSizeChange(pageSize: number) {
 }
 
 function getStatusType(status: string) {
-  if (status === 'DONE') return 'success'
+  if (['COMPLETED', 'ROUND_COMPLETED'].includes(status)) return 'success'
+  if (['AWAITING_INPUT', 'INTERRUPTED'].includes(status)) return 'warning'
   if (status === 'FAILED') return 'danger'
   if (status === 'RUNNING') return 'primary'
   return 'info'
@@ -208,7 +210,7 @@ function handleRowClick(row: TaskSummary) {
 
       <el-table-column prop="status" :label="t('workspace_assets.tasks.fields.status')" width="110" sortable="custom">
         <template #default="{ row }">
-          <el-tag :type="getStatusType(row.status)" effect="light">{{ row.status }}</el-tag>
+          <el-tag :type="getStatusType(row.status)" effect="light">{{ t(taskStatusKey(row.status)) }}</el-tag>
         </template>
       </el-table-column>
 

@@ -24,7 +24,7 @@ def search_assets(
     )
 
     if not include_unfinished_task_spec:
-        query = query.filter(~((SddAsset.asset_type == AssetType.SPEC) & (SddTask.status != TaskStatus.DONE)))
+        query = query.filter(~((SddAsset.asset_type == AssetType.SPEC) & (SddTask.status != TaskStatus.COMPLETED)))
 
     if task_id:
         query = query.filter(SddAsset.task_id == task_id)

@@ -17,7 +17,7 @@ describe('useTaskCloseout', () => {
     const { useTaskCloseout } = await import('@/composables/useTaskCloseout')
     apiMock.post
       .mockResolvedValueOnce({ data: { filename: 'evidence.txt', path: 'uploads/evidence.txt', url: '/api/upload/files/evidence.txt' } })
-      .mockResolvedValueOnce({ data: { task_id: 'task-1', workspace_id: 'ws-1', status: 'DONE', evidence_ids: ['evidence-1'] } })
+      .mockResolvedValueOnce({ data: { task_id: 'task-1', workspace_id: 'ws-1', status: 'COMPLETED', evidence_ids: ['evidence-1'] } })
 
     const closeout = useTaskCloseout()
     const file = new File(['ok'], 'evidence.txt', { type: 'text/plain' })
@@ -48,7 +48,7 @@ describe('useTaskCloseout', () => {
         ],
       }),
     )
-    expect(result?.status).toBe('DONE')
+    expect(result?.status).toBe('COMPLETED')
   })
 
   it('submits failure closeout without calling old cancel endpoint', async () => {

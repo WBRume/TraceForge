@@ -48,7 +48,7 @@ class ContextTokenServiceTest(unittest.TestCase):
             name="Task",
             description="Build the thing",
             project_path=self.tmpdir.name,
-            status=TaskStatus.CODING,
+            status=TaskStatus.RUNNING,
         )
         job = SddAiJob(
             id="job-1",

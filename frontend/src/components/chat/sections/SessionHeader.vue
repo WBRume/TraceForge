@@ -17,8 +17,10 @@ import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import ChatMoreActionsMenu from '@/components/chat/ChatMoreActionsMenu.vue'
 import TaskPinButton from '@/components/floating/TaskPinButton.vue'
 import CollaborationEntry from '@/components/collaboration/CollaborationEntry.vue'
+import TaskStatusIcon from '@/components/chat/TaskStatusIcon.vue'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
+import { normalizeTaskStatus, taskStatusKey } from '@/utils/taskStatus'
 
 /**
  * 会话头部动作域：引擎启停、初始化、技能/文档抽屉入口、补丁工作流、
@@ -87,7 +89,12 @@ onBeforeUnmount(() => {
       </button>
       <h2 :title="props.vm.currentTask.name">{{ props.vm.currentTask.name }}</h2>
       <TaskPinButton :task-id="props.vm.currentTask.id" :task-name="props.vm.currentTask.name" :workspace-id="String(props.vm.route.params.wsId || '')" :workspace-name="workspaceStore.currentWorkspace?.name || ''" />
-      <span class="badge" :class="props.vm.currentTask.status.toLowerCase()">{{ props.vm.currentTask.status }}</span>
+      <span class="task-status-indicator" data-testid="session-task-status" role="status"
+        :title="t(taskStatusKey(props.vm.currentTask.status))"
+        :aria-label="t(taskStatusKey(props.vm.currentTask.status))"
+        :data-status="normalizeTaskStatus(props.vm.currentTask.status)">
+        <TaskStatusIcon :status="props.vm.currentTask.status" />
+      </span>
       <span
         v-if="props.vm.isLocalTask"
         class="badge local-resource-badge"
@@ -113,7 +120,7 @@ onBeforeUnmount(() => {
       <div class="action-divider"></div>
 
       <button
-        v-if="props.vm.isDiagnosisTask && props.vm.currentTask.status === 'DONE' && props.vm.canManageTaskStatus"
+        v-if="props.vm.isDiagnosisTask && props.vm.currentTask.status === 'COMPLETED' && props.vm.canManageTaskStatus"
         class="btn-micro"
         @click="emit('link-requirement')"
       >
@@ -138,6 +145,11 @@ onBeforeUnmount(() => {
 
       <button class="icon-btn" :disabled="!props.vm.canInitializeAction" @click="props.vm.handleInitialize" :title="t('chat.initialize')">
         <RotateCcw class="w-4 h-4" />
+      </button>
+      <button class="icon-btn interrupt-btn" :class="{ active: props.vm.canTemporarilyInterrupt }"
+        data-testid="interrupt-task" :disabled="!props.vm.canTemporarilyInterrupt"
+        :title="t('chat.temporary_interrupt')" @click="props.vm.interruptCurrentRun">
+        <OctagonPause class="w-4 h-4" />
       </button>
       <button class="icon-btn danger" :disabled="props.vm.isTerminalStatus || !props.vm.canManageTaskStatus" @click="props.vm.handleInterruptClick" :title="t('chat.mark_failed_confirm')">
         <OctagonPause class="w-4 h-4" />
@@ -256,6 +268,17 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
 }
 
+.task-status-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+}
+.chat-header .interrupt-btn.active {
+  color: #b45309;
+  background: #fef3c7;
+}
 .badge {
   font-size: 0.75rem;
   padding: 2px 8px;
@@ -265,10 +288,6 @@ onBeforeUnmount(() => {
   font-weight: 600;
   letter-spacing: 0.5px;
 }
-.badge.coding, .badge.running { background-color: var(--color-primary-100); color: var(--color-primary-900); }
-.badge.done { background-color: #D1FAE5; color: #065F46; }
-.badge.failed { background-color: #FEE2E2; color: #991B1B; }
-.badge.interrupted { background-color: #FEF3C7; color: #92400E; }
 
 .badge.local-resource-badge {
   display: inline-flex;

@@ -332,7 +332,7 @@ watch(
         @update:selected-model="vm.selectAgentModel" @reload-models="vm.reloadAgentModels"
         :disabled="vm.initializingTask || vm.sendingChat || (!vm.suggestionOnly && (vm.isChatLocked || Boolean(playbook.run && !['COMPLETED', 'CANCELLED'].includes(playbook.run.state))))"
         :send-blocked="vm.collaboration?.blocked.value"
-        :running="!vm.suggestionOnly && vm.engineRunning"
+        :running="!vm.suggestionOnly && vm.engineRunning && vm.currentTask?.status !== 'AWAITING_INPUT'"
         :can-interrupt="vm.canTemporarilyInterrupt"
         :interrupting="vm.interruptingTask"
         :placeholder="vm.chatInputPlaceholder"
@@ -441,7 +441,7 @@ watch(
     <StartTaskModal :vm="vm" />
 
     <TaskRequirementLinkDrawer
-      v-if="showRequirementLinkDrawer && vm.currentTask?.task_type === 'DIAGNOSIS' && vm.currentTask.status === 'DONE'"
+      v-if="showRequirementLinkDrawer && vm.currentTask?.task_type === 'DIAGNOSIS' && vm.currentTask.status === 'COMPLETED'"
       :workspace-id="String(vm.route.params.wsId || '')" :task-id="vm.currentTask.id"
       :task-name="vm.currentTask.name" :requirements="vm.currentTask.requirements || []"
       @close="showRequirementLinkDrawer = false"

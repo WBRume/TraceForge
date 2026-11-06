@@ -10,7 +10,7 @@ const createDeps = () => {
     contextRefresh: 0,
     upserts: [] as any[],
     removedByIds: [] as Array<Set<string>>,
-    statusSyncs: [] as string[],
+    statusSyncs: [] as any[],
     statusCardPushes: [] as any[],
     statusCardDrops: 0,
     cardsCleared: 0,
@@ -36,9 +36,9 @@ const createDeps = () => {
     task: {
       getTaskId: () => 't1',
       patchSessionGeneration: (generation: number) => calls.generationPatches.push(generation),
-      syncTaskStatus: (status: string) => calls.statusSyncs.push(status),
+      applyTaskStatusSnapshot: (snapshot: any) => calls.statusSyncs.push(snapshot),
       getCurrentSessionGeneration: () => 2,
-      getCurrentTaskStatus: () => 'CODING',
+      getCurrentTaskStatus: () => 'RUNNING',
     },
     messages: {
       upsert: (message: any) => calls.upserts.push(message),
@@ -90,6 +90,44 @@ const createDeps = () => {
 }
 
 describe('createTaskWsEventRouter', () => {
+  it('applies only the explicit versioned task status event', () => {
+    const { deps, calls } = createDeps()
+    const router = createTaskWsEventRouter(deps)
+    const snapshot = { task_id: 't1', status: 'AWAITING_INPUT', status_seq: '42' }
+    router.handleWsMessage({ type: 'task_status_changed', payload: snapshot })
+    expect(calls.statusSyncs).toEqual([snapshot])
+  })
+
+  it.each(['ask_question', 'request_approval', 'confirmation'])('maps %s to awaiting input', type => {
+    const { deps, calls } = createDeps()
+    createTaskWsEventRouter(deps).handleWsMessage({ type, payload: { task_id: 't1', session_generation: 2 } })
+    expect(calls.statusSyncs).toEqual([])
+  })
+
+  it('ignores stale results and running signals after interruption', () => {
+    const { deps, calls } = createDeps()
+    deps.task.getCurrentTaskStatus = () => 'INTERRUPTED'
+    const router = createTaskWsEventRouter(deps)
+    router.handleWsMessage({ type: 'result', payload: { success: true, session_generation: 1 } })
+    router.handleWsMessage({ type: 'status', payload: { status: 'RUNNING', session_generation: 2 } })
+    router.handleWsMessage({ type: 'result', payload: { success: true, session_generation: 2 } })
+    expect(calls.statusSyncs).toEqual([])
+  })
+
+  it('keeps an unresolved question awaiting input after a successful provider result', () => {
+    const { deps, calls } = createDeps()
+    deps.task.getCurrentTaskStatus = () => 'AWAITING_INPUT'
+    createTaskWsEventRouter(deps).handleWsMessage({ type: 'result', payload: { success: true } })
+    expect(calls.statusSyncs).toEqual([])
+  })
+
+  it('discards an older round result within the same session generation', () => {
+    const { deps, calls } = createDeps()
+    const router = createTaskWsEventRouter({ ...deps, task: { ...deps.task, getCurrentSessionRevision: () => 4 } })
+    router.handleWsMessage({ type: 'result', payload: { success: true, session_generation: 2, session_revision: 3 } })
+    expect(calls.statusSyncs).toEqual([])
+    expect(calls.summaryAppends).toEqual([])
+  })
   it('keeps the task conversation on repository apply and invalidates only older undo actions', () => {
     const { deps, calls } = createDeps()
     const invalidateUndoBeforeRevision = vi.fn()
@@ -140,29 +178,29 @@ describe('createTaskWsEventRouter', () => {
     const { handleWsMessage } = createTaskWsEventRouter(deps)
 
     handleWsMessage({ type: 'status', payload: { status: 'RUNNING', message: 'working', model: 'm' } })
-    expect(engineRunning.value).toBe(true)
+    expect(engineRunning.value).toBe(false)
     expect(calls.statusCardPushes[0]).toMatchObject({ type: 'status', status: 'RUNNING' })
-    expect(calls.statusSyncs).toEqual(['CODING'])
+    expect(calls.statusSyncs).toEqual([])
 
-    handleWsMessage({ type: 'status', payload: { status: 'DONE' } })
-    expect(calls.statusSyncs).toEqual(['CODING', 'DONE'])
+    handleWsMessage({ type: 'status', payload: { status: 'COMPLETED' } })
+    expect(calls.statusSyncs).toEqual([])
   })
 
   it('accumulates result frames and keeps terminal task status untouched', () => {
     const { deps, calls, engineRunning } = createDeps()
     const { handleWsMessage } = createTaskWsEventRouter(deps)
-    ;(deps.task.getCurrentTaskStatus as any) = () => 'DONE'
+    ;(deps.task.getCurrentTaskStatus as any) = () => 'COMPLETED'
 
     handleWsMessage({ type: 'result', payload: { duration_ms: 1200, cost_usd: 0.5, success: false } })
     expect(calls.summaryAppends).toHaveLength(1)
     expect(calls.statusCardDrops).toBe(1)
-    // DONE 是终态：状态保持原值（显式写回 DONE），不改写为 INTERRUPTED
-    expect(calls.statusSyncs).toEqual(['DONE'])
+    // 终态忽略迟到的结果，保持已结算状态。
+    expect(calls.statusSyncs).toEqual([])
 
     engineRunning.value = false
-    ;(deps.task.getCurrentTaskStatus as any) = () => 'CODING'
+    ;(deps.task.getCurrentTaskStatus as any) = () => 'RUNNING'
     handleWsMessage({ type: 'result', payload: { success: true } })
-    expect(calls.statusSyncs).toEqual(['DONE', 'IDLE'])
+    expect(calls.statusSyncs).toEqual([])
   })
 
   it('applies session reverts: drops messages/logs/cards and syncs status', () => {
@@ -171,7 +209,7 @@ describe('createTaskWsEventRouter', () => {
     engineRunning.value = true
 
     handleWsMessage({ type: 'task_session_reverted', payload: {
-      task_id: 't1', removed_message_ids: ['m1', 'm2'], session_generation: 5, task_status: 'PENDING',
+      task_id: 't1', removed_message_ids: ['m1', 'm2'], session_generation: 5, task_snapshot: { task_id: 't1', status: 'INITIALIZED', status_seq: '4' },
     } })
 
     expect(calls.generationBumps).toBe(1)
@@ -182,7 +220,7 @@ describe('createTaskWsEventRouter', () => {
     expect(calls.thinkingResets).toBe(1)
     expect(engineRunning.value).toBe(false)
     expect(calls.generationPatches).toEqual([5])
-    expect(calls.statusSyncs).toEqual(['PENDING'])
+    expect(calls.statusSyncs).toEqual([{ task_id: 't1', status: 'INITIALIZED', status_seq: '4' }])
   })
 
   it('routes transport-only frames to their domains without touching the chat flow', () => {

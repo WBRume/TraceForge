@@ -1,3 +1,4 @@
+import { applyTaskStatusSnapshot } from '@/utils/taskStatusProjection'
 import { describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
@@ -19,7 +20,7 @@ const question = (id: string, jobId: string, generation: number) => ({
 })
 
 const createLifecycle = () => {
-  const task = ref({ id: 'task', status: 'CODING', session_generation: 1 })
+  const task = ref({ id: 'task', status: 'RUNNING', status_seq: '1', session_generation: 1 })
   const messages = ref<any[]>([question('old', 'old-job', 1)])
   const jobs = useChatJobs({
     getWorkspaceId: () => 'workspace', getTaskId: () => task.value.id,
@@ -34,7 +35,7 @@ const createLifecycle = () => {
   const syncEngine = () => { engineRunning.value = jobs.hasExecutingJob() }
   const ingestJob = createChatJobIngest({ jobs, cards, syncEngineFromJobs: syncEngine, onJobUpdate: () => {} })
   const generationBump = vi.fn()
-  const interruptTask = vi.fn(async () => ({ task_id: 'task', status: 'INTERRUPTED',
+  const interruptTask = vi.fn(async () => ({ task_id: 'task', status: 'INTERRUPTED', status_seq: String(Number(task.value.status_seq) + 1),
     session_generation: task.value.session_generation,
     job: { ...jobs.jobList().find(job => job.status === 'RUNNING'), status: 'INTERRUPTED' } }))
   const state = useSessionState({
@@ -45,7 +46,7 @@ const createLifecycle = () => {
     convergeFromJobs: () => { syncEngine(); return true }, syncConfirmationCards: cards.syncConfirmationCards,
     upsertMessage: message => messages.value.push(message), loadHistory: async () => {},
     loadActivePreInput: async () => true, onSessionGenerationBump: generationBump,
-    syncTaskStatus: status => { task.value.status = status },
+    applyTaskStatusSnapshot: snapshot => { applyTaskStatusSnapshot(task.value, snapshot) },
     reloadSpecBootstrap: () => {}, hasTaskSpecification: () => false,
   })
   const persistedHistory = [...messages.value]
@@ -83,27 +84,23 @@ const createLifecycle = () => {
 }
 
 describe('confirmation lifecycle', () => {
-  it.each([false, true])('disables stopping during preparation even when engine state is stale (%s)', async engineRunning => {
+  it.each([false, true])('allows interrupting RUNNING preparation regardless of the engine flag (%s)', async engineRunning => {
     const runtime = createLifecycle()
     runtime.jobs.reset()
     runtime.engineRunning.value = engineRunning
     runtime.preparingSubmission.value = true
-    expect(runtime.status.canTemporarilyInterrupt.value).toBe(false)
-    expect(await runtime.status.interruptCurrentRun()).toBe(false)
-    expect(runtime.interruptTask).not.toHaveBeenCalled()
-    expect(runtime.putSubmission).not.toHaveBeenCalled()
-    expect(runtime.preparingSubmission.value).toBe(true)
-    expect(runtime.task.value.status).toBe('CODING')
-    runtime.preparingSubmission.value = false
-    runtime.ingestJob({ id: 'new-job', task_id: 'task', status: 'RUNNING', progress: 0, session_generation: 1 })
     expect(runtime.status.canTemporarilyInterrupt.value).toBe(true)
+    expect(await runtime.status.interruptCurrentRun()).toBe(true)
+    expect(runtime.interruptTask).toHaveBeenCalledOnce()
+    expect(runtime.task.value.status).toBe('INTERRUPTED')
+    expect(runtime.status.canTemporarilyInterrupt.value).toBe(false)
     runtime.state.dispose()
   })
 
   it('keeps initialization busy while clearing the old run and restores history if the request fails', async () => {
     const runtime = createLifecycle()
     api.get.mockResolvedValue({ data: { items: [
-      { id: 'old-job', task_id: 'task', status: 'RUNNING', progress: 0, session_generation: 1 },
+      { id: 'old-job', task_id: 'task', status: 'RUNNING', status_seq: '1', progress: 0, session_generation: 1 },
     ] } })
     let reject!: (reason: Error) => void
     api.post.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail }))
@@ -131,8 +128,8 @@ describe('confirmation lifecycle', () => {
     expect(await runtime.status.interruptCurrentRun()).toBe(true)
     runtime.cards.syncConfirmationCards()
     expect(runtime.cards.activeHitlCards.value).toHaveLength(0)
-    const newJob = { id: 'new-job', task_id: 'task', status: 'RUNNING', progress: 0, session_generation: 2 }
-    api.post.mockResolvedValue({ data: { msg: 'Task initialized', job: newJob } })
+    const newJob = { id: 'new-job', task_id: 'task', status: 'RUNNING', status_seq: '1', progress: 0, session_generation: 2 }
+    api.post.mockResolvedValue({ data: { msg: 'Task initialized', status: 'RUNNING', status_seq: '3', task_id: 'task', job: newJob } })
     api.get.mockResolvedValue({ data: { items: [newJob] } })
     expect(await runtime.start.initializeTaskWithReason('重新开始', '请询问 Java 项目需求')).toBe(true)
     expect(runtime.task.value.session_generation).toBe(2)
@@ -163,13 +160,13 @@ describe('confirmation lifecycle', () => {
     const runtime = createLifecycle()
     runtime.messages.value.push(question('new', 'new-job', 2))
     api.get.mockResolvedValue({ data: { task_id: 'task', session_generation: 2,
-      jobs: [{ id: 'new-job', status: 'RUNNING', progress: 0, session_generation: 2 }],
+      jobs: [{ id: 'new-job', status: 'RUNNING', status_seq: '1', progress: 0, session_generation: 2 }],
       receipts: [], messages: [] } })
     await runtime.state.recoverSession('reconnect')
     expect(runtime.task.value.session_generation).toBe(2)
     expect(runtime.cards.activeHitlCards.value.map(card => card.message_id)).toEqual(['new'])
-    runtime.state.applyTaskSessionPayload({ task_id: 'task', status: 'INTERRUPTED', session_generation: 1 })
-    expect(runtime.task.value.status).toBe('CODING')
+    runtime.state.applyTaskSessionPayload({ task_id: 'task', status: 'INTERRUPTED', status_seq: '2', session_generation: 1 })
+    expect(runtime.task.value.status).toBe('RUNNING')
     expect(runtime.cards.activeHitlCards.value).toHaveLength(1)
     runtime.state.dispose()
   })
@@ -180,7 +177,7 @@ describe('confirmation lifecycle', () => {
     api.get.mockReturnValue(new Promise(response => { resolve = response }))
     const pending = runtime.jobs.loadActive('task')
     runtime.jobs.reset()
-    resolve({ data: { items: [{ id: 'old-job', status: 'RUNNING', progress: 0, session_generation: 1 }] } })
+    resolve({ data: { items: [{ id: 'old-job', status: 'RUNNING', status_seq: '1', progress: 0, session_generation: 1 }] } })
     expect(await pending).toBe(false)
     expect(runtime.jobs.jobList()).toEqual([])
     expect(runtime.cards.activeHitlCards.value).toHaveLength(0)

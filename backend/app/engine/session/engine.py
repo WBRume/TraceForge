@@ -39,7 +39,7 @@ from app.database import SessionLocal
 from app.domains.skill.services import skill_runtime_trace_service
 from app.domains.task.models.log import LogType
 from app.domains.task.models.session_turn import TaskSessionTurn
-from app.domains.task.models.task import TaskStatus
+from app.domains.task.services.status_machine import Trigger
 from app.engine.claude_event_adapter import claude_stream_to_agent_events
 from app.engine.session import turn_setup
 from app.engine.session.frontend import FrontendFeed, ThinkingStream
@@ -47,8 +47,8 @@ from app.engine.session.gate import SessionGate
 from app.engine.session.persistence import (
     ContextSegmentBatcher,
     ExecutionLogBatcher,
+    emit_status_event,
     update_task_metrics,
-    update_task_status,
 )
 from app.engine.session.registry import register_engine, unregister_engine
 
@@ -123,6 +123,7 @@ class TaskAgentEngine:
         self.attempt: AgentAttemptContext | None = attempt
         self.session_turn_id: str | None = None
         self.session_revision: int | None = None
+        self.status_seq: int | None = None
         self._run_task: asyncio.Task | None = None
         self.on_result = on_result
         self.on_hitl = on_hitl
@@ -265,6 +266,9 @@ class TaskAgentEngine:
             return False
         await self.cli.respond_to_ask_user(provider_request_id, response)
         self._pending_confirmations.pop(interaction_id, None)
+        if not self._pending_confirmations and not self._interrupt_requested:
+            await emit_status_event(self, Trigger.ANSWER_RECEIVED, event_key=f"answer:{interaction_id}")
+            await self.frontend.push_status("RUNNING", "继续执行")
         return True
 
     # ─────────────── 主执行流程 ───────────────
@@ -306,13 +310,13 @@ class TaskAgentEngine:
             self.last_result_text = error_text
             self.segments.update_snapshot(status="INTERRUPTED")
             await self.segments.flush()
-            await update_task_status(self, TaskStatus.INTERRUPTED, error_text)
+            await emit_status_event(self, Trigger.EXECUTION_INTERRUPTED, event_key="execution-error", reason=error_text)
             await self.frontend.push_status("INTERRUPTED", f"引擎超时，可继续发送消息恢复: {e}")
         else:
             logger.exception(f"TaskAgentEngine error, session is resumable: {e}")
             self.segments.update_snapshot(status="INTERRUPTED")
             await self.segments.flush()
-            await update_task_status(self, TaskStatus.INTERRUPTED, error_text)
+            await emit_status_event(self, Trigger.EXECUTION_INTERRUPTED, event_key="execution-error", reason=error_text)
             await self.frontend.push_status("INTERRUPTED", f"引擎异常，可继续发送消息恢复: {e}")
             self.last_result_success = False
             self.last_result_text = error_text
@@ -329,8 +333,7 @@ class TaskAgentEngine:
         )
         await self._gate.load()
         self._session_generation = await run_db(self.frontend.load_session_generation_sync)
-
-        await update_task_status(self, TaskStatus.CODING)
+        self.status_seq = await run_db(self.frontend.load_status_sequence_sync)
 
         project_path = await run_db(turn_setup.resolve_project_path_sync, self.task_id)
         if not recovery and not self.additional_workspace_directories:
@@ -440,7 +443,9 @@ class TaskAgentEngine:
                 self.last_result_text = str(e)
                 self.segments.update_snapshot(status="INTERRUPTED")
                 await self.segments.flush()
-                await update_task_status(self, TaskStatus.INTERRUPTED, str(e))
+                await emit_status_event(
+                    self, Trigger.EXECUTION_INTERRUPTED, event_key="execution-timeout", reason=str(e)
+                )
                 await self.frontend.push_status("INTERRUPTED", f"引擎超时，可继续发送消息恢复: {e}")
             except Exception as e:
                 await self._handle_run_error(e, recovery)
@@ -752,7 +757,7 @@ class TaskAgentEngine:
         self.segments.update_snapshot(model=model, status="RUNNING")
         await self._emit_hook(self.on_session, sid, self.current_job_id or "")
         suffix = f" (model: {model})" if model else ""
-        await self.frontend.push_status("INIT", f"Agent 会话已启动{suffix}", model=model)
+        await self.frontend.push_status("RUNNING", f"Agent 会话已启动{suffix}", model=model)
 
     async def _on_tool_use(self, payload: dict) -> None:
         tool_name = str(payload.get("tool_name") or "unknown")
@@ -855,6 +860,9 @@ class TaskAgentEngine:
         interaction_id = self._confirmation_id(str(payload["ask_user_id"]))
         self._pending_confirmations.pop(interaction_id, None)
         status = str(payload.get("status") or "closed")
+        if not self._pending_confirmations and not self._interrupt_requested:
+            await emit_status_event(self, Trigger.ANSWER_RECEIVED, event_key=f"answer:{interaction_id}")
+            await self.frontend.push_status("RUNNING", "交互已处理，继续执行")
         labels = {
             "answered": "提问已回答",
             "cancelled": "提问已取消",
@@ -911,6 +919,8 @@ class TaskAgentEngine:
         if normalized_kind == "form":
             confirmation["fields"] = fields
         self._pending_confirmations[interaction_id] = str(provider_request_id or interaction_id)
+        await emit_status_event(self, Trigger.QUESTION_OPENED, event_key=f"question:{interaction_id}")
+        await self.frontend.push_status("AWAITING_INPUT", "等待用户输入")
         self.segments.record(
             "confirmation",
             workspace_id=self.ws_id,
@@ -978,7 +988,7 @@ class TaskAgentEngine:
             logger.bind(finish_reason=finish_reason, is_error=is_error, duration_ms=duration).warning(
                 "Agent execution timed out, session is resumable"
             )
-            await update_task_status(self, TaskStatus.INTERRUPTED, "Agent execution timed out; session is resumable")
+            await emit_status_event(self, Trigger.EXECUTION_INTERRUPTED, event_key="result-timeout")
             await update_task_metrics(self, cost, duration, "INTERRUPTED")
             await self.frontend.push_status("INTERRUPTED", "执行超时，可继续发送消息恢复")
             self.last_result_success = None
@@ -992,7 +1002,7 @@ class TaskAgentEngine:
                 total_cost_usd=cost,
             )
             logger.error("Agent execution failed, session is resumable")
-            await update_task_status(self, TaskStatus.INTERRUPTED, "Agent execution failed; session is resumable")
+            await emit_status_event(self, Trigger.EXECUTION_INTERRUPTED, event_key="result-error")
             await update_task_metrics(self, cost, duration, "INTERRUPTED")
             await self.frontend.push_result(False, result_text, duration, cost)
             await self.frontend.push_status("INTERRUPTED", "执行异常，可继续发送消息恢复")

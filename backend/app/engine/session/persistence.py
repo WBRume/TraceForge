@@ -410,28 +410,36 @@ class ContextSegmentBatcher(BatchFlusher):
 # ─────────────── 任务状态 / 指标（off-loop 条件写入） ───────────────
 
 
-def update_task_status(owner, status: TaskStatus, error_msg: str | None = None):
-    """任务状态更新（off-loop，条件更新兜底 fence）。"""
-    return run_db(_update_task_status_sync, owner, status, error_msg)
+def emit_status_event(owner, trigger, *, event_key: str, reason: str | None = None):
+    return run_db(_emit_status_event_sync, owner, trigger, event_key, reason)
 
 
-def _update_task_status_sync(owner, status: TaskStatus, error_msg: str | None = None):
-    db = SessionLocal()
-    try:
+def _emit_status_event_sync(owner, trigger, event_key, reason):
+    from app.domains.ai.models.ai_job import SddAiJob
+    from app.domains.task.services import status_machine as sm
+
+    with SessionLocal() as db:
         gate = owner.gate
         if gate is not None and not gate.fence_sync(db):
             return
-        task = db.query(SddTask).filter(SddTask.id == owner.task_id).first()
-        if task:
-            task.status = status
-            if error_msg:
-                task.error_message = error_msg
-            db.commit()
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"Update task status failed: {e}")
-    finally:
-        db.close()
+        job = db.get(SddAiJob, owner.current_job_id)
+        task = db.get(SddTask, owner.task_id)
+        if not job or not task:
+            return
+        result = sm.execution_event(
+            db,
+            task,
+            trigger,
+            event_key=f"engine:{job.id}:{event_key}",
+            job_id=job.id,
+            expected_seq=getattr(owner, "status_seq", None),
+            generation=int(job.session_generation or 0),
+            revision=int(job.session_revision or 0),
+            reason=reason,
+        )
+        db.commit()
+        if not result.get("duplicate"):
+            owner.status_seq = int(result["status_seq"])
 
 
 def update_task_metrics(owner, cost: float | None, duration: int | None, status: str | None = None):
@@ -452,7 +460,7 @@ def _update_task_metrics_sync(owner, cost: float | None, duration: int | None, s
             return
 
         # 如果任务已完成，不再增加统计 (HITL 后的额外操作可能需要用户决定)
-        if task.status in {TaskStatus.DONE, TaskStatus.BASELINED}:
+        if task.status in {TaskStatus.COMPLETED}:
             return
 
         if cost:

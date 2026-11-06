@@ -21,7 +21,7 @@ async def test_workspace_filter_limits_candidates_and_rejects_unauthorized_scope
     first.name = "连接池工作区一"
     second_ws = Workspace(id="ws-2", name="Second", owner_id=first.creator_id)
     second = SddTask(
-        id="task-2", workspace_id=second_ws.id, creator_id=first.creator_id, name="连接池工作区二", status="CODING"
+        id="task-2", workspace_id=second_ws.id, creator_id=first.creator_id, name="连接池工作区二", status="RUNNING"
     )
     db.add_all(
         [

@@ -38,6 +38,24 @@ async def _complete_initial_sync(
 
 
 class RoomJournalReplayTest(IsolatedAsyncioTestCase):
+    async def test_task_status_retries_and_late_deliveries_never_enter_the_journal(self) -> None:
+        self.registry = ConnectionRegistry()
+        socket = _Socket()
+        connection = await self.registry.connect("task:status-order", socket, client_id="tab")
+        await _complete_initial_sync(self.registry, "task:status-order", socket, connection)
+        for sequence in (10, 10, 9, 12, 11):
+            self.registry.broadcast_json(
+                "task:status-order",
+                {
+                    "type": "task_status_changed",
+                    "payload": {"status_seq": str(sequence), "status": "RUNNING"},
+                },
+            )
+        await connection.wait_flushed()
+        frames = [json.loads(frame) for frame in socket.sent_texts if json.loads(frame).get("type") == "event"]
+        self.assertEqual([frame["payload"]["status_seq"] for frame in frames], ["10", "12"])
+        self.assertEqual([frame["sequence"] for frame in frames], [1, 2])
+
     async def asyncTearDown(self) -> None:
         # Each test owns its registry, but allow all sender/replay tasks to
         # finish before IsolatedAsyncioTestCase closes the loop.

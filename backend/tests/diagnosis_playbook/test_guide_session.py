@@ -182,7 +182,7 @@ def test_commands_commit_and_broadcast_the_same_snapshot(db, monkeypatch):
     from app.domains.task.models.task import TaskStatus
     from app.domains.task.services import chat_submission_service
 
-    task.status = TaskStatus.CODING
+    task.status = TaskStatus.RUNNING
     db.commit()
     scheduled = Mock()
     monkeypatch.setattr(chat_submission_service, "schedule", scheduled)

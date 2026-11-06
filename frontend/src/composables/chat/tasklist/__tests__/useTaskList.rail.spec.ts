@@ -58,11 +58,11 @@ describe('task list rail filters', () => {
     const { list, wrapper } = harness()
     api.get.mockResolvedValue({ data: { items: [], has_more: false } })
     list.taskSearchQuery.value = 'target'
-    await list.applyTaskFilters({ status: 'DONE', taskType: 'DIAGNOSIS', relations: ['created_by_me', 'followed_by_me'] })
+    await list.applyTaskFilters({ status: 'COMPLETED', taskType: 'DIAGNOSIS', relations: ['created_by_me', 'followed_by_me'] })
     await vi.advanceTimersByTimeAsync(250)
     expect(api.get).toHaveBeenCalledTimes(1)
     expect(api.get.mock.calls.at(-1)?.[1].params).toMatchObject({
-      status: 'DONE', task_type: 'DIAGNOSIS', relation: 'created_by_me,followed_by_me', search: 'target', page: 1,
+      status: 'COMPLETED', task_type: 'DIAGNOSIS', relation: 'created_by_me,followed_by_me', search: 'target', page: 1,
     })
     await list.resetTaskFilters()
     expect(api.get.mock.calls.at(-1)?.[1].params).toEqual({ search: 'target', page: 1, page_size: 20 })

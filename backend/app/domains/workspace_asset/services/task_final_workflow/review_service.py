@@ -73,7 +73,7 @@ def derive_review_status(
 ) -> ReviewDerivedStatus:
     """Derive final-workflow review status from linked blocking clarifications."""
     baselined = (
-        enum_value(review.task.status) == TaskStatus.BASELINED.value
+        review.task.baselined_at is not None
         if task_is_baselined is None and review.task is not None
         else bool(task_is_baselined)
     )
@@ -170,7 +170,7 @@ def ensure_expert_review_for_task(
     actor_id: str | None,
 ) -> SddHumanReview | None:
     """Create only the default seed review; users can add more review items."""
-    if enum_value(task.status) != TaskStatus.DONE.value:
+    if enum_value(task.status) != TaskStatus.COMPLETED.value:
         return None
     if not task.evidence_items:
         return None

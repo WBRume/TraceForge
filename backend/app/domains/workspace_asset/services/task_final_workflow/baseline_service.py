@@ -145,7 +145,7 @@ def build_baseline_checklist(db: Session, task: SddTask) -> list[BaselineCheckIt
     final_status = enum_value(task.final_summary.final_status) if task.final_summary else None
     decision_count = len(task.decisions or [])
     task_status = enum_value(task.status)
-    task_is_freeze_ready = task_status in {TaskStatus.DONE.value, TaskStatus.BASELINED.value}
+    task_is_freeze_ready = task_status in {TaskStatus.COMPLETED.value}
 
     return [
         BaselineCheckItem(
@@ -272,7 +272,7 @@ def build_baseline_snapshot(task: SddTask, *, version: int) -> dict[str, Any]:
 
 
 def baseline_task(db: Session, task: SddTask, actor_id: str | None) -> SddTaskBaseline:
-    if enum_value(task.status) == TaskStatus.BASELINED.value:
+    if task.baselined_at is not None:
         existing = latest_baseline(db, task.id)
         if existing:
             return existing
@@ -295,7 +295,6 @@ def baseline_task(db: Session, task: SddTask, actor_id: str | None) -> SddTaskBa
     db.add(baseline)
     db.flush()
 
-    task.status = TaskStatus.BASELINED
     task.baseline_version = version
     task.baselined_at = datetime.utcnow()
     task.baselined_by_id = actor_id

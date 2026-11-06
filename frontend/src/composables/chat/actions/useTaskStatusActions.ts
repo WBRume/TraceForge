@@ -1,9 +1,11 @@
+import { applyTaskStatusSnapshot } from '@/utils/taskStatusProjection'
 import { computed, ref } from 'vue'
 import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import type { Router } from 'vue-router'
 import type { RequirementOption } from '@/types/taskRail'
+import { isActiveTaskStatus, isTerminalTaskStatus } from '@/utils/taskStatus'
 
 /**
  * 任务状态动作：临时中断、标记完成/失败（closeout 面板入口）、
@@ -40,8 +42,7 @@ export function useTaskStatusActions(options: {
 
   const canTemporarilyInterrupt = computed(() => (
     Boolean(options.getCurrentTask()?.id)
-    && options.engineRunning.value
-    && !options.preparingSubmission?.value
+    && isActiveTaskStatus(options.getCurrentTask()?.status)
     && options.canManageTaskStatus.value
     && !options.interruptingTask.value
   ))
@@ -59,9 +60,9 @@ export function useTaskStatusActions(options: {
     }
 
     const status = options.getCurrentTask()?.status
-    const isRunningStatus = status && !['DONE', 'FAILED'].includes(status)
+    const canCloseout = status && !isTerminalTaskStatus(status)
 
-    if (!isRunningStatus && !options.engineRunning.value) {
+    if (!canCloseout) {
       ElMessage.warning(t('chat.no_running_engine'))
       return false
     }
@@ -76,9 +77,9 @@ export function useTaskStatusActions(options: {
     }
 
     const status = options.getCurrentTask()?.status
-    const isRunningStatus = status && !['DONE', 'FAILED'].includes(status)
+    const canCloseout = status && !isTerminalTaskStatus(status)
 
-    if (!isRunningStatus && !options.engineRunning.value) {
+    if (!canCloseout) {
       ElMessage.warning(t('chat.no_running_engine'))
       return false
     }
@@ -94,8 +95,7 @@ export function useTaskStatusActions(options: {
       ElMessage.warning(t('chat.errors.no_permission_manage_task_status'))
       return false
     }
-    if (options.preparingSubmission?.value) return false
-    if (!options.engineRunning.value) {
+    if (!isActiveTaskStatus(task.status)) {
       ElMessage.warning(t('chat.no_running_engine'))
       return false
     }
@@ -141,20 +141,20 @@ export function useTaskStatusActions(options: {
     void options.loadTasks({ reset: true, trySelectRouteTask: false })
   }
 
-  const handleTaskCloseoutSuccess = (status: string, requirement?: RequirementOption | null) => {
+  const handleTaskCloseoutSuccess = (result: import('@/types/taskCloseout').TaskCloseoutResponse, requirement?: RequirementOption | null) => {
     const task = options.getCurrentTask()
     if (!task) return
     closeoutMode.value = null
     options.engineRunning.value = false
     options.cardsDropByTypes(['status', 'hitl'])
     options.jobsReset()
-    task.status = status
-    options.patchTask(task.id, { status })
+    applyTaskStatusSnapshot(task, result)
+    options.patchTask(task.id, { status: result.status, status_seq: result.status_seq })
     if (requirement) handleTaskRequirementLinked(requirement)
     options.messagesPush({
       id: Date.now().toString(),
       role: 'system',
-      content: status === 'DONE' ? t('chat.closeout.complete_saved') : t('chat.closeout.failure_saved'),
+      content: result.status === 'COMPLETED' ? t('chat.closeout.complete_saved') : t('chat.closeout.failure_saved'),
       created_at: new Date().toISOString(),
       message_type: 'text',
     })

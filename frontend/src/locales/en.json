@@ -621,9 +621,9 @@
     "avg_phase": "Estimated vs Actual",
     "retry_heatmap": "Error & Retry Heatmap (Last 7 Days)",
     "status": {
-      "DONE": "Done",
+      "COMPLETED": "Done",
       "FAILED": "Failed",
-      "PENDING": "Pending",
+      "INITIALIZED": "Pending",
       "RUNNING": "Running"
     },
     "phases": {
@@ -646,6 +646,18 @@
     "delete_confirm": "Are you sure to delete session {name}? All history and process assets will be cleared, this action is irreversible."
   },
   "chat": {
+    "status": {
+      "INITIALIZED": "Ready to start",
+      "RUNNING": "Running",
+      "ROUND_COMPLETED": "Round completed",
+      "AWAITING_INPUT": "Awaiting input",
+      "INTERRUPTED": "Interrupted",
+      "COMPLETED": "Completed",
+      "FAILED": "Failed",
+      "PROVISIONING": "Preparing workspace",
+      "UNKNOWN": "Unknown status"
+    },
+    "temporary_interrupt": "Interrupt execution",
     "plan_docs_baseline_unavailable": "The initial file snapshot is unavailable for this task, so document changes cannot be identified.",
     "plan_docs_configure": "Configure directories",
     "plan_docs_not_configured": "No plan document directories configured for this workspace. Configure them in Workspace Settings.",

@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session, selectinload
 
 from app.domains.asset.models.asset import AssetType
-from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.models.task import SddTask
 from app.domains.workspace_asset.models.workspace_asset import (
     ClarificationBlockingLevel,
     SddClarification,
@@ -203,7 +203,7 @@ def _workflow_step_status(task: SddTask) -> list[TaskFinalWorkflowStep]:
     summary_verified = bool(
         task.final_summary and enum_value(task.final_summary.final_status) == TaskFinalStatus.VERIFIED.value
     )
-    baselined = enum_value(task.status) == TaskStatus.BASELINED.value
+    baselined = task.baselined_at is not None
     review_ready = bool(reviews) and unresolved_blocking_count == 0
     review_attention_count = sum(
         1
@@ -249,7 +249,7 @@ def _workflow_step_status(task: SddTask) -> list[TaskFinalWorkflowStep]:
 
 
 def _actions(task: SddTask, checklist_blocked: bool) -> list[FinalWorkflowAction]:
-    readonly = enum_value(task.status) == TaskStatus.BASELINED.value
+    readonly = task.baselined_at is not None
     if readonly:
         return []
     summary_verified = bool(
@@ -300,7 +300,7 @@ def get_workflow_state(
         item.id: [_thread_response(thread) for thread in (item.threads or [])] for item in (task.clarifications or [])
     }
     checklist_blocked = any(item.blocking for item in checklist)
-    readonly = enum_value(task.status) == TaskStatus.BASELINED.value
+    readonly = task.baselined_at is not None
     reviews = _workflow_reviews(task)
     for review in reviews:
         review._derived_status = review_service.derive_review_status(review, task_is_baselined=readonly)

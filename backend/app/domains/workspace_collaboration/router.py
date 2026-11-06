@@ -10,7 +10,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import User, WorkspacePermission
-from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.models.task import SddTask
 from app.domains.workspace.services import workspace_service
 
 from . import content, history, service, session
@@ -39,7 +39,7 @@ def _task(
     if write:
         if not workspace_service.user_has_permission(db, ws_id, user_id, WorkspacePermission.START_TASK):
             raise HTTPException(403, "No permission to collaborate on this task")
-        if task.status == TaskStatus.BASELINED and not allow_baselined:
+        if task.baselined_at is not None and not allow_baselined:
             raise HTTPException(403, "Baselined task is read-only")
     return task
 

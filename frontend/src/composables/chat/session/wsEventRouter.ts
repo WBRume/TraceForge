@@ -2,6 +2,7 @@ import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import type { ChatAiJob } from '../types'
 import { notifyRepositoryUpdate } from '@/services/repositoryUpdates'
+import { isTerminalTaskStatus } from '@/utils/taskStatus'
 
 /**
  * WS 事件路由：把任务频道的传输事件映射到各领域操作。
@@ -12,9 +13,10 @@ export function createTaskWsEventRouter(deps: {
   task: {
     getTaskId: () => string
     patchSessionGeneration: (generation: number) => void
-    syncTaskStatus: (status: string) => void
+    applyTaskStatusSnapshot: (snapshot: any) => void
     getCurrentSessionGeneration: () => number
     getCurrentTaskStatus: () => string
+    getCurrentSessionRevision?: () => number
   }
   messages: {
     upsert: (message: any) => void
@@ -106,6 +108,14 @@ export function createTaskWsEventRouter(deps: {
 
   const handleWsMessage = (msg: any) => {
     const { type, payload } = msg
+    const generation = payload?.session_generation ?? payload?.job?.session_generation
+    const eventTaskId = payload?.task_id ?? payload?.job?.task_id
+    if (eventTaskId && eventTaskId !== deps.task.getTaskId()) return
+    if (payload?.session_revision != null && deps.task.getCurrentSessionRevision
+      && Number(payload.session_revision) < deps.task.getCurrentSessionRevision()
+      && ['status', 'result', 'ask_question', 'request_approval', 'confirmation'].includes(type)) return
+    if (generation != null && Number(generation) < deps.task.getCurrentSessionGeneration()
+      && ['status', 'result', 'ask_question', 'request_approval', 'confirmation', 'task_interrupted', 'task_resumed', 'chat_job_update', 'chat_job_done', 'chat_job_failed'].includes(type)) return
 
     if (typeof type === 'string' && (type.startsWith('playbook.') || type.startsWith('runner.'))) {
       deps.playbookEvent?.(type, payload)
@@ -113,6 +123,11 @@ export function createTaskWsEventRouter(deps: {
     }
 
     switch (type) {
+      case 'task_status_changed': {
+        deps.task.applyTaskStatusSnapshot(payload)
+        break
+      }
+
       case 'chat_message': {
         // 自然语言对话气泡 (user / assistant text) 与定位结果卡片
         syncSessionGeneration(payload)
@@ -299,9 +314,7 @@ export function createTaskWsEventRouter(deps: {
         if (payload?.session_generation !== undefined) {
           deps.task.patchSessionGeneration(Number(payload.session_generation || 0))
         }
-        if (payload?.task_status) {
-          deps.task.syncTaskStatus(String(payload.task_status))
-        }
+        if (payload?.task_snapshot) deps.task.applyTaskStatusSnapshot(payload.task_snapshot)
         deps.contextWindowScheduleRefresh()
         break
       }
@@ -330,12 +343,16 @@ export function createTaskWsEventRouter(deps: {
         break
       }
 
+      case 'ask_question':
+      case 'request_approval':
+      case 'confirmation': {
+        deps.cards.syncConfirmationCards()
+        break
+      }
+
       case 'status': {
         // 阶段状态 → 置顶卡片
-        const nextTaskStatus = (payload.status === 'INIT' || payload.status === 'RUNNING')
-          ? 'CODING'
-          : payload.status
-        deps.engine.engineRunning.value = payload.status === 'INIT' || payload.status === 'RUNNING'
+        if (isTerminalTaskStatus(deps.task.getCurrentTaskStatus())) break
         deps.onModelObserved?.(payload.model)
         deps.cards.dropStatusCards()
         deps.cards.pushStatusCard({
@@ -346,9 +363,6 @@ export function createTaskWsEventRouter(deps: {
           model: payload.model,
           created_at: new Date().toISOString(),
         })
-        if (deps.task.getTaskId()) {
-          deps.task.syncTaskStatus(nextTaskStatus)
-        }
         break
       }
 
@@ -358,14 +372,6 @@ export function createTaskWsEventRouter(deps: {
         deps.cards.dropStatusCards()
         deps.resultsSummary.appendResult(payload)
 
-        // 更新任务状态（自动执行异常保留为 INTERRUPTED 以便继续会话；
-        // FAILED 只能由用户通过失败复盘显式标记。）
-        if (deps.task.getTaskId() && !deps.engine.engineRunning.value && !deps.submissions.busy()) {
-          const currentStatus = deps.task.getCurrentTaskStatus()
-          const terminalStatus = ['DONE', 'FAILED', 'BASELINED'].includes(currentStatus)
-          const nextStatus = terminalStatus ? currentStatus : (payload.success ? 'IDLE' : 'INTERRUPTED')
-          deps.task.syncTaskStatus(nextStatus)
-        }
         deps.contextWindowScheduleRefresh()
         break
       }

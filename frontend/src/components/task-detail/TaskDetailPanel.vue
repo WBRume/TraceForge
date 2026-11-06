@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { taskStatusKey } from '@/utils/taskStatus'
 import { useI18n } from 'vue-i18n'
 import { useTaskInspection } from '@/composables/useTaskInspection'
 import TaskRepositoryDetails from './TaskRepositoryDetails.vue'
@@ -25,7 +26,7 @@ const { detail, loading, failed, reload } = useTaskInspection(() => props.worksp
         <p v-if="showDescription && detail.task.description" class="task-description">{{ detail.task.description }}</p>
         <dl class="task-fields">
           <div><dt>{{ t('task_inspection.task_id') }}</dt><dd>{{ detail.task.id }}</dd></div>
-          <div><dt>{{ t('task_inspection.status') }}</dt><dd>{{ detail.task.status }}</dd></div>
+          <div><dt>{{ t('task_inspection.status') }}</dt><dd>{{ t(taskStatusKey(detail.task.status)) }}</dd></div>
           <div><dt>{{ t('task_inspection.creator') }}</dt><dd>{{ detail.task.creator_name || detail.task.creator_id }}</dd></div>
           <div><dt>{{ t('task_inspection.created_at') }}</dt><dd>{{ detail.task.created_at }}</dd></div>
           <div><dt>{{ t('task_inspection.execution_location') }}</dt><dd>{{ t(detail.task.execution_location === 'LOCAL' ? 'task_inspection.local' : 'task_inspection.server') }}</dd></div>

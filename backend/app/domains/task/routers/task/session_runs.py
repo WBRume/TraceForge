@@ -31,7 +31,7 @@ router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 async def start_task(
     ws_id: str,
     task_id: str,
-    start_req: TaskStartRequest | None = None,
+    start_req: TaskStartRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -59,8 +59,9 @@ async def start_task(
                 ws_id=ws_id,
                 task_id=task_id,
                 actor_user_id=current_user.id,
-                requested_prompt=start_req.prompt if start_req else None,
-                sop_auto_run=start_req.sop_auto_run if start_req else None,
+                command_id=start_req.command_id,
+                requested_prompt=start_req.prompt,
+                sop_auto_run=start_req.sop_auto_run,
             )
     except task_session_control_service.TaskSessionControlError as exc:
         raise_session_control_error(exc)

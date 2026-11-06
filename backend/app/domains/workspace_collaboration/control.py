@@ -2,6 +2,7 @@
 
 from uuid import uuid4
 
+from app.domains.task.services import status_machine as sm
 from app.domains.workspace_collaboration.models import CollaborationState
 
 
@@ -103,13 +104,15 @@ def closeout_snapshot(db, task, confirmed_snapshot_id):
 
 def resume_submission(db, task_id, actor_id, prepared, client_id, metadata=None):
     from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
-    from app.domains.task.models.task import SddTask, TaskStatus
+    from app.domains.task.models.task import SddTask
 
     task = db.get(SddTask, task_id)
     if not enabled(db, task_id):
         return None
     require_ready(db, task_id, actor_id=actor_id)
-    task.status = TaskStatus.CODING
+    sm.dispatch(
+        db, task, sm.Trigger.RESUME, event_key=f"resume:{client_id or prepared['old_job_id']}", actor_id=actor_id
+    )
     task.session_id = prepared.get("session_id", task.session_id)
     task.error_message = None
     task.interrupt_reason = None

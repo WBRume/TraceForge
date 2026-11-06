@@ -33,6 +33,7 @@ import { useChatHistory } from './message/useChatHistory'
 import { usePinnedCards } from './cards/usePinnedCards'
 import { useChatJobs } from './jobs/useChatJobs'
 import { createChatJobIngest } from './jobs/jobIngest'
+import { applyTaskStatusSnapshot as applyStatusProjection } from '@/utils/taskStatusProjection'
 import { useEngineState } from './runtime/useEngineState'
 import { useResultsSummary } from './runtime/useResultsSummary'
 import { useTaskRuntimeSkills } from './runtime/useTaskRuntimeSkills'
@@ -256,7 +257,10 @@ export function useChatViewModel() {
     jobs,
     cards,
     syncEngineFromJobs: engine.syncFromJobs,
-    onJobUpdate: (job) => diagnosis.onJobUpdate(job),
+    onJobUpdate: (job) => {
+      if (job.task_snapshot) applyTaskStatusSnapshot(job.task_snapshot)
+      diagnosis.onJobUpdate(job)
+    },
   })
 
   const preinput = usePreInput({
@@ -438,7 +442,7 @@ export function useChatViewModel() {
     loadHistory: (taskId, reset) => history.loadHistory(taskId, reset),
     loadActivePreInput: (taskId) => preinput.loadActive(taskId),
     onSessionGenerationBump: () => history.bumpGeneration(),
-    syncTaskStatus,
+    applyTaskStatusSnapshot,
     reloadSpecBootstrap: (taskId) => void specBootstrap.load(taskId, taskState.currentTask.value),
     hasTaskSpecification: specDrawer.hasTaskSpecification,
   })
@@ -530,9 +534,10 @@ export function useChatViewModel() {
       patchSessionGeneration: (generation) => {
         if (taskState.currentTask.value) taskState.currentTask.value.session_generation = generation
       },
-      syncTaskStatus,
+      applyTaskStatusSnapshot,
       getCurrentSessionGeneration: () => Number(taskState.currentTask.value?.session_generation || 0),
       getCurrentTaskStatus: () => String(taskState.currentTask.value?.status || ''),
+      getCurrentSessionRevision: () => Number(taskState.currentTask.value?.session_revision || 0),
     },
     messages: {
       upsert: messages.upsert,
@@ -618,6 +623,8 @@ export function useChatViewModel() {
     },
     noteSentTime: messages.noteSentTime,
     findHitlCard: (cardId) => cards.findHitlByCardId(cardId),
+    getPendingConfirmation: () => cards.activeHitlCards.value.length === 1 && cards.activeHitlCards.value[0]?.hitl_type !== 'form'
+      ? cards.activeHitlCards.value[0] : undefined,
     engine: {
       engineRunning: engine.engineRunning,
     },
@@ -776,11 +783,11 @@ export function useChatViewModel() {
   // ─── 会话编排：任务状态同步 / 切换 / 路由联动 ───
 
   /** 任务状态变更同时落到当前会话对象与列表条目。 */
-  function syncTaskStatus(status: string) {
+  function applyTaskStatusSnapshot(snapshot: any) {
     const task = taskState.currentTask.value
-    if (task) task.status = status
-    const taskId = taskState.getTaskId()
-    if (taskId) taskList.patchTask(taskId, { status })
+    if (task) applyStatusProjection(task, snapshot)
+    const listed = taskList.findTask(snapshot?.task_id)
+    if (listed) applyStatusProjection(listed, snapshot)
   }
 
   function loadTasks(loadOptions?: { reset?: boolean; clear?: boolean; trySelectRouteTask?: boolean }) {

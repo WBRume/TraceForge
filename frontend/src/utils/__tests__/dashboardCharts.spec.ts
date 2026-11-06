@@ -12,14 +12,14 @@ describe('buildSuccessChartOption', () => {
   it('maps statuses through the translate function and keeps counts', () => {
     const option = buildSuccessChartOption(
       [
-        { status: 'DONE', count: 3 },
+        { status: 'COMPLETED', count: 3 },
         { status: 'FAILED', count: 1 }
       ],
       t
     ) as any
 
     expect(option.series[0].data).toEqual([
-      { value: 3, name: 'dashboard.status.DONE' },
+      { value: 3, name: 'dashboard.status.COMPLETED' },
       { value: 1, name: 'dashboard.status.FAILED' }
     ])
   })

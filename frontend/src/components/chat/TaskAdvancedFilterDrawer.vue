@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { TASK_STATUSES, taskStatusKey } from '@/utils/taskStatus'
 import BaseSelect from '@/components/BaseSelect.vue'
 import type { TaskListFilters, TaskRelationFilter, TaskSessionFilter, TaskTypeFilterValue } from '@/composables/chat/types'
 
@@ -127,8 +128,7 @@ onBeforeUnmount(() => {
               :aria-label="t('chat.session_filter_label')"
               :options="[
                 { label: t('chat.session_filter_all'), value: 'ALL' },
-                { label: t('chat.session_filter_success'), value: 'DONE' },
-                { label: t('chat.session_filter_failed'), value: 'FAILED' },
+                ...TASK_STATUSES.map(value => ({ label: t(taskStatusKey(value)), value })),
               ]"
               size="sm"
               class="task-filter-select"

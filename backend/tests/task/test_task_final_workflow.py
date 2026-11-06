@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime
 
 from fastapi.testclient import TestClient
 
@@ -44,7 +45,7 @@ from tests.workspace_asset.test_workspace_asset_boundary import (  # noqa: E402
 
 def _seed_done_task_with_requirement(db, workspace_id: str, task_id: str):
     user, workspace, task = _seed_workspace(db, workspace_id=workspace_id, task_id=task_id)
-    task.status = TaskStatus.DONE
+    task.status = TaskStatus.COMPLETED
     requirement = SddRequirement(
         id=f"req-{task_id}",
         workspace_id=workspace.id,
@@ -205,7 +206,7 @@ def _seed_preview_targets(db, workspace_id: str, task_id: str):
         name="Other task",
         description="Not the preview task",
         project_path="G:/repo",
-        status=TaskStatus.DONE,
+        status=TaskStatus.COMPLETED,
     )
     other_evidence = SddEvidence(
         id=f"other-evidence-{task_id}",
@@ -283,7 +284,8 @@ def test_final_workflow_review_target_preview_reads_each_target_type_and_respect
 
         with _session(SessionLocal) as db:
             task = db.get(SddTask, "task-preview")
-            task.status = TaskStatus.BASELINED
+            task.status = TaskStatus.COMPLETED
+            task.baselined_at = datetime.utcnow()
             task.baseline_version = 1
             db.commit()
 
@@ -318,7 +320,7 @@ def test_final_workflow_uses_multiple_review_items_and_message_driven_clarificat
         )
         assert workflow.status_code == 200, workflow.text
         body = workflow.json()
-        assert body["task"]["status"] == "DONE"
+        assert body["task"]["status"] == "COMPLETED"
         assert body["task"]["coverage_status"] == "verified"
         assert body["can_write_final_workflow"] is True
         assert body["can_resolve_clarification"] is True
@@ -445,7 +447,7 @@ def test_final_workflow_uses_multiple_review_items_and_message_driven_clarificat
         assert verified.status_code == 200, verified.text
         verified_body = verified.json()
         assert verified_body["readonly"] is True
-        assert verified_body["task"]["status"] == "BASELINED"
+        assert verified_body["task"]["status"] == "COMPLETED"
         assert verified_body["task"]["baseline_version"] == 1
         assert verified_body["final_summary"]["final_status"] == "VERIFIED"
         assert verified_body["baseline"]["version"] == 1
@@ -465,7 +467,7 @@ def test_final_workflow_uses_multiple_review_items_and_message_driven_clarificat
                 )
                 .count()
             )
-            assert task.status == TaskStatus.BASELINED
+            assert task.status == TaskStatus.COMPLETED
             assert task.baseline_version == 1
             assert review.status == HumanReviewStatus.CLOSED
             assert clarification_row.status.value == "ACCEPTED"

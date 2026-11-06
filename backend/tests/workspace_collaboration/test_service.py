@@ -47,7 +47,7 @@ def environment(db, tmp_path, monkeypatch):
         name="Task",
         project_path=str(task_root),
         execution_location="SERVER",
-        status=TaskStatus.CODING,
+        status=TaskStatus.RUNNING,
         session_generation=1,
         session_revision=0,
     )

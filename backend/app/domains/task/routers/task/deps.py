@@ -21,7 +21,6 @@ from sqlalchemy.orm import Session
 from app.core.distributed_lock import LockAcquireTimeout, make_resource_busy_error
 from app.core.offload import run_db_txn_with_bind
 from app.domains.auth.models.user import WorkspacePermission
-from app.domains.task.models.task import TaskStatus
 from app.domains.task.services.task_records import queries as task_task_records_queries
 from app.domains.task.services.task_session_control_service import (
     BASELINED_LOCKED_MSG,
@@ -91,7 +90,7 @@ def ensure_task_not_baselined(task) -> None:
         require_available(task)
     except InitializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if task.status == TaskStatus.BASELINED:
+    if task.baselined_at is not None:
         raise HTTPException(status_code=403, detail=BASELINED_LOCKED_MSG)
 
 

@@ -39,6 +39,7 @@ from app.config import settings
 from app.core.logging import get_logger
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.services import status_machine as sm
 
 logger = get_logger(__name__, category="ai_session")
 
@@ -619,14 +620,25 @@ def _apply_task_interrupt_in_txn(
         job.result_json = _merge_json(job.result_json, request.result_patch)
     if request.evidence.failure_code:
         job.failure_code = request.evidence.failure_code
-    if task and task.status not in {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.BASELINED}:
+    if task:
+        task = db.query(SddTask).filter_by(id=task.id).populate_existing().with_for_update().one_or_none()
+    if task and task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
         # 用户已显式关闭/失败的任务不能被引擎回调降级回 INTERRUPTED。
-        task.status = TaskStatus.INTERRUPTED
-        task.session_id = resolved_session_id
-        task.error_message = None
-        task.interrupt_reason = reason_text
-        task.interrupted_by_id = None
-        task.interrupted_at = now
+        transition = sm.execution_event(
+            db,
+            task,
+            sm.Trigger.EXECUTION_INTERRUPTED,
+            event_key=f"job:{job.id}:interrupted",
+            job_id=job.id,
+            generation=int(job.session_generation or 0),
+            revision=int(job.session_revision or 0),
+        )
+        if transition["outcome"] == "APPLIED":
+            task.session_id = resolved_session_id
+            task.error_message = None
+            task.interrupt_reason = reason_text
+            task.interrupted_by_id = None
+            task.interrupted_at = now
     _clear_ownership_fields(job)
 
 
@@ -699,6 +711,29 @@ def _apply_business_status_in_txn(
         job.last_reap_verified_at = now
         job.next_reap_at = None
     _finalize_submission_in_txn(db, job, final_status)
+    _converge_task_status_in_txn(db, job, final_status)
+
+
+def _converge_task_status_in_txn(db: Session, job: SddAiJob, final_status: AiJobStatus) -> None:
+    if job.channel != AiJobChannel.TASK_CHAT or final_status not in {
+        AiJobStatus.SUCCESS,
+        AiJobStatus.FAILED,
+        AiJobStatus.CANCELLED,
+        AiJobStatus.INTERRUPTED,
+    }:
+        return
+    task = db.get(SddTask, job.task_id)
+    if task:
+        trigger = sm.Trigger.ROUND_FINISHED if final_status == AiJobStatus.SUCCESS else sm.Trigger.EXECUTION_INTERRUPTED
+        sm.execution_event(
+            db,
+            task,
+            trigger,
+            event_key=f"job:{job.id}:{trigger.value}",
+            job_id=job.id,
+            generation=int(job.session_generation or 0),
+            revision=int(job.session_revision or 0),
+        )
 
 
 def _finalize_submission_in_txn(db: Session, job: SddAiJob, final_status: AiJobStatus) -> None:
@@ -1018,19 +1053,31 @@ def _job_active_ownership(job: SddAiJob) -> bool:
 
 def _mark_task_interrupted(db, job, request, resolved_session_id, reason, now):
     if request.mark_task_interrupted and job.task_id:
-        task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
+        task = db.query(SddTask).filter(SddTask.id == job.task_id).populate_existing().with_for_update().first()
         if task is not None and task.status not in {
-            TaskStatus.DONE,
+            TaskStatus.COMPLETED,
             TaskStatus.FAILED,
-            TaskStatus.BASELINED,
+            TaskStatus.INTERRUPTED,
         }:
             task_session_id = resolved_session_id or str(getattr(task, "session_id", None) or "").strip() or None
-            task.status = TaskStatus.INTERRUPTED
-            task.session_id = task_session_id
-            task.error_message = None
-            task.interrupt_reason = reason
-            task.interrupted_by_id = request.actor_user_id
-            task.interrupted_at = now
+            transition = sm.dispatch(
+                db,
+                task,
+                sm.Trigger.EXECUTION_INTERRUPTED,
+                event_key=f"interrupt:{job.id}",
+                actor_id=request.actor_user_id,
+                job_id=job.id,
+                generation=int(job.session_generation or 0),
+                revision=int(job.session_revision or 0),
+                expected_seq=int(task.status_seq or 0),
+                reason=reason,
+            )
+            if transition["outcome"] == "APPLIED":
+                task.session_id = task_session_id
+                task.error_message = None
+                task.interrupt_reason = reason
+                task.interrupted_by_id = request.actor_user_id
+                task.interrupted_at = now
 
 
 def request_attempt_termination_in_txn(

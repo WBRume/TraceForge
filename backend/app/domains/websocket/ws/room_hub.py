@@ -104,6 +104,7 @@ class RoomHub:
     journal: RoomJournal
     connections: dict[WebSocket, OutboundConnection] = field(default_factory=dict)
     last_activity_at: float = field(default_factory=time.monotonic)
+    task_status_sequence: int = 0
     # publish() is intentionally synchronous because the fan-out path must
     # never await while holding the room critical section.  The same lock is
     # used by connect/replay/resync hand-off so registration, HWM capture and
@@ -333,6 +334,8 @@ class RoomHubRegistry:
     @staticmethod
     def _decode_json(payload: dict) -> tuple[str, Any, bool, str | None, int | None]:
         event_type = str(payload.get("type") or "event")
+        if event_type == "task_status_changed":
+            return event_type, payload.get("payload", payload), True, None, None
         if event_type in CONTROL_FRAME_TYPES or event_type in NON_SEQUENCED_EVENT_TYPES:
             return event_type, payload, False, None, None
         aggregate = payload.get("job") if isinstance(payload.get("job"), dict) else payload
@@ -377,6 +380,11 @@ class RoomHubRegistry:
     ) -> int:
         hub = self._hub(room_key)
         with hub.lock:
+            if event_type == "task_status_changed":
+                status_sequence = int(payload["status_seq"])
+                if status_sequence <= hub.task_status_sequence:
+                    return 0
+                hub.task_status_sequence = status_sequence
             if sequenced:
                 envelope = hub.journal.append(
                     event_type=event_type,

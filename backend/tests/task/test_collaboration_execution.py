@@ -30,7 +30,7 @@ def collaboration_db(db):
         creator_id="u",
         name="Task",
         project_path="/unused",
-        status=TaskStatus.CODING,
+        status=TaskStatus.RUNNING,
         agent_backend="mock",
         session_generation=1,
         session_revision=0,
@@ -130,7 +130,7 @@ def test_message_is_durable_while_waiting_for_actual_input(collaboration_db):
 
 
 @pytest.mark.parametrize("phase", ["PREPARING", "RECOVERY_REQUIRED"])
-def test_stop_does_not_cancel_preparing_message_without_an_agent_job(collaboration_db, phase):
+def test_interrupt_cancels_preparing_message_without_an_agent_job(collaboration_db, phase):
     from app.domains.task.services import task_session_control_service as controls
 
     db = collaboration_db
@@ -141,12 +141,13 @@ def test_stop_does_not_cancel_preparing_message_without_an_agent_job(collaborati
         state.recovery_kind = "SERVER_INPUT"
         state.recovery_operation_id = "lost-handoff"
     db.commit()
-    with pytest.raises(controls.TaskSessionControlError, match="No running"):
-        controls._cancel_active_jobs_sync(db, task_id="t", workspace_id="w", message="cancel preparation")
-    assert receipt.status == "PREPARING"
-    assert receipt.active_task_id == "t"
-    assert state.pending_submission_id == receipt.id
-    assert state.sync_phase == phase
+    result = controls._cancel_active_jobs_sync(db, task_id="t", workspace_id="w", message="cancel preparation")
+    assert receipt.status == "FAILED"
+    assert receipt.active_task_id is None
+    assert state.pending_submission_id is None
+    assert state.sync_phase == ("RECOVERY_REQUIRED" if phase == "RECOVERY_REQUIRED" else "READY")
+    assert result["task"]["status"] == "INTERRUPTED"
+    assert result["task"]["submission"]["status"] == "FAILED"
     assert db.query(SddAiJob).count() == 0
 
 
@@ -463,6 +464,7 @@ def test_start_is_preparation_not_an_immediate_job(collaboration_db, initial_gen
     from app.domains.task.services.task_session_control_service import start_task_session_sync
 
     db = collaboration_db
+    db.get(SddTask, "t").status = TaskStatus.INITIALIZED
     db.get(SddTask, "t").session_generation = initial_generation
     db.get(CollaborationState, "t").session_generation = initial_generation
     db.commit()
@@ -513,6 +515,6 @@ def test_resume_receipt_is_idempotent_and_preserves_pre_input_metadata(collabora
     assert existing_resume(db, "t", "u", "resume-key", "continue", False)["submission"]["id"] == receipt["id"]
     row = db.get(TaskChatSubmission, receipt["id"])
     assert row.metadata_json["pre_input_id"] == "pre-input"
-    assert task.status == TaskStatus.CODING
+    assert task.status == TaskStatus.RUNNING
     assert task.session_id == "interrupted-provider-session"
     assert db.query(SddAiJob).count() == 1

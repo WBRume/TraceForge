@@ -22,7 +22,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
-  success: [status: string, requirement?: RequirementOption | null]
+  success: [result: import('@/types/taskCloseout').TaskCloseoutResponse, requirement?: RequirementOption | null]
 }>()
 
 const { t } = useI18n()
@@ -47,13 +47,13 @@ const description = computed(() => props.mode === 'complete'
 async function submitComplete(payload: Omit<CompleteCloseoutPayload, 'evidence_attachments'>, files: File[]) {
   if (!codeReady.value) return
   const result = await closeout.completeTask(props.workspaceId, props.taskId, { ...payload, ...snapshotEvidence() }, files)
-  if (result) emit('success', result.status, selectedRequirement.value)
+  if (result) emit('success', result, selectedRequirement.value)
 }
 
 async function submitFailure(payload: Omit<FailCloseoutPayload, 'evidence_attachments'>, files: File[]) {
   if (!codeReady.value) return
   const result = await closeout.failTask(props.workspaceId, props.taskId, { ...payload, ...snapshotEvidence() }, files)
-  if (result) emit('success', result.status)
+  if (result) emit('success', result)
 }
 </script>
 

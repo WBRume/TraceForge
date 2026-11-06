@@ -26,7 +26,9 @@ class WSLogPayload(BaseModel):
 # ── 阶段状态 ──
 class WSStatusPayload(BaseModel):
     task_id: str
-    status: str  # INIT / RUNNING / DONE / FAILED
+    status: str  # Task collaboration state; INIT remains a legacy provider-start signal.
+    session_generation: int | None = None
+    session_revision: int | None = None
     sub_task: str | None = None
     message: str
     job_id: str | None = None
@@ -108,6 +110,8 @@ class WSToolResultPayload(BaseModel):
 class WSResultPayload(BaseModel):
     task_id: str
     success: bool
+    session_generation: int | None = None
+    session_revision: int | None = None
     result: str = ""
     job_id: str | None = None
     duration_ms: int | None = None

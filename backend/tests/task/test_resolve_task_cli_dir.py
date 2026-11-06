@@ -33,7 +33,7 @@ def _seed_multi_repo_task(db):
         creator_id=user.id,
         name="Task",
         project_path="G:/tmp/task-1",
-        status="CODING",
+        status="RUNNING",
     )
     db.add_all([user, workspace, task])
     db.flush()
@@ -66,7 +66,7 @@ def _seed_single_repo_task(db):
         creator_id=user.id,
         name="Task",
         project_path="G:/tmp/task-2",
-        status="CODING",
+        status="RUNNING",
     )
     db.add_all([user, workspace, task])
     db.commit()
@@ -117,7 +117,7 @@ def test_resolve_task_cli_dir_falls_back_to_dot_when_project_path_empty():
         creator_id=user.id,
         name="Task",
         project_path="",
-        status="CODING",
+        status="RUNNING",
     )
     db.add_all([user, workspace, task])
     db.commit()

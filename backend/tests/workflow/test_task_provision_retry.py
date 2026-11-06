@@ -81,7 +81,7 @@ def test_failed_dual_task_retry_recreates_bindings_and_prepares_both_repos(db, w
     asyncio.run(provision.run_create_task_job(retry.id))
     db.expire_all()
     assert retry.status == ProvisionJobStatus.SUCCESS
-    assert task.status == TaskStatus.PENDING
+    assert task.status == TaskStatus.INITIALIZED
     assert task.task_meta_json["initial_workspace_checkpoint"]
     bindings = db.query(SddTaskRepository).filter_by(task_id=task.id).all()
     assert {r.repository_id for r in bindings} == {"repo-0", "repo-1"}

@@ -7,7 +7,7 @@ import type { LocalCollaboration } from '@/composables/collaboration/useLocalCol
 const calls = vi.hoisted(() => ({ complete: vi.fn(), fail: vi.fn() }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('@/composables/useTaskCloseout', () => ({ useTaskCloseout: () => ({ saving: ref(false), error: ref(''), completeTask: calls.complete, failTask: calls.fail }) }))
-beforeEach(() => { vi.clearAllMocks(); calls.complete.mockResolvedValue({ status: 'DONE' }) })
+beforeEach(() => { vi.clearAllMocks(); calls.complete.mockResolvedValue({ status: 'COMPLETED' }) })
 
 it('requires explicit acknowledgment of the exact current cloud snapshot and invalidates older consent', async () => {
   const state = ref({ snapshot_id: 'snapshot-A' })

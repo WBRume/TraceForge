@@ -53,7 +53,7 @@ def _build_session(*, expire_on_commit=False):
     return sessionmaker(bind=engine, expire_on_commit=expire_on_commit)
 
 
-def _seed_task(db, *, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING):
+def _seed_task(db, *, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.RUNNING):
     user = User(id="user-1", email="user@example.com", hashed_password="x", display_name="User")
     workspace = Workspace(id="ws-1", name="Workspace", owner_id=user.id)
     task = SddTask(
@@ -63,6 +63,9 @@ def _seed_task(db, *, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNN
         name="Task",
         project_path="G:/tmp/task-1",
         status=task_status,
+        status_run_id="job-1",
+        session_generation=0,
+        session_revision=0,
     )
     job = SddAiJob(
         id="job-1",
@@ -71,6 +74,8 @@ def _seed_task(db, *, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNN
         channel=AiJobChannel.TASK_CHAT,
         queue_key=f"{AiJobChannel.TASK_CHAT.value}:{task.id}",
         status=job_status,
+        session_generation=0,
+        session_revision=0,
         prompt_text="work on this",
         creator_id=user.id,
         session_id="session-1",
@@ -206,7 +211,7 @@ def test_undo_commits_before_deleted_message_is_accessed_and_ignores_broadcast_f
     # behavior here so a deleted target reproduces SQLAlchemy's ObjectDeletedError.
     SessionLocal = _build_session(expire_on_commit=True)
     db = SessionLocal()
-    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.SUCCESS)
+    task, job = _seed_task(db, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.SUCCESS)
     task.session_generation = 1
     task.session_revision = 1
     task.session_id = "session-1"
@@ -293,6 +298,19 @@ def test_undo_commits_before_deleted_message_is_accessed_and_ignores_broadcast_f
 
     assert payload["target_message_id"] == "message-1"
     assert payload["status"] == TaskSessionTurnStatus.REVERTED.value
+    with SessionLocal() as retry_db:
+        replay = task_session_service._prepare_undo_sync(
+            retry_db, task_id=task_id, message_id=message_id, actor_user_id="user-1", operation_id="undo-operation-1"
+        )
+        assert replay == {"duplicate_result": payload}
+        with pytest.raises(task_session_service.TaskSessionUndoError, match="identity"):
+            task_session_service._prepare_undo_sync(
+                retry_db,
+                task_id=task_id,
+                message_id="different-message",
+                actor_user_id="user-1",
+                operation_id="undo-operation-1",
+            )
     check_db = SessionLocal()
     try:
         assert check_db.query(ChatMessage).filter(ChatMessage.id == message_id).first() is None
@@ -303,7 +321,7 @@ def test_undo_commits_before_deleted_message_is_accessed_and_ignores_broadcast_f
             check_db.query(TaskSessionTurn).filter(TaskSessionTurn.id == turn_id).one().status
             == TaskSessionTurnStatus.REVERTED
         )
-        assert check_db.query(SddTask).filter(SddTask.id == task_id).one().status == TaskStatus.CODING
+        assert check_db.query(SddTask).filter(SddTask.id == task_id).one().status == TaskStatus.ROUND_COMPLETED
     finally:
         check_db.close()
 
@@ -339,7 +357,7 @@ def test_undo_stop_engine_does_not_swallow_stop_failure(monkeypatch):
 def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
-    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.PENDING)
+    task, job = _seed_task(db, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.PENDING)
 
     published = []
     events = []
@@ -367,10 +385,20 @@ def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch)
     db.refresh(job)
     assert job.status == AiJobStatus.CANCELLED
     assert job.message == "stop before start"
-    assert task.status == TaskStatus.CODING
+    assert task.status == TaskStatus.INTERRUPTED
     assert published == ["job-1"]
     assert events == [("task_interrupted", "task-1", "job-1")]
     assert payload["job"]["status"] == AiJobStatus.CANCELLED.value
+    prepared = task_session_control_service._prepare_interrupted_resume(
+        db,
+        task_id=task.id,
+        actor_user_id="user-1",
+        idempotency_key=None,
+        prompt="Continue the queued task",
+        confirm_continue=False,
+    )
+    assert prepared["old_job_id"] == job.id
+    assert prepared["prompt_text"] == "Continue the queued task"
 
 
 def test_task_resume_requires_interrupted_status(monkeypatch):
@@ -446,7 +474,7 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
     db.refresh(task)
     db.refresh(job)
     resume_job = db.query(SddAiJob).filter(SddAiJob.id != job.id).one()
-    assert task.status == TaskStatus.CODING
+    assert task.status == TaskStatus.RUNNING
     assert task.session_id == session_id
     assert job.status == AiJobStatus.CANCELLED
     assert resume_job.status == AiJobStatus.PENDING
@@ -458,7 +486,7 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
     assert published == ["job-1"]
     assert events == [("task_resumed", "task-1", resume_job.id)]
     assert enqueued == [resume_job.id]
-    assert payload["status"] == TaskStatus.CODING.value
+    assert payload["status"] == TaskStatus.RUNNING.value
 
     # Retrying the same HTTP request is idempotent even though the task is now CODING.
     duplicate = asyncio.run(
@@ -476,7 +504,7 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
 def test_initialize_turn_captures_incremental_boundary_and_is_undoable(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
-    task, _job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.SUCCESS)
+    task, _job = _seed_task(db, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.SUCCESS)
     db.close()
 
     checkpoint_calls = []
@@ -526,7 +554,7 @@ def test_initialize_turn_captures_incremental_boundary_and_is_undoable(monkeypat
 def test_execute_job_failure_converges_running_resume_attempt_to_interrupted(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
-    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING)
+    task, job = _seed_task(db, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.RUNNING)
     job.context_json = {"resume_interrupted": True, "resumed_from_job_id": "old-job"}
     db.commit()
     db.close()
@@ -558,7 +586,7 @@ def test_execute_job_failure_converges_running_resume_attempt_to_interrupted(mon
 def test_startup_recovery_schedules_requirement_preview_queues(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
-    task, _job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.SUCCESS)
+    task, _job = _seed_task(db, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.SUCCESS)
     managed = SddAiJob(
         id="managed-pending",
         workspace_id=task.workspace_id,
@@ -599,7 +627,7 @@ def test_startup_recovery_schedules_requirement_preview_queues(monkeypatch):
 def test_execute_job_dispatches_requirement_preview_jobs(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
-    task, _job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.SUCCESS)
+    task, _job = _seed_task(db, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.SUCCESS)
     preview_job = SddAiJob(
         id="preview-job-1",
         workspace_id=task.workspace_id,
@@ -642,7 +670,7 @@ def test_execute_job_dispatches_requirement_preview_jobs(monkeypatch):
 def test_ai_job_queue_blocks_on_interrupted_job(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
-    task, _job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.INTERRUPTED)
+    task, _job = _seed_task(db, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.INTERRUPTED)
     pending = SddAiJob(
         id="job-2",
         workspace_id="ws-1",
@@ -751,7 +779,7 @@ def test_run_task_chat_turn_restores_job_session_for_resume(monkeypatch):
 def test_finalize_timeout_marks_task_and_job_interrupted(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
-    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING)
+    task, job = _seed_task(db, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.RUNNING)
     db.commit()
     db.close()
 
@@ -795,7 +823,7 @@ def test_finalize_timeout_marks_task_and_job_interrupted(monkeypatch):
 def test_finalize_auto_failure_marks_task_and_job_interrupted(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
-    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING)
+    task, job = _seed_task(db, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.RUNNING)
     db.commit()
     db.close()
 
@@ -842,7 +870,7 @@ def test_run_task_chat_turn_fresh_session_clears_engine_session(monkeypatch):
     starts a brand-new Claude session without --resume."""
     SessionLocal = _build_session()
     db = SessionLocal()
-    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING)
+    task, job = _seed_task(db, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.RUNNING)
     job.session_id = "session-1"
     job.context_json = {"fresh_session": True}
     db.commit()

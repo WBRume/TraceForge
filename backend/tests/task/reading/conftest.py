@@ -70,7 +70,7 @@ def seeded_db(db):
         creator_id=user_a.id,
         name="T",
         project_path="G:/repo/task",
-        status=TaskStatus.PENDING,
+        status=TaskStatus.INITIALIZED,
         session_generation=0,
         session_revision=0,
         reading_change_seq=0,

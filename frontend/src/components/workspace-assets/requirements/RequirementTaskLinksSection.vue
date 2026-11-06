@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { taskStatusKey } from '@/utils/taskStatus'
 import { computed, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -81,28 +82,6 @@ async function confirmUnlink(task: RequirementLinkedTask) {
   }
 }
 
-function getStatusLabel(status: string) {
-  switch (status) {
-    case 'COMPLETED':
-    case 'SUCCESS':
-    case 'DONE':
-      return '已完成'
-    case 'RUNNING':
-    case 'IN_PROGRESS':
-      return '运行中'
-    case 'PROVISIONING':
-      return '准备中'
-    case 'FAILED':
-      return '失败'
-    case 'PLANNING':
-      return '规划中'
-    case 'PENDING':
-      return '待处理'
-    default:
-      return status
-  }
-}
-
 function getStatusBadgeClass(status: string) {
   switch (status) {
     case 'COMPLETED':
@@ -179,7 +158,7 @@ function getStatusBadgeClass(status: string) {
           <!-- 汉化状态指示与当前阶段 -->
           <span :class="['status-badge', getStatusBadgeClass(task.task_status)]">
             <span class="status-dot"></span>
-            {{ getStatusLabel(task.task_status) }}
+            {{ t(taskStatusKey(task.task_status)) }}
             <template v-if="task.current_phase"> · {{ task.current_phase }}</template>
           </span>
         </div>

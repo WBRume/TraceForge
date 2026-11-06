@@ -299,7 +299,7 @@ async def test_interrupt_notifies_initiator_unless_they_confirmed_the_stop(
     default_endpoint = endpoint(db, "user:me", user_id=user.id, events=routes.DEFAULT_EVENTS.copy())
     opted_in = endpoint(db, "workspace:ws", workspace_id=workspace.id, events=["AI_RUN_INTERRUPTED"])
     job = start(db, user, workspace, task, seconds=seconds)
-    task.status = TaskStatus.CODING
+    task.status = TaskStatus.RUNNING
     job.run_token = "interrupt-attempt"
     job.worker_boot_id = registry.WORKER_BOOT_ID
     job.session_id = "preserved-session"
@@ -372,7 +372,7 @@ def test_remote_system_interruption_always_notifies_even_when_error_is_cleared(s
     job.run_token = "remote-attempt"
     job.worker_boot_id = registry.WORKER_BOOT_ID
     job.process_execution_kind = EXECUTION_KIND_REMOTE_SESSION
-    task.status = TaskStatus.CODING
+    task.status = TaskStatus.RUNNING
     db.commit()
     reason = "Agent produced no meaningful activity for 600s" if timeout else "Provider execution failed"
     evidence = AttemptFinalizerEvidence(

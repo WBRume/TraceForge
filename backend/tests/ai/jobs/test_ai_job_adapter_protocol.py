@@ -49,7 +49,7 @@ def test_claim_persists_execution_kind_for_task_backend(monkeypatch):
         creator_id="user-1",
         name="T",
         project_path=".",
-        status="CODING",
+        status="RUNNING",
         agent_backend="opencode",
     )
     job = SddAiJob(
@@ -88,7 +88,7 @@ def test_claim_persists_local_kind_for_claude_backend(monkeypatch):
         creator_id="user-1",
         name="T",
         project_path=".",
-        status="CODING",
+        status="RUNNING",
         agent_backend="claude-code",
     )
     job = SddAiJob(

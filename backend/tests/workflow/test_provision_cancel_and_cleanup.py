@@ -255,7 +255,7 @@ def test_success_path_still_moves_task_to_pending(tmp_path, monkeypatch):
         with _session(SessionLocal) as db:
             task_row = db.query(SddTask).filter(SddTask.id == task_id).first()
             assert task_row is not None
-            assert task_row.status == TaskStatus.PENDING.value
+            assert task_row.status == TaskStatus.INITIALIZED.value
             assert os.path.exists(task_row.project_path)
             checkpoint = task_row.task_meta_json["initial_workspace_checkpoint"]
             saved = json.loads(Path(checkpoint, "worktree.json").read_text())
@@ -434,7 +434,7 @@ def test_list_tasks_hides_provisioning(tmp_path):
                 creator_id=user.id,
                 name="Ready task",
                 project_path=str(tmp_path),
-                status=TaskStatus.PENDING,
+                status=TaskStatus.INITIALIZED,
             )
             db.add(ready)
             db.commit()

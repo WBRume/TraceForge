@@ -13,15 +13,14 @@ from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.task.models.task import SddTask, TaskStatus
 
 # 成功率口径：DONE 与 BASELINED 视为完成
-SUCCESS_STATUSES = (TaskStatus.DONE, TaskStatus.BASELINED)
+SUCCESS_STATUSES = (TaskStatus.COMPLETED,)
 FAILURE_STATUSES = (TaskStatus.FAILED,)
 # 进行中口径：已启动且未终结（PROVISIONING 资源准备中、PENDING 未启动、终态均不算）
 ACTIVE_EXCLUDED_STATUSES = (
     TaskStatus.PROVISIONING,
-    TaskStatus.PENDING,
-    TaskStatus.DONE,
+    TaskStatus.INITIALIZED,
+    TaskStatus.COMPLETED,
     TaskStatus.FAILED,
-    TaskStatus.BASELINED,
 )
 HEATMAP_DAYS = 7
 
@@ -107,9 +106,9 @@ def get_success_rate(db: Session, workspace_id: str) -> list[SuccessRateData]:
     # 状态分布基于 Task 实时状态：
     # DONE / FAILED / PENDING 单独统计，其它状态归并为 RUNNING
     status_bucket = case(
-        (SddTask.status == TaskStatus.DONE, "DONE"),
+        (SddTask.status == TaskStatus.COMPLETED, "COMPLETED"),
         (SddTask.status == TaskStatus.FAILED, "FAILED"),
-        (SddTask.status == TaskStatus.PENDING, "PENDING"),
+        (SddTask.status == TaskStatus.INITIALIZED, "INITIALIZED"),
         else_="RUNNING",
     ).label("status_bucket")
 
@@ -123,9 +122,9 @@ def get_success_rate(db: Session, workspace_id: str) -> list[SuccessRateData]:
     stats = {str(bucket): int(count) for bucket, count in results}
 
     return [
-        SuccessRateData(status="DONE", count=stats.get("DONE", 0)),
+        SuccessRateData(status="COMPLETED", count=stats.get("COMPLETED", 0)),
         SuccessRateData(status="FAILED", count=stats.get("FAILED", 0)),
-        SuccessRateData(status="PENDING", count=stats.get("PENDING", 0)),
+        SuccessRateData(status="INITIALIZED", count=stats.get("INITIALIZED", 0)),
         SuccessRateData(status="RUNNING", count=stats.get("RUNNING", 0)),
     ]
 

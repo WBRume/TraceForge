@@ -79,7 +79,7 @@ Object.defineProperty(globalThis, 'WebSocket', {
 const task = (id: string, skillIds: string[] = []) => ({
   id,
   name: id,
-  status: 'CODING',
+  status: 'RUNNING', status_seq: '1',
   task_type: 'DEVELOPMENT',
   skill_ids: skillIds,
   total_cost_usd: 0,
@@ -182,13 +182,13 @@ describe('useChatViewModel session state single flight', () => {
 
   it('keeps a completed diagnosis task active when its requirement association refreshes the list', async () => {
     await mountViewModel()
-    await vm.selectTask({ ...task('t1'), task_type: 'DIAGNOSIS', status: 'DONE' })
+    await vm.selectTask({ ...task('t1'), task_type: 'DIAGNOSIS', status: 'COMPLETED', status_seq: '9' })
     await readySocket()
     const before = countCalls('/tasks')
     const requirement = { id: 'leaf', title: '权限检查', status: 'READY', can_link_task: true }
     vm.handleTaskRequirementLinked(requirement)
     await flushPromises()
-    expect(vm.currentTask.value).toMatchObject({ id: 't1', status: 'DONE', requirements: [requirement] })
+    expect(vm.currentTask.value).toMatchObject({ id: 't1', status: 'COMPLETED', status_seq: '9', requirements: [requirement] })
     expect(countCalls('/tasks')).toBe(before + 1)
     vm.handleTaskRequirementLinked(requirement)
     await flushPromises()
@@ -396,7 +396,7 @@ describe('useChatViewModel session state single flight', () => {
 
     const reply = { id: 'new-question', role: 'assistant', content: '需要使用什么构建工具？',
       task_id: 't1', session_generation: 2, session_turn_id: 'new-turn', message_type: 'text' }
-    const job = { id: 'new-job', task_id: 't1', status: 'RUNNING', progress: 55,
+    const job = { id: 'new-job', task_id: 't1', status: 'RUNNING', status_seq: '1', progress: 55,
       session_generation: 2, message: 'AI is processing' }
     const event = (sequence: number, type: string, payload: any) => socket.receive({
       type: 'event', room: 'task:t1', epoch: 'e', sequence,

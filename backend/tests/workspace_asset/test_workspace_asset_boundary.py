@@ -92,7 +92,7 @@ def _seed_workspace(db, workspace_id="ws-1", task_id="task-1"):
         name="Implement checkout",
         description="Task process boundary",
         project_path="G:/repo",
-        status=TaskStatus.PLANNING,
+        status=TaskStatus.RUNNING,
     )
     db.add_all([user, workspace, member, task])
     db.commit()
@@ -350,7 +350,7 @@ def test_spec_coverage_matrix_derives_conservative_statuses():
                     creator_id=user.id,
                     name="Spec only task",
                     project_path="G:/repo",
-                    status=TaskStatus.PLANNING,
+                    status=TaskStatus.RUNNING,
                 ),
                 SddTask(
                     id="task-evidence-missing",
@@ -358,7 +358,7 @@ def test_spec_coverage_matrix_derives_conservative_statuses():
                     creator_id=user.id,
                     name="Plan without evidence task",
                     project_path="G:/repo",
-                    status=TaskStatus.PLANNING,
+                    status=TaskStatus.RUNNING,
                 ),
                 SddTask(
                     id="task-clarification",
@@ -366,7 +366,7 @@ def test_spec_coverage_matrix_derives_conservative_statuses():
                     creator_id=user.id,
                     name="Clarification task",
                     project_path="G:/repo",
-                    status=TaskStatus.PLANNING,
+                    status=TaskStatus.RUNNING,
                 ),
                 SddTask(
                     id="task-rejected",
@@ -374,7 +374,7 @@ def test_spec_coverage_matrix_derives_conservative_statuses():
                     creator_id=user.id,
                     name="Rejected task",
                     project_path="G:/repo",
-                    status=TaskStatus.REVIEWING,
+                    status=TaskStatus.RUNNING,
                 ),
                 SddTask(
                     id="task-verified",
@@ -382,7 +382,7 @@ def test_spec_coverage_matrix_derives_conservative_statuses():
                     creator_id=user.id,
                     name="Verified task",
                     project_path="G:/repo",
-                    status=TaskStatus.REVIEWING,
+                    status=TaskStatus.RUNNING,
                 ),
             ]
             links = [
@@ -575,7 +575,7 @@ def test_workspace_asset_tasks_pagination_and_filtering():
                     creator_id=user.id,
                     name=f"Filterable task {i}",
                     project_path="G:/repo",
-                    status=TaskStatus.DONE if i % 2 == 0 else TaskStatus.PLANNING,
+                    status=TaskStatus.COMPLETED if i % 2 == 0 else TaskStatus.RUNNING,
                     current_phase="CODING" if i % 2 == 0 else "TESTING",
                 )
                 for i in range(5)
@@ -593,7 +593,7 @@ def test_workspace_asset_tasks_pagination_and_filtering():
 
         res2 = client.get("/api/workspaces/ws-tasks/workspace-assets/tasks?status=DONE")
         assert res2.status_code == 200
-        assert all(item["status"] == "DONE" for item in res2.json()["items"])
+        assert all(item["status"] == "COMPLETED" for item in res2.json()["items"])
 
         res3 = client.get("/api/workspaces/ws-tasks/workspace-assets/tasks?q=Filterable task")
         assert res3.status_code == 200
@@ -612,7 +612,7 @@ def _seed_stats_fixtures(db, workspace, user):
             creator_id=user.id,
             name=f"Task {k.upper()}",
             project_path="G:/repo",
-            status=TaskStatus.CODING,
+            status=TaskStatus.RUNNING,
         )
         for k in ("a", "b", "c")
     ]

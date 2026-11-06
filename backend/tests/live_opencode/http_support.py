@@ -128,7 +128,7 @@ def seed_task(config, ids, root):
                 workspace_id=ids["workspace_id"],
                 creator_id=ids["owner_id"],
                 name=config["case"].replace("http_", ""),
-                status=TaskStatus.CODING,
+                status=TaskStatus.RUNNING,
                 project_path=str(root / "work"),
                 session_generation=1,
                 session_revision=0,

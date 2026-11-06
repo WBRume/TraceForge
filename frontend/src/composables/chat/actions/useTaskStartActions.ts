@@ -4,6 +4,7 @@ import { noteTaskRunInitiated } from '@/utils/taskAwarenessIntent'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import type { RuntimeSkillItem } from '../types'
+import { generateClientMessageId } from '../shared/messageIdentity'
 
 /**
  * 引擎启动 / 会话初始化：启动确认弹窗、初始化弹窗（理由 + 初始提示词 + 技能选择）、
@@ -44,6 +45,7 @@ export function useTaskStartActions(options: {
   const startPrompt = ref('')
   const showStartConfirm = ref(false)
   const startingTask = ref(false)
+  const startCommands = new Map<string, { content: string; id: string }>()
   // 主开关：自动执行全流程（仅问题定位且绑定规程的任务生效）
   const startSopAutoRun = ref(false)
 
@@ -64,12 +66,12 @@ export function useTaskStartActions(options: {
   const initSelectedSkillIds = ref<string[]>([])
   const showDeletedRuntimeSkillConfirm = ref(false)
 
-  const isStartActionVisible = computed(() => Boolean(options.getCurrentTask()) && (options.isTaskPreStart.value || options.isTaskProvisioning.value))
+  const isStartActionVisible = computed(() => Boolean(options.getCurrentTask()) && options.isTaskPreStart.value)
   const canClickStartAction = computed(() => (
     options.isTaskPreStart.value && options.canStartTask.value && !startingTask.value && !options.collaborationBlocked?.()
   ))
   const canInitializeAction = computed(() => (
-    Boolean(options.getCurrentTask()) && !options.isTaskPreStart.value && options.canManageTaskStatus.value && !initializingTask.value
+    Boolean(options.getCurrentTask()) && !options.isTaskPreStart.value && !options.isTaskProvisioning.value && !['COMPLETED', 'FAILED'].includes(options.getCurrentTask()?.status) && options.canManageTaskStatus.value && !initializingTask.value
   ))
 
   const defaultInitialPromptForTask = (task: any): string => {
@@ -114,15 +116,20 @@ export function useTaskStartActions(options: {
     startingTask.value = true
 
     const prompt = String(startPrompt.value || defaultInitialPromptForTask(task)).trim()
+    const content = JSON.stringify([prompt, startSopAutoRun.value])
+    const previous = startCommands.get(task.id)
+    const commandId = previous?.content === content ? previous.id : generateClientMessageId()
+    startCommands.set(task.id, { content, id: commandId })
 
     try {
       const started = await api.post(
         `/workspaces/${options.getWorkspaceId()}/tasks/${task.id}/start`,
-        { prompt, ...(taskUsesSop(task) ? { sop_auto_run: startSopAutoRun.value } : {}), metadata: options.getSubmissionMetadata?.() }
+        { command_id: commandId, prompt, ...(taskUsesSop(task) ? { sop_auto_run: startSopAutoRun.value } : {}), metadata: options.getSubmissionMetadata?.() }
       )
+      startCommands.delete(task.id)
       noteTaskRunInitiated(task.id, undefined, started.data?.job?.id)
 
-      task.status = 'CODING'
+      options.applyTaskSessionPayload(started.data)
       options.engineRunning.value = !started.data?.submission
       showStartConfirm.value = false
       options.specDrawerClose()
@@ -284,7 +291,7 @@ export function useTaskStartActions(options: {
       noteTaskRunInitiated(task.id, undefined, job?.id)
       if (options.getCurrentTask()?.id !== task.id || options.getWorkspaceId() !== workspaceId) return true
       options.applyTaskSessionPayload({
-        task_id: task.id, status: 'CODING', job,
+        ...res.data, ...job?.task_snapshot, task_id: task.id, job,
         ...(job?.session_generation != null ? { session_generation: job.session_generation } : {}),
       })
       if (hasSkillSelectionArg) {
@@ -301,8 +308,8 @@ export function useTaskStartActions(options: {
       await options.skills.loadTaskRuntimeSkills({ silent: true, hydrateEditor: options.skills.showTaskSkillsDrawer.value })
 
       options.patchTask(task.id, hasSkillSelectionArg
-        ? { status: 'CODING', session_generation: task.session_generation, skill_ids: normalizedSkillIds }
-        : { status: 'CODING', session_generation: task.session_generation })
+        ? { session_generation: task.session_generation, skill_ids: normalizedSkillIds }
+        : { session_generation: task.session_generation })
       // Retain the receipt if refreshing history fails after the server commits.
       // Retrying the UI must recover that turn, not discard code a second time.
       initOperationId.value = ''

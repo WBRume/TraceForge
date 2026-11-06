@@ -74,7 +74,7 @@ def _prepare_task_undo_context_sync(
 async def interrupt_task(
     ws_id: str,
     task_id: str,
-    body: TaskInterruptRequest = Body(default_factory=TaskInterruptRequest),
+    body: TaskInterruptRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -106,6 +106,8 @@ async def interrupt_task(
                 workspace_id=state["workspace_id"],
                 actor_user_id=current_user.id,
                 reason=body.reason,
+                command_id=body.command_id,
+                expected_status_seq=body.expected_status_seq,
             )
     except LockAcquireTimeout as exc:
         raise_task_lock_conflict(exc)
@@ -249,6 +251,46 @@ def get_task_session_state(
     if state is None:
         raise HTTPException(404, "Task not found")
     return state
+
+
+@router.get("/{task_id}/status-events")
+def get_task_status_events(
+    ws_id: str,
+    task_id: str,
+    after_seq: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.domains.task.models.task_status_event import TaskStatusEvent
+    from app.domains.task.services import status_machine as sm
+
+    verify_workspace_access(ws_id, current_user.id, db)
+    task = get_task_or_404(db, task_id, ws_id)
+    rows = (
+        db.query(TaskStatusEvent)
+        .filter(TaskStatusEvent.task_id == task_id, TaskStatusEvent.status_seq > after_seq)
+        .order_by(TaskStatusEvent.status_seq)
+        .limit(1000)
+        .all()
+    )
+    return {
+        "task_snapshot": sm.snapshot(task),
+        "items": [
+            {
+                "event_key": row.event_key,
+                "status_seq": str(row.status_seq),
+                "trigger": row.trigger,
+                "from_status": row.from_status,
+                "to_status": row.to_status,
+                "actor_id": row.actor_id,
+                "job_id": row.job_id,
+                "session_generation": row.session_generation,
+                "session_revision": row.session_revision,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ],
+    }
 
 
 @router.get("/{task_id}/ai-jobs", response_model=AiJobListResponse)

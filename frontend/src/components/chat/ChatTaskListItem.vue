@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { normalizeTaskStatus, taskStatusKey } from '@/utils/taskStatus'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import { formatTime } from '@/utils/chatFormatters'
 import { Star, StarSolid } from '@/components/icons'
 import TaskRequirementBadges from './task-rail/TaskRequirementBadges.vue'
+import TaskStatusIcon from './TaskStatusIcon.vue'
 import type { RequirementOption } from '@/types/taskRail'
 
 interface ChatTaskListItemData {
@@ -31,7 +34,7 @@ const emit = defineEmits<{
   toggleFollow: [task: ChatTaskListItemData]
 }>()
 
-const normalizedStatus = computed(() => String(props.task.status || '').toLowerCase())
+const { t } = useI18n()
 const isDiagnosis = computed(() => props.task.task_type === 'DIAGNOSIS')
 const hasMetadata = computed(() => Boolean(props.task.creator_name || props.task.created_at))
 
@@ -65,9 +68,9 @@ const toggleFollow = (event?: MouseEvent) => {
           >
             {{ isDiagnosis ? $t('task_types.diagnosis_short') : $t('task_types.development_short') }}
           </span>
-          <span class="task-status" :title="task.status || ''">
-            <span class="status-dot" :class="normalizedStatus"></span>
-            {{ task.status }}
+          <span class="task-status" :title="t(taskStatusKey(task.status))" :data-status="normalizeTaskStatus(task.status)">
+            <TaskStatusIcon :status="task.status" :size="12" />
+            {{ t(taskStatusKey(task.status)) }}
           </span>
         </span>
       </span>
@@ -192,6 +195,8 @@ const toggleFollow = (event?: MouseEvent) => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  padding: 3px;
+  margin: -3px;
   min-width: 0;
   overflow: hidden;
   color: var(--color-text-muted);
@@ -241,35 +246,6 @@ const toggleFollow = (event?: MouseEvent) => {
 .task-item.active .task-type-tag.is-diagnosis {
   color: #92400e;
   background: #fde68a;
-}
-
-.status-dot {
-  width: 6px;
-  height: 6px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background-color: var(--color-text-muted);
-}
-
-.status-dot.coding,
-.status-dot.running {
-  background-color: var(--color-primary-500);
-}
-
-.status-dot.pending {
-  background-color: var(--color-accent-amber);
-}
-
-.status-dot.done {
-  background-color: var(--color-accent-emerald);
-}
-
-.status-dot.failed {
-  background-color: var(--color-accent-rose);
-}
-
-.status-dot.interrupted {
-  background-color: #f59e0b;
 }
 
 .task-meta {

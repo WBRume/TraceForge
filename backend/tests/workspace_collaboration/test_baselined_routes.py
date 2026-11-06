@@ -1,5 +1,6 @@
 """Frozen tasks remain downloadable without reopening their code for writes."""
 
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -31,7 +32,8 @@ def frozen_client(environment, monkeypatch):
         ],
     }
     state = service.receipt(db, task, "u", DeliveryReceipt(**receipt))
-    task.status = TaskStatus.BASELINED
+    task.status = TaskStatus.COMPLETED
+    task.baselined_at = datetime.utcnow()
     db.commit()
     user = SimpleNamespace(id="u")
     monkeypatch.setattr(router.workspace_service, "get_workspace_member", lambda *_: True)
@@ -56,7 +58,7 @@ def test_frozen_snapshot_download_is_read_only_for_workspace_reader(environment,
     assert {str(p.relative_to(root)): p.read_bytes() for p in root.glob("*/same.txt")} == before
     task = db.get(SddTask, "t")
     assert service.get_state(db, task) == state
-    assert task.status == TaskStatus.BASELINED
+    assert task.status == TaskStatus.COMPLETED
     assert client.post(PATH + "/lease", json=fence(state)).status_code == 403
 
 
@@ -102,4 +104,4 @@ def test_frozen_task_rejects_upload_and_handoff_and_can_disconnect(environment, 
     response = client.post(PATH + "/disable", json={**fence(state), "operation_id": "disconnect"})
     assert response.status_code == 200, response.text
     assert response.json()["enabled"] is False
-    assert db.get(SddTask, "t").status == TaskStatus.BASELINED
+    assert db.get(SddTask, "t").status == TaskStatus.COMPLETED

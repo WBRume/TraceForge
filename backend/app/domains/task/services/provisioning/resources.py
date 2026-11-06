@@ -11,6 +11,7 @@ from app.domains.auth.models.user import Workspace
 from app.domains.skill.services.runtime import materialization as skill_runtime_materialization
 from app.domains.task.models.task import SddTask, TaskStatus, TaskType
 from app.domains.task.services import git_worktree_service
+from app.domains.task.services import status_machine as sm
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 
 logger = get_logger(__name__, category="task_execution")
@@ -80,7 +81,7 @@ def _load_provision_task(db: Session, workspace_id: str, task_id: str) -> SddTas
     task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
     if not task:
         raise ValueError("Task not found")
-    if task.status not in (TaskStatus.PROVISIONING, TaskStatus.PENDING):
+    if task.status not in (TaskStatus.PROVISIONING, TaskStatus.INITIALIZED):
         raise ValueError("Task no longer provisioning")
     return task
 
@@ -94,7 +95,7 @@ def prepare_task_resources_for_provision(
     snapshot_progress: Callable[[], None] | None = None,
 ) -> SddTask:
     task = _load_provision_task(db, workspace_id, task_id)
-    if task.status == TaskStatus.PENDING:
+    if task.status == TaskStatus.INITIALIZED:
         return task
 
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
@@ -153,7 +154,7 @@ def prepare_task_resources_for_provision(
             db.refresh(task)
             if task.status != TaskStatus.PROVISIONING:
                 raise ProvisionJobCancelled("Task no longer provisioning")
-            task.status = TaskStatus.PENDING
+            sm.dispatch(db, task, sm.Trigger.RESOURCES_READY, event_key="resources-ready")
             task.current_phase = None
             task.error_message = None
             db.commit()

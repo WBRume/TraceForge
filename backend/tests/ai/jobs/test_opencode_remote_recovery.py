@@ -34,7 +34,7 @@ def jobs(monkeypatch):
                 workspace_id="ws-1",
                 creator_id="user-1",
                 name="Long task",
-                status=TaskStatus.CODING,
+                status=TaskStatus.RUNNING,
                 session_revision=0,
                 session_generation=1,
             )

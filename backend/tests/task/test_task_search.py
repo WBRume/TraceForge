@@ -19,12 +19,12 @@ def search_db():
         db.add(User(id="user", email="search@example.com", hashed_password="x", display_name="Search"))
         db.add_all([Workspace(id=ws, name=ws, owner_id="user") for ws in ("ws", "other-ws")])
         for task_id, name, workspace_id, status, task_type in [
-            ("target-a", "Search 100%_ready", "ws", TaskStatus.DONE, TaskType.DIAGNOSIS),
-            ("target-b", "Search second", "ws", TaskStatus.DONE, TaskType.DIAGNOSIS),
+            ("target-a", "Search 100%_ready", "ws", TaskStatus.COMPLETED, TaskType.DIAGNOSIS),
+            ("target-b", "Search second", "ws", TaskStatus.COMPLETED, TaskType.DIAGNOSIS),
             ("target-c", "Search failed", "ws", TaskStatus.FAILED, TaskType.DIAGNOSIS),
-            ("target-d", "Search development", "ws", TaskStatus.DONE, TaskType.DEVELOPMENT),
+            ("target-d", "Search development", "ws", TaskStatus.COMPLETED, TaskType.DEVELOPMENT),
             ("hidden", "Search pending", "ws", TaskStatus.PROVISIONING, TaskType.DIAGNOSIS),
-            ("cross", "Search elsewhere", "other-ws", TaskStatus.DONE, TaskType.DIAGNOSIS),
+            ("cross", "Search elsewhere", "other-ws", TaskStatus.COMPLETED, TaskType.DIAGNOSIS),
         ]:
             db.add(
                 SddTask(
@@ -62,7 +62,7 @@ def test_search_matches_literal_name_or_id_with_workspace_scope(search_db, searc
 def test_search_combines_filters_before_pagination(search_db):
     filters = {
         "search": "Search",
-        "status_filter": "DONE",
+        "status_filter": "COMPLETED",
         "task_type": "DIAGNOSIS",
         "relation": "created_by_me",
         "current_user_id": "user",

@@ -1,3 +1,4 @@
+import { mergeTaskSnapshot } from '@/utils/taskStatusProjection'
 import { ref, shallowRef, watch } from 'vue'
 import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
@@ -35,11 +36,7 @@ export function useTaskList(options: {
   let requestController: AbortController | undefined
   let searchTimer: ReturnType<typeof setTimeout> | undefined
 
-  const resolveTaskStatusQuery = (): 'DONE' | 'FAILED' | undefined => {
-    if (taskStatusFilter.value === 'DONE') return 'DONE'
-    if (taskStatusFilter.value === 'FAILED') return 'FAILED'
-    return undefined
-  }
+  const resolveTaskStatusQuery = () => taskStatusFilter.value === 'ALL' ? undefined : taskStatusFilter.value
 
   /** 列表加载完成后是否允许对路由任务做单条补拉（筛选状态下不做）。 */
   const canAutoFetchRouteTask = () => (
@@ -103,7 +100,11 @@ export function useTaskList(options: {
 
       const res = await api.get(`/workspaces/${wsId}/tasks`, { params, signal: requestController.signal })
       if (generation !== requestGeneration || wsId !== options.getWorkspaceId()) return
-      const items = Array.isArray(res.data?.items) ? res.data.items : []
+      const items = (Array.isArray(res.data?.items) ? res.data.items : []).map((item: any) => {
+        const target = tasks.value.find((old: any) => old.id === item.id) || {}
+        mergeTaskSnapshot(target, item)
+        return target
+      })
       taskListHasMore.value = Boolean(res.data?.has_more)
       tasks.value = reset ? items : [...tasks.value, ...items]
       loadOptions?.onLoaded?.()
@@ -195,7 +196,7 @@ export function useTaskList(options: {
 
   const patchTask = (taskId: string, patch: Record<string, any>) => {
     const target = tasks.value.find((task: any) => task.id === taskId)
-    if (target) Object.assign(target, patch)
+    if (target) mergeTaskSnapshot(target, patch)
   }
 
   const removeTask = (taskId: string) => {
@@ -212,7 +213,7 @@ export function useTaskList(options: {
   const upsertTask = (task: any) => {
     if (!task?.id) return
     const existing = tasks.value.find((item: any) => item.id === task.id)
-    if (existing) Object.assign(existing, task)
+    if (existing) mergeTaskSnapshot(existing, task)
     else unshiftTask(task)
   }
 
@@ -221,7 +222,7 @@ export function useTaskList(options: {
     if (!currentTaskId) return
     const latest = tasks.value.find((task: any) => task.id === currentTaskId)
     if (latest && currentTask) {
-      Object.assign(currentTask, latest)
+      mergeTaskSnapshot(currentTask, latest)
     }
   }
 

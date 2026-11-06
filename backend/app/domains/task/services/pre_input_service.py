@@ -37,16 +37,12 @@ logger = get_logger(__name__, category="task_execution")
 
 # 可发起预输入的会话状态（等待用户输入 / 执行中均可收集，终态与预热期不行）
 _PRE_INPUT_ALLOWED_TASK_STATUSES = {
-    TaskStatus.BRAINSTORMING,
-    TaskStatus.PLANNING,
-    TaskStatus.CODING,
-    TaskStatus.TESTING,
-    TaskStatus.REVIEWING,
-    TaskStatus.DEPLOYING,
+    TaskStatus.RUNNING,
+    TaskStatus.ROUND_COMPLETED,
+    TaskStatus.AWAITING_INPUT,
     TaskStatus.INTERRUPTED,
-    TaskStatus.BASELINED,
 }
-_PRE_INPUT_TERMINAL_TASK_STATUSES = {TaskStatus.DONE, TaskStatus.FAILED}
+_PRE_INPUT_TERMINAL_TASK_STATUSES = {TaskStatus.COMPLETED, TaskStatus.FAILED}
 
 MIN_WAIT_SECONDS = 30
 MAX_WAIT_SECONDS = 1800

@@ -64,6 +64,7 @@ from app.domains.system_config.routers import system_config
 from app.domains.task.models.task import SddTask
 from app.domains.task.routers import public_session_shares, task, task_closeout
 from app.domains.task.services import pre_input_worker as pre_input_deadline_worker
+from app.domains.task.services.status_machine import StatusTransitionError
 from app.domains.websocket.ws.connection import (
     ConnectionEvicted,
     receive_json_until_evicted,
@@ -193,6 +194,11 @@ app.add_middleware(LoggingMiddleware)
 
 # ── OAuth 统一业务异常输出：{"detail": ..., "code": "OAUTH_XXX", **extra} ──
 app.add_exception_handler(OAuthAPIError, oauth_api_error_handler)
+
+
+@app.exception_handler(StatusTransitionError)
+async def task_status_error_handler(_request, error):
+    return JSONResponse(status_code=error.status_code, content={"code": error.code, "detail": str(error)})
 
 
 # ── 路由挂载 ──

@@ -9,7 +9,7 @@ import type { TaskInspection } from '@/types/taskInspection'
 vi.mock('@/utils/api', () => ({ default: { get: vi.fn() } }))
 
 const detail: TaskInspection = {
-  task: { id: 'task-1', name: '检查初始版本', description: '任务描述', status: 'DONE', task_type: 'DEVELOPMENT',
+  task: { id: 'task-1', name: '检查初始版本', description: '任务描述', status: 'COMPLETED', task_type: 'DEVELOPMENT',
     creator_id: 'user', creator_name: 'Alice', execution_location: 'SERVER', created_at: '2026-10-11T10:00:00' },
   project_path: '/tasks/task-1',
   repositories: [{ id: 'r1', repository_id: 'repo', repo_name: 'Backend', repo_url: 'https://example.com/backend.git',

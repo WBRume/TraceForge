@@ -35,7 +35,7 @@ def test_diagnosis_completion_records_method_without_implying_code_implementatio
     response = client.post(f"/api/workspaces/{workspace_id}/tasks/{task_id}/closeout/complete", json=payload)
     assert response.status_code == 200, response.text
     with _session(sessions) as db:
-        assert db.get(SddTask, task_id).status == TaskStatus.DONE
+        assert db.get(SddTask, task_id).status == TaskStatus.COMPLETED
         summary = db.query(SddTaskFinalSummary).one()
         assert summary.final_status.value == "PARTIAL"
         assert "diagnosis closeout" in summary.remaining_risk

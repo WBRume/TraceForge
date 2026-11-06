@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.agents import (
     EXECUTION_KIND_LOCAL_PROCESS,
@@ -50,6 +50,7 @@ from app.domains.ai.services.jobs.constants import (
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID, runtime
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_cli_bootstrap import SddTaskCliBootstrap
+from app.domains.task.services import status_machine as sm
 
 # A productive turn can legitimately run longer than ten minutes now.  Stale
 # cleanup must never race the hard runtime watchdog and mark a live job failed.
@@ -179,6 +180,7 @@ def resolve_execution_kind_for_claim(
 
 
 def serialize_job(job: SddAiJob) -> dict[str, Any]:
+    task = job.task if object_session(job) is not None else job.__dict__.get("task")
     return {
         "id": job.id,
         "workspace_id": job.workspace_id,
@@ -188,6 +190,7 @@ def serialize_job(job: SddAiJob) -> dict[str, Any]:
         "channel": as_status(job.channel),
         "queue_key": job.queue_key,
         "status": as_status(job.status),
+        "task_snapshot": sm.snapshot(task) if task else None,
         "progress": int(job.progress or 0),
         "message": job.message,
         "prompt_text": job.prompt_text,
@@ -399,9 +402,19 @@ def apply_task_chat_job_interrupted(
     job.context_json = merge_json(job.context_json, patch)
     if result_patch:
         job.result_json = merge_json(job.result_json, result_patch)
-    if task and task.status not in {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.BASELINED}:
+    if task:
+        task = db.query(SddTask).filter_by(id=task.id).populate_existing().with_for_update().one_or_none()
+    if task and task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
         # 用户已显式关闭/失败的任务不能被引擎回调降级回 INTERRUPTED。
-        task.status = TaskStatus.INTERRUPTED
+        sm.execution_event(
+            db,
+            task,
+            sm.Trigger.EXECUTION_INTERRUPTED,
+            event_key=f"job:{job.id}:interrupted",
+            job_id=job.id,
+            generation=int(job.session_generation or 0),
+            revision=int(job.session_revision or 0),
+        )
         task.session_id = resolved_session_id
         task.error_message = None
         task.interrupt_reason = reason_text
@@ -530,6 +543,9 @@ def create_task_chat_job(
     commit: bool = True,
 ) -> SddAiJob:
     payload_context = {"source": "task_chat"}
+    task = db.get(SddTask, task_id)
+    if task and task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+        raise ValueError("Terminal tasks cannot accept new chat jobs")
     if isinstance(context_json, dict):
         payload_context.update(context_json)
     job = SddAiJob(
@@ -552,6 +568,8 @@ def create_task_chat_job(
     )
     db.add(job)
     db.flush()
+    if task:
+        sm.dispatch(db, task, sm.Trigger.BIND_EXECUTION, event_key=f"bind:{job.id}", job_id=job.id, actor_id=creator_id)
     from app.domains.workspace_collaboration.hooks import authorize_job
 
     authorize_job(db, job)

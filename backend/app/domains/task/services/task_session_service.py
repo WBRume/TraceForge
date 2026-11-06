@@ -34,8 +34,10 @@ from app.domains.task.models.session_turn import (
     TaskSessionTurnStatus,
 )
 from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.services import status_machine as sm
 from app.domains.task.services import task_confirmation_service, task_session_snapshot_service
 from app.domains.task.services.conversation import history as task_conversation_history
+from app.domains.task.services.status_policy import is_terminal
 from app.domains.websocket.ws.manager import manager
 from app.domains.workspace_asset.models.workspace_asset import SddAiOutput, SddDecision, SddEvidence
 from app.engine.session import get_engine
@@ -221,6 +223,8 @@ def _prepare_chat_turn_sync(
     from app.domains.task.services.chat_submission_service import assert_no_preparing_submission
 
     assert_no_preparing_submission(db, task_id, allowed_id=submission_id, initialization_id=initialization_id)
+    if is_terminal(task.status):
+        raise TaskSessionUndoError("Terminal tasks cannot accept messages", code="TASK_TERMINAL")
     active_job = (
         db.query(SddAiJob)
         .filter(
@@ -300,6 +304,12 @@ def _prepare_chat_turn_sync(
     }
 
 
+def _accept_turn_input(db, task, turn, actor_id):
+    # Pre-input turns bypass the ordinary chat submission receipt.
+    if task.status in {TaskStatus.ROUND_COMPLETED, TaskStatus.AWAITING_INPUT}:
+        sm.dispatch(db, task, sm.Trigger.INPUT_SUBMITTED, event_key=f"input-turn:{turn.id}", actor_id=actor_id)
+
+
 def _persist_chat_turn_sync(
     db: Session,
     *,
@@ -317,13 +327,17 @@ def _persist_chat_turn_sync(
     from app.domains.task.models.chat_submission import TaskChatSubmission
 
     task = db.query(SddTask).filter_by(id=task_id).with_for_update().one()
-    if int(task.session_generation or 0) != generation or int(task.session_revision or 0) != revision:
+    if (
+        is_terminal(task.status)
+        or int(task.session_generation or 0) != generation
+        or int(task.session_revision or 0) != revision
+    ):
         raise TaskSessionUndoError("Session changed while preparing message", code="TASK_SESSION_CHANGED")
     submission_id = (context_json or {}).get("submission_id")
     if submission_id and _enum_text(task.status) in {
-        "PENDING",
+        "INITIALIZED",
         "PROVISIONING",
-        "DONE",
+        "COMPLETED",
         "FAILED",
         "BASELINED",
         "INTERRUPTED",
@@ -391,6 +405,7 @@ def _persist_chat_turn_sync(
     # rely on this column to expose the undo action.
     message.session_turn_id = turn.id
     metadata.update({"session_turn_id": turn.id, "chat_message_id": message.id})
+    _accept_turn_input(db, task, turn, prepared["actor_user_id"])
     job = ai_job_store.create_task_chat_job(
         db,
         workspace_id=workspace_id,
@@ -595,6 +610,8 @@ def _persist_confirmation_reply_sync(
     if not task:
         raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
     parent = db.query(ChatMessage).filter(ChatMessage.id == reply_to_message_id, ChatMessage.task_id == task_id).first()
+    if is_terminal(task.status):
+        raise TaskSessionUndoError("Terminal tasks cannot accept replies", code="TASK_TERMINAL")
     parent_metadata = parent.metadata_json if parent and isinstance(parent.metadata_json, dict) else {}
     confirmation = parent_metadata.get("confirmation") if isinstance(parent_metadata, dict) else None
     if not parent or parent.role != "assistant" or not isinstance(confirmation, dict):
@@ -1006,6 +1023,13 @@ def _undo_provider_metadata(db: Session, task: SddTask, turn: TaskSessionTurn) -
     return metadata
 
 
+def _completed_undo_receipt(db, operation, message_id, actor_id):
+    result = sm.receipt(db, operation.task_id, f"revert:{operation.operation_id}")
+    if not result or result.get("target_message_id") != message_id or operation.actor_user_id != actor_id:
+        raise TaskSessionUndoError("Undo operation identity does not match", code="UNDO_OPERATION_CONFLICT")
+    return result
+
+
 def _prepare_undo_sync(
     db: Session,
     *,
@@ -1041,7 +1065,7 @@ def _prepare_undo_sync(
     )
     recovering = bool(existing and existing.status != TaskSessionOperationStatus.REVERTED)
     if existing and existing.status == TaskSessionOperationStatus.REVERTED:
-        raise TaskSessionUndoError("Undo operation has already completed", code="UNDO_ALREADY_COMPLETED")
+        return {"duplicate_result": _completed_undo_receipt(db, existing, message_id, actor_user_id)}
     if (
         db.query(TaskSessionOperation.id)
         .filter(
@@ -1191,17 +1215,19 @@ def _complete_undo_sync(
 
     if session_checkpoint_adapter(context["provider_name"]).replaces_session_id:
         task.session_id = forked_dsh_session_id
-    task.status = TaskStatus.CODING
+    sm.dispatch(db, task, sm.Trigger.REVERT, event_key=f"revert:{context['operation_id']}", actor_id=actor_user_id)
     task.error_message = None
-    db.commit()
-    return {
+    result = {
         "target_message_id": context["target_message_id"],
         "removed_message_ids": context["message_ids"],
         "restored_content": context["restored_content"],
         "session_generation": context["session_generation"],
-        "task_status": TaskStatus.CODING.value,
+        "task_snapshot": sm.snapshot(task),
         "status": TaskSessionTurnStatus.REVERTED.value,
     }
+    sm.remember_command_result(db, task.id, f"revert:{context['operation_id']}", result)
+    db.commit()
+    return result
 
 
 def _fail_undo_sync(db: Session, *, task_id: str, operation_id: str) -> None:
@@ -1318,6 +1344,8 @@ async def undo_task_message(
                 operation_id=operation_id,
             ),
         )
+        if "duplicate_result" in context:
+            return context["duplicate_result"]
         provider_name = context["provider_name"]
         target = context["target"]
         suffix = context["suffix"]
@@ -1396,7 +1424,7 @@ async def undo_task_message(
                             "operation_id": operation_id,
                             "removed_message_ids": context["message_ids"],
                             "session_generation": context["session_generation"],
-                            "task_status": TaskStatus.CODING.value,
+                            "task_snapshot": result["task_snapshot"],
                         },
                     ),
                 )

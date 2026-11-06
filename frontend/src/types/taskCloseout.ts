@@ -45,6 +45,7 @@ export type FailCloseoutPayload = {
 }
 
 export type TaskCloseoutResponse = {
+  status_seq: string
   task_id: string
   workspace_id: string
   status: string

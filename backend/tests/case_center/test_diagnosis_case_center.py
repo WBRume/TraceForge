@@ -106,8 +106,8 @@ def test_create_diagnosis_task_via_service_and_filter():
             assert diag_task.id not in listed_ids
 
             # 准备完成（PENDING）后才会出现在列表中
-            dev_task.status = TaskStatus.PENDING.value
-            diag_task.status = TaskStatus.PENDING.value
+            dev_task.status = TaskStatus.INITIALIZED.value
+            diag_task.status = TaskStatus.INITIALIZED.value
             db.commit()
             all_items, total = list_tasks(db, workspace.id)
             assert total == 3  # 种子任务 + 研发态 + 问题定位
