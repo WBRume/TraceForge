@@ -1,6 +1,6 @@
 """Re-adapt preserved task output using the shared, durable Agent job lifecycle."""
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs.constants import queue_key_for_task
@@ -11,6 +11,12 @@ from . import git, service, storage
 from .git import UpdateError
 
 KIND = "TASK_REPOSITORY_ADAPT"
+
+
+def _candidate_roots(task, operation_id, job_id):
+    directory = storage.directory(task, operation_id)
+    # Keep accepting already queued jobs created with the previous directory layout.
+    return directory / ("a-" + UUID(job_id).hex), directory / "adaptations" / job_id
 
 
 def create(db, task, actor_id, operation_id, version, instruction, *, auto_apply=False):
@@ -25,7 +31,9 @@ def create(db, task, actor_id, operation_id, version, instruction, *, auto_apply
     # clones at each pinned remote commit, never in the task's original path.
     attempt_id = str(uuid4())
     sm.dispatch(db, task, sm.Trigger.INPUT_SUBMITTED, event_key=f"adapt-input:{attempt_id}", actor_id=actor_id)
-    root = storage.directory(task, operation_id) / "adaptations" / attempt_id
+    # Git's Windows repository discovery also needs room for .git/config.lock.
+    # Keep the candidate under its operation while avoiding another UUID directory level.
+    root = _candidate_roots(task, operation_id, attempt_id)[0]
     root.mkdir(parents=True)
     for repo in plan["repositories"]:
         original = service.stage(task, plan, repo)
@@ -134,8 +142,8 @@ def prepare_job(db, job_id, token):
     from pathlib import Path
 
     root = Path(job.context_json["candidate_root"]).resolve()
-    expected = (storage.directory(task, plan["id"]) / "adaptations" / job.id).resolve()
-    if root != expected or not root.is_dir():
+    expected = {path.resolve() for path in _candidate_roots(task, plan["id"], job.id)}
+    if root not in expected or not root.is_dir():
         raise UpdateError("候选代码目录不存在或与适配请求不一致。")
     return str(root)
 
@@ -164,8 +172,8 @@ def settle(db, job_id):
             if not job.session_id or job.session_id != task.session_id:
                 raise UpdateError("原任务会话已变化，无法应用本次适配。", "SOURCE_CHANGED")
             root = Path(job.context_json["candidate_root"])
-            expected = (storage.directory(task, plan["id"]) / "adaptations" / job.id).resolve()
-            if root.resolve() != expected:
+            expected = {path.resolve() for path in _candidate_roots(task, plan["id"], job.id)}
+            if root.resolve() not in expected:
                 raise UpdateError("候选代码目录与适配请求不一致。")
             for repo in plan["repositories"]:
                 candidate = root / repo["rel_path"]

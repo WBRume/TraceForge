@@ -66,9 +66,8 @@ function scan(root: string, policy: Policy) {
 
 function repoState(root: string, repo: string, destination: string): Repo {
   const relative = path.relative(root, repo).replaceAll('\\', '/') || '.'
-  const index = text(repo, 'rev-parse', '--path-format=absolute', '--git-path', 'index')
-  const gitDir = text(repo, 'rev-parse', '--absolute-git-dir')
-  // HEAD can be unborn; symbolic-ref without -q reports detached as nonzero.
+  const [index, gitDir] = text(repo, 'rev-parse', '--path-format=absolute', '--git-path', 'index', '--absolute-git-dir').split(/\r?\n/)
+  // HEAD can be unborn. Keep its symbolic name even when no object exists yet.
   const headFile = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim()
   const branch = headFile.startsWith('ref: refs/heads/') ? headFile.slice(16) : null
   const refs = text(repo, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads/')
@@ -117,8 +116,9 @@ export function capturePart(root: string, store: string, relative: string, sourc
       const index = sourceInfo![2]
       if (fs.existsSync(index)) {
         fs.copyFileSync(index, path.join(directory, 'index'))
-        for (const name of fs.readdirSync(path.dirname(index))) if (name.startsWith('sharedindex.')) fs.copyFileSync(path.join(path.dirname(index), name), path.join(directory, name))
-        run(['update-index', '--no-split-index'])
+        const sharedIndexes = fs.readdirSync(path.dirname(index)).filter(name => name.startsWith('sharedindex.'))
+        for (const name of sharedIndexes) fs.copyFileSync(path.join(path.dirname(index), name), path.join(directory, name))
+        if (sharedIndexes.length) run(['update-index', '--no-split-index'])
       }
     }
     if (!fs.existsSync(path.join(directory, 'index'))) run(['read-tree', '--empty'])

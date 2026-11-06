@@ -812,7 +812,7 @@ class PersistedSessionStopContractTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(adapter, "_abort_session", abort):
             result = await adapter.cancel_persisted_session("persisted-session-1")
 
-        abort.assert_awaited_once_with("persisted-session-1")
+        abort.assert_awaited_once_with("persisted-session-1", connect=True)
         self.assertTrue(result.stop_acknowledged)
 
     async def test_opencode_persisted_cancel_requires_explicit_session_id(self):

@@ -2,7 +2,7 @@
 
 在独立 MySQL 测试库上验证真实行锁与事务边界
 （SQLite 结果不能称为 MySQL 实测）。实例不可达时整体跳过。测试库为
-独立 schema（``traceforge_invite_link_audit``），测完即删，不触碰
+独立 schema（``traceforge_invite_link_audit_<随机后缀>``），测完即删，不触碰
 ``sdd_platform`` 数据。
 
 验收项：
@@ -18,6 +18,7 @@
 import threading
 import time
 from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -29,7 +30,7 @@ from app.domains.auth.models.user import User, Workspace, WorkspaceMember, Works
 from app.domains.workspace.models.invite_link import WorkspaceInviteLink
 from app.domains.workspace.services import workspace_service as ws
 
-TEST_SCHEMA = "traceforge_invite_link_audit"
+TEST_SCHEMA = "traceforge_invite_link_audit_" + uuid4().hex[:12]
 
 
 def _mysql_reachable() -> bool:

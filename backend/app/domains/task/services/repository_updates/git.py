@@ -135,8 +135,12 @@ def prepare(source: Path, destination: Path, *, url: str, branch: str, baseline:
     if result.returncode and not unresolved:
         raise UpdateError("Git 无法生成合并结果，原任务代码保持不变。")
     # Pin all inputs, even when the merge has no changes and Git drops MERGE_HEAD.
-    git(destination, "update-ref", "refs/traceforge/task", commit)
-    git(destination, "update-ref", "refs/traceforge/base", base)
+    git(
+        destination,
+        "update-ref",
+        "--stdin",
+        data=f"update refs/traceforge/task {commit}\nupdate refs/traceforge/base {base}\n".encode(),
+    )
     return {
         "source_head": head,
         "source_tree": source_tree,
@@ -160,7 +164,7 @@ def file_list(root: Path, repo: dict) -> list[dict]:
             ("remote", "target"),
         )
     }
-    pending = conflicts(root)
+    pending = set()
     current = {}
     for record in command(root, "ls-files", "-s", "-z").stdout.split(b"\0"):
         if record:
@@ -168,6 +172,8 @@ def file_list(root: Path, repo: dict) -> list[dict]:
             mode, oid, stage = header.decode().split()
             if stage == "0":
                 current[path.decode()] = {"mode": mode, "oid": oid, "kind": "commit" if mode == "160000" else "blob"}
+            else:
+                pending.add(path.decode())
     sides["result"] = current
     paths = sorted(set().union(*(set(v) for v in sides.values()), repo["conflicts"], pending))
     result = []
@@ -191,21 +197,59 @@ def file_list(root: Path, repo: dict) -> list[dict]:
     return sorted(result, key=lambda file: (not file["conflict"], file["path"]))
 
 
-def read_blob(root: Path, entry: dict | None) -> dict:
-    if entry is None:
-        return {"exists": False, "text": "", "binary": False, "mode": None}
-    if entry["mode"] == "160000":
-        return {"exists": True, "text": entry["oid"], "binary": True, "mode": entry["mode"]}
-    size = int(git(root, "cat-file", "-s", entry["oid"]))
-    if size > 2 * 1024 * 1024:
-        return {"exists": True, "text": "", "binary": True, "mode": entry["mode"]}
-    data = command(root, "cat-file", "blob", entry["oid"]).stdout
-    try:
-        text = data.decode("utf-8")
-        binary = b"\0" in data
-    except UnicodeDecodeError:
-        text, binary = "", True
-    return {"exists": True, "text": "" if binary else text, "binary": binary, "mode": entry["mode"]}
+def read_versions(root: Path, versions: dict[str, dict | None]) -> dict[str, dict]:
+    """Read distinct review blobs in two bounded Git batches, including binary data."""
+    oids = list(dict.fromkeys(entry["oid"] for entry in versions.values() if entry and entry["mode"] != "160000"))
+    sizes = {}
+    if oids:
+        rows = command(
+            root,
+            "cat-file",
+            "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+            data="".join(oid + "\n" for oid in oids).encode(),
+        ).stdout.splitlines()
+        if len(rows) != len(oids):
+            raise UpdateError("Git 文件版本信息不完整。")
+        for oid, row in zip(oids, rows, strict=True):
+            fields = row.split()
+            if len(fields) != 3 or fields[:2] != [oid.encode(), b"blob"]:
+                raise UpdateError("Git 文件版本不可用。")
+            sizes[oid] = int(fields[2])
+    selected = [oid for oid in oids if sizes[oid] <= 2 * 1024 * 1024]
+    blobs = {}
+    if selected:
+        raw = command(root, "cat-file", "--batch", data="".join(oid + "\n" for oid in selected).encode()).stdout
+        offset = 0
+        for oid in selected:
+            end = raw.find(b"\n", offset)
+            size = sizes[oid]
+            if end < offset or raw[offset:end] != f"{oid} blob {size}".encode():
+                raise UpdateError("Git 文件版本内容不完整。")
+            offset = end + 1
+            data = raw[offset : offset + size]
+            if len(data) != size or raw[offset + size : offset + size + 1] != b"\n":
+                raise UpdateError("Git 文件版本内容不完整。")
+            blobs[oid] = data
+            offset += size + 1
+        if offset != len(raw):
+            raise UpdateError("Git 文件版本内容无效。")
+    result = {}
+    for side, entry in versions.items():
+        value = {"exists": entry is not None, "text": "", "binary": False, "mode": entry["mode"] if entry else None}
+        if entry:
+            if entry["mode"] == "160000":
+                value.update(text=entry["oid"], binary=True)
+            elif entry["oid"] not in blobs:
+                value["binary"] = True
+            else:
+                data = blobs[entry["oid"]]
+                try:
+                    text = data.decode("utf-8")
+                    value.update(text=text if b"\0" not in data else "", binary=b"\0" in data)
+                except UnicodeDecodeError:
+                    value["binary"] = True
+        result[side] = value
+    return result
 
 
 def resolve(root: Path, repo: dict, path: str, choice: str, text: str | None):
@@ -215,9 +259,10 @@ def resolve(root: Path, repo: dict, path: str, choice: str, text: str | None):
     destination = safe_file(root, path)
     entry = known["versions"].get(choice)
     if choice == "edit":
-        if text is None or any(
-            v and (v["mode"] in {"120000", "160000"} or read_blob(root, v)["binary"])
-            for v in known["versions"].values()
+        if (
+            text is None
+            or any(v and v["mode"] in {"120000", "160000"} for v in known["versions"].values())
+            or any(v["binary"] for v in read_versions(root, known["versions"]).values())
         ):
             raise UpdateError("此文件只能选择完整版本，不能编辑文本。")
         if re.search(r"^<<<<<<< .+", text, re.MULTILINE) and re.search(r"^>>>>>>> .+", text, re.MULTILINE):
@@ -252,8 +297,15 @@ def install(source: Path, staging: Path, repo: dict, candidate: str):
     # Preflight verified the complete input tree before any repo is changed.
     # A checkpoint covers compensation; hidden refs retain committed history.
     git(source, "fetch", "--no-tags", str(staging), candidate)
-    git(source, "update-ref", f"refs/traceforge/updates/{candidate}/before", repo["source_head"])
-    git(source, "update-ref", f"refs/traceforge/updates/{candidate}/result", candidate)
+    git(
+        source,
+        "update-ref",
+        "--stdin",
+        data=(
+            f"update refs/traceforge/updates/{candidate}/before {repo['source_head']}\n"
+            f"update refs/traceforge/updates/{candidate}/result {candidate}\n"
+        ).encode(),
+    )
     git(source, "read-tree", "--reset", "-u", candidate)
     git(source, "update-ref", "HEAD", repo["target"], repo["source_head"])
     git(source, "read-tree", repo["target"])

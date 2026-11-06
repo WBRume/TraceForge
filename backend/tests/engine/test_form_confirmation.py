@@ -11,6 +11,12 @@ from app.engine.session.engine import TaskAgentEngine
 from app.engine.session.persistence import ContextSegmentBatcher
 
 
+@pytest.fixture(autouse=True)
+def status_events(monkeypatch):
+    # These checks exercise form persistence; state transitions have their own suite.
+    monkeypatch.setattr("app.engine.session.engine.emit_status_event", AsyncMock())
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["opencode", "claude-code", "dsh"])
 @pytest.mark.parametrize(
@@ -73,6 +79,7 @@ def test_questionnaire_is_persisted_as_chat_confirmation_without_provider_locato
         engine.frontend = SimpleNamespace(
             persist_chat_message=AsyncMock(return_value={"id": "message"}),
             push=AsyncMock(),
+            push_status=AsyncMock(),
         )
         engine.on_hitl = None
         engine._emit_hook = AsyncMock()
@@ -112,6 +119,7 @@ def test_questionnaire_flushes_real_segment_batch_without_dropping_entries(db, m
         engine.frontend = SimpleNamespace(
             persist_chat_message=AsyncMock(return_value={"id": "message"}),
             push=AsyncMock(),
+            push_status=AsyncMock(),
         )
         engine.on_hitl = None
         engine._emit_hook = AsyncMock()

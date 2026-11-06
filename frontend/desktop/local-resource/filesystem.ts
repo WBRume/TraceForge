@@ -101,15 +101,16 @@ export function remoteKey(value: string) {
   return url.hostname.toLowerCase() + port + '/' + url.pathname.replace(/^\/+|\/+$/g, '').replace(/\.git$/, '')
 }
 export function inspectRepo(localPath: string, configuredUrl: string, roots: string[]) {
-  const actual = inside(git(inside(localPath, roots), 'rev-parse', '--show-toplevel'), roots)
-  const common = inside(path.resolve(actual, git(actual, 'rev-parse', '--git-common-dir')), roots)
+  const [top, commonPath, gitDir, head] = git(inside(localPath, roots), 'rev-parse', '--path-format=absolute',
+    '--show-toplevel', '--git-common-dir', '--absolute-git-dir', 'HEAD').split(/\r?\n/)
+  const actual = inside(top, roots)
+  const common = inside(commonPath, roots)
   const remotes = git(actual, 'remote').split('\n').filter(Boolean).flatMap(name => git(actual, 'remote', 'get-url', '--all', name).split('\n').map(fetch_url => ({ name, fetch_url })))
   const key = remoteKey(configuredUrl)
   const matched = remotes.find(remote => { try { return remoteKey(remote.fetch_url) === key } catch { return false } })
   if (!matched) fail('REPOSITORY_MISMATCH: 配置地址未匹配任何 fetch remote，请检查个人 fork / upstream')
-  const gitDir = git(actual, 'rev-parse', '--absolute-git-dir')
   if (['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'index.lock'].some(marker => fs.existsSync(path.join(gitDir, marker)))) fail('REPOSITORY_BUSY')
-  return { repo_root: actual, common_git_dir: common, matched_remote: matched!.name, remotes, head_sha: git(actual, 'rev-parse', '--verify', 'HEAD'), dirty: !!gitRaw(actual, ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], { GIT_OPTIONAL_LOCKS: '0' }).length }
+  return { repo_root: actual, common_git_dir: common, matched_remote: matched!.name, remotes, head_sha: head, dirty: !!gitRaw(actual, ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], { GIT_OPTIONAL_LOCKS: '0' }).length }
 }
 export function provision(root: string, taskId: string, repos: Repository[], roots: string[], manifestFile: string, checkout = true): Receipt {
   let receipt: Receipt

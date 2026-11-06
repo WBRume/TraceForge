@@ -771,8 +771,6 @@ def test_public_share_ws_nudge_flow(owner_client):
 
     # 有效凭证 → 连接成功；完成 resync 握手后收到 nudge
     with client.websocket_connect(f"/ws/public/session-shares/{share_id}?access={access_token}") as ws:
-        import asyncio
-
         # 无游标连接：先收到 resync_required（页面已用 REST 建立快照）
         hello = ws.receive_json()
         assert hello["type"] == "resync_required"
@@ -784,7 +782,8 @@ def test_public_share_ws_nudge_flow(owner_client):
             }
         )
 
-        asyncio.run(notify_task_shares_history_changed("task-1"))
+        # The outbound queue belongs to the WebSocket portal's event loop.
+        ws.portal.call(notify_task_shares_history_changed, "task-1")
         # 握手回执（resync_ok）后即为业务 nudge
         frame = ws.receive_json()
         if frame.get("type") == "resync_ok":

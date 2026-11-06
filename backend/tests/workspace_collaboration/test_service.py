@@ -33,7 +33,7 @@ def git(path, *args):
 
 
 @pytest.fixture
-def environment(db, tmp_path, monkeypatch):
+def environment(db, tmp_path, monkeypatch, collaboration_repository_templates):
     monkeypatch.setattr(content.settings, "TASK_SESSION_SNAPSHOT_ROOT", str(tmp_path / "private"))
     task_root = tmp_path / "task"
     task_root.mkdir()
@@ -54,16 +54,8 @@ def environment(db, tmp_path, monkeypatch):
     db.add(task)
     for name, branch in [("api", "release/2.x"), ("web", "feature/login")]:
         root = task_root / name
-        root.mkdir()
-        git(root, "init")
-        git(root, "config", "user.name", "Test")
-        git(root, "config", "user.email", "test@example.local")
-        git(root, "config", "core.autocrlf", "false")
-        (root / "same.txt").write_bytes((name + " baseline\r\n").encode())
-        (root / "binary.bin").write_bytes(b"\x00\xff\xfe")
-        git(root, "add", ".")
-        git(root, "commit", "-m", "initial")
-        sha = git(root, "rev-parse", "HEAD")
+        template, sha = collaboration_repository_templates[name]
+        shutil.copytree(template, root)
         db.add(
             SddTaskRepository(
                 id=name,
@@ -80,6 +72,21 @@ def environment(db, tmp_path, monkeypatch):
         )
     db.commit()
     return db, task, task_root
+
+
+def test_environment_copies_keep_seed_git_data_and_contents_independent(
+    environment, collaboration_repository_templates
+):
+    _, _, root = environment
+    for name in ("api", "web"):
+        template, sha = collaboration_repository_templates[name]
+        repository = root / name
+        assert not (template / ".git/index").samefile(repository / ".git/index")
+        (repository / "same.txt").write_bytes(b"scenario-specific edit")
+        git(repository, "add", "same.txt")
+        assert (template / "same.txt").read_bytes() == (name + " baseline\r\n").encode()
+        assert git(template, "status", "--porcelain") == ""
+        assert git(repository, "rev-parse", "HEAD") == sha
 
 
 def enabled(environment):

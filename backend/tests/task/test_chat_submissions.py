@@ -205,7 +205,10 @@ def task_db(tmp_path):
 
     # Concurrent service transactions must not share StaticPool's single connection.
     engine = create_engine(f"sqlite:///{tmp_path / 'submissions.db'}")
-    Base.metadata.create_all(engine)
+    # sqlite3's legacy transaction mode otherwise commits every CREATE TABLE separately.
+    with engine.begin() as connection:
+        connection.exec_driver_sql("BEGIN")
+        Base.metadata.create_all(connection)
     db = Session(engine)
     db.add(User(id="u", email="submission@test.local", hashed_password="x", display_name="User"))
     db.add(Workspace(id="w", name="Workspace", owner_id="u"))

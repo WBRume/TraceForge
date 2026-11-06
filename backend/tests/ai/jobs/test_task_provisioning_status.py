@@ -96,7 +96,7 @@ def test_start_task_rejected_while_provisioning(tmp_path):
             ws_id, task_id = workspace.id, task.id
         client = TestClient(_build_app(SessionLocal, user))
 
-        resp = client.post(f"/api/workspaces/{ws_id}/tasks/{task_id}/start", json={})
+        resp = client.post(f"/api/workspaces/{ws_id}/tasks/{task_id}/start", json={"command_id": "start-provisioning"})
         assert resp.status_code == 409, resp.text
         assert "provision" in resp.json()["detail"].lower()
     finally:
@@ -126,7 +126,7 @@ def test_start_task_persists_user_initial_prompt_and_links_job(tmp_path, monkeyp
 
         resp = client.post(
             f"/api/workspaces/{ws_id}/tasks/{task_id}/start",
-            json={"prompt": "用户真正提交的启动提示"},
+            json={"command_id": "start-prompt", "prompt": "用户真正提交的启动提示"},
         )
 
         assert resp.status_code == 200, resp.text
@@ -164,7 +164,7 @@ def test_start_task_persists_sop_auto_run_main_switch(tmp_path, monkeypatch):
 
         resp = client.post(
             f"/api/workspaces/{ws_id}/tasks/{task_id}/start",
-            json={"prompt": "启动", "sop_auto_run": True},
+            json={"command_id": "start-sop", "prompt": "启动", "sop_auto_run": True},
         )
         assert resp.status_code == 200, resp.text
         with _session(SessionLocal) as db:
@@ -232,7 +232,7 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
         with _session(factory) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-recover", task_id="task-recover")
             task.project_path = str(tmp_path)
-            task.status = TaskStatus.INTERRUPTED
+            task.status = TaskStatus.RUNNING
             task.session_id = "old-session"
             old = ai_store.create_task_chat_job(
                 db,
@@ -241,6 +241,7 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
                 creator_id=user.id,
                 prompt_text="old prompt",
             )
+            task.status = TaskStatus.INTERRUPTED
             old.status = old_status
             if old_status == AiJobStatus.RUNNING:
                 old.run_token = "before-restart"
@@ -334,7 +335,7 @@ def test_initialize_preserves_or_recovers_session_after_cleanup(monkeypatch, rec
         monkeypatch.setattr("app.database.SessionLocal", factory)
         monkeypatch.setattr(
             "app.domains.task.services.task_session_control_service.get_engine",
-            lambda _: SimpleNamespace(stop=stop) if recovery == "stop_failure" else None,
+            lambda _: SimpleNamespace(stop=stop, running=False) if recovery == "stop_failure" else None,
         )
         monkeypatch.setattr("app.domains.ai.services.jobs.publishing.publish_job", noop)
         monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", noop)

@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -24,25 +25,47 @@ environment = shared.environment
 def desktop(tmp_path, environment):
     repository_root = Path(__file__).resolve().parents[3]
     frontend = repository_root / "frontend"
-    executable = frontend / "node_modules" / "bun" / "bin" / ("bun.exe" if os.name == "nt" else "bun")
-    if not executable.is_file():
-        pytest.skip("Installed frontend Bun runtime is required for native collaboration integration")
-    runtime_url = (frontend / "desktop/local-resource/collaboration.ts").as_uri()
+    executable = shutil.which("node")
+    bundler = frontend / "node_modules" / "bun" / "bin" / ("bun.exe" if os.name == "nt" else "bun")
+    if not executable or not bundler.is_file():
+        pytest.skip("Node and installed frontend Bun are required for native collaboration integration")
+    runtime_path = (frontend / "desktop/local-resource/collaboration.ts").as_posix()
     bridge = tmp_path / "desktop-bridge.ts"
     bridge.write_text(
-        f"import {{ CollaborationRuntime }} from {json.dumps(runtime_url)};\n"
+        f"import {{ CollaborationRuntime }} from {json.dumps(runtime_path)};\n"
         "import fs from 'node:fs';\n"
         "const input = JSON.parse(fs.readFileSync(0, 'utf8'));\n"
         "const runtime = new CollaborationRuntime(input.state, () => input.roots);\n"
         "try { process.stdout.write(JSON.stringify(runtime.execute(input.kind, input.payload))); }\n"
-        "finally { runtime.close(); }\n",
+        "finally { await runtime.close(); }\n",
         encoding="utf-8",
     )
+    # Electron runs this same runtime in Node. Compile TypeScript once, retaining
+    # a fresh OS process per request for the persistence/recovery assertions.
+    # Bun's Windows spawnSync adds multi-second waits to otherwise tiny Git calls.
+    bundle = tmp_path / "desktop-bridge.mjs"
+    build = subprocess.run(
+        [
+            str(bundler),
+            "build",
+            str(bridge),
+            "--target=node",
+            "--format=esm",
+            "--outfile",
+            str(bundle),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert build.returncode == 0, build.stderr
 
     def execute(kind, payload):
         # Each request starts a new runtime to prove binding, input and recovery persistence.
         process = subprocess.Popen(
-            [str(executable), str(bridge)],
+            [executable, str(bundle)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

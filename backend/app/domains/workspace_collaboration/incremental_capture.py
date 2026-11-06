@@ -40,7 +40,11 @@ def _changed_groups(root: Path, previous: dict, changed: dict[str, set[int]]):
         if info is None and name not in modes:
             # Atomic-write scratch paths that disappeared were never in the cut.
             continue
-        group = next(key for key in ordered if key == "." or name.startswith(key + "/"))
+        group = next((key for key in ordered if key == "." or name.startswith(key + "/")), None)
+        if group is None:
+            group = "."
+            groups[group] = {"existing": [], "removed": [], "paths": []}
+            ordered.append(group)
         relative = name if group == "." else name[len(group) + 1 :]
         groups[group]["paths"].append(relative)
         if info:
@@ -119,6 +123,10 @@ def capture_changed(
         else:
             current = {**part, "ref": ref}
         parts.append(current)
+    if "." in groups and not any(part["relative"] == "." for part in previous["partitions"]):
+        # Allocate the previously empty root lazily, without traversing the worktree.
+        shadow = git_store.Shadow(str(root), previous["object_store"], ".", None)
+        parts.append(shadow.capture(groups["."]["existing"], "refs/traceforge/" + token))
     payload = {**previous, "partitions": parts, "modes": modes, "directories": sorted(directories), "repositories": []}
     if stable:
         from app.domains.task.services import task_session_snapshot_service as snapshots

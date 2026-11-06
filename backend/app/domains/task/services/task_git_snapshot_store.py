@@ -127,6 +127,7 @@ class Shadow:
         key = hashlib.sha256(relative.encode()).hexdigest()[:24]
         self.directory = os.path.join(object_store, "shadow", key)
         self.source = source
+        self.source_objects: str | None = None
         self.cold = not os.path.exists(self.directory)
 
     def run(self, args: list[str], data: bytes | None = None) -> bytes:
@@ -165,29 +166,45 @@ class Shadow:
             if os.path.exists(os.path.join(self.directory, "objects", "info", "alternates")):
                 raise ValueError("Snapshot initialization did not finish")
             return
-        fmt = git(self.source, ["rev-parse", "--show-object-format"]).decode().strip() if self.source else "sha1"
+        fmt, objects, index = "sha1", None, None
+        if self.source:
+            fmt, objects, index = (
+                git(
+                    self.source,
+                    [
+                        "rev-parse",
+                        "--show-object-format",
+                        "--path-format=absolute",
+                        "--git-path",
+                        "objects",
+                        "--git-path",
+                        "index",
+                    ],
+                )
+                .decode()
+                .splitlines()
+            )
+            self.source_objects = objects
         os.makedirs(self.directory, exist_ok=True)
         self.run(["init", "--object-format=" + fmt, "."])
         Path(self.directory, "info", "attributes").write_bytes(ATTRIBUTES)
         if self.source:
-            objects = (
-                git(self.source, ["rev-parse", "--path-format=absolute", "--git-path", "objects"]).decode().strip()
-            )
             Path(self.directory, "objects", "info", "alternates").write_bytes(
                 (objects.replace("\\", "/") + "\n").encode("utf-8")
             )
-            index = git(self.source, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).decode().strip()
             if os.path.isfile(index):
                 shutil.copyfile(index, os.path.join(self.directory, "index"))
                 # Expand split indexes before detaching the source dependency.
-                for shared in Path(index).parent.glob("sharedindex.*"):
+                shared_indexes = list(Path(index).parent.glob("sharedindex.*"))
+                for shared in shared_indexes:
                     shutil.copyfile(shared, Path(self.directory, shared.name))
-                self.run(["update-index", "--no-split-index"])
+                if shared_indexes:
+                    self.run(["update-index", "--no-split-index"])
         if not os.path.isfile(os.path.join(self.directory, "index")):
             self.run(["read-tree", "--empty"])
         files.write_json(os.path.join(self.directory, "owner.json"), {"root": self.root, "relative": self.relative})
 
-    def _exclude_transformed_entries(self, protected, names, remove):
+    def _exclude_transformed_entries(self, protected, names, remove, config=None):
         # Reuse only entries whose source representation is raw bytes.
         attrs = git(
             self.source,
@@ -201,7 +218,8 @@ class Shadow:
                     conversion.add(os.fsdecode(attrs[i]))
                 else:
                     remove.add(os.fsdecode(attrs[i]))
-        config = git(self.source, ["config", "--list", "--null"])
+        if config is None:
+            config = git(self.source, ["config", "--list", "--null"])
         if any(
             row.lower().startswith(b"core.autocrlf\n") and row.split(b"\n", 1)[1].lower() not in (b"false", b"0")
             for row in config.split(b"\0")
@@ -220,11 +238,13 @@ class Shadow:
                     equal_eol.add(os.fsdecode(name))
             remove.update(conversion - equal_eol)
 
-    def _windows_modes(self, entries) -> list[str]:
+    def _windows_modes(self, entries, source_index=None) -> list[str]:
         link_placeholders = []
         if os.name == "nt" and self.source:
             source_modes = {}
-            for row in git(self.source, ["ls-files", "--stage", "-z"]).split(b"\0"):
+            if source_index is None:
+                source_index = git(self.source, ["ls-files", "--stage", "-z"])
+            for row in source_index.split(b"\0"):
                 if row:
                     header, name = row.split(b"\t", 1)
                     source_modes[name] = header.split()[0]
@@ -247,12 +267,14 @@ class Shadow:
 
     def capture(self, protected: list[str], ref: str, *, force_raw: bool = False) -> dict:
         self.initialize()
+        config = None
         if os.name == "nt" and self.source:
             config = git(self.source, ["config", "--list", "--null"])
             self.run(["config", "core.symlinks", "false" if b"core.symlinks\nfalse\0" in config else "true"])
         indexed = self.run(["ls-files", "--stage", "-z"])
         entries = [row.split(b"\t", 1) for row in indexed.split(b"\0") if row]
-        link_placeholders = self._windows_modes(entries)
+        # A cold index is an independent byte-for-byte copy of the source index.
+        link_placeholders = self._windows_modes(entries, indexed if self.cold else None)
         if any(row[0].split()[2] != b"0" for row in entries):
             raise ValueError("Snapshot source index has unresolved conflicts")
         names = {os.fsdecode(row[1]) for row in entries}
@@ -261,7 +283,7 @@ class Shadow:
             self.run(["update-index", "--no-skip-worktree", "-z", "--stdin"], nul(sorted(names)))
         remove = names - set(protected)
         if self.cold and self.source and protected:
-            self._exclude_transformed_entries(protected, names, remove)
+            self._exclude_transformed_entries(protected, names, remove, config)
 
         if remove:
             self.run(["update-index", "--force-remove", "-z", "--stdin"], nul(sorted(remove)))
@@ -300,7 +322,9 @@ class Shadow:
         source cannot invalidate a snapshot. Cross-volume stores deliberately
         use Git repack instead. Other link errors remain fatal.
         """
-        source = git(self.source, ["rev-parse", "--path-format=absolute", "--git-path", "objects"]).decode().strip()
+        source = self.source_objects
+        if source is None:
+            source = git(self.source, ["rev-parse", "--path-format=absolute", "--git-path", "objects"]).decode().strip()
         roots = [source]
         for line in git(self.source, ["count-objects", "-v"]).decode().splitlines():
             if line.startswith("alternate: "):
@@ -521,6 +545,9 @@ def capture(
     token = hashlib.sha256(os.path.abspath(checkpoint).encode()).hexdigest()
     parts = []
     for relative, source in partition_sources.items():
+        if relative == "." and source is None and not groups[relative] and repositories:
+            # Nested repositories already own all bytes; directories remain in the manifest.
+            continue
         parts.append(
             Shadow(root, object_store, relative, source).capture(
                 groups[relative], "refs/traceforge/" + token, force_raw=force_raw

@@ -110,6 +110,10 @@ python -m pytest tests
 
 后端测试限定 `tests` 目录，避免收集 `tmp/` 中外部项目的测试。真实 OpenCode 验收会访问真实模型与服务，应按[专用说明](tests/live_opencode/README.md)显式运行。
 
+默认使用 pytest-xdist 自动并行执行，最多启动 8 个进程；可通过 `python -m pytest tests -n 4` 指定进程数。快照目录逐例隔离。
+
+串行执行及统计慢用例使用 `python -m pytest tests -n 0 --durations=25`。并行调度只用于提高吞吐，不能作为单用例优化或串行耗时对照的依据。
+
 ### 代码规范
 
 统一配置为 [`ruff.toml`](ruff.toml)，Ruff 版本由 [`requirements-dev.txt`](requirements-dev.txt) 固定；升级时同步调整 `required-version`。目标 Python 3.10，120 列、4 空格缩进、双引号。仓库根目录运行 `python -m ruff check backend` 也会读取同一配置。

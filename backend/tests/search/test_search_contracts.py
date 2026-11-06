@@ -100,7 +100,7 @@ def test_exact_supplier_contract(monkeypatch):
 
     async def check():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            assert len((await embed(client, profile, ["测试"]))[0]) == 1024
+            assert len((await embed(client, profile, ["测试"], runtime_credentials=False))[0]) == 1024
 
     asyncio.run(check())
 

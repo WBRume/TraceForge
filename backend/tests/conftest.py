@@ -41,6 +41,11 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(TESTS_ROOT, ".env.test"), override=False)
 
+# Configure process-local files before app imports initialize Loguru sinks.
+_TEST_LOG_ROOT = os.path.join(BACKEND_ROOT, "tmp", "pytest-logs", str(os.getpid()))
+os.environ["LOG_DIR"] = os.path.join(_TEST_LOG_ROOT, "logs")
+os.environ["AI_SESSION_LOG_DIR"] = os.path.join(_TEST_LOG_ROOT, "ai-sessions")
+
 # 补全 ORM mapper / FK 注册表：User 及各域模型的 relationship / ForeignKey
 # 指向跨域表，必须全量导入 models 包后才能 create_all（与生产 app 全量加载等价）
 import importlib  # noqa: E402
@@ -88,7 +93,43 @@ from app.domains.auth.routers import auth as auth_router_module  # noqa: E402
 from app.domains.auth.routers import oauth as oauth_router_module  # noqa: E402
 from app.domains.auth.services import auth_service  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _isolated_snapshot_roots(monkeypatch, tmp_path):
+    """Keep fixed fixture task IDs independent across tests and worker processes."""
+    monkeypatch.setattr(settings, "TASK_SESSION_SNAPSHOT_ROOT", str(tmp_path / "session-snapshots"))
+    monkeypatch.setattr(settings, "COLLABORATION_SNAPSHOT_ROOT", str(tmp_path / "collaboration-snapshots"))
+
+
 # ══════════════════ 数据库 fixtures ══════════════════
+
+
+@pytest.fixture(scope="session")
+def collaboration_repository_templates(tmp_path_factory):
+    """Build immutable seed repositories once; each scenario copies its own Git data."""
+    from app.core.subprocess_runner import run_git
+
+    directory = tmp_path_factory.mktemp("collaboration-repository-templates")
+    templates = {}
+    for name in ("api", "web"):
+        root = directory / name
+        root.mkdir()
+        (root / "same.txt").write_bytes((name + " baseline\r\n").encode())
+        (root / "binary.bin").write_bytes(b"\x00\xff\xfe")
+        commands = [
+            ["init"],
+            ["config", "user.name", "Test"],
+            ["config", "user.email", "test@example.local"],
+            ["config", "core.autocrlf", "false"],
+            ["add", "."],
+            ["commit", "-m", "initial"],
+            ["rev-parse", "HEAD"],
+        ]
+        for command in commands:
+            result = run_git(command, cwd=str(root))
+            assert result.returncode == 0, result.stderr
+        templates[name] = root, result.stdout.strip()
+    return templates
 
 
 @pytest.fixture()

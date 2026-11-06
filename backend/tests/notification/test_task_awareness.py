@@ -19,6 +19,7 @@ from app.domains.notification.services.task_awareness import capture_business, c
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.task import TaskStatus
 from app.domains.task.routers import task_closeout as closeout_routes
+from app.domains.task.services import status_machine as sm
 from app.domains.task.services import task_session_control_service
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace
 
@@ -42,10 +43,13 @@ def start(db, user, workspace, task, *, seconds=30, creator_id=None):
         status=AiJobStatus.RUNNING,
         queue_key=f"TASK_CHAT:{task.id}",
         started_at=datetime.utcnow() - timedelta(seconds=seconds),
+        session_generation=task.session_generation,
+        session_revision=task.session_revision,
         context_json={"client_message_id": "c1"},
     )
     db.add(job)
     db.flush()
+    sm.dispatch(db, task, sm.Trigger.BIND_EXECUTION, event_key=f"bind:{job.id}", job_id=job.id, actor_id=user.id)
     capture_job(db, job, allow_start=True)
     db.commit()
     return job

@@ -194,7 +194,7 @@ async def test_file_restore_failure_then_same_operation_retry_finishes(undo_db, 
     assert db.get(ChatMessage, "message-1") is None
     assert provider.await_args_list[1].kwargs["recovering"] is True
     assert restore.await_args_list[0].args[2] != restore.await_args_list[1].args[2]
-    with pytest.raises(service.TaskSessionUndoError) as error:
-        await service.undo_task_message(db, **kwargs)
-    assert error.value.code == "UNDO_ALREADY_COMPLETED"
+    duplicate = await service.undo_task_message(db, **kwargs)
+    assert duplicate == result
+    assert provider.await_count == 2
     assert restore.await_count == 2

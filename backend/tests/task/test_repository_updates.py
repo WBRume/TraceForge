@@ -1,5 +1,6 @@
 """Real Git repositories: remote advancement, cloud output and review/apply fences."""
 
+import shutil
 from uuid import uuid4
 
 import pytest
@@ -24,7 +25,7 @@ def commit(root):
 
 
 @pytest.fixture
-def env(db, tmp_path, monkeypatch):
+def env(db, tmp_path, monkeypatch, update_repository_templates):
     monkeypatch.setattr(settings, "TASK_SESSION_SNAPSHOT_ROOT", str(tmp_path / "snapshots"))
     user, workspace, task_id = (str(uuid4()) for _ in range(3))
     db.add(User(id=user, email="update@test.local", display_name="Reviewer", hashed_password="x"))
@@ -47,15 +48,10 @@ def env(db, tmp_path, monkeypatch):
     remotes = {}
     for name, branch in [("api", "release/2.x"), ("web", "feature/ui")]:
         remote = tmp_path / f"remote-{name}"
-        remote.mkdir()
-        git.git(remote, "init", "-b", branch)
-        git.git(remote, "config", "core.autocrlf", "false")
-        write(remote, "shared.txt", "first\n" + "middle\n" * 8 + "last\n")
-        write(remote, "delete.txt", "original\n")
-        write(remote, "binary.bin", b"\0base")
-        sha = commit(remote)
-        git.git(remote, "clone", "-c", "core.autocrlf=false", str(remote), str(root / name))
-        git.git(root / name, "config", "core.autocrlf", "false")
+        seed_remote, seed_checkout, sha = update_repository_templates[name]
+        shutil.copytree(seed_remote, remote)
+        shutil.copytree(seed_checkout, root / name)
+        git.git(root / name, "remote", "set-url", "origin", str(remote))
         db.add(
             SddTaskRepository(
                 id=str(uuid4()),
@@ -72,6 +68,38 @@ def env(db, tmp_path, monkeypatch):
         remotes[name] = remote
     db.commit()
     return db, task, root, remotes, user
+
+
+@pytest.fixture(scope="session")
+def update_repository_templates(tmp_path_factory):
+    directory = tmp_path_factory.mktemp("update-repository-templates")
+    templates = {}
+    for name, branch in [("api", "release/2.x"), ("web", "feature/ui")]:
+        remote, checkout = directory / ("remote-" + name), directory / name
+        remote.mkdir()
+        git.git(remote, "init", "-b", branch)
+        git.git(remote, "config", "core.autocrlf", "false")
+        write(remote, "shared.txt", "first\n" + "middle\n" * 8 + "last\n")
+        write(remote, "delete.txt", "original\n")
+        write(remote, "binary.bin", b"\0base")
+        sha = commit(remote)
+        git.git(remote, "clone", "--no-hardlinks", "-c", "core.autocrlf=false", str(remote), str(checkout))
+        templates[name] = remote, checkout, sha
+    return templates
+
+
+def test_update_repository_copies_are_independent(env, update_repository_templates):
+    _, _, root, remotes, _ = env
+    for name, (remote, checkout, sha) in update_repository_templates.items():
+        assert not (root / name / ".git/index").samefile(checkout / ".git/index")
+        assert not (remotes[name] / ".git/index").samefile(remote / ".git/index")
+        write(root / name, "shared.txt", "changed task")
+        write(remotes[name], "shared.txt", "changed remote")
+        commit(root / name)
+        commit(remotes[name])
+        for seed in (remote, checkout):
+            assert git.git(seed, "rev-parse", "HEAD") == sha
+            assert git.git(seed, "status", "--porcelain") == ""
 
 
 def prepare(env):
@@ -497,3 +525,41 @@ async def test_adaptation_publishes_normal_task_chat_lifecycle(env, monkeypatch)
     await publishing.broadcast_job_payload(serialize_job(db.get(SddAiJob, plan["job_id"])))
     assert [call.args[1].type for call in send.await_args_list] == ["task_repository_update", "chat_job_update"]
     assert send.await_args_list[-1].args[1].payload["job"]["session_id"] == "existing-task-session"
+
+
+@pytest.mark.parametrize("layout", ["compact", "legacy", "foreign"])
+def test_adaptation_candidate_directory_keeps_operation_ownership(tmp_path, monkeypatch, layout):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from app.domains.ai.models.ai_job import SddAiJob
+    from app.domains.task.services.repository_updates import adaptation
+
+    monkeypatch.setattr(settings, "TASK_SESSION_SNAPSHOT_ROOT", str(tmp_path / "snapshots"))
+    task = SimpleNamespace(id=str(uuid4()), project_path=str(tmp_path / "task"), session_id="session")
+    operation_id, job_id = str(uuid4()), str(uuid4())
+    directory = storage.directory(task, operation_id)
+    roots = {
+        "compact": directory / ("a-" + job_id.replace("-", "")),
+        "legacy": directory / "adaptations" / job_id,
+        "foreign": tmp_path / "another-operation",
+    }
+    candidate = roots[layout]
+    candidate.mkdir(parents=True)
+    job = SimpleNamespace(
+        id=job_id,
+        task_id=task.id,
+        session_id=task.session_id,
+        context_json={"operation_id": operation_id, "candidate_root": str(candidate)},
+    )
+    db = Mock()
+    db.get.side_effect = lambda model, _: job if model is SddAiJob else task
+    monkeypatch.setattr("app.domains.ai.services.jobs.fencing.attempt_is_current_sync", lambda *a, **k: True)
+    monkeypatch.setattr(storage, "load", lambda *a: {"id": operation_id, "state": "ADAPTING", "job_id": job_id})
+    monkeypatch.setattr(service, "idle", Mock())
+    monkeypatch.setattr(service, "validate_source", Mock())
+    if layout == "foreign":
+        with pytest.raises(git.UpdateError, match="候选代码目录"):
+            adaptation.prepare_job(db, job_id, None)
+    else:
+        assert adaptation.prepare_job(db, job_id, None) == str(candidate.resolve())

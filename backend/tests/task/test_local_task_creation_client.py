@@ -20,7 +20,7 @@ def creation(monkeypatch):
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="user-1")
     app.dependency_overrides[get_db] = lambda: Mock()
     monkeypatch.setattr(crud, "verify_workspace_permission", Mock())
-    record = Mock(return_value=SimpleNamespace(id="task-1", name="Test task"))
+    record = Mock(return_value=SimpleNamespace(id="task-1", name="Test task", repo_bindings=[]))
     job = Mock(return_value=_fake_job(job_type=ProvisionJobType.CREATE_TASK, task_id="task-1", workspace_id="ws-1"))
     monkeypatch.setattr(crud.task_provisioning_creation, "create_task_record_for_provision", record)
     monkeypatch.setattr(crud.provision_job_service, "create_job", job)

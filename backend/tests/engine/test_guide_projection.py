@@ -19,7 +19,7 @@ def test_only_successful_provider_completion_projects_sop(monkeypatch, reason):
     engine.frontend.push_result = AsyncMock()
     engine.frontend.push_status = AsyncMock()
     engine._emit_hook = AsyncMock()
-    monkeypatch.setattr(engine_module, "update_task_status", AsyncMock())
+    monkeypatch.setattr(engine_module, "emit_status_event", AsyncMock())
     monkeypatch.setattr(engine_module, "update_task_metrics", AsyncMock())
     record = AsyncMock(return_value={"version": 8})
     published = AsyncMock()

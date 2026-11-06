@@ -1,21 +1,23 @@
 """Replay persists one visible reply/form even after the engine is recreated."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from sqlalchemy.orm import sessionmaker
 
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.task.models.chat import ChatMessage
-from app.domains.task.models.task import SddTask
+from app.domains.task.models.task import SddTask, TaskStatus
 from app.engine.session.engine import TaskAgentEngine
 from app.engine.session.frontend import FrontendFeed
 
 
 @pytest.fixture
 def engine_factory(db, monkeypatch):
-    monkeypatch.setattr("app.engine.session.frontend.SessionLocal", sessionmaker(bind=db.get_bind()))
+    sessions = sessionmaker(bind=db.get_bind())
+    monkeypatch.setattr("app.engine.session.frontend.SessionLocal", sessions)
+    monkeypatch.setattr("app.engine.session.persistence.SessionLocal", sessions)
     db.add(
         SddTask(
             id="replay-task",
@@ -24,6 +26,8 @@ def engine_factory(db, monkeypatch):
             name="Replay",
             session_generation=1,
             agent_backend="opencode",
+            status=TaskStatus.RUNNING,
+            status_run_id="replay-job",
         )
     )
     db.add(
@@ -35,12 +39,15 @@ def engine_factory(db, monkeypatch):
             channel=AiJobChannel.TASK_CHAT,
             status=AiJobStatus.RUNNING,
             queue_key="TASK_CHAT:replay-task",
+            session_generation=1,
+            session_revision=0,
         )
     )
     db.commit()
 
     def create():
-        engine = object.__new__(TaskAgentEngine)
+        with patch.object(TaskAgentEngine, "_create_engine_backend", return_value=Mock()):
+            engine = TaskAgentEngine("replay-task", "workspace", "user", job_id="replay-job")
         engine.is_current = lambda: True
         engine.task_id, engine.ws_id, engine.user_id = "replay-task", "workspace", "user"
         engine.current_job_id, engine.session_id = "replay-job", "ses_test"
@@ -81,7 +88,8 @@ async def test_pending_form_recovers_same_public_id_and_private_reply_route(db, 
     recovered = engine_factory()
     await recovered._on_ask_user(event)
     assert recovered._pending_confirmations == {original_id: "frm_private"}
-    recovered.frontend.push.assert_not_awaited()
+    recovered.frontend.push.assert_awaited_once()
+    assert recovered.frontend.push.await_args.args[0] == "status"
     messages = db.query(ChatMessage).filter_by(task_id="replay-task").all()
     assert len(messages) == 1
     assert messages[0].metadata_json["confirmation"]["interaction_id"] == original_id

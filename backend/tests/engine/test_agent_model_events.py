@@ -40,7 +40,7 @@ class TaskAgentEngineModelEventTest(unittest.IsolatedAsyncioTestCase):
         )
 
         initial_status = engine.frontend.push_status.await_args_list[-1]
-        self.assertEqual(initial_status.args[:2], ("INIT", "Agent 会话已启动"))
+        self.assertEqual(initial_status.args[:2], ("RUNNING", "Agent 会话已启动"))
         self.assertEqual(initial_status.kwargs["model"], None)
 
         await engine.handle_agent_event(

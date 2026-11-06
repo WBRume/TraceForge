@@ -1,11 +1,13 @@
 """Exercise the real submission/job barriers with durable collaboration rows."""
 
 import asyncio
+import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
+from app.core.subprocess_runner import run_git
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import store as job_store
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
@@ -15,7 +17,7 @@ from app.domains.task.models.task import SddTask, TaskStatus, TaskType
 from app.domains.task.models.task_repository import SddTaskRepository, TaskRepositoryState
 from app.domains.task.services import chat_submission_service as submissions
 from app.domains.task.services import task_session_service as turns
-from app.domains.workspace_collaboration import content, hooks, service
+from app.domains.workspace_collaboration import content, hooks, manifest_store, service
 from app.domains.workspace_collaboration.models import CollaborationSnapshot, CollaborationState
 
 
@@ -61,8 +63,8 @@ def collaboration_db(db):
         CollaborationSnapshot(
             id="input",
             task_id="t",
-            manifest_json=manifest,
-            content_digest=content.digest(manifest),
+            manifest_json={key: value for key, value in manifest.items() if key != "repositories"},
+            content_digest=manifest_store.store_repositories(db, "t", manifest["repositories"]),
             source="HUMAN_HANDOFF",
         )
     )
@@ -280,9 +282,21 @@ def test_fixed_input_is_bound_to_one_job_after_checkpoint_preparation(
     collaboration_db, monkeypatch, initial_generation, tmp_path
 ):
     from app.domains.task.services import context_token_service
+    from app.domains.task.services import task_session_snapshot_service as snapshots
 
     db = collaboration_db
-    db.get(SddTask, "t").session_generation = initial_generation
+    task = db.get(SddTask, "t")
+    task.session_generation = initial_generation
+    root = tmp_path / "task"
+    (root / "api").mkdir(parents=True)
+    assert run_git(["init"], cwd=str(root / "api")).returncode == 0
+    task.project_path = str(root)
+    monkeypatch.setattr(content.settings, "TASK_SESSION_SNAPSHOT_ROOT", str(tmp_path / "private"))
+    monkeypatch.setattr(content.settings, "COLLABORATION_SNAPSHOT_ROOT", str(tmp_path / "collaboration"))
+    checkpoint = snapshots._create_checkpoint_sync(str(root), ["api"], "none", None, "w", "Workspace", "t", "Task")
+    private_path = content.ObjectStore(task).root / "snapshots" / "input.json"
+    private_path.parent.mkdir(parents=True)
+    private_path.write_text(json.dumps({"worktree": checkpoint["worktree"]}), encoding="utf-8")
     db.get(CollaborationState, "t").session_generation = initial_generation
     db.commit()
     monkeypatch.setattr(context_token_service, "seed_snapshot_for_job", lambda *a, **k: None)
@@ -299,6 +313,7 @@ def test_fixed_input_is_bound_to_one_job_after_checkpoint_preparation(
     )
     db.commit()
     prepared["actor_user_id"] = "u"
+    assert prepared["pinned_worktree"] == checkpoint["worktree"]
     created = turns._persist_chat_turn_sync(
         db,
         prepared=prepared,
@@ -323,7 +338,7 @@ def test_fixed_input_is_bound_to_one_job_after_checkpoint_preparation(
         assert manifest["session_turn_id"] == turn.id
         assert manifest["turn_index"] == turn.turn_index
         assert manifest["turn_title"] == "Update login"
-        assert manifest["turn_created_at"] == turn.created_at.isoformat() + "Z"
+        assert manifest["turn_created_at"] == turn.created_at.isoformat()
         # Inventories are compressed separately; the persisted header does not
         # duplicate repositories. Compare through the public snapshot reader.
         assert service.get_snapshot(db, "t", manifest["snapshot_id"]) == manifest

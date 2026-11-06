@@ -100,7 +100,12 @@ class WorkflowSegmentBufferTest(unittest.IsolatedAsyncioTestCase):
         async def _capture_flush():
             events.append("flush")
 
+        async def _capture_push(kind, payload):
+            events.append(kind)
+
+        engine.frontend.push.side_effect = _capture_push
         with (
+            patch("app.engine.session.engine.emit_status_event", AsyncMock()),
             patch(
                 "app.engine.session.frontend.run_db",
                 AsyncMock(
@@ -115,9 +120,10 @@ class WorkflowSegmentBufferTest(unittest.IsolatedAsyncioTestCase):
         ):
             await engine._push_hitl(prompt="需要确认", hitl_type="text")
 
-        # 强制 flush 发生在 WS 广播之前
-        self.assertEqual(events, ["flush"])
-        engine.frontend.push.assert_awaited_once()
+        # Status is published first; persisted confirmation segments precede the chat frame.
+        self.assertEqual(events, ["status", "flush", "chat_message"])
+        self.assertEqual(engine.frontend.push.await_count, 2)
+        self.assertEqual(engine.frontend.push.await_args_list[0].args[1]["status"], "AWAITING_INPUT")
         self.assertEqual(engine.frontend.push.await_args.args[0], "chat_message")
         payload = engine.frontend.push.await_args.args[1]
         self.assertEqual(payload["role"], "assistant")

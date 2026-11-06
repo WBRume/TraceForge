@@ -21,7 +21,7 @@ async def test_diagnosis_timeout_words_do_not_override_provider_result(monkeypat
     engine.frontend.push_status = AsyncMock()
     engine._emit_hook = AsyncMock()
     update_status = AsyncMock()
-    monkeypatch.setattr(engine_module, "update_task_status", update_status)
+    monkeypatch.setattr(engine_module, "emit_status_event", update_status)
     monkeypatch.setattr(engine_module, "update_task_metrics", AsyncMock())
     await engine._on_result(
         {

@@ -77,6 +77,31 @@ def restore(tmp, name="turn-a"):
     service._restore_worktree_sync(str(tmp / name), str(tmp / "task"), str(tmp / name / "current-worktree"))
 
 
+@pytest.mark.parametrize("split_index", [False, True])
+def test_cold_capture_preserves_source_index_flags_and_split_index(tmp_path, split_index):
+    root = tmp_path / "task"
+    init(root)
+    write(root, "assumed.txt", b"base assumed")
+    write(root, "skipped.txt", b"base skipped")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "base")
+    if split_index:
+        git(root, "update-index", "--split-index")
+    git(root, "update-index", "--assume-unchanged", "assumed.txt")
+    git(root, "update-index", "--skip-worktree", "skipped.txt")
+    original_index = (root / ".git/index").read_bytes()
+    write(root, "assumed.txt", b"changed assumed")
+    write(root, "skipped.txt", b"changed skipped")
+    capture(tmp_path)
+    assert (root / ".git/index").read_bytes() == original_index
+    write(root, "assumed.txt", b"later")
+    write(root, "skipped.txt", b"later")
+    restore(tmp_path)
+    assert (root / "assumed.txt").read_bytes() == b"changed assumed"
+    assert (root / "skipped.txt").read_bytes() == b"changed skipped"
+    assert (root / ".git/index").read_bytes() == original_index
+
+
 def test_non_git_initial_state_untracked_files_empty_dirs_and_multiple_turns(tmp_path):
     root = tmp_path / "task"
     write(root, "init.txt", b"first round initialization")
@@ -95,6 +120,33 @@ def test_non_git_initial_state_untracked_files_empty_dirs_and_multiple_turns(tmp
     assert (root / "empty").is_dir()
     assert not (root / ".git").exists()
     assert first["version"] == 4
+
+
+def test_empty_task_root_does_not_need_a_shadow_and_later_root_files_are_captured(tmp_path):
+    from app.domains.workspace_collaboration.incremental_capture import _changed_groups
+
+    root = tmp_path / "task"
+    repository = root / "api"
+    init(repository)
+    write(repository, "main.py", b"original")
+    git(repository, "add", ".")
+    git(repository, "commit", "-m", "initial")
+    (root / "empty").mkdir()
+    first = capture(tmp_path)
+    assert {part["relative"] for part in first["partitions"]} == {"api"}
+    assert snapshots.entries(first)["api/main.py"]["size"] == len(b"original")
+
+    write(root, "notes.txt", b"new root file")
+    groups, _, _ = _changed_groups(root, first, {"notes.txt": {1}})
+    assert groups["."]["existing"] == ["notes.txt"]
+    second = capture(tmp_path, "with-root-file")
+    assert {part["relative"] for part in second["partitions"]} == {"api", "."}
+    assert "notes.txt" in snapshots.entries(second)
+    restore(tmp_path)
+    assert not (root / "notes.txt").exists()
+    assert (repository / "main.py").read_bytes() == b"original"
+    assert (root / "empty").is_dir()
+    assert not (root / ".git").exists()
 
 
 def test_seed_preserves_staged_unstaged_and_source_independence(tmp_path):

@@ -198,7 +198,7 @@ def file_detail(task, operation_id, repo_id, path):
     file = next((f for f in git.file_list(root, repo) if f["path"] == path), None)
     if not file:
         raise UpdateError("文件不在本次变更中。")
-    versions = {key: git.read_blob(root, entry) for key, entry in file["versions"].items()}
+    versions = git.read_versions(root, file["versions"])
     if file["conflict"]:
         candidate = git.safe_file(root, path)
         if candidate.is_file() and not candidate.is_symlink() and candidate.stat().st_size <= 2 * 1024 * 1024:
