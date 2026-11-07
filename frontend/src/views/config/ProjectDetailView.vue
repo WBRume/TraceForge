@@ -4,14 +4,14 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Pencil } from '@/components/icons'
-import AdminGuard from '@/components/management/AdminGuard.vue'
+import AdminGuard from '@/components/config/AdminGuard.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
-import IconActionButton from '@/components/management/IconActionButton.vue'
-import ProjectFormModal from '@/components/management/ProjectFormModal.vue'
-import LifecycleTransitionPanel from '@/components/management/LifecycleTransitionPanel.vue'
-import ProjectProductsPanel from '@/components/management/ProjectProductsPanel.vue'
-import ReleaseListSection from '@/components/management/ReleaseListSection.vue'
-import ReleaseFormModal from '@/components/management/ReleaseFormModal.vue'
+import IconActionButton from '@/components/config/IconActionButton.vue'
+import ProjectFormModal from '@/components/config/ProjectFormModal.vue'
+import LifecycleTransitionPanel from '@/components/config/LifecycleTransitionPanel.vue'
+import ProjectProductsPanel from '@/components/config/ProjectProductsPanel.vue'
+import ReleaseListSection from '@/components/config/ReleaseListSection.vue'
+import ReleaseFormModal from '@/components/config/ReleaseFormModal.vue'
 import { deleteProjectRelease, getProject } from '@/services/managementApi'
 import { formatApiError } from '@/utils/error'
 import { useAuthStore } from '@/stores/auth'
@@ -49,7 +49,7 @@ onMounted(() => {
 })
 
 const goBack = () => {
-  router.push('/management/projects')
+  router.push('/config/projects')
 }
 
 // 编辑

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Pencil, Trash2 } from '@/components/icons'
-import IconActionButton from '@/components/management/IconActionButton.vue'
+import IconActionButton from '@/components/config/IconActionButton.vue'
 import type { Repository } from '@/types/management'
 
 withDefaults(defineProps<{

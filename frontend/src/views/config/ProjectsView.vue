@@ -6,9 +6,9 @@ import { ElMessage } from 'element-plus'
 import { Plus } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
-import AdminGuard from '@/components/management/AdminGuard.vue'
-import ProjectListTable from '@/components/management/ProjectListTable.vue'
-import ProjectFormModal from '@/components/management/ProjectFormModal.vue'
+import AdminGuard from '@/components/config/AdminGuard.vue'
+import ProjectListTable from '@/components/config/ProjectListTable.vue'
+import ProjectFormModal from '@/components/config/ProjectFormModal.vue'
 import { deleteProject, listProjects } from '@/services/managementApi'
 import { formatApiError } from '@/utils/error'
 import { useAuthStore } from '@/stores/auth'
@@ -94,7 +94,7 @@ const openCreate = () => {
 }
 
 const openEdit = (project: Project) => {
-  router.push({ path: '/management/projects/' + project.id, query: { mode: 'edit' } })
+  router.push({ path: '/config/projects/' + project.id, query: { mode: 'edit' } })
 }
 
 const handleSaved = () => {
@@ -122,7 +122,7 @@ const confirmRemove = async () => {
 }
 
 const openDetail = (project: Project) => {
-  router.push({ path: '/management/projects/' + project.id, query: { mode: 'view' } })
+  router.push({ path: '/config/projects/' + project.id, query: { mode: 'view' } })
 }
 </script>
 

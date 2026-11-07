@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
-import SkillEditorView from '@/views/SkillEditorView.vue'
+import SkillEditorView from '@/views/config/SkillEditorView.vue'
 
 const state = vi.hoisted(() => ({
   vm: null as any,

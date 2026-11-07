@@ -7,10 +7,10 @@ import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { ElMessage } from 'element-plus';
 import { ArrowLeft } from '@/components/icons';
-import AdminGuard from '@/components/management/AdminGuard.vue';
-import ProductBaseReposPanel from '@/components/management/ProductBaseReposPanel.vue';
-import ProductFormModal from '@/components/management/ProductFormModal.vue';
-import ProductVersionsPanel from '@/components/management/ProductVersionsPanel.vue';
+import AdminGuard from '@/components/config/AdminGuard.vue';
+import ProductBaseReposPanel from '@/components/config/ProductBaseReposPanel.vue';
+import ProductFormModal from '@/components/config/ProductFormModal.vue';
+import ProductVersionsPanel from '@/components/config/ProductVersionsPanel.vue';
 import { getProduct } from '@/services/managementApi';
 import { formatApiError } from '@/utils/error';
 import { useAuthStore } from '@/stores/auth';
@@ -53,11 +53,11 @@ onMounted(() => {
 });
 
 const goBack = () => {
-  router.push('/management/products');
+  router.push('/config/products');
 };
 
 const openProduct = (productId: string) => {
-  router.push({ path: '/management/products/' + productId, query: { mode: 'view' } });
+  router.push({ path: '/config/products/' + productId, query: { mode: 'view' } });
 };
 
 const onProductSaved = () => {

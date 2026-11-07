@@ -77,122 +77,139 @@ const router = createRouter({
       component: () => import('../views/ProvisioningView.vue'),
       meta: { requiresAuth: true }
     },
-    // Legacy URLs kept working: skills now live inside the Operations Center (/ops).
+    // Legacy URLs kept working: centers are now organized as /config (configuration)
+    // and /ops (operations & management).
     {
       path: '/skills',
-      redirect: '/ops/skills',
+      redirect: '/config/skills',
     },
     {
-      path: '/skills/new',
-      redirect: '/ops/skills/new',
+      path: '/skills/:pathMatch(.*)*',
+      redirect: (to) => ({
+        path: `/config/skills/${(to.params.pathMatch as string[]).join('/')}`,
+        query: to.query,
+        hash: to.hash,
+      }),
     },
     {
-      path: '/skills/:skillId/edit',
-      redirect: (to) => ({ path: `/ops/skills/${to.params.skillId}/edit` }),
+      path: '/management/:pathMatch(.*)*',
+      redirect: (to) => {
+        const rest = (to.params.pathMatch as string[]).join('/')
+        return {
+          path: rest ? `/config/${rest}` : '/config',
+          query: to.query,
+          hash: to.hash,
+        }
+      },
     },
     {
-      path: '/skills/:skillId/edit/analysis',
-      redirect: (to) => ({ path: `/ops/skills/${to.params.skillId}/edit/analysis` }),
+      path: '/ops/skills/:pathMatch(.*)*',
+      redirect: (to) => {
+        const rest = (to.params.pathMatch as string[]).join('/')
+        return {
+          path: rest ? `/config/skills/${rest}` : '/config/skills',
+          query: to.query,
+          hash: to.hash,
+        }
+      },
     },
     {
-      path: '/skills/:skillId/edit/analysis/risks/:riskKey',
-      redirect: (to) => ({ path: `/ops/skills/${to.params.skillId}/edit/analysis/risks/${to.params.riskKey}` }),
-    },
-    {
-      path: '/management',
-      component: () => import('../views/management/ManagementLayout.vue'),
+      // 配置中心：产品 / 项目 / 仓库 / 技能 / 系统等“配置类”能力。
+      path: '/config',
+      component: () => import('../views/layouts/CenterLayout.vue'),
       meta: { requiresAuth: true, center: 'config' },
       children: [
         {
           path: 'products',
           name: 'productsHome',
-          component: () => import('../views/management/ProductsView.vue'),
+          component: () => import('../views/config/ProductsView.vue'),
         },
         {
           path: 'products/:productId',
           name: 'productDetail',
-          component: () => import('../views/management/ProductDetailView.vue'),
+          component: () => import('../views/config/ProductDetailView.vue'),
         },
         {
           path: 'projects',
           name: 'projectsHome',
-          component: () => import('../views/management/ProjectsView.vue'),
+          component: () => import('../views/config/ProjectsView.vue'),
         },
         {
           path: 'projects/:projectId',
           name: 'projectDetail',
-          component: () => import('../views/management/ProjectDetailView.vue'),
+          component: () => import('../views/config/ProjectDetailView.vue'),
         },
         {
           path: 'repositories',
           name: 'repositoriesHome',
-          component: () => import('../views/management/RepositoriesView.vue'),
+          component: () => import('../views/config/RepositoriesView.vue'),
+        },
+        {
+          path: 'skills',
+          name: 'skillsHome',
+          component: () => import('../views/config/SkillsView.vue'),
+        },
+        {
+          path: 'skills/new',
+          name: 'skillsCreate',
+          component: () => import('../views/config/SkillEditorView.vue'),
+        },
+        {
+          path: 'skills/:skillId/edit',
+          name: 'skillsEdit',
+          component: () => import('../views/config/SkillEditorView.vue'),
+        },
+        {
+          path: 'skills/:skillId/edit/analysis',
+          name: 'skillsEditAnalysis',
+          component: () => import('../views/config/SkillEditorView.vue'),
+        },
+        {
+          path: 'skills/:skillId/edit/analysis/risks/:riskKey',
+          name: 'skillsEditAnalysisRisk',
+          component: () => import('../views/config/SkillEditorView.vue'),
         },
         {
           path: 'system',
           name: 'systemConfigHome',
-          component: () => import('../views/management/SystemConfigView.vue'),
+          component: () => import('../views/config/SystemConfigView.vue'),
         },
         {
           path: 'system/:feature',
           name: 'systemConfigDetail',
-          component: () => import('../views/management/SystemConfigDetailView.vue'),
+          component: () => import('../views/config/SystemConfigDetailView.vue'),
         },
         {
           path: '',
-          redirect: '/management/products',
+          redirect: '/config/products',
         },
       ],
     },
     {
+      // 管理中心：队列运维 / 案例同步队列等“运维管理类”能力。
       path: '/ops',
-      component: () => import('../views/management/ManagementLayout.vue'),
+      component: () => import('../views/layouts/CenterLayout.vue'),
       meta: { requiresAuth: true, center: 'ops' },
       children: [
         {
           path: 'queue',
           name: 'opsQueueList',
-          component: () => import('../views/OpsQueueListView.vue'),
-        },
-        {
-          path: 'rag-queue',
-          name: 'ragQueueList',
-          component: () => import('../views/RagQueueView.vue'),
-        },
-        {
-          path: 'rag-queue/:queueId',
-          name: 'ragQueueDetail',
-          component: () => import('../views/RagQueueDetailView.vue'),
+          component: () => import('../views/ops/OpsQueueListView.vue'),
         },
         {
           path: 'queue/:source/:jobId',
           name: 'opsQueueDetail',
-          component: () => import('../views/OpsQueueDetailView.vue'),
+          component: () => import('../views/ops/OpsQueueDetailView.vue'),
         },
         {
-          path: 'skills',
-          name: 'skillsHome',
-          component: () => import('../views/SkillsView.vue'),
+          path: 'rag-queue',
+          name: 'ragQueueList',
+          component: () => import('../views/ops/RagQueueView.vue'),
         },
         {
-          path: 'skills/new',
-          name: 'skillsCreate',
-          component: () => import('../views/SkillEditorView.vue'),
-        },
-        {
-          path: 'skills/:skillId/edit',
-          name: 'skillsEdit',
-          component: () => import('../views/SkillEditorView.vue'),
-        },
-        {
-          path: 'skills/:skillId/edit/analysis',
-          name: 'skillsEditAnalysis',
-          component: () => import('../views/SkillEditorView.vue'),
-        },
-        {
-          path: 'skills/:skillId/edit/analysis/risks/:riskKey',
-          name: 'skillsEditAnalysisRisk',
-          component: () => import('../views/SkillEditorView.vue'),
+          path: 'rag-queue/:queueId',
+          name: 'ragQueueDetail',
+          component: () => import('../views/ops/RagQueueDetailView.vue'),
         },
         {
           path: '',
@@ -202,7 +219,7 @@ const router = createRouter({
     },
     {
       path: '/knowledge',
-      component: () => import('../views/management/ManagementLayout.vue'),
+      component: () => import('../views/layouts/CenterLayout.vue'),
       meta: { requiresAuth: true, center: 'knowledge' },
       children: [
         {
@@ -396,7 +413,7 @@ router.beforeEach(async (to) => {
     const systemConfigStore = useSystemConfigStore()
     await systemConfigStore.load()
     if (!systemConfigStore.projectProductManagementEnabled) {
-      return { path: '/management/repositories' }
+      return { path: '/config/repositories' }
     }
   }
 

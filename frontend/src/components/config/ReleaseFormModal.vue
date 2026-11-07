@@ -4,8 +4,8 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { GitBranch, Plus, Tag, X } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
-import RefNameInput from '@/components/management/RefNameInput.vue'
-import RepoPickerDialog from '@/components/management/RepoPickerDialog.vue'
+import RefNameInput from '@/components/config/RefNameInput.vue'
+import RepoPickerDialog from '@/components/config/RepoPickerDialog.vue'
 import {
   createProjectRelease,
   getProduct,

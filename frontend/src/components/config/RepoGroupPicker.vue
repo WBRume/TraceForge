@@ -5,7 +5,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { Search } from '@/components/icons'
-import RepoGroupPickerNode from '@/components/management/RepoGroupPickerNode.vue'
+import RepoGroupPickerNode from '@/components/config/RepoGroupPickerNode.vue'
 import { getRepoGroupTree } from '@/services/managementApi'
 import type { RepoGroupRepo, RepoGroupTreeNode } from '@/types/management'
 

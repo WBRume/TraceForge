@@ -12,10 +12,10 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { CalendarDays, Check, GitBranch, Pencil, Plus, Tag as TagIcon, Trash2, X } from '@/components/icons'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
-import IconActionButton from '@/components/management/IconActionButton.vue'
+import IconActionButton from '@/components/config/IconActionButton.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
-import RefNameInput from '@/components/management/RefNameInput.vue'
-import RepoGroupPicker from '@/components/management/RepoGroupPicker.vue'
+import RefNameInput from '@/components/config/RefNameInput.vue'
+import RepoGroupPicker from '@/components/config/RepoGroupPicker.vue'
 import {
   addBaselineExclusion,
   bindVersionRepo,
@@ -76,7 +76,7 @@ const toggleVersionRepos = (version: ProductVersionDetail): void => {
 
 const openProductVersion = (productId: string, versionId: string): void => {
   router.push({
-    path: '/management/products/' + productId,
+    path: '/config/products/' + productId,
     query: { mode: 'view', version: versionId },
   })
 }

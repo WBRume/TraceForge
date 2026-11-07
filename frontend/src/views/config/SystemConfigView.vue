@@ -13,7 +13,7 @@ import {
   ArrowPathIcon,
   ChevronRightIcon,
 } from '@heroicons/vue/24/outline'
-import AdminGuard from '@/components/management/AdminGuard.vue'
+import AdminGuard from '@/components/config/AdminGuard.vue'
 import { useServiceCapabilities, type serviceFeatures } from '@/composables/useServiceCapabilities'
 import { useSystemConfigStore } from '@/stores/systemConfig'
 
@@ -38,7 +38,7 @@ const getServiceIcon = (feature: (typeof serviceFeatures)[number]) => {
 }
 
 const goToDetail = (target: string) => {
-  void router.push(`/management/system/${target}`)
+  void router.push(`/config/system/${target}`)
 }
 
 onMounted(() => {

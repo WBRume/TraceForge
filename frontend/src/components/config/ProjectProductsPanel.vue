@@ -4,8 +4,8 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, ArrowRight, Plus, Trash2 } from '@/components/icons'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
-import IconActionButton from '@/components/management/IconActionButton.vue'
-import LifecycleBadge from '@/components/management/LifecycleBadge.vue'
+import IconActionButton from '@/components/config/IconActionButton.vue'
+import LifecycleBadge from '@/components/config/LifecycleBadge.vue'
 import {
   addProjectProduct,
   listProducts,

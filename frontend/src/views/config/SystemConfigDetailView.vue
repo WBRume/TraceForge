@@ -20,7 +20,7 @@ import {
   XCircleIcon,
   InformationCircleIcon,
 } from '@heroicons/vue/24/outline'
-import AdminGuard from '@/components/management/AdminGuard.vue'
+import AdminGuard from '@/components/config/AdminGuard.vue'
 import FeatureConfigForm from '@/components/system-config/FeatureConfigForm.vue'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
 import SearchIndexManagement from '@/components/global-search/SearchIndexManagement.vue'
@@ -148,7 +148,7 @@ const onConfigSaved = (config: FeatureConfig, applied: boolean) => {
 }
 
 const goBackToOverview = () => {
-  void router.push('/management/system')
+  void router.push('/config/system')
 }
 
 onMounted(() => {

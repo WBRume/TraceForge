@@ -7,9 +7,9 @@ import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { ElMessage } from 'element-plus';
 import { Plus } from '@/components/icons';
-import AdminGuard from '@/components/management/AdminGuard.vue';
-import ProductListTable from '@/components/management/ProductListTable.vue';
-import ProductFormModal from '@/components/management/ProductFormModal.vue';
+import AdminGuard from '@/components/config/AdminGuard.vue';
+import ProductListTable from '@/components/config/ProductListTable.vue';
+import ProductFormModal from '@/components/config/ProductFormModal.vue';
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue';
 import BaseSelect from '@/components/BaseSelect.vue';
 import { deleteProduct, listProducts } from '@/services/managementApi';
@@ -96,7 +96,7 @@ const openCreate = () => {
 };
 
 const openEdit = (product: Product) => {
-  router.push({ path: '/management/products/' + product.id, query: { mode: 'edit' } });
+  router.push({ path: '/config/products/' + product.id, query: { mode: 'edit' } });
 };
 
 const onSaved = () => {
@@ -121,7 +121,7 @@ const confirmDelete = async () => {
 };
 
 const openDetail = (product: Product) => {
-  router.push({ path: '/management/products/' + product.id, query: { mode: 'view' } });
+  router.push({ path: '/config/products/' + product.id, query: { mode: 'view' } });
 };
 
 const changePage = (delta: number) => {

@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Settings2, ServerCog, LibraryBig } from '@/components/icons'
+import { useSystemConfigStore } from '@/stores/systemConfig'
 
 const router = useRouter()
 const { t } = useI18n()
+const systemConfigStore = useSystemConfigStore()
+// 系统配置关闭“项目/产品管理”时，隐藏对应入口（与配置中心侧边栏保持一致）
+const showProjectProductConfig = computed(() => systemConfigStore.projectProductManagementEnabled)
 
 const isOpen = ref(false)
 const dropdownRef = ref<HTMLElement | null>(null)
@@ -44,6 +48,7 @@ const handleKeyDown = (event: KeyboardEvent) => {
 }
 
 onMounted(() => {
+  systemConfigStore.load()
   document.addEventListener('click', handleClickOutside)
   document.addEventListener('keydown', handleKeyDown)
 })
@@ -103,28 +108,41 @@ onUnmounted(() => {
               <button
                 type="button"
                 class="center-link-btn"
-                @click="navigateTo('/management')"
+                @click="navigateTo('/config')"
               >
                 {{ t('common.enter') || '主页' }} →
               </button>
             </div>
             <div class="sub-links-row">
-              <button type="button" class="sub-tag-btn" @click="navigateTo('/management/products')">
-                {{ t('management.nav_products') || '产品管理' }}
+              <button
+                v-if="showProjectProductConfig"
+                type="button"
+                class="sub-tag-btn"
+                @click="navigateTo('/config/products')"
+              >
+                {{ t('management.nav_products') || '产品配置' }}
               </button>
-              <button type="button" class="sub-tag-btn" @click="navigateTo('/management/projects')">
-                {{ t('management.nav_projects') || '项目管理' }}
+              <button
+                v-if="showProjectProductConfig"
+                type="button"
+                class="sub-tag-btn"
+                @click="navigateTo('/config/projects')"
+              >
+                {{ t('management.nav_projects') || '项目配置' }}
               </button>
-              <button type="button" class="sub-tag-btn" @click="navigateTo('/management/repositories')">
-                {{ t('management.nav_repositories') || '关联代码仓' }}
+              <button type="button" class="sub-tag-btn" @click="navigateTo('/config/repositories')">
+                {{ t('management.nav_repositories') || '仓库配置' }}
               </button>
-              <button type="button" class="sub-tag-btn" @click="navigateTo('/management/system')">
-                {{ t('management.nav_system_config') || '系统设置' }}
+              <button type="button" class="sub-tag-btn" @click="navigateTo('/config/skills')">
+                {{ t('skills.entry') || '技能配置' }}
+              </button>
+              <button type="button" class="sub-tag-btn" @click="navigateTo('/config/system')">
+                {{ t('management.nav_system_config') || '系统配置' }}
               </button>
             </div>
           </div>
 
-          <!-- 管理中心 (运维与技能) -->
+          <!-- 管理中心 (运维与队列管理) -->
           <div class="center-block center-ops">
             <div class="center-row">
               <div class="center-identity">
@@ -143,13 +161,10 @@ onUnmounted(() => {
             </div>
             <div class="sub-links-row">
               <button type="button" class="sub-tag-btn" @click="navigateTo('/ops/queue')">
-                {{ t('queue_ops.entry') || 'Ops 任务队列' }}
-              </button>
-              <button type="button" class="sub-tag-btn" @click="navigateTo('/ops/skills')">
-                {{ t('skills.entry') || 'Skills 技能市场' }}
+                {{ t('queue_ops.entry') || '队列运维' }}
               </button>
               <button type="button" class="sub-tag-btn" @click="navigateTo('/ops/rag-queue')">
-                {{ t('rag_queue.entry') || 'RAG 提取队列' }}
+                {{ t('rag_queue.entry') || '案例同步队列' }}
               </button>
             </div>
           </div>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Folder, Pencil, Trash2 } from '@/components/icons'
-import IconActionButton from '@/components/management/IconActionButton.vue'
+import IconActionButton from '@/components/config/IconActionButton.vue'
 import type { RepoGroupTreeNode } from '@/types/management'
 
 defineProps<{

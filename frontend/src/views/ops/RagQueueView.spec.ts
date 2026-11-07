@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ElementPlus from 'element-plus'
-import RagQueueView from '@/views/RagQueueView.vue'
+import RagQueueView from '@/views/ops/RagQueueView.vue'
 
 const apiMock = vi.hoisted(() => ({
   get: vi.fn(),

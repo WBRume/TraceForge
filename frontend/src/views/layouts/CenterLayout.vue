@@ -1,8 +1,8 @@
 <!--
-Knowledge/Management domain shell: navbar + sidebar navigation + router-view.
+Center shell: navbar + sidebar navigation + router-view.
 Serves centers distinguished by route meta.center:
-  - 'config'    (配置中心 / Config Center): products / projects / repositories
-  - 'ops'       (管理中心 / Management Center): queue ops / skills
+  - 'config'    (配置中心 / Config Center): products / projects / repositories / skills / system
+  - 'ops'       (管理中心 / Management Center): queue ops / case sync queue
   - 'knowledge' (知识中心 / Knowledge Center): business / framework / maintenance / cases
 -->
 <script setup lang="ts">
@@ -49,14 +49,14 @@ const configNavItems = computed(() => {
         key: 'products',
         label: t('management.nav_products'),
         icon: Package,
-        to: '/management/products',
+        to: '/config/products',
         active: routeName.value === 'productsHome' || routeName.value === 'productDetail',
       },
       {
         key: 'projects',
         label: t('management.nav_projects'),
         icon: FolderKanban,
-        to: '/management/projects',
+        to: '/config/projects',
         active: routeName.value === 'projectsHome' || routeName.value === 'projectDetail',
       },
     )
@@ -66,8 +66,15 @@ const configNavItems = computed(() => {
       key: 'repositories',
       label: t('management.nav_repositories'),
       icon: GitFork,
-      to: '/management/repositories',
+      to: '/config/repositories',
       active: routeName.value === 'repositoriesHome',
+    },
+    {
+      key: 'skills',
+      label: t('skills.entry'),
+      icon: Wrench,
+      to: '/config/skills',
+      active: ['skillsHome', 'skillsCreate', 'skillsEdit', 'skillsEditAnalysis', 'skillsEditAnalysisRisk'].includes(routeName.value),
     },
   )
   if (isAdmin.value) {
@@ -75,7 +82,7 @@ const configNavItems = computed(() => {
       key: 'system-config',
       label: t('management.nav_system_config'),
       icon: SlidersHorizontal,
-      to: '/management/system',
+      to: '/config/system',
       active: routeName.value === 'systemConfigHome' || routeName.value === 'systemConfigDetail',
     })
   }
@@ -89,13 +96,6 @@ const opsNavItems = computed(() => [
     icon: ServerCog,
     to: '/ops/queue',
     active: routeName.value === 'opsQueueList' || routeName.value === 'opsQueueDetail',
-  },
-  {
-    key: 'skills',
-    label: t('skills.entry'),
-    icon: Wrench,
-    to: '/ops/skills',
-    active: ['skillsHome', 'skillsCreate', 'skillsEdit', 'skillsEditAnalysis', 'skillsEditAnalysisRisk'].includes(routeName.value),
   },
   {
     key: 'rag-queue',
