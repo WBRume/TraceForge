@@ -6,8 +6,8 @@ import {
   Wrench,
   FolderGit2,
   RotateCcw,
-  OctagonPause,
   CheckCircle2,
+  XCircle,
   GitPullRequest,
   FileText,
   PanelLeftClose,
@@ -146,13 +146,8 @@ onBeforeUnmount(() => {
       <button class="icon-btn" :disabled="!props.vm.canInitializeAction" @click="props.vm.handleInitialize" :title="t('chat.initialize')">
         <RotateCcw class="w-4 h-4" />
       </button>
-      <button class="icon-btn interrupt-btn" :class="{ active: props.vm.canTemporarilyInterrupt }"
-        data-testid="interrupt-task" :disabled="!props.vm.canTemporarilyInterrupt"
-        :title="t('chat.temporary_interrupt')" @click="props.vm.interruptCurrentRun">
-        <OctagonPause class="w-4 h-4" />
-      </button>
       <button class="icon-btn danger" :disabled="props.vm.isTerminalStatus || !props.vm.canManageTaskStatus" @click="props.vm.handleInterruptClick" :title="t('chat.mark_failed_confirm')">
-        <OctagonPause class="w-4 h-4" />
+        <XCircle class="w-4 h-4" />
       </button>
       <button class="icon-btn success" :disabled="props.vm.isTerminalStatus || !props.vm.canManageTaskStatus" @click="props.vm.handleCompleteClick" :title="t('chat.complete_task')">
         <CheckCircle2 class="w-4 h-4" />
@@ -274,10 +269,6 @@ onBeforeUnmount(() => {
   justify-content: center;
   width: 30px;
   height: 30px;
-}
-.chat-header .interrupt-btn.active {
-  color: #b45309;
-  background: #fef3c7;
 }
 .badge {
   font-size: 0.75rem;
