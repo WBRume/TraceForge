@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.domains.ai.routers import queue as queue_router
 from app.domains.ai.services import queue_service
+from app.domains.skill.models.skill import SkillAnalysisStatus
 from app.domains.workflow.models.provision_job import ProvisionJobStatus, ProvisionJobType
 
 
@@ -130,6 +131,64 @@ def test_stale_import_skill_job_uses_started_at_before_local_updated_at(monkeypa
     assert job.status == ProvisionJobStatus.FAILED
     assert job.stage == "FAILED"
     assert db.committed is True
+
+
+class _FakeSkillQuery:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def join(self, *args, **kwargs):
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def limit(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _FakeSkillDb:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def query(self, *args, **kwargs):
+        return _FakeSkillQuery(self._rows)
+
+
+def test_skill_analysis_queue_item_uses_persisted_status():
+    analysis = SimpleNamespace(
+        id="analysis-1",
+        workspace_id="ws-1",
+        skill_id="skill-1",
+        status=SkillAnalysisStatus.FAILED,
+        progress=100,
+        ref_kind="WORKTREE",
+        message="静态包摘要已完成",
+        error_message="semantic provider offline",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+        created_by_id="user-1",
+    )
+    db = _FakeSkillDb([(analysis, SimpleNamespace(name="Demo Skill"))])
+
+    items = queue_service._list_skill_analysis_items(
+        db,
+        user_id="user-1",
+        view="mine",
+        workspace_id=None,
+        status_filter=None,
+    )
+
+    assert len(items) == 1
+    assert items[0].status == "FAILED"
+    assert items[0].message == "静态包摘要已完成"
+    assert items[0].error_message == "semantic provider offline"
 
 
 def test_retry_queue_job_returns_new_job_id(monkeypatch):

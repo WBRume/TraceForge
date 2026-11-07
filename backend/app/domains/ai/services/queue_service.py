@@ -660,8 +660,7 @@ def _list_skill_analysis_items(
     rows = query.order_by(SddSkillAnalysis.created_at.desc()).limit(500).all()
     items: list[QueueJobItem] = []
     for analysis, skill in rows:
-        semantic_degraded = skill_analysis_service.is_semantic_degraded_analysis(analysis)
-        status = "SUCCESS" if semantic_degraded else _to_queue_status(_enum_text(analysis.status))
+        status = _to_queue_status(_enum_text(analysis.status))
         if status_filter_norm and status_filter_norm != status:
             continue
         target_path = _build_target_path(
@@ -679,12 +678,8 @@ def _list_skill_analysis_items(
                 status=status,  # type: ignore[arg-type]
                 progress=int(analysis.progress or 0),
                 stage=_enum_text(analysis.ref_kind),
-                message=(
-                    skill_analysis_service.SEMANTIC_UNAVAILABLE_MESSAGE
-                    if semantic_degraded
-                    else analysis.message or f"Analyze skill: {skill.name}"
-                ),
-                error_message=None if semantic_degraded else analysis.error_message,
+                message=analysis.message or f"Analyze skill: {skill.name}",
+                error_message=analysis.error_message,
                 workspace_id=analysis.workspace_id,
                 task_id=None,
                 creator_id=str(analysis.created_by_id or ""),
@@ -943,8 +938,7 @@ def get_queue_job(
             user_id=normalized_user_id,
         ):
             raise PermissionError("No permission to view this queue job")
-        semantic_degraded = skill_analysis_service.is_semantic_degraded_analysis(analysis)
-        status = "SUCCESS" if semantic_degraded else _to_queue_status(_enum_text(analysis.status))
+        status = _to_queue_status(_enum_text(analysis.status))
         target_path = _build_target_path(
             source=QUEUE_SOURCE_SKILL_ANALYSIS,
             job_type="SKILL_ANALYSIS",
@@ -959,12 +953,8 @@ def get_queue_job(
             status=status,  # type: ignore[arg-type]
             progress=int(analysis.progress or 0),
             stage=_enum_text(analysis.ref_kind),
-            message=(
-                skill_analysis_service.SEMANTIC_UNAVAILABLE_MESSAGE
-                if semantic_degraded
-                else analysis.message or f"Analyze skill: {skill.name}"
-            ),
-            error_message=None if semantic_degraded else analysis.error_message,
+            message=analysis.message or f"Analyze skill: {skill.name}",
+            error_message=analysis.error_message,
             workspace_id=analysis.workspace_id,
             task_id=None,
             creator_id=str(analysis.created_by_id or ""),
