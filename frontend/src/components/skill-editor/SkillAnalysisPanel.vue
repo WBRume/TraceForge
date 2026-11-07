@@ -39,23 +39,6 @@ const levelClass = (level?: SkillAnalysisLevel | string | null) => {
   return ['low', 'medium', 'high'].includes(normalized) ? normalized : 'low'
 }
 
-const statusText = computed(() => {
-  const status = analysis.value?.status
-  if (!status) return '尚未分析'
-  if (status === 'PENDING') return '排队中'
-  if (status === 'RUNNING') return '分析中'
-  if (status === 'SUCCESS') return '已完成'
-  return '分析失败'
-})
-
-const statusClass = computed(() => {
-  const status = analysis.value?.status
-  if (status === 'SUCCESS') return 'success'
-  if (status === 'FAILED') return 'failed'
-  if (status === 'PENDING' || status === 'RUNNING') return 'running'
-  return 'idle'
-})
-
 const runButtonText = computed(() => {
   if (vm.analysisRunning) return '分析中'
   return analysis.value ? '重新分析' : '开始分析'
@@ -100,20 +83,6 @@ const openRisk = async (riskKey: string) => {
       </div>
     </header>
 
-    <div class="status-banner" :class="statusClass">
-      <div class="status-info">
-        <Loader2 v-if="vm.analysisLoading || vm.analysisRunning" class="w-4 h-4 animate-spin" />
-        <CheckCircle2 v-else-if="analysis?.status === 'SUCCESS'" class="w-4 h-4" />
-        <AlertTriangle v-else-if="analysis?.status === 'FAILED'" class="w-4 h-4" />
-        <FileSearch v-else class="w-4 h-4" />
-        <span class="status-label">{{ statusText }}</span>
-        <span v-if="analysis?.progress !== undefined" class="progress-val">{{ analysis.progress }}%</span>
-      </div>
-      <div v-if="analysis?.progress !== undefined" class="progress-track">
-        <div class="progress-fill" :style="{ width: `${analysis.progress}%` }"></div>
-      </div>
-    </div>
-
     <div v-if="analysis?.error_message" class="error-panel">
       <AlertTriangle class="w-5 h-5" />
       <p>{{ analysis.error_message }}</p>
@@ -125,7 +94,7 @@ const openRisk = async (riskKey: string) => {
       <p>手动运行分析以获取包摘要信息。</p>
     </div>
 
-    <template v-if="analysis">
+    <template v-if="analysis?.status === 'SUCCESS'">
       <!-- Bento Grid for Metrics - Optimized for Density -->
       <div class="bento-grid">
         <div v-for="item in overviewItems" :key="item.label" class="bento-card" :class="levelClass(item.tone)">
@@ -310,25 +279,6 @@ const openRisk = async (riskKey: string) => {
 .btn-run-analysis:hover {
   transform: translateY(-1px);
   box-shadow: 0 8px 15px -4px rgba(14, 165, 233, 0.3);
-}
-
-/* Status Banner */
-.status-banner {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  padding: 0.75rem 1rem;
-  border-radius: 12px;
-  background: white;
-  border: 1px solid #e2e8f0;
-}
-
-.status-info {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  font-weight: 700;
-  font-size: 0.85rem;
 }
 
 /* Bento Grid - Optimized */

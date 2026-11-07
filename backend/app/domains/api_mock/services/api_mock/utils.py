@@ -4,7 +4,6 @@ API MOCK Utils.
 
 import json
 import os
-import re
 import shutil
 import urllib.parse
 import urllib.request
@@ -58,49 +57,9 @@ def _copy_task_workspace(task_source_path: str, target_temp_path: str) -> None:
     shutil.copytree(task_source_path, target_temp_path, ignore=_ignore_filter, dirs_exist_ok=False)
 
 
-def _extract_json_from_text(text: str) -> dict[str, Any]:
-    cleaned = (text or "").strip()
-    if not cleaned:
-        raise ValueError("Empty analysis output")
-
-    try:
-        data = json.loads(cleaned)
-        if isinstance(data, dict):
-            return data
-    except Exception:
-        pass
-
-    code_fence_match = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", cleaned, re.IGNORECASE)
-    if code_fence_match:
-        data = json.loads(code_fence_match.group(1))
-        if isinstance(data, dict):
-            return data
-
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        candidate = cleaned[start : end + 1]
-        data = json.loads(candidate)
-        if isinstance(data, dict):
-            return data
-
-    raise ValueError("Cannot parse JSON output from analysis")
-
-
 def _read_text_from_url(url: str) -> str:
     request = urllib.request.Request(url, method="GET")
     with urllib.request.urlopen(request, timeout=20) as response:
         data = response.read()
         charset = response.headers.get_content_charset() or "utf-8"
         return data.decode(charset, errors="ignore")
-
-
-def _api_mock_cli_candidates() -> list[str]:
-    configured_cli = (settings.CLAUDE_CLI_PATH or "").strip()
-    cli_candidates: list[str] = []
-    if configured_cli:
-        cli_candidates.append(configured_cli)
-    for candidate in ("claude", "claude.exe"):
-        if candidate not in cli_candidates:
-            cli_candidates.append(candidate)
-    return cli_candidates

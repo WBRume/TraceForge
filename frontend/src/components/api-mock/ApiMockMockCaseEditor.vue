@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DomainMilestones from '@/components/ai/DomainMilestones.vue'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { Plus, Save, Trash2, ArrowLeft, ExternalLink } from '@/components/icons'
 import { VueMonacoEditor } from '@guolao/vue-monaco-editor'
@@ -706,6 +707,8 @@ defineExpose({
           </button>
         </div>
       </header>
+
+      <DomainMilestones :events="autoMockJob?.result_json?.live_events" />
 
       <div v-if="!endpoint" class="empty-box">{{ $t('api_mock.select_endpoint_hint') }}</div>
       <div v-else class="case-grid">

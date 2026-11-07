@@ -1,0 +1,207 @@
+import asyncio
+import json
+
+import httpx
+import pytest
+
+from app.agents.domain_tools import DomainTool, DomainToolError, DomainToolRun
+from app.agents.domain_tools.contracts import DocumentRewrite, RequirementSubmission, SkillReview
+from app.agents.domain_tools.server import create_app, serve_tools
+from app.agents.domain_tools.validators import skill_review_validator, validate_mock_cases, validate_openapi
+
+
+def requirement(title="Login"):
+    return {
+        "items": [
+            {
+                "title": title,
+                "body": "Allow users to sign in",
+                "acceptance_criteria": ["Valid credentials sign in"],
+                "task_prompt": "Implement sign in",
+                "priority": "P1",
+            }
+        ]
+    }
+
+
+def make_run(**kwargs):
+    return DomainToolRun(DomainTool("submit_requirements", "需求草案", RequirementSubmission), **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_invalid_then_valid_submission_repairs_in_the_same_run():
+    run = make_run()
+    invalid = requirement()
+    invalid["items"][0]["priority"] = "urgent"
+    rejected = await run.invoke(run.tool.name, invalid, "bad")
+    assert rejected["isError"] is True
+    assert "items.0.priority" in rejected["content"][0]["text"]
+    assert run.value is None
+    accepted = await run.invoke(run.tool.name, requirement(), "good")
+    assert not accepted["isError"]
+    assert run.require_result().items[0].title == "Login"
+    assert [event.stage for event in run.events] == ["validating", "repairing", "validating", "accepted"]
+    assert {event.run_id for event in run.events} == {run.run_id}
+    assert not any(event.stage == "persisted" for event in run.events)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_and_conflicting_submissions_cannot_replace_result():
+    run = make_run()
+    first, duplicate = await asyncio.gather(
+        run.invoke(run.tool.name, requirement(), "one"), run.invoke(run.tool.name, requirement(), "two")
+    )
+    assert first == duplicate
+    assert len(run.events) == 2
+    assert (await run.invoke(run.tool.name, requirement("different"), "three"))["isError"]
+    assert run.require_result().items[0].title == "Login"
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_validation_discards_result():
+    cancelled = False
+
+    async def validate(_):
+        nonlocal cancelled
+        cancelled = True
+
+    run = DomainToolRun(
+        DomainTool("submit", "Submit", RequirementSubmission, validate), should_cancel=lambda: cancelled
+    )
+    result = await run.invoke("submit", requirement(), "one")
+    assert result["isError"]
+    assert run.value is None
+    with pytest.raises(DomainToolError, match="REVOKED"):
+        run.require_result()
+
+
+@pytest.mark.asyncio
+async def test_operational_failure_is_not_a_correctable_or_successful_result():
+    def validate(_):
+        raise OSError("database unavailable")
+
+    run = DomainToolRun(DomainTool("submit", "Submit", RequirementSubmission, validate))
+    result = await run.invoke("submit", requirement(), "one")
+    assert json.loads(result["content"][0]["text"])["retryable"] is False
+    with pytest.raises(OSError, match="database unavailable"):
+        run.require_result()
+
+
+@pytest.mark.asyncio
+async def test_no_tool_call_never_accepts_prose_or_an_empty_result():
+    with pytest.raises(DomainToolError, match="DOMAIN_RESULT_MISSING"):
+        make_run().require_result()
+
+
+@pytest.mark.asyncio
+async def test_mcp_authorization_scope_and_real_socket_lifecycle(tmp_path):
+    run = make_run()
+    run.project_path = str(tmp_path)
+    async with serve_tools(run) as binding:
+        async with httpx.AsyncClient(trust_env=False) as client:
+            rpc = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+            assert (await client.post(binding["url"], json=rpc)).status_code == 401
+            response = await client.post(binding["url"], headers=binding["headers"], json=rpc)
+            assert {t["name"] for t in response.json()["result"]["tools"]} == {"submit_requirements", "read_workspace"}
+            assert (
+                await client.post(
+                    binding["url"], headers={**binding["headers"], "Origin": "https://hostile.invalid"}, json=rpc
+                )
+            ).status_code == 403
+            rpc.update(method="tools/call", params={"name": "submit_requirements", "arguments": requirement()})
+            assert not (await client.post(binding["url"], headers=binding["headers"], json=rpc)).json()["result"][
+                "isError"
+            ]
+            assert run.require_result().items
+    with pytest.raises(DomainToolError, match="REVOKED"):
+        run.require_result()
+
+
+@pytest.mark.asyncio
+async def test_workspace_reader_rejects_escape_and_does_not_expose_secrets(tmp_path):
+    run = make_run()
+    run.project_path = str(tmp_path)
+    (tmp_path / "source.py").write_text("hello\nworld\n", encoding="utf-8")
+    result = await run.invoke("read_workspace", {"path": "source.py", "start_line": 2}, "read")
+    assert json.loads(result["content"][0]["text"])["text"] == "world"
+    for path in ("../outside", ".env", ".git/config"):
+        assert (await run.invoke("read_workspace", {"path": path}, "bad"))["isError"]
+
+
+@pytest.mark.asyncio
+async def test_http_rejects_malformed_and_oversized_input():
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_app(make_run(), "token")), base_url="http://test"
+    ) as client:
+        headers = {"Authorization": "Bearer token"}
+        assert (await client.post("/mcp", headers=headers, content=b"x" * 2_000_001)).status_code == 413
+        assert (await client.post("/mcp", headers=headers, content=b"bad json")).json()["error"]["code"] == -32600
+
+
+def test_document_scope_and_skill_evidence_are_validated(tmp_path):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        DocumentRewrite.model_validate({"scope": "document", "anchor_text": "partial", "change_summary": "updated"})
+    with pytest.raises(ValidationError):
+        SkillReview.model_validate(
+            {
+                "risk_level": "HIGH",
+                "complexity": "LOW",
+                "review_priority": "HIGH",
+                "risk_items": [],
+                "review_suggestions": [],
+            }
+        )
+    review = SkillReview.model_validate(
+        {"risk_level": "LOW", "complexity": "LOW", "review_priority": "LOW", "risk_items": [], "review_suggestions": []}
+    )
+    skill_review_validator(tmp_path)(review)
+
+
+def test_openapi_schema_and_internal_references():
+    from app.agents.domain_tools.contracts import OpenAPISubmission
+
+    document = {
+        "openapi": "3.0.3",
+        "info": {"title": "Example", "version": "1"},
+        "paths": {"/test": {"get": {"responses": {"200": {"description": "ok"}}}}},
+    }
+    validate_openapi(OpenAPISubmission(document=document))
+    document["paths"]["/test"]["get"]["responses"] = {"200": {"$ref": "https://example.com/secret"}}
+    with pytest.raises(DomainToolError, match="internal"):
+        validate_openapi(OpenAPISubmission(document=document))
+    document["paths"]["/test"]["get"]["responses"] = {}
+    with pytest.raises(DomainToolError):
+        validate_openapi(OpenAPISubmission(document=document))
+
+
+@pytest.mark.parametrize("keyword", ["$dynamicRef", "$recursiveRef", "$id"])
+def test_openapi_cannot_resolve_external_schema_resources(keyword):
+    from app.agents.domain_tools.contracts import OpenAPISubmission
+
+    value = OpenAPISubmission(
+        document={
+            "openapi": "3.1.0",
+            "info": {"title": "Test", "version": "1"},
+            "paths": {},
+            "components": {"schemas": {"Test": {keyword: "https://external.invalid/schema"}}},
+        }
+    )
+    with pytest.raises(DomainToolError):
+        validate_openapi(value)
+
+
+@pytest.mark.asyncio
+async def test_mockjs_validates_with_real_runtime():
+    from app.agents.domain_tools.contracts import MockSubmission
+
+    valid = MockSubmission(
+        cases=[
+            {"name": "Success", "mode": "MOCKJS", "status_code": 200, "mockjs_template": '{"items|1-2":[{"id|+1":1}]}'}
+        ]
+    )
+    await validate_mock_cases(valid)
+    valid.cases[0].mockjs_template = "{ broken }"
+    with pytest.raises(DomainToolError, match="JSON Mock.js"):
+        await validate_mock_cases(valid)

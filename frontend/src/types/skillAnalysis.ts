@@ -32,6 +32,7 @@ export type SkillAnalysis = {
   id: string
   workspace_id: string
   skill_id: string
+  skill_name?: string
   version_id?: string | null
   commit_sha?: string | null
   ref_kind: SkillAnalysisRefKind

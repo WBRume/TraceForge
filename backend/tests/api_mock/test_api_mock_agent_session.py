@@ -1,106 +1,82 @@
 import asyncio
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from app.agents import selection
-from app.domains.api_mock.services.api_mock import cli_sync_service
-from app.domains.api_mock.services.api_mock.job_service import JobCancelledError
+from app.agents.domain_tools import DomainTool, DomainToolError
+from app.agents.domain_tools.contracts import OpenAPISubmission
+from app.agents.domain_tools.invocation import active_domain_run
+from app.agents.errors import AgentCancelledError
+from app.domains.ai.services.jobs import provider_turn
+from app.domains.ai.services.jobs.domain_turn import run_domain_turn
 
 
-@pytest.mark.parametrize("backend_name", ["opencode", "dsh"])
-def test_agent_session_adapts_remote_events_and_closes(monkeypatch, backend_name):
-    backend = SimpleNamespace(
-        capabilities=SimpleNamespace(execution_kind="REMOTE_SESSION"),
-        close=AsyncMock(),
+@pytest.mark.asyncio
+async def test_interface_analysis_uses_one_provider_turn_and_typed_tool(monkeypatch, tmp_path):
+    calls = []
+
+    async def provider(prompt, path, **kwargs):
+        calls.append(kwargs)
+        run = active_domain_run.get()
+        assert run.project_path == str(tmp_path)
+        assert (await run.invoke(run.tool.name, {"unexpected": True}, "bad"))["isError"]
+        assert not (await run.invoke(run.tool.name, {"document": {"openapi": "3.1.0"}}, "good"))["isError"]
+        return {"session_id": "same-session", "text": "This prose is ignored"}
+
+    monkeypatch.setattr(provider_turn, "run_cli_single_turn", provider)
+    result = await run_domain_turn(
+        "Analyze",
+        str(tmp_path),
+        backend_name="opencode",
+        tool=DomainTool("submit_openapi", "接口分析", OpenAPISubmission),
     )
-    factory = Mock(return_value=backend)
-    monkeypatch.setattr(selection, "create_agent_backend_by_name", factory)
-    captured = []
+    assert result["artifact"].document == {"openapi": "3.1.0"}
+    assert result["session_id"] == "same-session"
+    assert len(calls) == 1 and calls[0]["max_attempts"] == 1
+    assert [e["stage"] for e in result["domain_milestones"]] == [
+        "started",
+        "validating",
+        "repairing",
+        "validating",
+        "accepted",
+    ]
+    assert active_domain_run.get() is None
 
-    async def run(_backend, request, on_event):
-        captured.append(request)
-        for kind, payload in [
-            ("text", {"text": '[{"name":"ok"}]'}),
-            ("result", {"success": True, "result": '[{"name":"ok"}]'}),
-        ]:
-            await on_event(SimpleNamespace(type=kind, payload=payload))
-        return SimpleNamespace(session_id="remote-session")
 
-    monkeypatch.setattr(selection, "run_agent_backend_with_logging", run)
-    events, logs = [], []
-    result = asyncio.run(
-        cli_sync_service.run_agent_session(
-            backend_name,
-            "workspace",
-            "generate cases",
-            on_event=events.append,
-            on_output=logs.append,
+@pytest.mark.asyncio
+async def test_text_without_tool_cannot_succeed(monkeypatch, tmp_path):
+    async def provider(*args, **kwargs):
+        return {"text": '{"document":{"openapi":"3.1.0"}}'}
+
+    monkeypatch.setattr(provider_turn, "run_cli_single_turn", provider)
+    with pytest.raises(DomainToolError, match="DOMAIN_RESULT_MISSING"):
+        await run_domain_turn("Analyze", str(tmp_path), tool=DomainTool("submit", "Submit", OpenAPISubmission))
+
+
+@pytest.mark.asyncio
+async def test_cancel_and_timeout_revoke_tools(monkeypatch, tmp_path):
+    runs = []
+
+    async def cancelled(*args, **kwargs):
+        runs.append(active_domain_run.get())
+        raise AgentCancelledError("Cancelled")
+
+    monkeypatch.setattr(provider_turn, "run_cli_single_turn", cancelled)
+    with pytest.raises(AgentCancelledError):
+        await run_domain_turn("Analyze", str(tmp_path), tool=DomainTool("submit", "Submit", OpenAPISubmission))
+    assert runs[0]._closed
+
+    stopped = asyncio.Event()
+
+    async def pending(*args, **kwargs):
+        runs.append(active_domain_run.get())
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    monkeypatch.setattr(provider_turn, "run_cli_single_turn", pending)
+    with pytest.raises(TimeoutError):
+        await run_domain_turn(
+            "Analyze", str(tmp_path), timeout_seconds=0.1, tool=DomainTool("submit", "Submit", OpenAPISubmission)
         )
-    )
-    factory.assert_called_once_with(backend_name, task_id=None)
-    assert result == (['[{"name":"ok"}]'], ['[{"name":"ok"}]'])
-    assert captured[0].project_path == "workspace"
-    assert captured[0].prompt == "generate cases"
-    assert captured[0].session_id is None
-    assert events and logs
-    backend.close.assert_awaited_once()
-
-
-def test_agent_session_uses_unified_claude_configuration(monkeypatch):
-    bridge = SimpleNamespace(start_session=AsyncMock(), wait=AsyncMock(), is_running=lambda: False)
-    factory = Mock(return_value=bridge)
-    monkeypatch.setattr(selection, "create_cli_bridge", factory)
-    assert asyncio.run(cli_sync_service.run_agent_session("claude-code", "workspace", "prompt")) == ([], [])
-    factory.assert_called_once_with()
-
-
-def test_remote_cancellation_is_a_job_cancellation(monkeypatch):
-    backend = SimpleNamespace(
-        capabilities=SimpleNamespace(execution_kind="REMOTE_SESSION"),
-        close=AsyncMock(),
-        cancel=AsyncMock(),
-    )
-    monkeypatch.setattr(selection, "create_agent_backend_by_name", lambda _, *, task_id=None: backend)
-
-    async def run(*_args):
-        await asyncio.Future()
-
-    monkeypatch.setattr(selection, "run_agent_backend_with_logging", run)
-    with pytest.raises(JobCancelledError):
-        asyncio.run(
-            cli_sync_service.run_agent_session(
-                "dsh",
-                "workspace",
-                "prompt",
-                should_cancel=lambda: True,
-            )
-        )
-    backend.cancel.assert_awaited_once()
-    backend.close.assert_awaited_once()
-
-
-def test_agent_failure_propagates_and_closes(monkeypatch):
-    backend = SimpleNamespace(
-        capabilities=SimpleNamespace(execution_kind="REMOTE_SESSION"),
-        close=AsyncMock(),
-    )
-    monkeypatch.setattr(selection, "create_agent_backend_by_name", lambda _, *, task_id=None: backend)
-    monkeypatch.setattr(
-        selection,
-        "run_agent_backend_with_logging",
-        AsyncMock(side_effect=RuntimeError("backend unavailable")),
-    )
-    with pytest.raises(RuntimeError, match="backend unavailable"):
-        asyncio.run(cli_sync_service.run_agent_session("dsh", "workspace", "prompt"))
-    backend.close.assert_awaited_once()
-
-
-@pytest.mark.parametrize("workspace_backend, expected", [("opencode", "opencode"), (None, "dsh")])
-def test_workspace_selection_and_global_fallback(monkeypatch, workspace_backend, expected):
-    monkeypatch.setattr(selection.settings, "AGENT_BACKEND", "dsh")
-    db = Mock()
-    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(agent_backend=workspace_backend)
-    assert selection.resolve_workspace_backend(db, "ws-1") == expected
-    db.commit.assert_not_called()
+    assert stopped.is_set() and runs[-1]._closed

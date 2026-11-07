@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.agents.domain_tools.runtime import Milestone
+
 ConnectionState = Literal["NOT_CONNECTED", "EMPTY", "AVAILABLE", "ERROR"]
 CoverageStatus = Literal["not_available", "waiting_evidence", "waiting_human_confirmation", "verified"]
 RequirementEditableStatus = Literal[
@@ -264,6 +266,7 @@ class RequirementImportBatchResponse(BaseModel):
 
 
 class RequirementPreviewJobResponse(BaseModel):
+    domain_milestones: list[Milestone] = Field(default_factory=list)
     job_id: str
     workspace_id: str
     status: str

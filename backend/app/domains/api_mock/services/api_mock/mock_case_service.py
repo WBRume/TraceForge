@@ -175,6 +175,7 @@ def create_mock_case(
     mockjs_template: str | None,
     headers_json: dict[str, Any] | None,
     cookies_json: list[dict[str, Any]] | None,
+    commit: bool = True,
 ) -> SddApiMockRule:
     from .endpoint_service import get_endpoint
     from .source_version_service import lock_project_source
@@ -213,8 +214,9 @@ def create_mock_case(
     if is_default:
         _normalize_mock_case_defaults(db, project.id, endpoint_id, rule.id)
 
-    db.commit()
-    db.refresh(rule)
+    if commit:
+        db.commit()
+        db.refresh(rule)
     return rule
 
 

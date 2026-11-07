@@ -1,10 +1,11 @@
-import json
 import os
 import sys
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
+
+from app.agents.domain_tools.contracts import MockSubmission
 
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
@@ -21,14 +22,16 @@ def test_auto_generate_mock_cases_persists_request_matchers_and_prompt_fields(mo
         task_id="task-1",
         task=SimpleNamespace(project_path="G:/proj/SDD-native"),
     )
-    endpoint = SimpleNamespace(id="endpoint-1", method="POST", path="/users")
+    endpoint = SimpleNamespace(
+        id="endpoint-1", method="POST", path="/users", parameters_json=[], request_schema_json={}, responses_json={}
+    )
     job = SimpleNamespace(id="job-1")
 
     created_calls = []
     captured = {"prompt": None, "success_result": None}
 
-    async def _fake_run_agent_session(selected_backend, _cwd, prompt, **_kwargs):
-        assert selected_backend == backend_name
+    async def _fake_run_domain_turn(prompt, _cwd, **_kwargs):
+        assert _kwargs["backend_name"] == backend_name
         captured["prompt"] = prompt
         payload = [
             {
@@ -39,7 +42,7 @@ def test_auto_generate_mock_cases_persists_request_matchers_and_prompt_fields(mo
                 "delay_ms": 0,
                 "headers_json": {"Content-Type": "application/json"},
                 "request_query_json": {"source": "ai"},
-                "request_body_json": '{"name":"Alice","role":"admin"}',
+                "request_body_json": {"name": "Alice", "role": "admin"},
                 "static_body_json": {"id": "u-1", "name": "Alice"},
             },
             {
@@ -50,11 +53,11 @@ def test_auto_generate_mock_cases_persists_request_matchers_and_prompt_fields(mo
                 "delay_ms": 0,
                 "headers_json": {"Content-Type": "application/json"},
                 "request_query_json": {"source": "ai"},
-                "request_body_json": '{"name":"Bob","role":"member"}',
+                "request_body_json": {"name": "Bob", "role": "member"},
                 "static_body_json": {"message": "email already exists"},
             },
         ]
-        return [json.dumps(payload)], []
+        return {"artifact": MockSubmission.model_validate({"cases": payload}), "domain_milestones": []}
 
     def _fake_create_mock_case(_db, _project, **kwargs):
         created_calls.append(kwargs)
@@ -74,7 +77,7 @@ def test_auto_generate_mock_cases_persists_request_matchers_and_prompt_fields(mo
     monkeypatch.setattr(auto_mock_service, "resolve_workspace_backend", resolve_backend)
     monkeypatch.setattr(auto_mock_service, "_temp_workspace_path", lambda *_args, **_kwargs: "G:/tmp/api-mock")
     monkeypatch.setattr(auto_mock_service, "_copy_task_workspace", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(auto_mock_service, "run_agent_session", _fake_run_agent_session)
+    monkeypatch.setattr(auto_mock_service, "run_domain_turn", _fake_run_domain_turn)
     monkeypatch.setattr(auto_mock_service, "list_mock_cases_for_endpoint", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(auto_mock_service, "create_mock_case", _fake_create_mock_case)
     monkeypatch.setattr(
@@ -101,4 +104,5 @@ def test_auto_generate_mock_cases_persists_request_matchers_and_prompt_fields(mo
     assert captured["success_result"]["cases_created"] == 2
     assert captured["success_result"]["created_count"] == 2
     assert captured["success_result"]["updated_count"] == 0
-    assert "request_body_json" in str(captured["prompt"])
+    assert "request_body" in str(captured["prompt"])
+    assert all(call["commit"] is False for call in created_calls)

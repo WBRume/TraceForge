@@ -1,6 +1,7 @@
 import { defineComponent, h, nextTick, proxyRefs } from 'vue'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { vi } from 'vitest'
+import { createPinia } from 'pinia'
 
 vi.mock('@/utils/monaco', () => ({
   ensureMonacoViteSetup: vi.fn(),
@@ -381,7 +382,7 @@ export const mountSkillEditorVm = async (): Promise<MountVmResult> => {
     },
   })
 
-  const wrapper = mount(Host)
+  const wrapper = mount(Host, { global: { plugins: [createPinia()] } })
   await flushAll()
 
   if (!vmInstance) {

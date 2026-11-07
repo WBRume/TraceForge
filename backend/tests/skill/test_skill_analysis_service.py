@@ -27,7 +27,6 @@ from app.database import Base
 from app.domains.skill.models.skill import SddSkillAnalysis, SkillAnalysisRefKind, SkillAnalysisStatus, SkillRiskLevel
 from app.domains.skill.services.skill_analysis_service import (
     SemanticAnalysisContractError,
-    _json_from_text,
     _merge_semantic_result,
     _semantic_prompt,
     _set_analysis_state,
@@ -122,7 +121,7 @@ class SkillAnalysisDeterministicScanTest(unittest.TestCase):
         self.assertIn("comments, documentation, examples", prompt)
         self.assertIn("Never return MEDIUM or HIGH risk_level with an empty risk_items array", prompt)
 
-    def test_semantic_merge_preserves_and_backfills_detail_fields(self):
+    def test_semantic_merge_preserves_validated_evidence(self):
         base = {
             "risk_level": "LOW",
             "complexity": "LOW",
@@ -144,6 +143,10 @@ class SkillAnalysisDeterministicScanTest(unittest.TestCase):
                         "line_start": 9,
                         "title": "SKILL.md:9 reads a token",
                         "evidence_summary": "Token read from environment",
+                        "description": "Reads a credential for an outbound call",
+                        "evidence_detail": "The script reads API_TOKEN and passes it to the request",
+                        "recommendation": "Review destination and secret handling",
+                        "confidence": 0.9,
                         "matched_text": "token = os.environ['API_TOKEN']",
                     }
                 ],
@@ -178,39 +181,31 @@ class SkillAnalysisDeterministicScanTest(unittest.TestCase):
                 },
             )
 
-        self.assertIn("risk_level=HIGH", str(ctx.exception))
+        self.assertIn("MEDIUM/HIGH", str(ctx.exception))
         self.assertIn("risk_items", str(ctx.exception))
 
-    def test_json_parser_accepts_fenced_json(self):
-        parsed = _json_from_text(
-            "Here is the result:\n```json\n"
-            '{"risk_level":"LOW","complexity":"LOW","review_priority":"LOW","risk_items":[],"review_suggestions":[]}'
-            "\n```"
-        )
-        self.assertEqual(parsed["risk_level"], "LOW")
+    def test_semantic_contract_rejects_fenced_prose(self):
+        from pydantic import ValidationError
 
-    def test_semantic_failure_with_scan_payload_serializes_as_degraded_success(self):
+        from app.agents.domain_tools.contracts import SkillReview
+
+        with self.assertRaises(ValidationError):
+            SkillReview.model_validate('```json\n{"risk_level":"LOW"}\n```', strict=True)
+
+    def test_semantic_failure_is_not_reported_as_success(self):
         analysis = SddSkillAnalysis(
             workspace_id="ws1",
             skill_id="skill1",
             created_by_id="user1",
             status=SkillAnalysisStatus.FAILED,
             progress=100,
-            message="Skill analysis failed during semantic review",
-            error_message="Claude returned empty analysis",
+            message="Semantic review failed",
+            error_message="No tool submission",
             file_stats_json={"total_files": 1},
-            file_type_distribution_json={".md": 1},
-            key_files_json=[],
-            risk_items_json=[],
-            review_suggestions_json=[],
         )
-
         payload = serialize_analysis(analysis)
-
-        self.assertEqual(payload["status"], "SUCCESS")
-        self.assertIn("语义风险审阅", payload["message"])
-        self.assertIn("暂不展示", payload["message"])
-        self.assertIsNone(payload["error_message"])
+        self.assertEqual(payload["status"], "FAILED")
+        self.assertEqual(payload["error_message"], "No tool submission")
 
     def test_serialize_analysis_backfills_legacy_risk_detail_fields(self):
         analysis = SddSkillAnalysis(
@@ -243,7 +238,7 @@ class SkillAnalysisDeterministicScanTest(unittest.TestCase):
         self.assertTrue(risk["evidence_detail"])
         self.assertTrue(risk["recommendation"])
 
-    def test_serialize_analysis_marks_high_level_with_empty_risk_items_failed(self):
+    def test_serializer_preserves_persisted_status_without_inventing_transitions(self):
         analysis = SddSkillAnalysis(
             id="analysis-high-empty",
             workspace_id="ws1",
@@ -263,10 +258,9 @@ class SkillAnalysisDeterministicScanTest(unittest.TestCase):
 
         payload = serialize_analysis(analysis)
 
-        self.assertEqual(payload["status"], "FAILED")
+        self.assertEqual(payload["status"], "SUCCESS")
         self.assertEqual(payload["risk_items"], [])
-        self.assertIn("语义审阅输出不完整", payload["message"])
-        self.assertIn("no concrete risk_items", payload["error_message"])
+        self.assertIsNone(payload["error_message"])
 
     def test_latest_analysis_is_scoped_to_version(self):
         db = self._db()

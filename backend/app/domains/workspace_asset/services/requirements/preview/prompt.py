@@ -6,13 +6,10 @@ AI 返回文本统一在此解析为标准 preview item 结构。
 
 from __future__ import annotations
 
-import json
-import re
 from typing import Any
 
 from app.domains.workspace_asset.services.common.primitives import (
     clean_optional,
-    normalize_list,
 )
 from app.domains.workspace_asset.services.requirements.segmentation import (
     direct_import_title,
@@ -34,27 +31,13 @@ def build_requirement_preview_prompt(
         "你是 SDD-Native Workspace Assets 的 Requirements 拆分助手。\n"
         "目标：把输入需求整理成可追踪 Requirement 预览项，并为后续创建 Task 生成提示词。\n\n"
         "硬性边界：\n"
-        "1. 只输出 JSON，不要输出 Markdown 解释。\n"
+        "1. 调用 submit_requirements 工具提交需求草案。\n"
         "2. 只做 Requirement 拆分，不创建 Task，不创建 Coverage，不创建 Evidence，不标记 Verified。\n"
         "3. 不修改原文业务含义，不减少文档内容。\n"
         "4. 不要为了拆分而拆分：如果输入已经是一条清晰、短小、可独立追踪的需求，必须只返回 1 个 item。\n"
         "5. 只有当原文明确包含多个可独立实现、独立验收、独立追踪的需求时，才拆成多条。\n"
         "6. 如果拆成多条，每条都必须保留理解该需求所需的背景；允许复制公共背景到多个条目。\n"
         "7. task_prompt 仅供后续创建 Task 使用，不能暗示平台会自动提交代码。\n\n"
-        "输出 JSON 格式：\n"
-        "{\n"
-        '  "items": [\n'
-        "    {\n"
-        '      "title": "需求标题",\n'
-        '      "body": "完整需求正文，保留必要背景",\n'
-        '      "acceptance_criteria": ["验收标准，可为空数组"],\n'
-        '      "priority": null,\n'
-        '      "source_ref": "来源段落或编号",\n'
-        '      "source_metadata": {"split_reason": "拆分理由"},\n'
-        '      "task_prompt": "后续创建 Task 时可使用的实现提示词"\n'
-        "    }\n"
-        "  ]\n"
-        "}\n\n"
         f"Preview mode: {mode}\n"
         f"Source kind: {source_kind or 'document'}\n"
         f"Source file: {file_name or ''}\n"
@@ -65,62 +48,6 @@ def build_requirement_preview_prompt(
         f"{markdown}\n"
         "----- END REQUIREMENT DOCUMENT -----\n"
     )
-
-
-def extract_json_object(text: str) -> dict[str, Any]:
-    candidate = str(text or "").strip()
-    if candidate.startswith("```"):
-        candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE).strip()
-        candidate = re.sub(r"\s*```$", "", candidate).strip()
-    if not (candidate.startswith("{") and candidate.endswith("}")):
-        match = re.search(r"\{[\s\S]*\}", candidate)
-        if match:
-            candidate = match.group(0).strip()
-    parsed = json.loads(candidate)
-    if not isinstance(parsed, dict):
-        raise ValueError("AI preview response must be a JSON object")
-    return parsed
-
-
-def normalize_ai_preview_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_items = payload.get("items")
-    if not isinstance(raw_items, list):
-        raise ValueError("AI preview response must include an items array")
-
-    items: list[dict[str, Any]] = []
-    for index, raw in enumerate(raw_items):
-        if not isinstance(raw, dict):
-            continue
-        title = clean_optional(raw.get("title"), limit=300)
-        body = clean_optional(raw.get("body"))
-        if not title:
-            title = clean_optional(str(body or "").splitlines()[0] if body else None, limit=300)
-        if not title:
-            continue
-        source_metadata = raw.get("source_metadata") if isinstance(raw.get("source_metadata"), dict) else {}
-        task_prompt = clean_optional(raw.get("task_prompt") or raw.get("taskPrompt"))
-        if task_prompt:
-            source_metadata = {**source_metadata, "task_prompt": task_prompt}
-        source_metadata = {
-            **source_metadata,
-            "ai_split": True,
-            "ai_segment_index": index,
-        }
-        items.append(
-            {
-                "title": title,
-                "body": body,
-                "acceptance_criteria": normalize_list(raw.get("acceptance_criteria") or raw.get("acceptanceCriteria")),
-                "priority": clean_optional(raw.get("priority"), limit=40),
-                "source_ref": clean_optional(raw.get("source_ref") or raw.get("sourceRef"), limit=300)
-                or f"ai:{index + 1}",
-                "source_metadata": source_metadata,
-                "order_index": index,
-            }
-        )
-    if not items:
-        raise ValueError("AI preview did not produce valid Requirement preview items")
-    return items
 
 
 def coalesce_simple_import_preview_items(
@@ -156,4 +83,32 @@ def coalesce_simple_import_preview_items(
             },
             "order_index": 0,
         }
+    ]
+
+
+def normalize_ai_preview_items(payload) -> list[dict[str, Any]]:
+    """Map the validated artifact to persistence fields without coercion or omission."""
+    from app.agents.domain_tools.contracts import RequirementSubmission
+
+    artifact = (
+        payload
+        if isinstance(payload, RequirementSubmission)
+        else RequirementSubmission.model_validate(payload, strict=True)
+    )
+    return [
+        {
+            "title": item.title,
+            "body": item.body,
+            "acceptance_criteria": item.acceptance_criteria,
+            "priority": item.priority,
+            "source_ref": item.source_ref or f"ai:{index + 1}",
+            "source_metadata": {
+                **item.source_metadata.model_dump(),
+                "task_prompt": item.task_prompt,
+                "ai_split": True,
+                "ai_segment_index": index,
+            },
+            "order_index": index,
+        }
+        for index, item in enumerate(artifact.items)
     ]

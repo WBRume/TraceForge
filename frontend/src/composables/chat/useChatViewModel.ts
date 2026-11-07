@@ -1233,6 +1233,7 @@ export function useChatViewModel() {
     diagnosisCaseCreating: diagnosis.diagnosisCaseCreating,
     diagnosisCaseLink: diagnosis.diagnosisCaseLink,
     diagnosisSummarizing: diagnosis.diagnosisSummarizing,
+    diagnosisMilestones: diagnosis.diagnosisMilestones,
     diagnosisChatBusy: diagnosis.diagnosisChatBusy,
     diagnosisSummarizingLabel: diagnosis.diagnosisSummarizingLabel,
     isDiagnosisAdopted: diagnosis.isDiagnosisAdopted,

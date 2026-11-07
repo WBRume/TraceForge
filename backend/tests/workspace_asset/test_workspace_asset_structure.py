@@ -27,7 +27,6 @@ from app.domains.workspace_asset.services.common.primitives import (  # noqa: E4
 from app.domains.workspace_asset.services.requirements.preview.prompt import (  # noqa: E402
     build_requirement_preview_prompt,
     coalesce_simple_import_preview_items,
-    extract_json_object,
     normalize_ai_preview_items,
 )
 from app.domains.workspace_asset.services.requirements.segmentation import (  # noqa: E402
@@ -187,33 +186,29 @@ def test_build_requirement_preview_prompt_embeds_boundaries_and_document():
         source_uri="file:///a.md",
         file_name="a.md",
     )
-    assert "只输出 JSON" in prompt
+    assert "submit_requirements" in prompt
     assert "不创建 Task" in prompt
     assert "Preview mode: import" in prompt
     assert "Doc body" in prompt
 
 
-def test_extract_json_object_strips_code_fence_and_embedded_json():
-    assert extract_json_object('```json\n{"a": 1}\n```') == {"a": 1}
-    assert extract_json_object('prefix {"a": {"b": 2}} suffix') == {"a": {"b": 2}}
-    with pytest.raises(ValueError):
-        extract_json_object("[1, 2]")
+def test_preview_contract_rejects_prose_and_wrapped_json():
+    from pydantic import ValidationError
+
+    for value in ('```json\n{"items": []}\n```', {"result": {"items": []}}, {"items": []}):
+        with pytest.raises(ValidationError):
+            normalize_ai_preview_items(value)
 
 
-def test_normalize_ai_preview_items_maps_camelcase_and_marks_ai_split():
-    payload = {
-        "items": [
-            {"title": "A", "acceptanceCriteria": ["c1"], "sourceRef": "r1", "taskPrompt": "p"},
-            {"body": "no title but body\nsecond line"},
-            "not-a-dict",
-        ]
-    }
-    items = normalize_ai_preview_items(payload)
-    assert len(items) == 2
+def test_preview_contract_keeps_valid_items_and_rejects_aliases():
+    from pydantic import ValidationError
+
+    item = {"title": "A", "body": "Body", "acceptance_criteria": ["c1"], "source_ref": "r1", "task_prompt": "p"}
+    items = normalize_ai_preview_items({"items": [item]})
     assert items[0]["acceptance_criteria"] == ["c1"]
     assert items[0]["source_metadata"]["task_prompt"] == "p"
-    assert items[0]["source_metadata"]["ai_split"] is True
-    assert items[1]["title"] == "no title but body"
+    with pytest.raises(ValidationError):
+        normalize_ai_preview_items({"items": [{**item, "taskPrompt": "p"}]})
 
 
 def test_coalesce_keeps_single_simple_requirement_unsplit():

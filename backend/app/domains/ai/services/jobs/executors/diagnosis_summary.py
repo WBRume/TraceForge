@@ -1,8 +1,8 @@
 """问题定位任务「一键总结问题案例」执行器。
 
-汇总会话 → 按原定位结果 JSON 契约生成结构化结果 → 反填定位结果卡片并
+汇总会话 → 调用强类型总结工具提交结构化结果 → 反填定位结果卡片并
 广播。与正常聊天不同：不向会话写入 AI 回复气泡。会话来源优先 fork 原会话
-（只读），快照不可用时回退持久化 transcript。
+（只读），无法分叉时明确失败，不以截断文本替代原始上下文。
 """
 
 from __future__ import annotations
@@ -13,18 +13,20 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.agents import current_agent_attempt
+from app.agents.domain_tools import DomainTool
+from app.agents.domain_tools.contracts import DiagnosisSubmission
 from app.agents.selection import backend_supports_fork, fork_session_for_backend, resolve_task_backend
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
 from app.core.offload import run_db_txn
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import attempts as attempt_ops
-from app.domains.ai.services.jobs import provider_turn, state
+from app.domains.ai.services.jobs import state
 from app.domains.ai.services.jobs.constants import JOB_KIND_DIAGNOSIS_SUMMARY
+from app.domains.ai.services.jobs.domain_turn import mark_domain_persisted, run_domain_turn
 from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError, attempt_is_current_sync
 from app.domains.ai.services.jobs.registry import runtime
 from app.domains.task.models.task import SddTask
 from app.domains.task.services import diagnosis_result_service
-from app.domains.task.services.conversation import history as task_conversation_history
 
 logger = get_logger(__name__, category="ai_session")
 
@@ -45,46 +47,6 @@ def _resolve_task_project_path(task) -> str:
     return project_path
 
 
-def collect_diagnosis_transcript_sync(db: Session, task_id: str, max_chars: int = 60000) -> str:
-    """汇总问题定位任务的会话文本（user/assistant/system），供一键总结使用。"""
-    from app.domains.task.models.chat import ChatMessage, MessageType
-
-    rows = (
-        db.query(ChatMessage)
-        .filter(
-            ChatMessage.task_id == task_id,
-            ChatMessage.message_type.in_([MessageType.TEXT, MessageType.INIT_REASON]),
-        )
-        .all()
-    )
-    rows = task_conversation_history.sort_chat_messages(rows)
-    parts = []
-    for row in rows:
-        role = str(row.role.value) if hasattr(row.role, "value") else str(row.role)
-        meta = row.metadata_json or {}
-        if meta.get("submission_id") and meta.get("knowledge_state") != "published":
-            continue
-        if role == "user":
-            label = "用户"
-        elif role == "system":
-            label = "系统"
-        else:
-            label = "AI"
-        content = str(row.content or "").strip()
-        if not content:
-            continue
-        parts.append(f"[{label}] {content}")
-    transcript = "\n\n".join(parts).strip()
-    if not transcript:
-        return ""
-    limit = max(0, int(max_chars or 60000))
-    if len(transcript) > limit:
-        head = transcript[: limit * 3 // 4]
-        tail = transcript[-limit // 4 :]
-        transcript = f"{head}\n\n…（中间内容过长已截断）…\n\n{tail}"
-    return transcript
-
-
 def _prepare_diagnosis_summary_sync(
     db: Session,
     job_id: str,
@@ -92,7 +54,7 @@ def _prepare_diagnosis_summary_sync(
 ) -> dict[str, Any] | None:
     """诊断总结准备段（线程内执行，由 run_db_txn 包装）。
 
-    一次性完成 job/task 加载、transcript 汇总、project_path 解析与
+    一次性完成 job/task 加载、会话来源校验、project_path 解析与
     任务粘性 backend 解析，返回纯数据（prompt 文本 + 各字段）。
     """
     job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
@@ -120,8 +82,9 @@ def _prepare_diagnosis_summary_sync(
         # transcript excludes. Do not reintroduce them through a native fork.
         source_session_id = ""
     project_path = _resolve_task_project_path(task)
-    transcript = collect_diagnosis_transcript_sync(db, task.id)
-    prompt = diagnosis_result_service.build_diagnosis_summary_prompt(task, transcript)
+    prompt = diagnosis_result_service.build_diagnosis_summary_prompt(task)
+    if not source_session_id:
+        raise ValueError("诊断总结需要可用的已完成排查会话，不能使用缺失或失败的会话上下文")
     task_backend = resolve_task_backend(db, task.id) if task.id else None
     return {
         "job_id": str(job.id),
@@ -139,10 +102,12 @@ def _prepare_diagnosis_summary_sync(
 async def execute_diagnosis_summary_job(job_id: str) -> bool | None:
     """问题定位任务「一键总结问题案例」执行器。
 
-    汇总会话 → 按原定位结果 JSON 契约生成结构化结果 → 反填定位结果卡片并广播。
+    汇总会话 → 调用强类型总结工具提交结构化结果 → 反填定位结果卡片并广播。
     与正常聊天不同：不向会话写入 AI 回复气泡。
     准备段/结果落库段经 DB executor；CLI 调用期间不持有任何 session。
     """
+    if await attempt_ops.is_job_cancelled_or_final(job_id):
+        return False
     attempt = current_agent_attempt()
     run_token = attempt.run_token if attempt else None
     prepared = await run_db_txn(lambda db: _prepare_diagnosis_summary_sync(db, job_id, run_token))
@@ -177,53 +142,24 @@ async def execute_diagnosis_summary_job(job_id: str) -> bool | None:
         prompt = prepared["prompt"]
 
         await state.update_job_state(job_id, progress=55, message="AI 正在生成结构化定位结果")
-        can_fork = bool(source_session_id and backend_supports_fork(task_backend))
-        summary_mode = "fork_read_only" if can_fork else "transcript_fallback"
-        await state.update_job_state(
-            job_id,
-            context_patch={"summary_session_mode": summary_mode},
+        if not backend_supports_fork(task_backend):
+            raise ValueError("当前 Agent 后端不支持诊断会话分叉")
+        summary_session_id = await fork_session_for_backend(
+            task_backend,
+            source_session_id,
+            source_dir=project_path,
+            target_dir=project_path,
+            task_id=task_id,
         )
-        summary_session_id: str | None = None
-        native_fork_on_resume = False
-        if can_fork:
-            try:
-                summary_session_id = await fork_session_for_backend(
-                    task_backend,
-                    source_session_id,
-                    source_dir=project_path,
-                    target_dir=project_path,
-                    task_id=task_id,
-                )
-                # Claude's adapter stages the snapshot and the CLI performs the
-                # actual child-session creation with --fork-session.  Server
-                # adapters already return the newly-created child id.
-                native_fork_on_resume = str(task_backend or "") == "claude-code"
-            except Exception as exc:
-                # Fork preserves provider-side context.  The persisted
-                # transcript is the deterministic fallback for stale snapshots.
-                logger.warning(
-                    "Diagnosis summary fork failed; using transcript fallback: task={}, backend={}, error={}",
-                    task_id,
-                    task_backend,
-                    exc,
-                )
-                can_fork = False
-                summary_mode = "transcript_fallback"
-                await state.update_job_state(
-                    job_id,
-                    progress=55,
-                    message="原会话快照不可用，正在使用持久化会话记录生成总结",
-                    context_patch={
-                        "summary_session_mode": summary_mode,
-                        "fork_error": str(exc)[:800],
-                    },
-                )
+        native_fork_on_resume = str(task_backend or "") == "claude-code"
+        await state.update_job_state(job_id, context_patch={"summary_session_mode": "fork_read_only"})
 
         try:
-            result = await provider_turn.run_cli_single_turn(
+            result = await run_domain_turn(
                 prompt,
                 project_path,
-                session_id=summary_session_id if can_fork else None,
+                session_id=summary_session_id,
+                tool=DomainTool("submit_diagnosis", "正在总结问题案例", DiagnosisSubmission),
                 max_attempts=1,
                 should_cancel=lambda: runtime.is_cancel_requested(job_id),
                 backend_name=task_backend,
@@ -241,13 +177,7 @@ async def execute_diagnosis_summary_job(job_id: str) -> bool | None:
             logger.info("Diagnosis summary cancelled after run; discard result: job={}", job_id)
             return True
 
-        summary_text = str(result.get("text") or "").strip()
-        if not summary_text:
-            raise ValueError("Diagnosis summary reply is empty")
-
-        payload = diagnosis_result_service.extract_payload_from_text(summary_text)
-        if payload is None:
-            raise ValueError("Failed to parse structured diagnosis summary")
+        payload = result["artifact"]
 
         def _persist_diagnosis_result_sync(db: Session) -> dict[str, Any]:
             if not attempt_is_current_sync(db, job_id=job_id, run_token=run_token):
@@ -267,6 +197,7 @@ async def execute_diagnosis_summary_job(job_id: str) -> bool | None:
             }
 
         summary_state = await run_db_txn(_persist_diagnosis_result_sync)
+        await mark_domain_persisted(job_id, result)
         if summary_state["source_chat_message_id"]:
             await diagnosis_result_service.publish_diagnosis_result_message(
                 task_id=summary_state["task_id"],
@@ -279,7 +210,7 @@ async def execute_diagnosis_summary_job(job_id: str) -> bool | None:
             progress=100,
             message="定位结果已生成",
             result_patch={
-                "summary_excerpt": str(payload.summary or payload.root_cause or summary_text)[:1200],
+                "summary_excerpt": str(payload.summary or payload.root_cause)[:1200],
                 "summary_source": "diagnosis_summary",
             },
             session_id=str(result.get("session_id") or "") or None,

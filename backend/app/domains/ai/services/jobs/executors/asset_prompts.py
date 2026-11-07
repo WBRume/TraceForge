@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-import json
-import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -188,57 +186,3 @@ def serialize_proposal_for_ws(proposal: Any) -> dict[str, Any]:
         "created_at": proposal.created_at.isoformat() if proposal.created_at else None,
         "updated_at": proposal.updated_at.isoformat() if proposal.updated_at else None,
     }
-
-
-def clean_rewrite_text(raw: str) -> str:
-    text = str(raw or "").strip()
-    if not text:
-        return ""
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].lstrip().startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].rstrip().startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    return text
-
-
-def parse_rewrite_payload(raw: str) -> dict[str, str]:
-    text = str(raw or "").strip()
-    if not text:
-        return {"scope": "anchor", "anchor_text": ""}
-
-    candidate = text
-    if candidate.startswith("```"):
-        lines = candidate.splitlines()
-        if lines and lines[0].lstrip().startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].rstrip().startswith("```"):
-            lines = lines[:-1]
-        candidate = "\n".join(lines).strip()
-
-    json_text = candidate
-    if not (json_text.startswith("{") and json_text.endswith("}")):
-        match = re.search(r"\{[\s\S]*\}", candidate)
-        if match:
-            json_text = match.group(0).strip()
-
-    try:
-        parsed = json.loads(json_text)
-    except Exception:
-        return {"scope": "anchor", "anchor_text": clean_rewrite_text(text)}
-
-    if not isinstance(parsed, dict):
-        return {"scope": "anchor", "anchor_text": clean_rewrite_text(text)}
-
-    scope = str(parsed.get("scope") or parsed.get("rewrite_scope") or "anchor").strip().lower()
-    if scope == "document":
-        markdown = str(
-            parsed.get("document_markdown") or parsed.get("markdown") or parsed.get("document") or ""
-        ).strip()
-        if markdown:
-            return {"scope": "document", "document_markdown": markdown}
-
-    anchor_text = str(parsed.get("anchor_text") or parsed.get("text") or parsed.get("rewritten_text") or "").strip()
-    return {"scope": "anchor", "anchor_text": clean_rewrite_text(anchor_text or text)}

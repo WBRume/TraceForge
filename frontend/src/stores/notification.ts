@@ -3,6 +3,8 @@ import { defineStore } from 'pinia'
 import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
 import { useProvisioningStore } from '@/stores/provisioning'
+import { useSkillAnalysisStore } from '@/stores/skillAnalysis'
+import type { SkillAnalysis } from '@/types/skillAnalysis'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
 import { buildWsCursorQuery, sendResyncComplete } from '@/utils/wsCursor'
@@ -127,6 +129,16 @@ export const useNotificationStore = defineStore('appNotification', () => {
       window.dispatchEvent(new CustomEvent('playbook-promotion-updated', { detail: item }))
       return
     }
+    if (item?.type === 'requirement_preview_updated') {
+      const job = (item as unknown as { job: Parameters<ReturnType<typeof useProvisioningStore>['ingestPreviewJobPayload']>[0] }).job
+      if (job) useProvisioningStore().ingestPreviewJobPayload(job)
+      return
+    }
+    if (item?.type === 'skill_analysis_updated') {
+      const analysis = (item as unknown as { analysis?: SkillAnalysis }).analysis
+      if (analysis) useSkillAnalysisStore().ingest(analysis, true)
+      return
+    }
     if (!item?.id) return
     const index = items.value.findIndex((existing) => existing.id === item.id)
     if (index >= 0) {
@@ -179,6 +191,7 @@ export const useNotificationStore = defineStore('appNotification', () => {
         void flushDesktopWebhooks()
         window.dispatchEvent(new Event('playbook-promotion-resync'))
         void useProvisioningStore().refreshPromotionJobs()
+        await useSkillAnalysisStore().refresh()
         if (!signal.aborted && context.socket === ws && context.socket.readyState === WebSocket.OPEN) {
           sendResyncComplete(context.socket, frame, room)
         }
@@ -200,6 +213,7 @@ export const useNotificationStore = defineStore('appNotification', () => {
       void flushDesktopWebhooks()
       window.dispatchEvent(new Event('playbook-promotion-resync'))
       void useProvisioningStore().refreshPromotionJobs()
+      void useSkillAnalysisStore().refresh()
       wsReconnectAttempt = 0
     }
     ws.onmessage = (event) => {
@@ -253,6 +267,7 @@ export const useNotificationStore = defineStore('appNotification', () => {
 
   const reset = () => {
     stop()
+    useSkillAnalysisStore().reset()
     items.value = []
     unreadCount.value = 0
   }

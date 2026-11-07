@@ -1,7 +1,9 @@
-import { computed, onBeforeUnmount, ref, type ComputedRef, type Ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch, type ComputedRef, type Ref } from 'vue'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import type { SkillAnalysis, SkillAnalysisRefKind } from '@/types/skillAnalysis'
+import { useSkillAnalysisStore, isSkillAnalysisRunning } from '@/stores/skillAnalysis'
+import { useProvisioningStore } from '@/stores/provisioning'
 
 type TranslateFn = (key: string, params?: Record<string, unknown>) => string
 
@@ -15,8 +17,6 @@ type UseSkillAnalysisOptions = {
   viewVersionId: Ref<string> | ComputedRef<string>
 }
 
-const TERMINAL_STATUSES = new Set(['SUCCESS', 'FAILED'])
-
 export function useSkillAnalysis(options: UseSkillAnalysisOptions) {
   const {
     t,
@@ -28,11 +28,15 @@ export function useSkillAnalysis(options: UseSkillAnalysisOptions) {
     viewVersionId,
   } = options
 
-  const latestAnalysis = ref<SkillAnalysis | null>(null)
+  const store = useSkillAnalysisStore()
+  const background = useProvisioningStore()
+  const analysisId = ref('')
+  const latestAnalysis = computed(() => store.analyses[analysisId.value] || null)
   const analysisLoading = ref(false)
-  const analysisRunning = ref(false)
+  const submitting = ref(false)
+  const analysisRunning = computed(() => submitting.value || Boolean(latestAnalysis.value && isSkillAnalysisRunning(latestAnalysis.value)))
   const analysisError = ref('')
-  let pollTimer: number | null = null
+  let requestVersion = 0
 
   const targetAnalysisVersionId = computed(() => {
     const viewed = String(viewVersionId.value || '').trim()
@@ -47,13 +51,6 @@ export function useSkillAnalysis(options: UseSkillAnalysisOptions) {
     return 'WORKTREE'
   })
 
-  const clearPollTimer = () => {
-    if (pollTimer !== null) {
-      window.clearTimeout(pollTimer)
-      pollTimer = null
-    }
-  }
-
   const analysisParams = () => {
     const params: { workspace_id?: string, ref_kind: SkillAnalysisRefKind, version_id?: string } = {
       ref_kind: defaultAnalysisRefKind.value,
@@ -64,61 +61,47 @@ export function useSkillAnalysis(options: UseSkillAnalysisOptions) {
   }
 
   const applyAnalysis = (payload: SkillAnalysis | null) => {
-    latestAnalysis.value = payload
-    analysisRunning.value = payload?.status === 'PENDING' || payload?.status === 'RUNNING'
+    analysisId.value = payload?.id || ''
+    if (payload) store.ingest(payload, isSkillAnalysisRunning(payload))
   }
 
   const loadLatestAnalysis = async () => {
     if (!skillId.value) return
+    const version = ++requestVersion
     analysisLoading.value = true
     analysisError.value = ''
     try {
       const res = await api.get(`/skills/${skillId.value}/analyses/latest`, {
         params: analysisParams(),
       })
-      applyAnalysis(res.data || null)
+      if (version === requestVersion) applyAnalysis(res.data || null)
     } catch (error) {
+      if (version !== requestVersion) return
       analysisError.value = formatApiError(error, t('skills.editor.analysis_load_failed'), t)
       actionError.value = analysisError.value
     } finally {
-      analysisLoading.value = false
+      if (version === requestVersion) analysisLoading.value = false
     }
   }
 
   const refreshAnalysisById = async (analysisId: string) => {
     if (!skillId.value || !analysisId) return null
+    const version = ++requestVersion
     const res = await api.get(`/skills/${skillId.value}/analyses/${analysisId}`, {
       params: analysisParams(),
     })
     const payload = (res.data || null) as SkillAnalysis | null
-    applyAnalysis(payload)
+    if (version === requestVersion) applyAnalysis(payload)
     return payload
-  }
-
-  const pollAnalysis = (analysisId: string, remaining = 90) => {
-    clearPollTimer()
-    if (!analysisId || remaining <= 0) return
-    pollTimer = window.setTimeout(async () => {
-      try {
-        const payload = await refreshAnalysisById(analysisId)
-        if (!payload || TERMINAL_STATUSES.has(payload.status)) {
-          analysisRunning.value = false
-          return
-        }
-        pollAnalysis(analysisId, remaining - 1)
-      } catch (error) {
-        analysisError.value = formatApiError(error, t('skills.editor.analysis_load_failed'), t)
-        analysisRunning.value = false
-      }
-    }, 2000)
   }
 
   const runAnalysis = async (refKind?: SkillAnalysisRefKind) => {
     if (!skillId.value || analysisRunning.value) return
+    const version = ++requestVersion
     const resolvedRefKind = refKind || defaultAnalysisRefKind.value
-    analysisRunning.value = true
+    submitting.value = true
+    analysisLoading.value = false
     analysisError.value = ''
-    clearPollTimer()
     try {
       const body: { ref_kind: SkillAnalysisRefKind, version_id?: string } = {
         ref_kind: resolvedRefKind,
@@ -130,24 +113,31 @@ export function useSkillAnalysis(options: UseSkillAnalysisOptions) {
         params: analysisParams(),
       })
       const payload = (res.data || null) as SkillAnalysis | null
-      applyAnalysis(payload)
-      if (payload?.id) pollAnalysis(payload.id)
+      // Keep the accepted background job even if navigation changed the editor.
+      if (payload) {
+        store.ingest(payload, true)
+        background.expand()
+      }
+      if (version === requestVersion) applyAnalysis(payload)
     } catch (error) {
+      if (version !== requestVersion) return
       analysisError.value = formatApiError(error, t('skills.editor.analysis_start_failed'), t)
       actionError.value = analysisError.value
-      analysisRunning.value = false
+    } finally {
+      if (version === requestVersion) submitting.value = false
     }
   }
 
   const resetAnalysis = () => {
-    clearPollTimer()
-    latestAnalysis.value = null
+    requestVersion += 1
+    analysisId.value = ''
     analysisLoading.value = false
-    analysisRunning.value = false
+    submitting.value = false
     analysisError.value = ''
   }
 
-  onBeforeUnmount(clearPollTimer)
+  watch(() => [skillId.value, selectedWorkspaceId.value, targetAnalysisVersionId.value], resetAnalysis, { flush: 'sync' })
+  onBeforeUnmount(resetAnalysis)
 
   return {
     latestAnalysis,

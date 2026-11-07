@@ -1,8 +1,8 @@
 import asyncio
-import json
 
 from fastapi.testclient import TestClient
 
+from app.agents.domain_tools.contracts import RequirementSubmission
 from app.domains.ai.services.jobs import (
     queue_runner as ai_queue_runner,
 )
@@ -54,7 +54,7 @@ def _capture_schedule_and_drive_queue(monkeypatch, SessionLocal, workspace_id):
 
 async def _fake_requirement_preview_cli(prompt, project_path, max_attempts=1, **kwargs):
     return {
-        "text": json.dumps(
+        "artifact": RequirementSubmission.model_validate(
             {
                 "items": [
                     {
@@ -84,7 +84,7 @@ async def _fake_requirement_preview_cli(prompt, project_path, max_attempts=1, **
 
 async def _fake_requirement_split_cli(prompt, project_path, max_attempts=1, **kwargs):
     return {
-        "text": json.dumps(
+        "artifact": RequirementSubmission.model_validate(
             {
                 "items": [
                     {
@@ -160,7 +160,7 @@ def test_requirement_import_preview_requires_confirm_before_creating_requirement
     engine, SessionLocal = _build_db()
     try:
         monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
-        monkeypatch.setattr(preview_runner, "run_cli_single_turn", _fake_requirement_preview_cli)
+        monkeypatch.setattr(preview_runner, "run_domain_turn", _fake_requirement_preview_cli)
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-import", task_id="task-import")
             _use_project_path(db, workspace, task, tmp_path)
@@ -224,7 +224,7 @@ def test_requirement_import_preview_keeps_simple_requirement_as_single_item(monk
     engine, SessionLocal = _build_db()
     try:
         monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
-        monkeypatch.setattr(preview_runner, "run_cli_single_turn", _fake_requirement_preview_cli)
+        monkeypatch.setattr(preview_runner, "run_domain_turn", _fake_requirement_preview_cli)
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-simple-import", task_id="task-simple-import")
             _use_project_path(db, workspace, task, tmp_path)
@@ -447,7 +447,7 @@ def test_requirement_import_preview_multiple_items_creates_parent_with_children(
     engine, SessionLocal = _build_db()
     try:
         monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
-        monkeypatch.setattr(preview_runner, "run_cli_single_turn", _fake_requirement_preview_cli)
+        monkeypatch.setattr(preview_runner, "run_domain_turn", _fake_requirement_preview_cli)
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-import-tree", task_id="task-import-tree")
             _use_project_path(db, workspace, task, tmp_path)
@@ -551,7 +551,7 @@ def test_requirement_split_preview_and_confirm_create_child_requirements(monkeyp
     engine, SessionLocal = _build_db()
     try:
         monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
-        monkeypatch.setattr(preview_runner, "run_cli_single_turn", _fake_requirement_split_cli)
+        monkeypatch.setattr(preview_runner, "run_domain_turn", _fake_requirement_split_cli)
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-split", task_id="task-split")
             _use_project_path(db, workspace, task, tmp_path)

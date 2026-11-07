@@ -202,6 +202,7 @@ class SubprocessCliBridge(CliBridgeBase):
         process_attach_timeout_seconds: float | None = None,
         runtime_policy: dict | None = None,
         model: str | None = None,
+        domain_mcp: dict | None = None,
     ) -> str:
         self._event_cb = event_callback
         self._running = True
@@ -212,6 +213,23 @@ class SubprocessCliBridge(CliBridgeBase):
         args = self._resolve_cli_base_args()
 
         cli_permission_args = resolve_claude_permission_args(permission_mode)
+        if domain_mcp is not None:
+            if runtime_policy is not None:
+                raise ValueError("Domain tools and playbook execution policy cannot share one invocation")
+            cli_permission_args = ["--permission-mode", "default"]
+            args.extend(
+                [
+                    "--tools",
+                    "",
+                    "--strict-mcp-config",
+                    "--mcp-config",
+                    json.dumps({"mcpServers": {"traceforge_domain": domain_mcp}}),
+                    "--allowedTools",
+                    "mcp__traceforge_domain__*",
+                    "--setting-sources",
+                    "",
+                ]
+            )
         if model:
             args.extend(["--model", model])
         args.extend(

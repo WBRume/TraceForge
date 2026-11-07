@@ -213,7 +213,15 @@ def test_diagnosis_summary_forks_source_session_read_only(monkeypatch, tmp_path)
 
         async def _fake_run(prompt, project_path, **kwargs):
             captured.update(kwargs)
-            return {"text": "```json\n{}\n```", "session_id": "forked-session"}
+            from app.agents.domain_tools.invocation import active_domain_run
+
+            run = active_domain_run.get()
+            await run.invoke(
+                run.tool.name,
+                {"summary": "summary", "root_cause": "cause", "evidence_chain": "log", "fix_suggestion": "fix"},
+                "one",
+            )
+            return {"text": "Submitted", "session_id": "forked-session"}
 
         async def _fake_fork(*_args, **_kwargs):
             return "forked-session"
@@ -226,14 +234,8 @@ def test_diagnosis_summary_forks_source_session_read_only(monkeypatch, tmp_path)
         monkeypatch.setattr(ai_diagnosis_summary, "resolve_task_backend", lambda *_args: "opencode")
         monkeypatch.setattr(ai_diagnosis_summary, "backend_supports_fork", lambda *_args: True)
         monkeypatch.setattr(ai_diagnosis_summary, "fork_session_for_backend", _fake_fork)
-        monkeypatch.setattr(ai_diagnosis_summary, "collect_diagnosis_transcript_sync", lambda *_args: "history")
         monkeypatch.setattr(ai_provider_turn, "run_cli_single_turn", _fake_run)
         monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _ignore_broadcast)
-        monkeypatch.setattr(
-            diagnosis_result_service,
-            "extract_payload_from_text",
-            lambda _text: SimpleNamespace(summary="summary", root_cause="cause"),
-        )
         monkeypatch.setattr(
             diagnosis_result_service,
             "upsert_diagnosis_result_from_ai",

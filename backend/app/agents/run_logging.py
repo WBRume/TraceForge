@@ -381,7 +381,10 @@ async def run_agent_backend_with_logging(
             await on_event(event)
 
         try:
-            result = await backend.run(request, _logged_event)
+            from app.agents.domain_tools.invocation import bound_request
+
+            async with bound_request(backend, request) as bound:
+                result = await backend.run(bound, _logged_event)
             result_extra = {
                 "backend": backend.name,
                 "run_id": request.run_id,

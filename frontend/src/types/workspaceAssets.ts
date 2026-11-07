@@ -211,6 +211,7 @@ export type RequirementImportBatch = {
 }
 
 export type RequirementPreviewJob = {
+  domain_milestones?: import('@/utils/domainMilestones').DomainMilestone[]
   job_id: string
   workspace_id: string
   status: string

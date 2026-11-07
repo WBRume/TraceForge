@@ -184,7 +184,7 @@ def _collect_turn_result(bridge, events, resumed_session_id, call, attempt_no, a
             failure_code=evidence.failure_code or "PROCESS_TREE_STILL_ALIVE",
         )
 
-    if call is not None and call.state != ProviderCallState.ENDED:
+    if not events.result_seen or (call is not None and call.state != ProviderCallState.ENDED):
         # P1：函数正常返回 / assistant 文本 / 非空
         # dict 都不是终局结果证明——没有 result 事件绝不伪造 outcome，
         # 交由上层按“无 outcome”收敛（本地已证明死亡 → FAILED；
@@ -194,7 +194,7 @@ def _collect_turn_result(bridge, events, resumed_session_id, call, attempt_no, a
             termination_confirmed_dead=dead,
             process_started=process_started,
             failure_code="PROVIDER_OUTCOME_MISSING",
-            provider_call_id=call.call_id,
+            provider_call_id=call.call_id if call else None,
         )
 
     # 诊断正文可以讨论 timeout/请求超时；调用失败只由提供方终局状态判定。
@@ -231,6 +231,12 @@ def _collect_turn_result(bridge, events, resumed_session_id, call, attempt_no, a
         if dead is None
         else dead,
     }
+
+
+async def _close_turn_backend(bridge) -> None:
+    close = getattr(getattr(bridge, "backend", None), "close", None)
+    if close is not None:
+        await asyncio.shield(close())
 
 
 async def _run_cli_attempt(
@@ -282,8 +288,10 @@ async def _run_cli_attempt(
             }
         )
 
-    on_process_started = partial(
-        _persist_turn_process, current_attempt=current_attempt, effective_run_token=effective_run_token
+    on_process_started = (
+        partial(_persist_turn_process, current_attempt=current_attempt, effective_run_token=effective_run_token)
+        if current_attempt
+        else None
     )
 
     monitor_task: asyncio.Task | None = None
@@ -362,6 +370,8 @@ async def _run_cli_attempt(
         # 收敛，绝不伪造结束。
         mark_provider_call_unresolved(call)
         raise
+    finally:
+        await _close_turn_backend(bridge)
 
 
 async def run_cli_single_turn(

@@ -25,6 +25,31 @@ async def broadcast_job_payload(payload: dict[str, Any]) -> None:
     status = str(payload.get("status") or "")
     final = status in {item.value for item in constants.FINAL_STATUSES}
     channel = str(payload.get("channel") or "")
+    if (payload.get("context_json") or {}).get("job_kind") in {
+        "REQUIREMENT_IMPORT_PREVIEW",
+        "REQUIREMENT_SPLIT_PREVIEW",
+    }:
+        from app.domains.notification.ws.notification_manager import notification_ws_manager
+
+        context = payload.get("context_json") or {}
+        await notification_ws_manager.send_message_to_user(
+            str(payload["creator_id"]),
+            {
+                "type": "requirement_preview_updated",
+                "job": {
+                    "job_id": payload["id"],
+                    "workspace_id": payload["workspace_id"],
+                    "status": status,
+                    "progress": payload.get("progress", 0),
+                    "message": payload.get("message"),
+                    "error": payload.get("error_message"),
+                    "job_kind": context.get("job_kind"),
+                    "requirement_id": context.get("requirement_id"),
+                    "requirement_title": context.get("requirement_title"),
+                    "domain_milestones": context.get("domain_milestones", []),
+                },
+            },
+        )
     if (payload.get("context_json") or {}).get("job_kind") == "TASK_REPOSITORY_ADAPT":
         from app.core.distributed_lock import lock_task
         from app.core.offload import run_db_txn

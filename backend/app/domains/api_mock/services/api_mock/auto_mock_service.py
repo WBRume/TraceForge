@@ -3,14 +3,18 @@ API MOCK Auto Mock Service.
 """
 
 import asyncio
-from typing import Any
+import json
 
 from sqlalchemy.orm import Session
 
+from app.agents.domain_tools import DomainTool
+from app.agents.domain_tools.contracts import MockSubmission
+from app.agents.domain_tools.validators import validate_mock_cases
+from app.agents.errors import AgentCancelledError
 from app.agents.selection import resolve_workspace_backend
+from app.domains.ai.services.jobs.domain_turn import persisted_milestones, run_domain_turn
 from app.domains.api_mock.models.api_mock import ApiMockRuleMode, SddApiMockProject
 
-from .cli_sync_service import run_agent_session
 from .endpoint_service import get_endpoint
 from .job_service import (
     JobCancelledError,
@@ -26,80 +30,7 @@ from .job_service import (
     get_job,
 )
 from .mock_case_service import create_mock_case, list_mock_cases_for_endpoint
-from .utils import _copy_task_workspace, _extract_json_from_text, _temp_workspace_path
-
-
-def _create_openapi_system_prompt() -> str:
-    return """You are an API design expert helping to mock API endpoints.
-Please read the attached OpenAPI specifications and source code (if any) and generate a rich set of mock cases for the requested endpoint.
-Ensure that your mock cases cover successful responses, potential errors (4xx, 5xx), and edge cases.
-Please output ONLY a valid JSON Array containing mock case objects.
-Do not format as Markdown block, output the raw JSON array string.
-Each object MUST have:
-- name: string (e.g., "Success - admin user")
-- description: string
-- mode: string (must be exactly "STATIC" or "MOCKJS")
-- status_code: integer
-- delay_ms: integer
-- headers_json: object (e.g. {"Content-Type": "application/json"})
-- request_path_params_json: object (optional, matcher for path params)
-- request_query_json: object (optional, matcher for query params)
-- request_body_json: object/array/scalar (optional matcher for request body; for POST/PUT/PATCH provide this when request body exists)
-- static_body_json: object (only if mode is STATIC)
-- mockjs_template: string (only if mode is MOCKJS)
-"""
-
-
-def _extract_auto_mock_cases_payload(result_texts: list[str], assistant_texts: list[str]) -> list[dict[str, Any]]:
-    for candidate in result_texts:
-        try:
-            val = _extract_json_from_text(candidate)
-            if isinstance(val, list):
-                return val
-        except Exception:
-            try:
-                import json
-
-                val = json.loads(candidate)
-                if isinstance(val, list):
-                    return val
-            except Exception:
-                continue
-
-    assistant_combined = "\n".join([chunk for chunk in assistant_texts if chunk]).strip()
-    if assistant_combined:
-        try:
-            val = _extract_json_from_text(assistant_combined)
-            if isinstance(val, list):
-                return val
-        except Exception:
-            try:
-                import json
-
-                start = assistant_combined.find("[")
-                end = assistant_combined.rfind("]")
-                if start != -1 and end != -1 and end > start:
-                    val = json.loads(assistant_combined[start : end + 1])
-                    if isinstance(val, list):
-                        return val
-            except Exception:
-                pass
-
-    raise ValueError("Cannot parse JSON Array output from Agent event stream")
-
-
-def _normalize_body_matcher(value: Any) -> Any:
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        try:
-            import json
-
-            return json.loads(text)
-        except Exception:
-            return text
-    return value
+from .utils import _copy_task_workspace, _temp_workspace_path
 
 
 def auto_generate_mock_cases_for_endpoint(
@@ -144,83 +75,78 @@ def auto_generate_mock_cases_for_endpoint(
         backend_name = resolve_workspace_backend(db, project.workspace_id)
         _set_job_progress(db, project.id, job, 30, f"Consulting {backend_name} for mock generation")
 
-        prompt = _create_openapi_system_prompt()
+        prompt = (
+            "根据端点定义和工作区源码生成覆盖成功、错误及边界场景的 Mock 用例，调用 submit_mock_cases。"
+            "MOCKJS 的 mockjs_template 必须是合法 JSON 格式的 Mock.js 模板，不接受可执行 JavaScript。"
+        )
+        prompt += "\n端点契约：" + json.dumps(
+            {
+                "parameters": endpoint.parameters_json,
+                "request_body": endpoint.request_schema_json,
+                "responses": endpoint.responses_json,
+            },
+            ensure_ascii=False,
+        )
+
         prompt += f"\n\nEndpoint: {endpoint.method} {endpoint.path}\n"
         if instructions:
             prompt += f"\nUser Additional Instructions: {instructions}\n"
+        if file_matchers:
+            prompt += "\n优先查看匹配这些路径的源码：" + json.dumps(file_matchers, ensure_ascii=False)
 
         _append_job_log(db, project.id, job, f"Sending prompt to Agent: {backend_name}")
 
-        result_texts, assistant_texts = asyncio.run(
-            run_agent_session(
-                backend_name,
-                temp_path,
+        def on_milestone(event):
+            job.message = event.message
+            _append_job_event(db, project.id, job, {"type": "domain_milestone", **event.model_dump()})
+
+        result = asyncio.run(
+            run_domain_turn(
                 prompt,
-                on_output=lambda msg: _append_job_log(db, project.id, job, msg),
-                on_event=lambda ev: _append_job_event(db, project.id, job, ev),
+                temp_path,
+                backend_name=backend_name,
+                tool=DomainTool("submit_mock_cases", "正在生成 Mock 场景", MockSubmission, validate_mock_cases),
+                permission_mode="read-only",
+                on_milestone=on_milestone,
                 should_cancel=_should_cancel,
+                timeout_seconds=300,
             )
         )
 
-        _append_job_log(db, project.id, job, f"{backend_name} response received. Parsing...")
-        _set_job_progress(db, project.id, job, 80, "Parsing mock cases payload")
-
-        cases_payload = _extract_auto_mock_cases_payload(result_texts, assistant_texts)
+        _append_job_log(db, project.id, job, f"{backend_name} submitted validated mock cases.")
+        _set_job_progress(db, project.id, job, 80, "正在保存 Mock 用例")
 
         _raise_if_cancel_requested(db, project.id, job, job_id)
-
         existing = list_mock_cases_for_endpoint(db, project, endpoint_id)
         has_default = any(c.is_default for c in existing)
-
-        created_count = 0
         from .mock_case_service import next_mock_case_sort_order
 
         next_order = next_mock_case_sort_order(db, project.id, endpoint_id)
-
-        for item in cases_payload:
-            if not isinstance(item, dict):
-                continue
-
-            name = str(item.get("name") or f"Auto Mock {created_count}")
-            mode_raw = str(item.get("mode") or "STATIC").upper()
-            mode = ApiMockRuleMode.STATIC if mode_raw == "STATIC" else ApiMockRuleMode.MOCKJS
-
-            status_code = int(item.get("status_code") or 200)
-            delay_ms = int(item.get("delay_ms") or 0)
-            headers_json = item.get("headers_json") if isinstance(item.get("headers_json"), dict) else None
-            request_path_params_json = (
-                item.get("request_path_params_json") if isinstance(item.get("request_path_params_json"), dict) else None
-            )
-            request_query_json = (
-                item.get("request_query_json") if isinstance(item.get("request_query_json"), dict) else None
-            )
-            request_body_json = _normalize_body_matcher(item.get("request_body_json"))
-
-            is_default = not has_default and created_count == 0
-
+        for index, item in enumerate(result["artifact"].cases):
+            fields = item.model_dump(exclude={"mode"})
             create_mock_case(
                 db,
                 project,
                 endpoint_id=endpoint_id,
                 updater_id=creator_id,
-                name=name,
-                description=item.get("description"),
-                is_default=is_default,
-                sort_order=next_order + created_count,
-                mode=mode,
-                request_path_params_json=request_path_params_json,
-                request_query_json=request_query_json,
-                request_body_json=request_body_json,
-                status_code=status_code,
+                is_default=not has_default and index == 0,
+                sort_order=next_order + index,
+                mode=ApiMockRuleMode(item.mode),
                 enabled=True,
-                delay_ms=delay_ms,
-                static_body_json=item.get("static_body_json") if mode == ApiMockRuleMode.STATIC else None,
-                mockjs_template=item.get("mockjs_template") if mode == ApiMockRuleMode.MOCKJS else None,
-                headers_json=headers_json,
                 cookies_json=None,
+                commit=False,
+                **fields,
             )
-            created_count += 1
-
+        created_count = len(result["artifact"].cases)
+        _raise_if_cancel_requested(db, project.id, job, job_id)
+        db.commit()
+        if result["domain_milestones"]:
+            _append_job_event(
+                db,
+                project.id,
+                job,
+                {"type": "domain_milestone", **persisted_milestones(result["domain_milestones"])[-1]},
+            )
         _set_job_success(
             db,
             project.id,
@@ -230,11 +156,12 @@ def auto_generate_mock_cases_for_endpoint(
         )
         _append_job_log(db, project.id, job, f"Generation complete. Created {created_count} mock cases.")
 
-    except JobCancelledError:
+    except (JobCancelledError, AgentCancelledError):
         db.rollback()
         _set_job_cancelled(db, project.id, job, "Generation cancelled by user")
         _append_job_log(db, project.id, job, "Generation cancelled.")
     except Exception as exc:
+        db.rollback()
         msg = f"Auto mock failed: {exc}"
         _append_job_log(db, project.id, job, msg)
         _set_job_failed(db, project.id, job, msg)

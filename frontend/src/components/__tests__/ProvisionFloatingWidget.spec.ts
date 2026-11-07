@@ -3,6 +3,8 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ProvisionFloatingWidget from '@/components/ProvisionFloatingWidget.vue'
 import { useProvisioningStore } from '@/stores/provisioning'
+import { useSkillAnalysisStore } from '@/stores/skillAnalysis'
+import type { SkillAnalysis } from '@/types/skillAnalysis'
 
 const apiMock = vi.hoisted(() => ({
   get: vi.fn(),
@@ -47,6 +49,47 @@ const mountWidget = () =>
   })
 
 describe('ProvisionFloatingWidget', () => {
+  const milestone = { run_id: 'run', sequence: 1, call_id: '', tool: 'submit_skill_review',
+    stage: 'started' as const, timestamp: 1, message: '正在审查技能包', issues: [] }
+
+  it('shows skill progress in the shared window and hides its timeline on completion', async () => {
+    const store = useSkillAnalysisStore()
+    const payload: SkillAnalysis = { id: 'analysis', skill_id: 'skill', workspace_id: 'ws', skill_name: 'Review fixture',
+      status: 'RUNNING', progress: 60, file_stats: { domain_milestones: [milestone] },
+      ref_kind: 'WORKTREE', file_type_distribution: {}, key_files: [], risk_items: [], review_suggestions: [],
+      created_by_id: 'user', created_at: '2026-11-07T00:00:00' }
+    store.ingest(payload, true)
+    useProvisioningStore().expand()
+    const wrapper = mountWidget()
+    expect(wrapper.text()).toContain('技能审阅：Review fixture')
+    expect(wrapper.get('.domain-milestones').text()).toContain('正在审查技能包')
+    expect(wrapper.find('.widget-btn-secondary').exists()).toBe(false)
+    store.ingest({ ...payload, status: 'SUCCESS', progress: 100 }, true)
+    await flushPromises()
+    expect(wrapper.find('.domain-milestones').exists()).toBe(false)
+    expect(wrapper.find('.widget-job-progress').exists()).toBe(false)
+    expect(wrapper.find('.widget-job-error').exists()).toBe(false)
+    expect(wrapper.text()).toContain('技能审阅已完成')
+    await wrapper.get('.widget-btn-primary').trigger('click')
+    expect(routerMock.push).toHaveBeenCalledWith({ name: 'skillsEditAnalysis', params: { skillId: 'skill' }, query: { wsId: 'ws' } })
+    expect(store.jobs).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('removes promotion execution history once the draft is ready to confirm', async () => {
+    const store = useProvisioningStore()
+    const payload = { job_id: 'promotion-timeline', workspace_id: 'ws', status: 'RUNNING', domain_milestones: [milestone] }
+    store.ingestPromotionJob(payload)
+    store.expand()
+    const wrapper = mountWidget()
+    expect(wrapper.find('.domain-milestones').exists()).toBe(true)
+    store.ingestPromotionJob({ ...payload, status: 'SUCCESS', result: { review_state: 'PENDING' } })
+    await flushPromises()
+    expect(wrapper.find('.domain-milestones').exists()).toBe(false)
+    expect(wrapper.get('.widget-btn-primary').text()).toBe('确认草案')
+    wrapper.unmount()
+  })
+
   it('shows successful drafts as ready for review instead of a failure alert', async () => {
     const store = useProvisioningStore()
     store.ingestPromotionJob({ job_id: 'review', workspace_id: 'ws', status: 'SUCCESS', progress: 100,

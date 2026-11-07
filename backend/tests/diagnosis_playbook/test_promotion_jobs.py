@@ -158,8 +158,6 @@ def test_missing_sources_and_stale_attempt_cannot_publish(db):
 
 
 def test_runner_calls_workspace_cli_with_snapshot_and_records_model_output(db, monkeypatch, tmp_path):
-    import json
-
     from app.agents import selection
     from app.config import settings
     from app.core import offload
@@ -192,7 +190,16 @@ def test_runner_calls_workspace_cli_with_snapshot_and_records_model_output(db, m
             job.result_json = values["result"]
 
     monkeypatch.setattr(runner, "update_preview_job_state", update)
-    cli = AsyncMock(return_value={"text": json.dumps(result([case.id]).model_dump(), ensure_ascii=False)})
+
+    async def submit(*args, **kwargs):
+        from app.agents.domain_tools.invocation import active_domain_run
+
+        run = active_domain_run.get()
+        reply = await run.invoke(run.tool.name, result([case.id]).model_dump(), "call-1")
+        assert not reply["isError"]
+        return {"text": "submitted"}
+
+    cli = AsyncMock(side_effect=submit)
     monkeypatch.setattr(provider_turn, "run_cli_single_turn", cli)
     published = []
 
@@ -205,8 +212,8 @@ def test_runner_calls_workspace_cli_with_snapshot_and_records_model_output(db, m
     assert asyncio.run(promotion.run(job.id)) is True
     assert cli.call_args.kwargs["backend_name"] == "test-backend"
     assert cli.call_args.kwargs["permission_mode"] == "read-only"
-    assert "晋升后的修改" not in cli.call_args.kwargs["prompt"]
-    assert "checkout" in cli.call_args.kwargs["prompt"]
+    assert "晋升后的修改" not in cli.call_args.args[0]
+    assert "checkout" in cli.call_args.args[0]
     assert db.query(PlaybookSpec).count() == 0
     assert job.result_json["review_state"] == "PENDING"
     assert len(published) == 2

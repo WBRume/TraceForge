@@ -1,7 +1,7 @@
 """
 问题定位结果：AI 会话反填提取与卡片消息测试
 
-覆盖：prompt 契约、fenced JSON 提取、降级策略、AI 反填 upsert、
+覆盖：工具契约严格校验、AI 反填 upsert、
 卡片消息稳定更新、CONFIRMED 保护、非诊断任务跳过。
 """
 
@@ -81,146 +81,32 @@ def test_prompt_suffix_empty_for_development_task():
         engine.dispose()
 
 
-def test_build_diagnosis_summary_prompt_reuses_removed_json_contract():
-    engine, SessionLocal = _build_db()
-    try:
-        with _session(SessionLocal) as db:
-            _, _, task = _seed_diagnosis_task(db)
-            prompt = diagnosis_result_service.build_diagnosis_summary_prompt(
-                task,
-                "[用户] 接口偶发超时\n[AI] 排查连接池",
-            )
-            assert "现象: 接口偶发超时" in prompt
-            assert "优先级: P1" in prompt
-            assert "会话记录" in prompt
-            assert "[用户] 接口偶发超时" in prompt
-            # 只读总结约束：压制 fork 会话历史中的定位惯性（写 plan 文件 /
-            # ExitPlanMode / 继续定位修复），保证仅输出 fenced JSON
-            assert "只读总结约束" in prompt
-            assert "禁止调用任何工具" in prompt
-            assert "ExitPlanMode" in prompt
-            assert "不要写计划文件" in prompt
-            assert "不要继续执行定位、修复、测试" in prompt
-            assert "不要输出任何 Markdown 正文" in prompt
-            # 复用了原定位结果 JSON 契约
-            assert "```json" in prompt
-            assert '"summary"' in prompt
-            assert '"root_cause"' in prompt
-            assert '"code_context"' in prompt
-            assert '"similar_cases"' in prompt
-            assert '"call_chain"' in prompt
-            assert '"confidence"' in prompt
+def test_summary_prompt_requires_tool_and_preserves_readonly_fork_context():
+    import pytest
+    from pydantic import ValidationError
 
-            # 无会话内容时给出兜底说明
-            empty_prompt = diagnosis_result_service.build_diagnosis_summary_prompt(task, "")
-            assert "暂无私聊内容" in empty_prompt
+    from app.agents.domain_tools.contracts import DiagnosisSubmission
+
+    engine, factory = _build_db()
+    try:
+        with _session(factory) as db:
+            _, _, task = _seed_diagnosis_task(db)
+            prompt = diagnosis_result_service.build_diagnosis_summary_prompt(task)
+            assert "submit_diagnosis" in prompt
+            assert "```json" not in prompt
+            assert "接口偶发超时" in prompt
+            valid = {
+                "summary": "连接池耗尽",
+                "root_cause": "池配置过小",
+                "evidence_chain": "日志超时",
+                "fix_suggestion": "扩容",
+            }
+            assert DiagnosisSubmission.model_validate(valid, strict=True).root_cause == "池配置过小"
+            for invalid in ({**valid, "confidence": 150}, {**valid, "confidence": "85%"}, {"diagnosis": valid}, "正文"):
+                with pytest.raises(ValidationError):
+                    DiagnosisSubmission.model_validate(invalid, strict=True)
     finally:
         engine.dispose()
-
-
-# ────────────────────────── JSON 提取 ──────────────────────────
-
-_JSON_BLOCK = """{
-  "summary": "连接池耗尽",
-  "root_cause": "池配置过小",
-  "evidence_chain": "日志超时",
-  "fix_suggestion": "扩容",
-  "fix_code": "maxActive=200",
-  "code_context": [{"file_path": "src/pool.py", "start_line": 12}],
-  "similar_cases": [{"title": "历史案例"}],
-  "call_chain": [{"seq": 1, "function": "handle"}],
-  "confidence": 88
-}"""
-
-
-def test_extract_valid_fenced_json():
-    text = f"定位结论如下：\n```json\n{_JSON_BLOCK}\n```\n请补充线索。"
-    payload = diagnosis_result_service.extract_payload_from_text(text)
-    assert payload is not None
-    assert payload.root_cause == "池配置过小"
-    assert payload.confidence == 88
-    assert payload.code_context[0].file_path == "src/pool.py"
-    assert payload.similar_cases[0].title == "历史案例"
-    assert payload.call_chain[0].function == "handle"
-
-
-def test_extract_takes_last_block_and_ignores_bad_ones():
-    bad_block = "```json\n{invalid json\n```"
-    good_block = "```json\n" + _JSON_BLOCK + "\n```"
-    text = f"先试一次：{bad_block}\n再来：{good_block}"
-    payload = diagnosis_result_service.extract_payload_from_text(text)
-    assert payload is not None
-    assert payload.root_cause == "池配置过小"
-
-
-def test_extract_unwraps_diagnosis_key():
-    text = '```json\n{"diagnosis": ' + _JSON_BLOCK + "}\n```"
-    payload = diagnosis_result_service.extract_payload_from_text(text)
-    assert payload is not None
-    assert payload.summary == "连接池耗尽"
-
-
-def test_extract_confidence_out_of_range_is_clamped():
-    block = _JSON_BLOCK.replace('"confidence": 88', '"confidence": 150')
-    text = f"```json\n{block}\n```"
-    payload = diagnosis_result_service.extract_payload_from_text(text)
-    assert payload is not None
-    assert payload.root_cause == "池配置过小"  # 字段级容错：越界置信度被夹取，不导致整体失败
-    assert payload.confidence == 100
-
-
-def test_extract_confidence_string_value_tolerated():
-    block = _JSON_BLOCK.replace('"confidence": 88', '"confidence": "85%"')
-    text = f"```json\n{block}\n```"
-    payload = diagnosis_result_service.extract_payload_from_text(text)
-    assert payload is not None
-    assert payload.root_cause == "池配置过小"
-    assert payload.confidence == 85
-
-
-def test_extract_fence_without_json_prefix():
-    text = f"```\n{_JSON_BLOCK}\n```"
-    payload = diagnosis_result_service.extract_payload_from_text(text)
-    assert payload is not None
-    assert payload.root_cause == "池配置过小"
-
-
-def test_extract_naked_json_without_fence():
-    text = f"结论如下：\n{_JSON_BLOCK}"
-    payload = diagnosis_result_service.extract_payload_from_text(text)
-    assert payload is not None
-    assert payload.root_cause == "池配置过小"
-    assert payload.code_context[0].file_path == "src/pool.py"
-
-
-def test_extract_with_nested_code_fence_in_fix_code():
-    """fix_code 内含 ```python 代码块时，fence 截断后由 raw_decode 兜底解析。"""
-    block = _JSON_BLOCK.replace(
-        '"fix_code": "maxActive=200"',
-        '"fix_code": "```python\\npool.maxActive = 200\\n```"',
-    )
-    text = f"```json\n{block}\n```"
-    payload = diagnosis_result_service.extract_payload_from_text(text)
-    assert payload is not None
-    assert payload.root_cause == "池配置过小"
-    assert "```python" in payload.fix_code
-
-
-def test_extract_fallback_summary_only_for_plain_text():
-    text = "问题大概率是连接池配置过小导致的超时。"
-    payload = diagnosis_result_service.extract_payload_from_text(text)
-    assert payload is not None
-    assert payload.summary == text
-    assert payload.root_cause is None
-    assert payload.confidence == 0
-
-
-def test_extract_none_for_empty_text():
-    assert diagnosis_result_service.extract_payload_from_text("   ") is None
-    assert diagnosis_result_service.extract_payload_from_text("") is None
-
-
-# ────────────────────────── AI 反填 upsert 与卡片消息 ──────────────────────────
 
 
 def test_upsert_from_ai_creates_and_updates_single_card_message():

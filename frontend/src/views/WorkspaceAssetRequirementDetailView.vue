@@ -150,6 +150,7 @@ const splitPreviewJob = computed<RequirementPreviewJob | null>(() => {
   if (!job) return null
   return {
     job_id: job.jobId,
+    domain_milestones: job.domain_milestones,
     workspace_id: job.workspaceId,
     status: job.status,
     progress: job.progress,

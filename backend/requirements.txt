@@ -34,6 +34,7 @@ websockets==14.1
 python-dateutil==2.9.0
 python-docx==1.1.2
 PyYAML==6.0.3
+openapi-spec-validator==0.7.2
 redis>=5.0.0
 zstandard==0.25.0
 

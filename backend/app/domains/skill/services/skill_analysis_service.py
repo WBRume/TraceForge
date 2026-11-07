@@ -4,24 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 import re
 import shutil
 import tempfile
 import threading
-import uuid
 from collections import Counter
 from collections.abc import Iterable
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
-from app.agents.contract import AgentRunRequest
-from app.agents.run_logging import run_agent_backend_with_logging
-from app.agents.selection import create_legacy_bridge, resolve_workspace_backend
-from app.config import settings
+from app.agents.selection import resolve_workspace_backend
 from app.core.background_tasks import retain_background_task
 from app.database import SessionLocal
 from app.domains.auth.models.user import User
@@ -36,6 +33,10 @@ from app.domains.skill.models.skill import (
 from app.domains.skill.services.packages import git as git_service
 from app.domains.skill.services.packages import storage as storage_service
 from app.domains.skill.services.packages import versions as skill_packages_versions
+
+_notification_loop: ContextVar[asyncio.AbstractEventLoop | None] = ContextVar(
+    "skill_analysis_notification_loop", default=None
+)
 
 LARGE_FILE_BYTES = 1024 * 1024
 SEMANTIC_TIMEOUT_SECONDS = 240
@@ -107,55 +108,21 @@ def _enum_value(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value or "")
 
 
-def is_semantic_degraded_analysis(analysis: SddSkillAnalysis) -> bool:
-    status = _enum_value(analysis.status).upper()
-    if status != SkillAnalysisStatus.FAILED.value:
-        return False
-    if not analysis.file_stats_json:
-        return False
-    message = str(analysis.message or "").lower()
-    error = str(analysis.error_message or "").lower()
-    return "semantic review" in message or "claude" in error
-
-
 def serialize_analysis(analysis: SddSkillAnalysis) -> dict[str, Any]:
-    semantic_degraded = is_semantic_degraded_analysis(analysis)
     risk_level = _enum_value(analysis.risk_level) or None
     risk_items = _dedupe_risks(analysis.risk_items_json or [])
-    semantic_contract_failed = (
-        _enum_value(analysis.status).upper() == SkillAnalysisStatus.SUCCESS.value
-        and _normalize_level(risk_level, "LOW") in {"MEDIUM", "HIGH"}
-        and not risk_items
-    )
     return {
         "id": analysis.id,
         "workspace_id": analysis.workspace_id,
         "skill_id": analysis.skill_id,
+        "skill_name": getattr(getattr(analysis, "skill", None), "name", ""),
         "version_id": analysis.version_id,
         "commit_sha": analysis.commit_sha,
         "ref_kind": _enum_value(analysis.ref_kind),
-        "status": (
-            SkillAnalysisStatus.FAILED.value
-            if semantic_contract_failed
-            else SkillAnalysisStatus.SUCCESS.value
-            if semantic_degraded
-            else _enum_value(analysis.status)
-        ),
+        "status": _enum_value(analysis.status),
         "progress": int(analysis.progress or 0),
-        "message": (
-            SEMANTIC_CONTRACT_FAILED_MESSAGE
-            if semantic_contract_failed
-            else SEMANTIC_UNAVAILABLE_MESSAGE
-            if semantic_degraded
-            else analysis.message
-        ),
-        "error_message": (
-            f"Provider returned risk_level={risk_level} but no concrete risk_items; re-run Analysis."
-            if semantic_contract_failed
-            else None
-            if semantic_degraded
-            else analysis.error_message
-        ),
+        "message": analysis.message,
+        "error_message": analysis.error_message,
         "risk_level": risk_level,
         "complexity": _enum_value(analysis.complexity) or None,
         "review_priority": _enum_value(analysis.review_priority) or None,
@@ -309,10 +276,38 @@ def retry_analysis_job(db: Session, *, source: SddSkillAnalysis, user_id: str) -
 def schedule_analysis_job(analysis_id: str) -> None:
     try:
         loop = asyncio.get_running_loop()
-        retain_background_task(loop.create_task(asyncio.to_thread(run_analysis_job, analysis_id)))
+        retain_background_task(loop.create_task(_run_analysis_in_thread(analysis_id)))
     except RuntimeError:
-        thread = threading.Thread(target=run_analysis_job, args=(analysis_id,), daemon=True)
-        thread.start()
+        # FastAPI sync routes run in AnyIO worker threads. Schedule back on the
+        # application loop so WS delivery shares the live socket's event loop.
+        from anyio import from_thread
+
+        try:
+            from_thread.run_sync(schedule_analysis_job, analysis_id)
+        except RuntimeError:
+            thread = threading.Thread(target=run_analysis_job, args=(analysis_id,), daemon=True)
+            thread.start()
+
+
+async def _run_analysis_in_thread(analysis_id: str) -> None:
+    token = _notification_loop.set(asyncio.get_running_loop())
+    try:
+        await asyncio.to_thread(run_analysis_job, analysis_id)
+    finally:
+        _notification_loop.reset(token)
+
+
+def _publish_analysis(analysis: SddSkillAnalysis) -> None:
+    loop = _notification_loop.get()
+    if loop is None or loop.is_closed():
+        return
+    from app.domains.notification.ws.notification_manager import notification_ws_manager
+
+    payload = {"type": "skill_analysis_updated", "analysis": jsonable_encoder(serialize_analysis(analysis))}
+    user_id = str(analysis.created_by_id)
+    loop.call_soon_threadsafe(
+        lambda: retain_background_task(loop.create_task(notification_ws_manager.send_message_to_user(user_id, payload)))
+    )
 
 
 def _set_analysis_state(
@@ -352,6 +347,8 @@ def _set_analysis_state(
         analysis.review_suggestions_json = payload.get("review_suggestions") or []
     db.commit()
     db.refresh(analysis)
+
+    _publish_analysis(analysis)
 
 
 def _safe_rel(path: str) -> str:
@@ -679,25 +676,6 @@ def _dedupe_risks(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return result[:300]
 
 
-def _has_valid_semantic_risk_item(semantic: dict[str, Any]) -> bool:
-    for item in semantic.get("risk_items") or []:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("file_path") or "").replace("\\", "/").strip("/"):
-            return True
-    return False
-
-
-def _semantic_contract_error(semantic: dict[str, Any]) -> str | None:
-    semantic_level = _normalize_level(semantic.get("risk_level"), "LOW")
-    if semantic_level in {"MEDIUM", "HIGH"} and not _has_valid_semantic_risk_item(semantic):
-        return (
-            f"Provider returned risk_level={semantic_level} but did not return any valid file-level risk_items. "
-            "A MEDIUM/HIGH semantic result must include at least one risk item with file_path and evidence_detail."
-        )
-    return None
-
-
 def _derive_levels(stats: dict[str, Any], risk_items: list[dict[str, Any]]) -> dict[str, str]:
     high_count = sum(1 for item in risk_items if str(item.get("risk_level")) == "HIGH")
     medium_count = sum(1 for item in risk_items if str(item.get("risk_level")) == "MEDIUM")
@@ -769,18 +747,7 @@ def _semantic_prompt() -> str:
         "instructions create an actionable reviewer concern. For binary or large files, decide from filename, role, "
         "size if visible, references, and surrounding package context whether they are worth review; omit them when "
         "they are ordinary assets. "
-        "Return JSON only with this shape: "
-        '{"risk_level":"LOW|MEDIUM|HIGH","complexity":"LOW|MEDIUM|HIGH",'
-        '"review_priority":"LOW|MEDIUM|HIGH","risk_items":[{"risk_type":"string",'
-        '"risk_level":"LOW|MEDIUM|HIGH","file_path":"relative/path","line_start":1,'
-        '"line_end":1,"title":"specific reviewer-facing title",'
-        '"description":"why this is risky in this Skill package",'
-        '"evidence_summary":"specific concise evidence summary",'
-        '"evidence_detail":"detailed evidence with relevant excerpt or context",'
-        '"matched_text":"exact relevant excerpt when available",'
-        '"recommendation":"specific review or mitigation action",'
-        '"source":"claude","confidence":0.0}],'
-        '"review_suggestions":["short checklist item"]}. '
+        "Call submit_skill_review to submit your structured review. "
         "Risk titles and evidence_summary must be concrete and must mention the observed behavior, not only the risk type. "
         "Never return MEDIUM or HIGH risk_level with an empty risk_items array; if the package deserves MEDIUM or HIGH, "
         "include at least one concrete risk item with file_path and evidence_detail. "
@@ -792,93 +759,31 @@ def _semantic_prompt() -> str:
     )
 
 
-def _semantic_retry_prompt(previous_error: str) -> str:
-    return (
-        _semantic_prompt()
-        + " Your previous structured result was rejected because: "
-        + str(previous_error)
-        + " Re-open the package files and repair the analysis. "
-        "If you cannot point to concrete file-level evidence, set risk_level, complexity, and review_priority to LOW "
-        "and return an empty risk_items array. If the package deserves MEDIUM or HIGH risk_level, you must include "
-        "specific risk_items with file_path, line_start when available, evidence_summary, evidence_detail, and recommendation. "
-        "Do not return a placeholder, uncertainty-only, or meta-analysis risk item."
-    )
-
-
-def _json_from_text(text: str) -> dict[str, Any]:
-    candidate = str(text or "").strip()
-    if not candidate:
-        raise ValueError("Claude returned empty analysis")
-    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", candidate, re.S | re.I)
-    if fenced_match:
-        try:
-            parsed = json.loads(fenced_match.group(1))
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
-    try:
-        parsed = json.loads(candidate)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
-
-    decoder = json.JSONDecoder()
-    parsed_candidates: list[dict[str, Any]] = []
-    for match in re.finditer(r"\{", candidate):
-        try:
-            parsed, _ = decoder.raw_decode(candidate[match.start() :])
-        except Exception:
-            continue
-        if isinstance(parsed, dict):
-            parsed_candidates.append(parsed)
-    if parsed_candidates:
-        return parsed_candidates[-1]
-    raise ValueError("Claude analysis was not valid JSON")
-
-
 def _normalize_level(value: Any, fallback: str) -> str:
     text = str(value or "").strip().upper()
     return text if text in {"LOW", "MEDIUM", "HIGH"} else fallback
 
 
 def _merge_semantic_result(base: dict[str, Any], semantic: dict[str, Any]) -> dict[str, Any]:
-    contract_error = _semantic_contract_error(semantic)
-    if contract_error:
-        raise SemanticAnalysisContractError(contract_error)
-    merged = dict(base)
-    semantic_risk_level = _normalize_level(semantic.get("risk_level"), "LOW")
-    merged["risk_level"] = _max_level(base.get("risk_level"), semantic_risk_level)
-    merged["complexity"] = _max_level(base.get("complexity"), semantic.get("complexity"))
-    merged["review_priority"] = _max_level(base.get("review_priority"), semantic.get("review_priority"))
-    semantic_risks: list[dict[str, Any]] = []
-    for item in semantic.get("risk_items") or []:
-        if not isinstance(item, dict):
-            continue
-        file_path = str(item.get("file_path") or "").replace("\\", "/").strip("/")
-        if not file_path:
-            continue
-        semantic_risks.append(
-            _build_risk_item(
-                risk_type=str(item.get("risk_type") or "SEMANTIC_RISK").strip() or "SEMANTIC_RISK",
-                risk_level=_normalize_level(item.get("risk_level"), "MEDIUM"),
-                file_path=file_path,
-                line_start=_safe_int(item.get("line_start")),
-                line_end=_safe_int(item.get("line_end")),
-                title=str(item.get("title") or "").strip() or None,
-                description=str(item.get("description") or "").strip() or None,
-                evidence_summary=str(item.get("evidence_summary") or "").strip() or None,
-                evidence_detail=str(item.get("evidence_detail") or "").strip() or None,
-                matched_text=str(item.get("matched_text") or "").strip() or None,
-                recommendation=str(item.get("recommendation") or "").strip() or None,
-                source="claude",
-                confidence=_safe_float(item.get("confidence"), 0.7),
-            )
+    from pydantic import ValidationError
+
+    from app.agents.domain_tools.contracts import SkillReview
+
+    try:
+        review = SkillReview.model_validate(
+            {key: value for key, value in semantic.items() if key != "_provider_session_id"}, strict=True
         )
-    merged["risk_items"] = _dedupe_risks(semantic_risks)
-    suggestions = [str(item).strip() for item in (semantic.get("review_suggestions") or []) if str(item).strip()]
-    merged["review_suggestions"] = list(dict.fromkeys([*(base.get("review_suggestions") or []), *suggestions]))
+    except ValidationError as exc:
+        raise SemanticAnalysisContractError(str(exc)) from exc
+    merged = dict(base)
+    for field in ("risk_level", "complexity", "review_priority"):
+        merged[field] = _max_level(base.get(field), getattr(review, field))
+    merged["risk_items"] = _dedupe_risks(
+        [_build_risk_item(**item.model_dump(), source="agent") for item in review.risk_items]
+    )
+    merged["review_suggestions"] = list(
+        dict.fromkeys([*(base.get("review_suggestions") or []), *review.review_suggestions])
+    )
     return merged
 
 
@@ -905,93 +810,22 @@ def _max_level(left: Any, right: Any) -> str:
     return left_text if order[left_text] >= order[right_text] else right_text
 
 
-async def _run_remote_semantic(provider, package_root: str, instructions: str) -> dict[str, Any]:
-    async def on_event(event):
-        if event.type != "ask_user":
-            return
-        if event.payload.get("permission_request"):
-            # Background analysis has no interactive approval surface.
-            await provider.respond_to_ask_user(event.payload["ask_user_id"], "reject")
-            return
-        raise ValueError("Skill background analysis requires interactive input")
+async def _run_semantic_analysis(package_root: str, *, backend_name: str, on_milestone=None) -> dict[str, Any]:
+    from app.agents.domain_tools import DomainTool
+    from app.agents.domain_tools.contracts import SkillReview
+    from app.agents.domain_tools.validators import skill_review_validator
+    from app.domains.ai.services.jobs.domain_turn import run_domain_turn
 
-    request = AgentRunRequest(
-        run_id=f"skill-analysis-{uuid.uuid4().hex}",
-        prompt=instructions,
-        project_path=package_root,
+    result = await run_domain_turn(
+        _semantic_prompt(),
+        package_root,
+        backend_name=backend_name,
         permission_mode="read-only",
-        execution_kind=provider.capabilities.execution_kind,
+        tool=DomainTool("submit_skill_review", "正在审查技能包", SkillReview, skill_review_validator(package_root)),
+        on_milestone=on_milestone,
         timeout_seconds=SEMANTIC_TIMEOUT_SECONDS,
     )
-    try:
-        result = await asyncio.wait_for(
-            run_agent_backend_with_logging(provider, request, on_event),
-            timeout=SEMANTIC_TIMEOUT_SECONDS,
-        )
-        if not result.success:
-            raise ValueError("Skill semantic analysis did not complete successfully")
-        parsed = _json_from_text(result.result_text)
-        parsed["_provider_session_id"] = result.session_id
-        return parsed
-    except BaseException:
-        await asyncio.shield(provider.cancel())
-        raise
-    finally:
-        await provider.close()
-
-
-async def _run_semantic_analysis(package_root: str, *, backend_name: str, prompt: str | None = None) -> dict[str, Any]:
-    bridge = create_legacy_bridge(backend_name)
-    texts: list[str] = []
-    provider = getattr(bridge, "backend", None)
-
-    async def _event_callback(event: dict[str, Any]) -> None:
-        event_type = str(event.get("type") or "").lower()
-        if event_type == "assistant":
-            message = event.get("message")
-            blocks = message.get("content", []) if isinstance(message, dict) else []
-            for block in blocks if isinstance(blocks, list) else []:
-                if isinstance(block, dict) and str(block.get("type") or "").lower() == "text":
-                    text = str(block.get("text") or "").strip()
-                    if text:
-                        texts.append(text)
-        elif event_type == "result":
-            result = str(event.get("result") or "").strip()
-            if result:
-                texts.append(result)
-
-    instructions = (
-        "Use directory read listings to discover package files, including hidden entries. "
-        "Read only paths present in those listings; do not guess filenames or probe absent secrets. "
-        "If glob or grep times out, use directory reads and file reads instead of retrying searches.\n\n"
-        + (prompt or _semantic_prompt())
-    )
-    if provider is not None:
-        return await _run_remote_semantic(provider, package_root, instructions)
-    try:
-        await bridge.start_session(
-            prompt=instructions,
-            project_path=package_root,
-            event_callback=_event_callback,
-            session_id=None,
-        )
-        await asyncio.wait_for(bridge.wait(), timeout=SEMANTIC_TIMEOUT_SECONDS)
-    except BaseException:
-        await asyncio.shield(bridge.cancel())
-        raise
-    raw_text = "\n".join(texts)
-    try:
-        result = _json_from_text(raw_text)
-        result["_provider_session_id"] = bridge.session_id
-        return result
-    except ValueError as exc:
-        process = getattr(bridge, "process", None)
-        return_code = getattr(process, "returncode", None)
-        if return_code not in {None, 0}:
-            raise ValueError(
-                f"Provider semantic review exited with code {return_code} and did not return valid JSON"
-            ) from exc
-        raise
+    return {**result["artifact"].model_dump(), "_provider_session_id": result.get("session_id")}
 
 
 def run_analysis_job(analysis_id: str) -> None:
@@ -1029,28 +863,20 @@ def run_analysis_job(analysis_id: str) -> None:
         deterministic = deterministic_scan(package_root, skill)
         _set_analysis_state(db, analysis, progress=60, message="Running semantic risk review", payload=deterministic)
 
+        def milestone(event):
+            events = list(deterministic["file_stats"].get("domain_milestones", []))
+            events.append(event.model_dump())
+            deterministic["file_stats"]["domain_milestones"] = events[-100:]
+            _set_analysis_state(db, analysis, message=event.message, payload=deterministic)
+
         try:
-            semantic = asyncio.run(_run_semantic_analysis(package_root, backend_name=backend_name))
-            contract_error = _semantic_contract_error(semantic)
-            if contract_error and settings.SKILL_ANALYSIS_MAX_ATTEMPTS == 1:
-                raise SemanticAnalysisContractError(contract_error)
-            if contract_error:
-                _set_analysis_state(
-                    db,
-                    analysis,
-                    progress=75,
-                    message="Retrying semantic risk review with stricter output contract",
+            semantic = asyncio.run(
+                _run_semantic_analysis(
+                    package_root,
+                    backend_name=backend_name,
+                    on_milestone=milestone,
                 )
-                semantic = asyncio.run(
-                    _run_semantic_analysis(
-                        package_root,
-                        backend_name=backend_name,
-                        prompt=_semantic_retry_prompt(contract_error),
-                    )
-                )
-                contract_error = _semantic_contract_error(semantic)
-                if contract_error:
-                    raise SemanticAnalysisContractError(contract_error)
+            )
             result = _merge_semantic_result(deterministic, semantic)
             result["file_stats"]["semantic_backend"] = backend_name
             result["file_stats"]["semantic_session_id"] = semantic.get("_provider_session_id")
@@ -1080,15 +906,18 @@ def run_analysis_job(analysis_id: str) -> None:
             _set_analysis_state(
                 db,
                 analysis,
-                status=SkillAnalysisStatus.SUCCESS,
+                status=SkillAnalysisStatus.FAILED,
                 progress=100,
                 message=SEMANTIC_UNAVAILABLE_MESSAGE,
-                error_message="",
+                error_message=str(exc),
                 finished=True,
                 payload=degraded,
             )
             return
 
+        from app.domains.ai.services.jobs.domain_turn import persisted_milestones
+
+        result["file_stats"]["domain_milestones"] = persisted_milestones(result["file_stats"].get("domain_milestones"))
         _set_analysis_state(
             db,
             analysis,

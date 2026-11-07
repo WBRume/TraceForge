@@ -42,6 +42,10 @@ export function useDiagnosis(options: {
   const diagnosisCaseLink = ref('')
   const diagnosisArchiveOrigin = ref('MANUAL')
   const diagnosisSummaryJobId = ref('')
+  const diagnosisMilestones = computed(() => Object.values(options.activeChatJobs.value)
+    .filter(job => job.task_id === taskId() && isDiagnosisSummaryJob(job))
+    .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))[0]
+    ?.context_json?.domain_milestones)
 
   // 「一键总结/重新生成」的 loading 状态以后端真实 job 状态为唯一事实源：
   // 识别 TASK_CHAT 中 job_kind=DIAGNOSIS_SUMMARY 且仍在 PENDING/RUNNING 的任务，
@@ -346,6 +350,7 @@ export function useDiagnosis(options: {
     diagnosisCaseLink,
     diagnosisSummaryJobId,
     diagnosisSummarizing,
+    diagnosisMilestones,
     diagnosisChatBusy,
     diagnosisSummarizingElapsed,
     diagnosisSummarizingLabel,

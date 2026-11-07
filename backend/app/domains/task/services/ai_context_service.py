@@ -74,10 +74,8 @@ def build_resolution_proposal_prompt(
         "1) 仅可依据已提供的锚点文本与讨论内容，不得猜测，不得补充未讨论的新需求。\n"
         "2) 不要输出“我将读取/我先查阅”这类过程语句。\n"
         "3) 不要罗列成员会话，不要输出分析过程、不要输出标题、不要输出代码块。\n"
-        "4) 仅输出“最终提案正文”本体，可使用自然段。\n"
-        "5) 若证据不足，必须只输出两行：\n"
-        "证据不足，无法生成可应用提案。\n"
-        "风险：<一句话风险>\n"
+        "4) 调用 submit_review_proposal，提交问题分析、改动依据和提案正文。\n"
+        "5) 若证据不足，在 analysis 中说明不确定性和风险，不得编造结论。\n"
         "6) 禁止向用户提问。\n\n"
         f"任务名称:\n{task_name or '(未命名任务)'}\n\n"
         f"文档:\n- 名称: {document_name or '(未知)'}\n- 版本: {document_version_label or '(未知)'}\n"
@@ -100,11 +98,6 @@ def build_resolution_anchor_rewrite_prompt(
     proposal_text: str,
     selection_mode: bool = False,
 ) -> str:
-    anchor_json_line = (
-        '  "anchor_text": "<改写后的选中文本>",\n'
-        if selection_mode
-        else '  "anchor_text": "<改写后的锚点块完整文本>",\n'
-    )
     insufficient_line = (
         "若证据不足无法改写：scope=anchor，anchor_text 直接返回锚点选中文本。"
         if selection_mode
@@ -119,15 +112,9 @@ def build_resolution_anchor_rewrite_prompt(
         "1) 仅修改锚点范围，不得扩散到无关段落。\n"
         "2) 只能根据锚点原文、所在块上下文、提案文本改写，不得新增未讨论需求，不得猜测。\n"
         "3) 必须根据上下文调整措辞与结构，保证前后语义连贯、术语一致、编号风格一致。\n"
-        "4) 必须只输出一个 JSON 对象，禁止输出任何解释、标题、代码块。\n"
+        "4) 调用 submit_document_rewrite 工具交付改写内容与 change_summary。\n"
         "5) 必须输出 scope=anchor，并只填写 anchor_text，document_markdown 留空字符串。\n"
         "6) 禁止向用户提问。\n\n"
-        "输出 JSON 模板（严格按键名）:\n"
-        "{\n"
-        '  "scope": "anchor",\n'
-        f"{anchor_json_line}"
-        '  "document_markdown": ""\n'
-        "}\n\n"
         f"{insufficient_line}\n\n"
         f"任务名称:\n{task_name or '(未命名任务)'}\n\n"
         f"文档:\n- 名称: {document_name or '(未知)'}\n- 版本: {document_version_label or '(未知)'}\n"
@@ -158,15 +145,9 @@ def build_resolution_document_rewrite_prompt(
         "1) 全文改写不是只替换锚点：应将提案涉及的变更融合进整篇文档相关章节。\n"
         "2) 保留与提案不冲突的既有内容和结构；对提案涉及章节做补充完善（目标、范围、规则、验收等）。\n"
         "3) 只能根据文档现有内容与提案文本改写，不得编造外部事实。\n"
-        "4) 必须只输出一个 JSON 对象，禁止输出任何解释、标题、代码块。\n"
+        "4) 调用 submit_document_rewrite 工具交付改写内容与 change_summary。\n"
         "5) 必须输出 scope=document，并只填写 document_markdown，anchor_text 留空字符串。\n"
         "6) 禁止向用户提问。\n\n"
-        "输出 JSON 模板（严格按键名）:\n"
-        "{\n"
-        '  "scope": "document",\n'
-        '  "anchor_text": "",\n'
-        '  "document_markdown": "<改写后的完整文档 Markdown>"\n'
-        "}\n\n"
         "若证据不足无法改写：scope=document，document_markdown 返回当前完整文档（保持不变）。\n\n"
         f"任务名称:\n{task_name or '(未命名任务)'}\n\n"
         f"文档:\n- 名称: {document_name or '(未知)'}\n- 版本: {document_version_label or '(未知)'}\n"

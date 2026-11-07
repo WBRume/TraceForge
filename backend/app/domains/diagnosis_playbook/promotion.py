@@ -7,6 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.services.jobs.domain_turn import persisted_milestones
 from app.domains.case_center.models.case import SddCase
 
 from .analysis_guide import source_snapshot
@@ -44,6 +45,7 @@ def view(job):
         "case_ids": (job.context_json or {}).get("case_ids", []),
         "cases": [{"id": s["id"], "title": s["title"]} for s in (job.context_json or {}).get("sources", [])],
         "result": job.result_json or {},
+        "domain_milestones": (job.context_json or {}).get("domain_milestones", []),
     }
 
 
@@ -146,8 +148,7 @@ def prepare(db, job_id, token, boot):
             if job.context_json.get("merge_all")
             else ""
         )
-        + "只输出符合以下 JSON Schema 的 JSON：\n"
-        + json.dumps(PromotionResult.model_json_schema(), ensure_ascii=False)
+        + "调用 submit_playbook_drafts 工具提交规程草案。"
         + "\n案例：\n"
         + json.dumps(job.context_json["sources"], ensure_ascii=False)
     )
@@ -205,6 +206,7 @@ def finalize(db, job_id, result, token, boot, evidence):
         status=AiJobStatus.SUCCESS,
         progress=100,
         message="规程草案已生成，待人工确认",
+        context_patch={"domain_milestones": persisted_milestones((job.context_json or {}).get("domain_milestones"))},
         result={"review_state": "PENDING", "draft": draft, "draft_revision": digest(draft)},
         run_token=token,
         worker_boot_id=boot,
@@ -332,19 +334,33 @@ def regenerate(db, job, revision, key, user_id):
 
 async def run(job_id):
     from app.agents import current_agent_attempt, current_agent_attempt_runtime
+    from app.agents.domain_tools import DomainTool, DomainToolError
     from app.core.offload import run_db_txn
     from app.domains.ai.services.ai_job_convergence_service import resolve_attempt_evidence
-    from app.domains.ai.services.jobs.provider_turn import run_cli_single_turn
+    from app.domains.ai.services.jobs.domain_turn import run_domain_turn
     from app.domains.ai.services.jobs.publishing import publish_job_state
     from app.domains.ai.services.jobs.registry import runtime
-    from app.domains.workspace_asset.services.requirements.preview.prompt import extract_json_object
 
     attempt = current_agent_attempt()
     token, boot = (attempt.run_token, attempt.worker_boot_id) if attempt else (None, None)
     prepared = await run_db_txn(lambda db: prepare(db, job_id, token, boot))
     await publish_job_state(job_id)
-    result = await run_cli_single_turn(
+
+    async def validate(value):
+        def check(db):
+            job = db.get(SddAiJob, job_id)
+            try:
+                validate_candidates(db, job, value)
+                if job.context_json.get("merge_all") and len(value.playbooks) != 1:
+                    raise PlaybookError("PROMOTION_MERGE_REQUIRED")
+            except PlaybookError as exc:
+                raise DomainToolError(str(exc)) from exc
+
+        await run_db_txn(check)
+
+    result = await run_domain_turn(
         **prepared,
+        tool=DomainTool("submit_playbook_drafts", "正在提炼诊断规程", PromotionResult, validate),
         max_attempts=1,
         permission_mode="read-only",
         should_cancel=lambda: runtime.is_cancel_requested(job_id),
@@ -355,7 +371,7 @@ async def run(job_id):
         runtime=current_agent_attempt_runtime(),
         provider_result=result,
     )
-    parsed = PromotionResult.model_validate(extract_json_object(result.get("text") or ""))
+    parsed = result["artifact"]
     await run_db_txn(lambda db: finalize(db, job_id, parsed, token, boot, evidence))
     # The runner does not republish jobs already finalized by the business path.
     await publish_job_state(job_id)

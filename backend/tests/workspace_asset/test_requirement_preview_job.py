@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -10,6 +10,7 @@ import app.domains.api_mock.models.api_mock
 import app.domains.task.models.test_result
 import app.domains.workflow.models.task_change
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
+from app.agents.domain_tools.contracts import RequirementSubmission
 from app.database import Base
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import (
@@ -108,14 +109,26 @@ def test_run_import_preview_job_executes_from_persisted_context(tmp_path, monkey
 
     prompts = []
 
-    async def fake_cli(prompt, project_path, max_attempts=1, should_cancel=None, backend_name=None):
+    async def fake_cli(prompt, project_path, max_attempts=1, should_cancel=None, backend_name=None, **kwargs):
         prompts.append({"prompt": prompt, "project_path": project_path})
         return {
-            "text": '{"items": [{"title": "Feature A", "body": "Body text", "acceptance_criteria": [], "source_ref": "r1"}]}',
+            "artifact": RequirementSubmission.model_validate(
+                {
+                    "items": [
+                        {
+                            "title": "Feature A",
+                            "body": "Body text",
+                            "acceptance_criteria": [],
+                            "source_ref": "r1",
+                            "task_prompt": "Implement Feature A",
+                        }
+                    ]
+                }
+            ),
             "session_id": "sess-1",
         }
 
-    monkeypatch.setattr(preview_runner, "run_cli_single_turn", fake_cli)
+    monkeypatch.setattr(preview_runner, "run_domain_turn", fake_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     asyncio.run(preview_runner.run_requirement_import_preview_job(job_id))
@@ -153,7 +166,7 @@ def test_run_import_preview_job_fails_when_content_missing(tmp_path, monkeypatch
     async def unexpected_cli(*_args, **_kwargs):
         raise AssertionError("CLI must not be called without persisted content")
 
-    monkeypatch.setattr(preview_runner, "run_cli_single_turn", unexpected_cli)
+    monkeypatch.setattr(preview_runner, "run_domain_turn", unexpected_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     asyncio.run(preview_runner.run_requirement_import_preview_job(job.id))
@@ -289,9 +302,23 @@ def test_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, monkeypatc
 
     async def fake_cli(*_args, **_kwargs):
         # 确定性解析失败：split preview 至少需要两个 item。
-        return {"text": '{"items": [{"title": "Only one"}]}', "session_id": "sess-1"}
+        return {
+            "artifact": RequirementSubmission.model_validate(
+                {
+                    "items": [
+                        {
+                            "title": "Only one",
+                            "body": "Only one",
+                            "acceptance_criteria": ["Meets the requirement"],
+                            "task_prompt": "Implement Only one",
+                        }
+                    ]
+                }
+            ),
+            "session_id": "sess-1",
+        }
 
-    monkeypatch.setattr(preview_runner, "run_cli_single_turn", fake_cli)
+    monkeypatch.setattr(preview_runner, "run_domain_turn", fake_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     from datetime import datetime, timezone
@@ -344,7 +371,7 @@ def test_split_preview_cancel_keeps_termination_state(tmp_path, monkeypatch):
             failure_code="USER_CANCELLED",
         )
 
-    monkeypatch.setattr(preview_runner, "run_cli_single_turn", cancelled_cli)
+    monkeypatch.setattr(preview_runner, "run_domain_turn", cancelled_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     ai_runtime.request_cancel(job_id)
@@ -371,9 +398,29 @@ def test_split_preview_wires_cancel_signal_into_cli(tmp_path, monkeypatch):
 
     async def fake_cli(prompt, project_path, *, max_attempts=1, should_cancel=None, backend_name=None, **_kw):
         captured["should_cancel"] = should_cancel
-        return {"text": '{"items": [{"title": "one", "body": "a"}, {"title": "two", "body": "b"}]}', "session_id": "s1"}
+        return {
+            "artifact": RequirementSubmission.model_validate(
+                {
+                    "items": [
+                        {
+                            "title": "one",
+                            "body": "a",
+                            "acceptance_criteria": ["Meets the requirement"],
+                            "task_prompt": "Implement one",
+                        },
+                        {
+                            "title": "two",
+                            "body": "b",
+                            "acceptance_criteria": ["Meets the requirement"],
+                            "task_prompt": "Implement two",
+                        },
+                    ]
+                }
+            ),
+            "session_id": "s1",
+        }
 
-    monkeypatch.setattr(preview_runner, "run_cli_single_turn", fake_cli)
+    monkeypatch.setattr(preview_runner, "run_domain_turn", fake_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     asyncio.run(preview_runner.run_requirement_split_preview_job(job_id, run_token="run-1"))
@@ -394,9 +441,23 @@ def test_preview_unknown_death_failure_stays_orphaned(tmp_path, monkeypatch):
     _claim_running(job_id, SessionLocal)
 
     async def fake_cli(*_args, **_kwargs):
-        return {"text": '{"items": [{"title": "Only one"}]}', "session_id": "sess-1"}
+        return {
+            "artifact": RequirementSubmission.model_validate(
+                {
+                    "items": [
+                        {
+                            "title": "Only one",
+                            "body": "Only one",
+                            "acceptance_criteria": ["Meets the requirement"],
+                            "task_prompt": "Implement Only one",
+                        }
+                    ]
+                }
+            ),
+            "session_id": "sess-1",
+        }
 
-    monkeypatch.setattr(preview_runner, "run_cli_single_turn", fake_cli)
+    monkeypatch.setattr(preview_runner, "run_domain_turn", fake_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     from datetime import datetime, timezone
@@ -449,7 +510,7 @@ def test_import_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, mon
         # normalize 阶段抛错（非 JSON 且不可兜底的内容）。
         return {"text": "not json at all", "session_id": "sess-1"}
 
-    monkeypatch.setattr(preview_runner, "run_cli_single_turn", fake_cli)
+    monkeypatch.setattr(preview_runner, "run_domain_turn", fake_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     from datetime import datetime, timezone
@@ -545,6 +606,11 @@ class _StubRemoteBridge:
     async def start_session(self, **kwargs):
         callback = kwargs["event_callback"]
         for event in self._events:
+            if "submission" in event:
+                from app.agents.domain_tools.invocation import active_domain_run
+
+                run = active_domain_run.get()
+                await run.invoke(run.tool.name, event["submission"], "call-1")
             await callback(event)
         if self._start_error is not None:
             raise self._start_error
@@ -589,7 +655,22 @@ def test_remote_split_preview_evidence_enables_convergence(monkeypatch):
                 "type": "result",
                 "subtype": "success",
                 "is_error": False,
-                "result": '{"items": [{"title": "one", "body": "a"}, {"title": "two", "body": "b"}]}',
+                "submission": {
+                    "items": [
+                        {
+                            "title": "one",
+                            "body": "a",
+                            "acceptance_criteria": ["Meets the requirement"],
+                            "task_prompt": "Implement one",
+                        },
+                        {
+                            "title": "two",
+                            "body": "b",
+                            "acceptance_criteria": ["Meets the requirement"],
+                            "task_prompt": "Implement two",
+                        },
+                    ]
+                },
                 "session_id": "remote-1",
             },
         ]
@@ -601,7 +682,8 @@ def test_remote_split_preview_evidence_enables_convergence(monkeypatch):
         with (
             patch("app.agents.selection.create_legacy_bridge", return_value=stub),
             patch.object(preview_runner, "run_db_txn", _async_txn),
-            patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+            patch("app.domains.ai.services.jobs.state.update_job_state", new_callable=AsyncMock),
+            patch("app.domains.ai.services.jobs.publishing.publish_job_state", new_callable=AsyncMock),
             patch.object(ai_provider_turn, "_persist_turn_locator_sync"),
         ):
             assert asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job")) is True
@@ -630,7 +712,17 @@ def test_remote_import_preview_evidence_enables_convergence(monkeypatch):
                 "type": "result",
                 "subtype": "success",
                 "is_error": False,
-                "result": '{"items": [{"title": "Feature A", "body": "Body", "acceptance_criteria": [], "source_ref": "r1"}]}',
+                "submission": {
+                    "items": [
+                        {
+                            "title": "Feature A",
+                            "body": "Body",
+                            "acceptance_criteria": [],
+                            "source_ref": "r1",
+                            "task_prompt": "Implement Feature A",
+                        }
+                    ]
+                },
                 "session_id": "remote-1",
             },
         ]
@@ -653,7 +745,8 @@ def test_remote_import_preview_evidence_enables_convergence(monkeypatch):
         with (
             patch("app.agents.selection.create_legacy_bridge", return_value=stub),
             patch.object(preview_runner, "run_db_txn", _async_txn),
-            patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+            patch("app.domains.ai.services.jobs.state.update_job_state", new_callable=AsyncMock),
+            patch("app.domains.ai.services.jobs.publishing.publish_job_state", new_callable=AsyncMock),
             patch.object(ai_provider_turn, "_persist_turn_locator_sync"),
         ):
             assert asyncio.run(preview_runner.run_requirement_import_preview_job("audit-job")) is True
@@ -683,7 +776,16 @@ def test_remote_split_parse_failure_keeps_provider_outcome_evidence(monkeypatch)
                 "type": "result",
                 "subtype": "success",
                 "is_error": False,
-                "result": '{"items": [{"title": "Only one"}]}',
+                "submission": {
+                    "items": [
+                        {
+                            "title": "Only one",
+                            "body": "Only one",
+                            "acceptance_criteria": ["Meets the requirement"],
+                            "task_prompt": "Implement Only one",
+                        }
+                    ]
+                },
                 "session_id": "remote-1",
             },
         ]
@@ -695,7 +797,8 @@ def test_remote_split_parse_failure_keeps_provider_outcome_evidence(monkeypatch)
         with (
             patch("app.agents.selection.create_legacy_bridge", return_value=stub),
             patch.object(preview_runner, "run_db_txn", _async_txn),
-            patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+            patch("app.domains.ai.services.jobs.state.update_job_state", new_callable=AsyncMock),
+            patch("app.domains.ai.services.jobs.publishing.publish_job_state", new_callable=AsyncMock),
             patch.object(ai_provider_turn, "_persist_turn_locator_sync"),
         ):
             assert asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job")) is True
@@ -737,7 +840,8 @@ def test_real_single_turn_error_outcome_survives_preview_failure(monkeypatch):
         with (
             patch("app.agents.selection.create_legacy_bridge", return_value=stub),
             patch.object(preview_runner, "run_db_txn", _async_txn),
-            patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+            patch("app.domains.ai.services.jobs.state.update_job_state", new_callable=AsyncMock),
+            patch("app.domains.ai.services.jobs.publishing.publish_job_state", new_callable=AsyncMock),
             patch.object(ai_provider_turn, "_persist_turn_locator_sync"),
         ):
             # 返回协议保持既有语义（异常路径返回 outcome 局部布尔）；
@@ -779,7 +883,8 @@ def test_remote_preview_without_provider_outcome_stays_unresolved(monkeypatch):
         with (
             patch("app.agents.selection.create_legacy_bridge", return_value=stub),
             patch.object(preview_runner, "run_db_txn", _async_txn),
-            patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+            patch("app.domains.ai.services.jobs.state.update_job_state", new_callable=AsyncMock),
+            patch("app.domains.ai.services.jobs.publishing.publish_job_state", new_callable=AsyncMock),
             patch.object(ai_provider_turn, "_persist_turn_locator_sync"),
         ):
             assert asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job")) is False

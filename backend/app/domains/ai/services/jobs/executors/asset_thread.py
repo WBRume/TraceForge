@@ -20,6 +20,8 @@ from typing import Any
 from sqlalchemy.orm import Session, joinedload
 
 from app.agents import current_agent_attempt
+from app.agents.domain_tools import DomainTool, DomainToolError
+from app.agents.domain_tools.contracts import DocumentRewrite, ReviewProposal
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
 from app.core.offload import run_db_txn
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
@@ -30,10 +32,10 @@ from app.domains.ai.services.jobs.constants import (
     JOB_KIND_THREAD_AI_REPLY,
     as_status,
 )
+from app.domains.ai.services.jobs.domain_turn import mark_domain_persisted, run_domain_turn
 from app.domains.ai.services.jobs.executors.asset_prompts import (
     extract_block_text,
     normalize_relocated_anchor,
-    parse_rewrite_payload,
     proposal_discussion_lines,
     proposal_source_message_ids,
     resolve_context_version,
@@ -365,6 +367,9 @@ def _persist_asset_proposal_sync(
     *,
     base: dict[str, Any],
     proposal_text: str,
+    analysis: str = "",
+    rationale: str = "",
+    provider_session_id: str | None = None,
     run_token: str | None = None,
 ) -> dict[str, Any]:
     if not attempt_is_current_sync(db, job_id=str(base.get("job_id") or ""), run_token=run_token):
@@ -387,8 +392,14 @@ def _persist_asset_proposal_sync(
         version=context_version,
         effective_anchor=base.get("effective_anchor") if isinstance(base.get("effective_anchor"), dict) else None,
     )
-    db.commit()
-    db.refresh(proposal)
+    proposal.proposed_patch_json = {
+        **(proposal.proposed_patch_json or {}),
+        "analysis": analysis,
+        "rationale": rationale,
+    }
+    if provider_session_id:
+        thread.cli_session_id = provider_session_id
+    db.flush()
     return {
         "proposal": serialize_proposal_for_ws(proposal),
         "proposal_id": str(proposal.id),
@@ -404,7 +415,10 @@ def _persist_asset_rewrite_sync(
     rewrite_scope: str,
     rewritten_markdown: str,
     selection_mode: bool,
+    change_summary: str = "",
+    provider_session_id: str | None = None,
     run_token: str | None = None,
+    validate_only: bool = False,
 ) -> dict[str, Any]:
     if not attempt_is_current_sync(db, job_id=str(base.get("job_id") or ""), run_token=run_token):
         raise AgentAttemptFencedError("Asset rewrite attempt is no longer current")
@@ -434,8 +448,7 @@ def _persist_asset_rewrite_sync(
         context_version_id=base.get("context_version_id"),
         relocated_anchor=base.get("effective_anchor") if isinstance(base.get("effective_anchor"), dict) else None,
     )
-    db.commit()
-    db.refresh(proposal)
+    db.flush()
     proposal_patch = proposal.proposed_patch_json if isinstance(proposal.proposed_patch_json, dict) else {}
     rewrite_ready = str(proposal_patch.get("rewrite_status") or "").strip().lower() == "ready"
     has_merged = bool(
@@ -447,6 +460,13 @@ def _persist_asset_rewrite_sync(
     )
     if not rewrite_ready or not has_merged:
         raise ValueError("Resolution rewrite persisted without merged AST payload")
+    if validate_only:
+        db.rollback()
+        return {}
+    proposal.proposed_patch_json = {**proposal_patch, "change_summary": change_summary}
+    if provider_session_id:
+        thread.cli_session_id = provider_session_id
+    db.flush()
     return {
         "proposal": serialize_proposal_for_ws(proposal),
         "proposal_id": str(proposal.id),
@@ -513,7 +533,7 @@ def _persist_asset_failure_message_sync(
         db,
         thread=thread,
         role=AssetThreadMessageRole.SYSTEM,
-        content=f"AI 回复失败: {error_text}\n\n可重试：已自动采用超时重试策略，如仍失败请稍后再次触发。",
+        content=f"AI 回复失败: {error_text}\n\n请查看错误原因后重试。",
         creator_id=failed_job.creator_id,
         metadata_json={"error": error_text, "job_id": job_id},
     )
@@ -558,20 +578,18 @@ async def _execute_proposal_turn(job_id, base, run_state, run_token):
             "effective_anchor": run_state["effective_anchor"],
         },
     )
-    result = await provider_turn.run_cli_single_turn(
+    result = await run_domain_turn(
         prompt,
         thread_cwd,
+        tool=DomainTool("submit_review_proposal", "正在生成文档修改建议", ReviewProposal),
         session_id=resume_session_id,
         should_cancel=lambda: runtime.is_cancel_requested(job_id),
         backend_name=thread_backend,
         fork_session=fork_first_turn,
+        permission_mode="read-only",
     )
-    provider_seen = bool(str(result.get("text") or "").strip())
-    if fork_first_turn:
-        await task_cli_state_service.record_thread_session_id_async(
-            base["thread_id"], str(result.get("session_id") or "")
-        )
-    proposal_text = str(result.get("text") or "").strip()
+    provider_seen = True
+    proposal_text = result["artifact"].proposal_text
     final_session_id = str(result.get("session_id") or "").strip()
     if not proposal_text:
         raise ValueError("Resolution proposal text is empty")
@@ -581,9 +599,13 @@ async def _execute_proposal_turn(job_id, base, run_state, run_token):
             db,
             base=run_state,
             proposal_text=proposal_text,
+            analysis=result["artifact"].analysis,
+            rationale=result["artifact"].rationale,
+            provider_session_id=final_session_id,
             run_token=run_token,
         )
     )
+    await mark_domain_persisted(job_id, result)
     await asset_discussion_ws_manager.broadcast(
         base["asset_id"],
         {
@@ -633,20 +655,41 @@ async def _execute_rewrite_turn(job_id, base, run_state, run_token):
             "effective_anchor": run_state["effective_anchor"],
         },
     )
-    result = await provider_turn.run_cli_single_turn(
+
+    async def validate_rewrite(value):
+        if value.scope != run_state["rewrite_scope"]:
+            raise DomainToolError("改写范围必须与本次请求一致")
+
+        def check(db):
+            try:
+                _persist_asset_rewrite_sync(
+                    db,
+                    base=run_state,
+                    proposal_text=run_state["proposal_text"],
+                    rewritten_text=value.anchor_text,
+                    rewrite_scope=value.scope,
+                    rewritten_markdown=value.document_markdown,
+                    selection_mode=run_state["selection_mode"],
+                    run_token=run_token,
+                    validate_only=True,
+                )
+            except ValueError as exc:
+                raise DomainToolError(str(exc)) from exc
+
+        await run_db_txn(check)
+
+    result = await run_domain_turn(
         prompt,
         thread_cwd,
+        tool=DomainTool("submit_document_rewrite", "正在改写文档", DocumentRewrite, validate_rewrite),
         session_id=resume_session_id,
         should_cancel=lambda: runtime.is_cancel_requested(job_id),
         backend_name=thread_backend,
         fork_session=fork_first_turn,
+        permission_mode="read-only",
     )
-    provider_seen = provider_seen or bool(str(result.get("text") or "").strip())
-    if fork_first_turn:
-        await task_cli_state_service.record_thread_session_id_async(
-            base["thread_id"], str(result.get("session_id") or "")
-        )
-    rewrite_payload = parse_rewrite_payload(str(result.get("text") or ""))
+    provider_seen = True
+    rewrite_payload = result["artifact"].model_dump()
     rewrite_scope = run_state["rewrite_scope"] or str(rewrite_payload.get("scope") or "anchor").strip().lower()
     rewritten_text = str(rewrite_payload.get("anchor_text") or "").strip()
     rewritten_markdown = str(rewrite_payload.get("document_markdown") or "").strip()
@@ -665,9 +708,12 @@ async def _execute_rewrite_turn(job_id, base, run_state, run_token):
             rewrite_scope=rewrite_scope,
             rewritten_markdown=rewritten_markdown,
             selection_mode=run_state["selection_mode"],
+            change_summary=result["artifact"].change_summary,
+            provider_session_id=final_session_id,
             run_token=run_token,
         )
     )
+    await mark_domain_persisted(job_id, result)
     await asset_discussion_ws_manager.broadcast(
         base["asset_id"],
         {

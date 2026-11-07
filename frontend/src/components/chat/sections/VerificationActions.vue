@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Sparkles, Database, TestTube, Loader2 } from '@/components/icons'
 import RunSummaryCard from './RunSummaryCard.vue'
+import DomainMilestones from '@/components/ai/DomainMilestones.vue'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
 
 /**
@@ -56,6 +57,7 @@ const canShowStatusSummary = computed(() => (
           <Sparkles v-else class="w-3 h-3" />
           {{ props.vm.isDiagnosisAdopted ? t('diagnosis.case_adopted_label') : props.vm.diagnosisSummarizingLabel }}
         </button>
+        <DomainMilestones :events="props.vm.diagnosisMilestones" />
       </template>
     </div>
 

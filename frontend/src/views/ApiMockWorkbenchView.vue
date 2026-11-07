@@ -39,7 +39,10 @@ const sources = useProjectSources(context, notifications, jobs, refreshProjectCo
 const editing = useProjectEditing(context, notifications, jobs, collaboration, refreshProjectContext)
 const { tasks, permissionsReady, pageError, canView, canManage, canPublish, loadPermissions, loadWorkspaceMembers, loadTasks } = workspace
 const { project, sourceVersions, endpoints, entities, mockCases, selectedEndpointId, selectedMockCaseId, documentData, documentLoading, endpointKeyword, contextVersion, selectedEndpoint, currentSourceLabel, resetTaskContext, loadMockCases } = context
-const { activeJob, activeAutoMockJob, isAutoMockRunning, isCurrentEndpointAutoMockLocked, isProjectSwaggerMutationLocked } = jobs
+const { activeJob, observedJobs, isAutoMockRunning, isCurrentEndpointAutoMockLocked, isProjectSwaggerMutationLocked } = jobs
+const endpointMockJob = computed(() => Object.values(observedJobs.value).reverse().find(job =>
+  job.job_type === jobs.AUTO_MOCK_JOB_TYPE && job.result_json?.target_endpoint_id === selectedEndpointId.value,
+) || null)
 const { notifyError, notifyProjectSwaggerLocked } = notifications
 const { collabConnected, onlineUsers, connectCollab, closeSocket, sendCollabEvent } = collaboration
 const { syncBusy, importBusy, cancelJobBusy, autoMockStartBusy, onSync, onImportSwagger, onStartAutoMock, onCancelActiveJob, onActivateSource, onUpdateProxy } = sources
@@ -235,7 +238,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onShortcuts))
         :project-auto-mock-locked="isAutoMockRunning"
         :current-endpoint-auto-mock-locked="isCurrentEndpointAutoMockLocked"
         :auto-mock-busy="autoMockStartBusy"
-        :auto-mock-job="activeAutoMockJob"
+        :auto-mock-job="endpointMockJob"
         :saving-endpoint="savingEndpoint"
         :saving-document="savingDocument"
         :cases="mockCases"

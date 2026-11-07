@@ -4,20 +4,16 @@ API MOCK CLI Sync Service.
 
 import asyncio
 import json
-import os
-from collections.abc import Callable
-from functools import partial
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.agents.selection import create_legacy_bridge
+from app.agents.errors import AgentCancelledError
+from app.agents.selection import resolve_workspace_backend
 from app.core.logging import get_logger
+from app.domains.ai.services.jobs.domain_turn import persisted_milestones
 from app.domains.api_mock.models.api_mock import ApiMockSourceType, SddApiMockProject
-from app.engine.claude_bridge import create_cli_bridge
-from app.engine.claude_event_adapter import flatten_claude_event, format_claude_event_log_line
 
-from .constants import SYNC_MAX_FIX_ATTEMPTS
 from .job_service import (
     JobCancelledError,
     _append_job_event,
@@ -33,19 +29,12 @@ from .job_service import (
 from .openapi_normalizer import normalize_oas_from_text, serialize_document_content
 from .source_version_service import persist_source_version
 from .utils import (
-    _api_mock_cli_candidates,
     _copy_task_workspace,
-    _extract_json_from_text,
     _read_text_from_url,
     _temp_workspace_path,
 )
 
 logger = get_logger(__name__, category="api_mock")
-
-try:
-    import yaml as _yaml  # type: ignore
-except ImportError:
-    _yaml = None
 
 
 def run_import_job_internal(
@@ -119,329 +108,33 @@ def run_import_job_internal(
         _set_job_failed(db, project.id, job, msg)
 
 
-async def _wait_bridge_terminated(bridge: Any) -> None:
-    if hasattr(bridge, "wait"):
-        await bridge.wait()
-        return
-    while True:
-        if not bridge.is_running():
-            return
-        await asyncio.sleep(0.2)
-
-
-def _extract_openapi_from_event_texts(result_texts: list[str], assistant_texts: list[str]) -> dict[str, Any]:
-    for candidate in result_texts:
-        try:
-            return _extract_json_from_text(candidate)
-        except Exception:
-            continue
-    assistant_combined = "\n".join([chunk for chunk in assistant_texts if chunk]).strip()
-    if assistant_combined:
-        return _extract_json_from_text(assistant_combined)
-    raise ValueError("Cannot parse JSON output from Claude event stream")
-
-
-async def run_claude_session(
-    cli_cmd: str,
+def analyze_workspace(
     temp_path: str,
-    prompt: str,
     *,
-    on_output: Callable[[str], None] | None = None,
-    on_event: Callable[[dict[str, Any]], None] | None = None,
-    should_cancel: Callable[[], bool] | None = None,
-) -> tuple[list[str], list[str]]:
-    bridge = create_cli_bridge(cli_path=cli_cmd)
-    if on_output:
-        on_output(f"Launching CLI: {cli_cmd}")
-    return await _run_bridge_session(
-        bridge,
-        temp_path,
-        prompt,
-        on_output=on_output,
-        on_event=on_event,
-        should_cancel=should_cancel,
-    )
-
-
-async def run_agent_session(
     backend_name: str,
-    temp_path: str,
-    prompt: str,
-    *,
-    on_output: Callable[[str], None] | None = None,
-    on_event: Callable[[dict[str, Any]], None] | None = None,
-    should_cancel: Callable[[], bool] | None = None,
-) -> tuple[list[str], list[str]]:
-    """Run a fresh session using the workspace's unified Agent selection."""
-    bridge = create_legacy_bridge(backend_name)
-    return await _run_bridge_session(
-        bridge,
-        temp_path,
-        prompt,
-        on_output=on_output,
-        on_event=on_event,
-        should_cancel=should_cancel,
-    )
-
-
-def _raw_event_text_value(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, (dict, list)):
-        try:
-            return json.dumps(value, ensure_ascii=False)
-        except Exception:
-            return str(value).strip()
-    return str(value).strip()
-
-
-async def _collect_bridge_event(event: dict[str, Any], *, assistant_texts, result_texts, on_event, on_output) -> None:
-    raw_type = str(event.get("type") or "").lower()
-    if raw_type == "assistant":
-        message = event.get("message")
-        blocks = message.get("content", []) if isinstance(message, dict) else []
-        if isinstance(blocks, list):
-            for block in blocks:
-                if not isinstance(block, dict):
-                    continue
-                if str(block.get("type") or "").lower() != "text":
-                    continue
-                raw_text = _raw_event_text_value(block.get("text"))
-                if raw_text:
-                    assistant_texts.append(raw_text)
-    elif raw_type == "result":
-        raw_result = _raw_event_text_value(event.get("result"))
-        if raw_result:
-            result_texts.append(raw_result)
-
-    entries = flatten_claude_event(event)
-    for entry in entries:
-        if on_event:
-            on_event(entry)
-        log_line = format_claude_event_log_line(entry)
-        if log_line and on_output:
-            on_output(log_line)
-
-
-async def _run_bridge_session(
-    bridge: Any,
-    temp_path: str,
-    prompt: str,
-    *,
-    on_output: Callable[[str], None] | None = None,
-    on_event: Callable[[dict[str, Any]], None] | None = None,
-    should_cancel: Callable[[], bool] | None = None,
-) -> tuple[list[str], list[str]]:
-    result_texts: list[str] = []
-    assistant_texts: list[str] = []
-    cancelled = False
-
-    _event_callback = partial(
-        _collect_bridge_event,
-        assistant_texts=assistant_texts,
-        result_texts=result_texts,
-        on_event=on_event,
-        on_output=on_output,
-    )
-
-    async def _cancel_monitor() -> None:
-        nonlocal cancelled
-        while True:
-            if should_cancel and should_cancel():
-                cancelled = True
-                await bridge.cancel()
-                return
-            if not bridge.is_running():
-                return
-            await asyncio.sleep(0.2)
-
-    try:
-        await bridge.start_session(
-            prompt=prompt,
-            project_path=temp_path,
-            event_callback=_event_callback,
-            session_id=None,
-        )
-    except Exception:
-        raise
-
-    monitor_task = asyncio.create_task(_cancel_monitor())
-    try:
-        await asyncio.wait_for(_wait_bridge_terminated(bridge), timeout=300)
-    except asyncio.CancelledError:
-        if cancelled:
-            raise JobCancelledError("Job cancelled by user") from None
-        raise
-    except asyncio.TimeoutError as exc:
-        await bridge.cancel()
-        raise RuntimeError("analysis timeout (300s)") from exc
-    finally:
-        monitor_task.cancel()
-        try:
-            await monitor_task
-        except asyncio.CancelledError:
-            pass
-
-    if cancelled:
-        raise JobCancelledError("Job cancelled by user")
-
-    return result_texts, assistant_texts
-
-
-def _analysis_prompt() -> str:
-    return """Scan the entire codebase in this directory. Find all REST API endpoints defined. Extract their request parameters, response structures, schemas and data models. Then create a directory named `swagger_parts/` in the current working directory. Inside this directory create one or more JSON files (e.g. `paths.json`, `schemas.json`, or `{component_name}.json`) that together accurately represent the API as OpenAPI 3.0.3 structures. The 'paths' and 'components' structures must strictly follow the OpenAPI 3.0.3 specification. Do NOT provide arbitrary textual explanations, just write the JSON files. Do NOT ask for permissions, run immediately. Wait, please note that you must write the JSON files to the filesystem to `swagger_parts/` so I can read them later."""
-
-
-def _fix_json_prompt(content: str, filename: str, error_msg: str) -> str:
-    return (
-        f"You previously generated a file named `{filename}` but it failed JSON/YAML schema validation with this error:\n"
-        f"{error_msg}\n\n"
-        f"Here is the bad content:\n"
-        f"```json\n"
-        f"{content}\n"
-        f"```\n\n"
-        f"Please rewrite `{filename}` to be perfectly valid JSON that satisfies the OpenAPI 3.0.3 components/paths definitions."
-    )
-
-
-async def _analyze_with_claude_once(
-    cli_cmd: str,
-    temp_path: str,
-    *,
-    on_output: Callable[[str], None] | None = None,
-    on_event: Callable[[dict[str, Any]], None] | None = None,
-    should_cancel: Callable[[], bool] | None = None,
-) -> dict[str, Any]:
-    result_texts, assistant_texts = await run_claude_session(
-        cli_cmd,
-        temp_path,
-        _analysis_prompt(),
-        on_output=on_output,
-        on_event=on_event,
-        should_cancel=should_cancel,
-    )
-    parsed = _extract_openapi_from_event_texts(result_texts, assistant_texts)
-    from .openapi_normalizer import _normalize_openapi_document
-
-    return _normalize_openapi_document(parsed)
-
-
-def _read_swagger_fragment(file_path, filename, cli_cmd, temp_path, on_output, on_event, should_cancel):
-    parsed_json = None
-    current_content = ""
-
-    for attempt in range(1, SYNC_MAX_FIX_ATTEMPTS + 1):
-        if should_cancel and should_cancel():
-            raise JobCancelledError("Job cancelled by user")
-
-        try:
-            with open(file_path, encoding="utf-8") as f:
-                current_content = f.read()
-            if not current_content.strip():
-                raise ValueError("File is empty.")
-            parsed_json = json.loads(current_content)
-            break
-        except Exception as e:
-            error_msg = str(e)
-            if on_output:
-                on_output(f"[{attempt}/{SYNC_MAX_FIX_ATTEMPTS}] Error parsing {filename}: {error_msg}")
-            if attempt >= SYNC_MAX_FIX_ATTEMPTS:
-                break
-
-            try:
-                asyncio.run(
-                    run_claude_session(
-                        cli_cmd,
-                        temp_path,
-                        _fix_json_prompt(current_content, os.path.join("swagger_parts", filename), error_msg),
-                        on_output=on_output,
-                        on_event=on_event,
-                        should_cancel=should_cancel,
-                    )
-                )
-            except Exception:
-                pass
-    return parsed_json
-
-
-def analyze_with_claude(
-    temp_path: str,
-    *,
-    on_output: Callable[[str], None] | None = None,
-    on_event: Callable[[dict[str, Any]], None] | None = None,
-    should_cancel: Callable[[], bool] | None = None,
+    on_milestone=None,
+    should_cancel=None,
 ) -> tuple[str, dict[str, Any]]:
-    # Simple logic using retry
-    cli_candidates = _api_mock_cli_candidates()
-    if not cli_candidates:
-        raise RuntimeError("No Claude CLI candidates configured")
-    cli_cmd = cli_candidates[0]
+    from app.agents.domain_tools import DomainTool
+    from app.agents.domain_tools.contracts import OpenAPISubmission
+    from app.agents.domain_tools.validators import validate_openapi
+    from app.domains.ai.services.jobs.domain_turn import run_domain_turn
 
-    if on_output:
-        on_output(f"Phase 1: Instructing Claude CLI to analyze and generate JSON fragments via {cli_cmd}")
-
-    asyncio.run(
-        run_claude_session(
-            cli_cmd,
+    result = asyncio.run(
+        run_domain_turn(
+            "扫描当前工作区源码的路由、控制器和模型。调用 submit_openapi 交付完整 OpenAPI 3.0/3.1 契约。"
+            "所有引用必须在 document 内定义，不得写文件或执行代码。",
             temp_path,
-            _analysis_prompt(),
-            on_output=on_output,
-            on_event=on_event,
+            backend_name=backend_name,
+            permission_mode="read-only",
+            tool=DomainTool("submit_openapi", "正在分析服务接口", OpenAPISubmission, validate_openapi),
+            on_milestone=on_milestone,
             should_cancel=should_cancel,
+            timeout_seconds=300,
         )
     )
-
-    if _yaml is None:
-        raise RuntimeError("PyYAML strictly required for YAML generation.")
-
-    swagger_parts_dir = os.path.join(temp_path, "swagger_parts")
-    if not os.path.exists(swagger_parts_dir):
-        raise RuntimeError("Claude failed to create 'swagger_parts/' directory. Check CLI output.")
-
-    merged_paths: dict[str, Any] = {}
-    merged_schemas: dict[str, Any] = {}
-
-    json_files = [f for f in os.listdir(swagger_parts_dir) if f.endswith(".json")]
-    if not json_files:
-        raise RuntimeError(f"No JSON files were created in {swagger_parts_dir}.")
-
-    for filename in json_files:
-        file_path = os.path.join(swagger_parts_dir, filename)
-        parsed_json = _read_swagger_fragment(
-            file_path, filename, cli_cmd, temp_path, on_output, on_event, should_cancel
-        )
-
-        if parsed_json is None or not isinstance(parsed_json, dict):
-            continue
-
-        if filename == "schemas.json":
-            components = parsed_json.get("components", {})
-            if isinstance(components, dict):
-                schemas = components.get("schemas", {})
-                if isinstance(schemas, dict):
-                    merged_schemas.update(schemas)
-        else:
-            if "paths" in parsed_json and isinstance(parsed_json["paths"], dict):
-                merged_paths.update(parsed_json["paths"])
-            elif "openapi" not in parsed_json and "paths" not in parsed_json:
-                merged_paths.update(parsed_json)
-
-    final_dict = {
-        "openapi": "3.0.3",
-        "info": {"title": "LLM Generated API", "version": "1.0.0"},
-        "paths": merged_paths,
-        "components": {"schemas": merged_schemas},
-    }
-
-    raw_yaml = _yaml.dump(final_dict, allow_unicode=True, sort_keys=False)
-    normalized = normalize_oas_from_text(raw_yaml)
-
-    if on_output:
-        on_output(f"Successfully merged {len(merged_paths)} paths and {len(merged_schemas)} schemas into valid YAML.")
-
-    return raw_yaml, normalized
+    document = result["artifact"].document
+    return json.dumps(document, ensure_ascii=False, indent=2), document
 
 
 def analyze_workspace_and_sync(
@@ -468,13 +161,20 @@ def analyze_workspace_and_sync(
         _raise_if_cancel_requested(db, project.id, job, job_id)
         temp_path = _temp_workspace_path(project.workspace_id, project.task_id)
         _copy_task_workspace(project.task.project_path, temp_path)
-        _append_job_log(db, project.id, job, "Workspace extracted. Starting Claude CLI...")
-        _set_job_progress(db, project.id, job, 30, "Analyzing with Claude")
+        _append_job_log(db, project.id, job, "Workspace extracted. Starting interface analysis...")
+        _set_job_progress(db, project.id, job, 30, "正在分析接口定义")
 
-        raw_yaml, normalized_oas = analyze_with_claude(
+        milestones = []
+
+        def on_milestone(event):
+            milestones.append(event.model_dump())
+            job.message = event.message
+            _append_job_event(db, project.id, job, {"type": "domain_milestone", **event.model_dump()})
+
+        raw_yaml, normalized_oas = analyze_workspace(
             temp_path,
-            on_output=lambda msg: _append_job_log(db, project.id, job, msg),
-            on_event=lambda ev: _append_job_event(db, project.id, job, ev),
+            backend_name=resolve_workspace_backend(db, project.workspace_id),
+            on_milestone=on_milestone,
             should_cancel=_should_cancel,
         )
 
@@ -485,7 +185,7 @@ def analyze_workspace_and_sync(
             db,
             project,
             source_type=ApiMockSourceType.CLAUDE_SYNC,
-            source_name="Claude Auto Sync",
+            source_name="AI 接口逆向",
             raw_content=raw_yaml,
             normalized_oas=normalized_oas,
             creator_id=creator_id,
@@ -493,6 +193,8 @@ def analyze_workspace_and_sync(
             clone_from_source_id=clone_from_source_id,
         )
 
+        if milestones:
+            _append_job_event(db, project.id, job, {"type": "domain_milestone", **persisted_milestones(milestones)[-1]})
         _set_job_success(
             db,
             project.id,
@@ -502,7 +204,7 @@ def analyze_workspace_and_sync(
         )
         _append_job_log(db, project.id, job, "Sync successful.")
 
-    except JobCancelledError:
+    except (JobCancelledError, AgentCancelledError):
         db.rollback()
         _set_job_cancelled(db, project.id, job, "Sync cancelled by user")
         _append_job_log(db, project.id, job, "Sync cancelled.")

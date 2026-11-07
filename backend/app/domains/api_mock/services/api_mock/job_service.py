@@ -345,6 +345,7 @@ def _clear_cancel_event(job_id: str) -> None:
 
 def _raise_if_cancel_requested(db: Session, project_id: str, job: SddApiMockJob, job_id: str) -> None:
     if _is_cancel_requested(job_id):
+        db.rollback()
         _append_job_log(db, project_id, job, "Cancellation signal received, stopping job.")
         raise JobCancelledError("Job cancelled by user")
 

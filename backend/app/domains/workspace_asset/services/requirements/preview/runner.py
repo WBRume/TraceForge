@@ -17,6 +17,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.agents import current_agent_attempt, current_agent_attempt_runtime
+from app.agents.domain_tools import DomainTool, DomainToolError
+from app.agents.domain_tools.contracts import RequirementSubmission
 from app.agents.errors import AgentCancelledError
 from app.agents.selection import resolve_workspace_backend
 from app.core.logging import get_logger
@@ -29,7 +31,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
     converge_job_attempt_in_txn,
     resolve_attempt_evidence,
 )
-from app.domains.ai.services.jobs.provider_turn import run_cli_single_turn
+from app.domains.ai.services.jobs.domain_turn import persisted_milestones, run_domain_turn
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID
 from app.domains.ai.services.jobs.registry import runtime as ai_job_runtime
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
@@ -40,7 +42,6 @@ from app.domains.workspace_asset.services.requirements.preview.job_service impor
 from app.domains.workspace_asset.services.requirements.preview.prompt import (
     build_requirement_preview_prompt,
     coalesce_simple_import_preview_items,
-    extract_json_object,
     normalize_ai_preview_items,
 )
 from app.domains.workspace_asset.services.requirements.queries import get_requirement
@@ -334,7 +335,10 @@ def finalize_requirement_import_sync(
         status=AiJobStatus.SUCCESS,
         progress=100,
         message="Requirement AI preview created",
-        context_patch={"preview_batch_id": batch.id},
+        context_patch={
+            "preview_batch_id": batch.id,
+            "domain_milestones": persisted_milestones((job.context_json or {}).get("domain_milestones")),
+        },
         result={"item_count": len(items), "batch_id": batch.id},
         run_token=run_token,
         worker_boot_id=worker_boot_id,
@@ -375,7 +379,7 @@ def prepare_requirement_split_sync(
         job,
         status=AiJobStatus.RUNNING,
         progress=16,
-        message="Running Claude Code CLI split preview",
+        message="正在分析需求拆分",
         run_token=run_token,
         worker_boot_id=worker_boot_id,
     )
@@ -461,7 +465,10 @@ def finalize_requirement_split_sync(
         status=AiJobStatus.SUCCESS,
         progress=100,
         message="Requirement split preview created",
-        context_patch={"preview_batch_id": batch.id},
+        context_patch={
+            "preview_batch_id": batch.id,
+            "domain_milestones": persisted_milestones((job.context_json or {}).get("domain_milestones")),
+        },
         result={"item_count": len(items), "batch_id": batch.id},
         run_token=run_token,
         worker_boot_id=worker_boot_id,
@@ -543,10 +550,11 @@ async def run_requirement_import_preview_job(job_id: str, run_token: str | None 
             return False
         # CLI 调用期间不持有任何 DB session；should_cancel 走统一取消信号
         # （ai-jobs cancel 通道），各 backend 由 bridge.cancel() 收敛
-        ai_result = await run_cli_single_turn(
+        ai_result = await run_domain_turn(
             prepared["prompt"],
             prepared["project_path"],
-            max_attempts=1,
+            tool=DomainTool("submit_requirements", "正在生成需求草案", RequirementSubmission),
+            permission_mode="read-only",
             should_cancel=lambda: ai_job_runtime.is_cancel_requested(job_id),
             backend_name=prepared["backend_name"],
             **({"run_token": run_token} if run_token else {}),
@@ -566,8 +574,7 @@ async def run_requirement_import_preview_job(job_id: str, run_token: str | None 
         # 结果都算）；文本为空或解析失败仍走 FAILED，但绝不能被误认为
         # 远程仍在运行。
         provider_outcome_seen = ai_result is not None
-        parsed_json = extract_json_object(str(ai_result.get("text") or ""))
-        items = normalize_ai_preview_items(parsed_json)
+        items = normalize_ai_preview_items(ai_result["artifact"])
         items = coalesce_simple_import_preview_items(
             markdown=context["markdown"],
             file_name=context["file_name"],
@@ -582,7 +589,7 @@ async def run_requirement_import_preview_job(job_id: str, run_token: str | None 
             extra={
                 "ai_preview": True,
                 "ai_job_id": job_id,
-                "splitter": "claude-code-cli",
+                "splitter": prepared["backend_name"],
                 "session_id": ai_result.get("session_id"),
             },
         )
@@ -602,6 +609,9 @@ async def run_requirement_import_preview_job(job_id: str, run_token: str | None 
                 evidence=evidence,
             )
         )
+        from app.domains.ai.services.jobs.publishing import publish_job_state
+
+        await publish_job_state(job_id)
         return provider_outcome_seen
     except Exception as exc:
         # 异常分支在事件循环线程补齐证据后显式传入 DB transaction；CLI 已
@@ -609,6 +619,7 @@ async def run_requirement_import_preview_job(job_id: str, run_token: str | None 
         # 重试。
         if attempt_evidence is None:
             attempt_evidence = _resolve_evidence_or_none(resolved_execution_kind, exc)
+        provider_outcome_seen = provider_outcome_seen or bool(getattr(attempt_evidence, "provider_outcome_seen", False))
         # 统一取消路径：cancel 事务已写 TERMINATING 并触发内存
         # 取消信号；这里清掉信号即可，CANCELLED 终态由 runner 退出收敛
         # （queue_runner._converge_runner_exit）负责，绝不写成 FAILED。
@@ -654,12 +665,18 @@ async def run_requirement_split_preview_job(job_id: str, run_token: str | None =
         if prepared is None:
             return False
         backend_name = prepared["backend_name"]
+
         # CLI 调用期间不持有任何 DB session；should_cancel 走统一取消信号
         # （ai-jobs cancel 通道），各 backend 由 bridge.cancel() 收敛
-        ai_result = await run_cli_single_turn(
+        def validate_split(value):
+            if len(value.items) < 2:
+                raise DomainToolError("需求拆分至少需要两个独立条目")
+
+        ai_result = await run_domain_turn(
             prepared["prompt"],
             prepared["project_path"],
-            max_attempts=1,
+            tool=DomainTool("submit_requirements", "正在生成需求草案", RequirementSubmission, validate_split),
+            permission_mode="read-only",
             should_cancel=lambda: ai_job_runtime.is_cancel_requested(job_id),
             backend_name=backend_name,
             **({"run_token": run_token} if run_token else {}),
@@ -675,8 +692,7 @@ async def run_requirement_split_preview_job(job_id: str, run_token: str | None =
         )
         evidence = attempt_evidence
         provider_outcome_seen = ai_result is not None
-        parsed_json = extract_json_object(str(ai_result.get("text") or ""))
-        items = normalize_ai_preview_items(parsed_json)
+        items = normalize_ai_preview_items(ai_result["artifact"])
         if len(items) <= 1:
             raise WorkspaceAssetError(
                 "AI split preview must produce at least two Requirement preview items.", status_code=422
@@ -694,12 +710,16 @@ async def run_requirement_split_preview_job(job_id: str, run_token: str | None =
                 evidence=evidence,
             )
         )
+        from app.domains.ai.services.jobs.publishing import publish_job_state
+
+        await publish_job_state(job_id)
         return provider_outcome_seen
     except Exception as exc:
         # 异常分支在事件循环线程补齐证据后显式传入 DB transaction：已确认退出的解析失败 → FAILED；死亡未证实的
         # 失败 → ORPHANED 保留 ownership。
         if attempt_evidence is None:
             attempt_evidence = _resolve_evidence_or_none(resolved_execution_kind, exc)
+        provider_outcome_seen = provider_outcome_seen or bool(getattr(attempt_evidence, "provider_outcome_seen", False))
         # 统一取消路径：与 import preview 相同，CANCELLED 终态
         # 由 runner 退出收敛负责，绝不把用户取消写成 FAILED。
         if isinstance(exc, AgentCancelledError) or ai_job_runtime.is_cancel_requested(job_id):

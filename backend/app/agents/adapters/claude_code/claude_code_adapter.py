@@ -149,6 +149,8 @@ class ClaudeCodeAdapter(AgentBackend):
             runtime_kwargs["model"] = request.model
         if request.provider_options.get("execution_policy") is not None:
             runtime_kwargs["runtime_policy"] = request.provider_options["execution_policy"]
+        if request.provider_options.get("domain_mcp") is not None:
+            runtime_kwargs["domain_mcp"] = request.provider_options["domain_mcp"]
 
         try:
             await program.start_session(

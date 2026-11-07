@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DomainMilestones from '@/components/ai/DomainMilestones.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -6,28 +7,30 @@ import { ElMessage } from 'element-plus'
 import { AlertTriangle, CheckCircle2, Loader2, Minimize2, X } from '@/components/icons'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import { useProvisioningStore, type ProvisionJobView } from '@/stores/provisioning'
+import { useSkillAnalysisStore } from '@/stores/skillAnalysis'
 import { formatApiError } from '@/utils/error'
 import { useFloatingPosition } from '@/composables/useFloatingPosition'
 
 const store = useProvisioningStore()
+const skillAnalysisStore = useSkillAnalysisStore()
 const router = useRouter()
 const { t } = useI18n()
 const widget = ref<HTMLElement | null>(null)
 const position = useFloatingPosition(widget)
-watch(() => [store.expanded, store.jobList.length], () => { void nextTick(position.clamp) })
+watch(() => [store.expanded, store.jobList.length, skillAnalysisStore.jobs.length], () => { void nextTick(position.clamp) })
 
 const KNOWN_ERROR_KEYS = new Set(['task_status_not_ready', 'load_failed', 'failed_fallback', 'job_not_found'])
 
 // 预览作业在弹窗点「缩小」或取消请求已发出（cancelRequested）后出现在浮窗；
 // 查看结果后隐藏。取消中的作业必须可见：这是「关闭弹窗已停止 CLI」的可见反馈
-const jobs = computed(() => store.jobList.filter((job) => job.kind === 'provision' || ((job.handedOver || job.cancelRequested) && !job.viewed)))
+const jobs = computed(() => [...store.jobList.filter((job) => job.kind === 'provision' || ((job.handedOver || job.cancelRequested) && !job.viewed)), ...skillAnalysisStore.jobs])
 const activeJobs = computed(() => jobs.value.filter((job) => !job.terminal))
 const terminalJobs = computed(() => jobs.value.filter((job) => job.terminal))
 const reviewJobs = computed(() => terminalJobs.value.filter((job) => job.status === 'SUCCESS' && job.reviewRequired))
 const pillVisible = computed(() => jobs.value.length > 0)
 
 // ── Requirement AI 预览作业（拆分/导入）分支 ──
-const isPreviewJob = (job: ProvisionJobView) => job.kind !== 'provision'
+const isPreviewJob = (job: ProvisionJobView) => job.kind !== 'provision' && job.kind !== 'skill_analysis'
 const isPreviewSuccess = (job: ProvisionJobView) => isPreviewJob(job) && job.kind !== 'playbook_promotion' && job.terminal && job.status === 'SUCCESS'
 
 const previewStageText = (job: ProvisionJobView) => {
@@ -82,6 +85,10 @@ const cancelling = ref(false)
 const cancellingPreviewId = ref('')
 
 const handleDismiss = async (job: ProvisionJobView) => {
+  if (job.kind === 'skill_analysis') {
+    skillAnalysisStore.dismiss(job.jobId)
+    return
+  }
   if (job.kind === 'playbook_promotion' && job.terminal) {
     if (cancellingPreviewId.value) return
     cancellingPreviewId.value = job.jobId
@@ -109,7 +116,7 @@ const handleDismiss = async (job: ProvisionJobView) => {
 }
 
 const stageText = (job: ProvisionJobView) => {
-  if (isPreviewJob(job)) return previewStageText(job)
+  if (isPreviewJob(job) || job.kind === 'skill_analysis') return previewStageText(job)
   if (job.ready) return t('provisioning.stage_completed')
   const stage = String(job.cancelRequested && !job.terminal ? 'CANCELLING' : job.stage || '').toUpperCase()
   const map: Record<string, string> = {
@@ -196,6 +203,13 @@ const handleEnterSession = (job: ProvisionJobView) => {
     router.push(`/workspaces/${workspaceId}/chat/${taskId}`)
   }
 }
+
+const openSkillAnalysis = (job: ProvisionJobView) => {
+  if (!job.analysis) return
+  skillAnalysisStore.dismiss(job.jobId)
+  router.push({ name: 'skillsEditAnalysis', params: { skillId: job.analysis.skill_id },
+    query: { wsId: job.workspaceId } })
+}
 </script>
 
 <template>
@@ -245,12 +259,14 @@ const handleEnterSession = (job: ProvisionJobView) => {
           v-for="job in jobs"
           :key="job.jobId"
           class="widget-job"
-          :class="{ 'widget-job-error': job.terminal && !job.ready && !isPreviewSuccess(job) && !job.reviewRequired }"
+          :class="{ 'widget-job-error': job.terminal && job.status !== 'SUCCESS' && !job.ready && !job.reviewRequired }"
         >
           <div class="widget-job-head">
             <span class="widget-job-name" :title="jobTitle(job)">{{ jobTitle(job) }}</span>
             <span class="widget-job-stage">{{ stageText(job) }}</span>
           </div>
+
+          <DomainMilestones v-if="!job.terminal" :events="job.domain_milestones" />
 
           <div v-if="!job.terminal" class="widget-job-progress">
             <el-progress
@@ -268,6 +284,10 @@ const handleEnterSession = (job: ProvisionJobView) => {
             <CheckCircle2 class="w-4 h-4 widget-ok" />
             <span>{{ t('provisioning.promotion_review_ready') }}</span>
           </div>
+          <div v-else-if="job.kind === 'skill_analysis' && job.status === 'SUCCESS'" class="widget-job-success">
+            <CheckCircle2 class="w-4 h-4 widget-ok" />
+            <span>技能审阅已完成</span>
+          </div>
           <div v-else-if="job.ready || isPreviewSuccess(job)" class="widget-job-success">
             <CheckCircle2 class="w-4 h-4 widget-ok" />
             <span>{{ isPreviewJob(job)
@@ -281,6 +301,10 @@ const handleEnterSession = (job: ProvisionJobView) => {
           </div>
 
           <div class="widget-job-actions">
+            <button
+              v-if="job.kind === 'skill_analysis' && job.status === 'SUCCESS'"
+              type="button" class="widget-btn-primary" @click="openSkillAnalysis(job)"
+            >查看审阅结果</button>
             <button
               v-if="isPreviewSuccess(job) || job.reviewRequired"
               type="button"
@@ -298,7 +322,7 @@ const handleEnterSession = (job: ProvisionJobView) => {
               {{ t('provisioning.task_provision_enter_session') }}
             </button>
             <button
-              v-else-if="!job.terminal && !isPreviewJob(job)"
+              v-else-if="!job.terminal && job.kind === 'provision'"
               type="button"
               class="widget-btn-secondary"
               :disabled="job.cancelRequested"

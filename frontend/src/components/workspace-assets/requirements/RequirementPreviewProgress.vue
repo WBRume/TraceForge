@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { Check, LoaderCircle, TriangleAlert } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 import type { RequirementPreviewJob } from '@/types/workspaceAssets'
+import DomainMilestones from '@/components/ai/DomainMilestones.vue'
 
 const props = defineProps<{
   job: RequirementPreviewJob
@@ -66,6 +67,7 @@ const progressWidth = computed(() => `${Math.max(0, Math.min(100, props.job.prog
         <dd>{{ props.job.error || props.job.message || t('workspace_assets.requirements.preview_progress.waiting_message') }}</dd>
       </div>
     </dl>
+    <DomainMilestones :events="job.domain_milestones" />
 
     <p v-if="!promotion" class="boundary-note">{{ t('workspace_assets.requirements.preview_progress.boundary') }}</p>
 

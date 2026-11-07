@@ -298,6 +298,17 @@ class OpenCodeAdapter(AgentBackend):
             )
             configured = await client.patch(self._session_url(session_id), json={"permissions": permissions})
             self._check_response(configured, "session permissions")
+        if request.provider_options.get("domain_mcp"):
+            from app.agents.domain_tools.invocation import active_domain_run
+
+            run = active_domain_run.get()
+            permissions = [{"action": "*", "resource": "*", "effect": "deny"}]
+            permissions.extend(
+                {"action": f"traceforge_domain_{tool}", "resource": "*", "effect": "allow"}
+                for tool in ("read_workspace", run.tool.name)
+            )
+            configured = await client.patch(self._session_url(session_id), json={"permissions": permissions})
+            self._check_response(configured, "domain permissions")
         body = {"text": prompt_text}
         if self._user_message_id:
             body["id"] = self._user_message_id

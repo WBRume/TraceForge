@@ -208,6 +208,7 @@ class SkillAnalysisResponse(BaseModel):
     id: str
     workspace_id: str
     skill_id: str
+    skill_name: str = ""
     version_id: str | None = None
     commit_sha: str | None = None
     ref_kind: SkillAnalysisRefKindValue

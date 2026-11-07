@@ -16,7 +16,6 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -179,11 +178,6 @@ def _patch_executor_common(monkeypatch, SessionLocal, *, run_impl):
         diagnosis_result_service,
         "upsert_diagnosis_result_from_ai",
         _fail_upsert,
-    )
-    monkeypatch.setattr(
-        diagnosis_result_service,
-        "extract_payload_from_text",
-        lambda _text: SimpleNamespace(summary="x", root_cause="y"),
     )
     return calls
 

@@ -3,14 +3,12 @@
 
 职责：
 - 构建诊断会话 prompt 契约（定位优先 / 辅助改码与测试 / 禁止全量修复 / 多轮 HITL / 结构化结果输出）
-- 从 AI 会话最终输出提取结构化定位结果（fenced JSON 块）
+- 接收领域工具提交的强类型定位结果
 - AI 结果反填 upsert（DRAFT）并同步「定位结果」卡片消息
 - 用户编辑结果 upsert（路由 PUT 复用）
 - 构造 WS 推送载荷，把卡片消息广播到任务房间
 """
 
-import json
-import re
 from datetime import datetime
 from typing import Any
 
@@ -39,15 +37,6 @@ from app.domains.task.schemas.diagnosis import DiagnosisResultPayload
 from app.domains.websocket.ws.manager import manager as ws_manager
 
 logger = get_logger(__name__, category="diagnosis_result")
-
-# fenced json 代码块（允许 ```json / ```JSON / ```，兼容 AI 输出变体）
-_FENCED_JSON_RE = re.compile(r"```(?:json|JSON)?\s*\n?(.*?)```", re.DOTALL)
-
-_SUMMARY_MAX_CHARS = 4000
-
-# raw_decode 扫描 `{` 位置的最大数量（防性能退化）
-_MAX_RAW_DECODE_SCANS = 300
-
 
 # ────────────────────────── Prompt 契约 ──────────────────────────
 
@@ -83,76 +72,16 @@ def build_diagnosis_prompt_suffix(task) -> str:
     return "\n\n" + "\n".join(parts)
 
 
-# 一键总结问题案例：结构化定位结果 JSON 契约（原每轮回复末尾输出的格式，改为在
-# 「一键总结」时由独立后台任务生成一次，输出展示格式与原定位结果气泡保持一致）
-DIAGNOSIS_RESULT_JSON_CONTRACT = """{
-  "summary": "结果内容概述",
-  "root_cause": "根因结论（未收敛时写当前最可能根因）",
-  "evidence_chain": "证据链（日志片段、复现步骤、调用栈、测试用例输出）",
-  "fix_suggestion": "修复方案说明",
-  "fix_code": "修复代码/补丁",
-  "code_context": [{"file_path": "", "start_line": 0, "end_line": 0, "snippet": "", "note": ""}],
-  "similar_cases": [{"title": "", "similarity": "高/中/低", "summary": "", "reference": ""}],
-  "call_chain": [{"seq": 1, "module": "", "function": "", "file_path": "", "description": ""}],
-  "confidence": 0
-}"""
-
-
-def build_diagnosis_summary_prompt(task, transcript: str) -> str:
-    """一键总结问题案例：把会话过程汇总为一份结构化定位结果。
-
-    复用上线时移出初始化提示词的 JSON 契约，仅要求输出一个 fenced JSON 代码块，
-    供 extract_payload_from_text 提取后反填入「定位结果」卡片。
-
-    总结任务以 fork（--resume --fork-session）方式继承原会话上下文（agent 原生
-    fork 不续写原会话），因此本 prompt 必须携带只读总结约束，压制会话历史中
-    「问题定位任务」契约与 plan 模式残留的惯性（写计划文件 / ExitPlanMode /
-    继续定位修复），否则模型会把总结当成新一轮定位执行。
-    """
-    task_meta = task.task_meta_json if isinstance(task.task_meta_json, dict) else {}
-    phenomenon = str(task_meta.get("phenomenon") or "").strip()
-    priority = str(task_meta.get("priority") or "").strip()
-
-    lines = ["你把「问题定位任务」的完整会话过程总结为一份结构化「问题案例」定位结果。"]
-    lines.append("")
-    lines.append("只读总结约束（必须遵守）：")
-    lines.append(
-        "- 本次回复是一次纯文本总结，禁止调用任何工具：不要读取/写入任何文件，"
-        "不要执行命令，不要写计划文件，不要调用 ExitPlanMode。"
+def build_diagnosis_summary_prompt(task) -> str:
+    """Summarize the fork's inherited evidence; submit through the domain tool."""
+    meta = task.task_meta_json if isinstance(task.task_meta_json, dict) else {}
+    prompt = (
+        "请把当前问题排查会话总结为问题案例。仅总结已观察的事实，区分已验证根因与未验证假设。"
+        "不要继续排查、执行命令、修改文件或执行修复。调用 submit_diagnosis 工具提交结果。"
+        "证据不足时明确说明缺失信息并降低 confidence；不得补造证据。\n"
+        f"现象: {meta.get('phenomenon', '')}\n优先级: {meta.get('priority', '')}"
     )
-    lines.append(
-        "- 忽略会话历史中此前注入的「问题定位任务」工作契约与任何待审批计划/plan 文件状态，"
-        "不要继续执行定位、修复、测试等动作，不要等待任何审批。"
-    )
-    lines.append("- 只基于下方会话记录做总结；除一个 fenced JSON 代码块外，不要输出任何 Markdown 正文或额外文字。")
-    if phenomenon:
-        lines.append(f"现象: {phenomenon}")
-    if priority:
-        lines.append(f"优先级: {priority}")
-
-    lines.append("")
-    lines.append("请基于以下完整会话记录收敛问题根因并输出定位结果；信息不足以收敛时，")
-    lines.append("root_cause 写明当前最可能根因，confidence 相应调低，其余字段尽量补全。")
-    lines.append("")
-    lines.append("仅输出一个 fenced JSON 代码块（```json ... ```），不要输出任何额外文字或 Markdown，结构如下：")
-    lines.append("```json")
-    lines.append(DIAGNOSIS_RESULT_JSON_CONTRACT)
-    lines.append("```")
-    lines.append("")
-    lines.append("字段说明：")
-    lines.append("- summary: 本次定位的结果内容概述。")
-    lines.append("- root_cause: 根因结论（未收敛时写当前最可能根因）。")
-    lines.append("- evidence_chain: 证据链（日志片段、复现步骤、调用栈、测试用例输出）。")
-    lines.append("- fix_suggestion: 修复方案说明；fix_code 为修复代码/补丁建议。")
-    lines.append("- confidence: 0-100 的整数，反映当前定位的确定性。")
-    lines.append("")
-    lines.append("会话记录：")
-    lines.append("")
-    lines.append(str(transcript or "").strip() or "（暂无私聊内容，请基于现象给出初步定位结论。）")
-    return "\n".join(lines)
-
-
-# ────────────────────────── 结果提取 ──────────────────────────
+    return prompt
 
 
 def _clean(value) -> str | None:
@@ -160,192 +89,6 @@ def _clean(value) -> str | None:
         return None
     text = str(value).strip()
     return text or None
-
-
-def _coerce_confidence(value) -> int:
-    if isinstance(value, str):
-        value = value.strip().rstrip("%").strip()
-    try:
-        confidence = int(float(value))
-    except (TypeError, ValueError):
-        return 0
-    return max(0, min(100, confidence))
-
-
-def _coerce_int(value) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _str_list_field(raw: Any, key: str) -> str | None:
-    if not isinstance(raw, dict):
-        return None
-    return _clean(raw.get(key))
-
-
-def _normalize_code_context(raw: Any) -> list[dict[str, Any]]:
-    items = []
-    for item in raw if isinstance(raw, list) else []:
-        if not isinstance(item, dict):
-            continue
-        entry: dict[str, Any] = {}
-        file_path = _clean(item.get("file_path"))
-        if not file_path:
-            continue
-        entry["file_path"] = file_path
-        start = _coerce_int(item.get("start_line"))
-        end = _coerce_int(item.get("end_line"))
-        if start is not None:
-            entry["start_line"] = start
-        if end is not None:
-            entry["end_line"] = end
-        snippet = _clean(item.get("snippet"))
-        note = _clean(item.get("note"))
-        if snippet:
-            entry["snippet"] = snippet
-        if note:
-            entry["note"] = note
-        items.append(entry)
-    return items
-
-
-def _normalize_similar_cases(raw: Any) -> list[dict[str, Any]]:
-    items = []
-    for item in raw if isinstance(raw, list) else []:
-        if not isinstance(item, dict):
-            continue
-        title = _clean(item.get("title"))
-        if not title:
-            continue
-        entry: dict[str, Any] = {"title": title}
-        for key in ("similarity", "summary", "reference"):
-            value = _clean(item.get(key))
-            if value:
-                entry[key] = value
-        items.append(entry)
-    return items
-
-
-def _normalize_call_chain(raw: Any) -> list[dict[str, Any]]:
-    items = []
-    for item in raw if isinstance(raw, list) else []:
-        if not isinstance(item, dict):
-            continue
-        entry: dict[str, Any] = {}
-        seq = _coerce_int(item.get("seq"))
-        if seq is not None:
-            entry["seq"] = seq
-        for key in ("module", "function", "file_path", "description"):
-            value = _clean(item.get(key))
-            if value:
-                entry[key] = value
-        if not entry:
-            continue
-        items.append(entry)
-    return items
-
-
-def _normalize_payload(data: dict[str, Any]) -> DiagnosisResultPayload | None:
-    """字段级容错归一化：任何单个字段异常（越界/类型不符）都不应导致整体提取失败。"""
-    try:
-        payload = DiagnosisResultPayload(
-            summary=_clean(data.get("summary")),
-            root_cause=_clean(data.get("root_cause")),
-            evidence_chain=_clean(data.get("evidence_chain")),
-            fix_suggestion=_clean(data.get("fix_suggestion")),
-            fix_code=_clean(data.get("fix_code")),
-            code_context=_normalize_code_context(data.get("code_context")),
-            similar_cases=_normalize_similar_cases(data.get("similar_cases")),
-            call_chain=_normalize_call_chain(data.get("call_chain")),
-            confidence=_coerce_confidence(data.get("confidence")),
-        )
-    except Exception:
-        return None
-    if not any(
-        (
-            payload.summary,
-            payload.root_cause,
-            payload.evidence_chain,
-            payload.fix_suggestion,
-            payload.fix_code,
-            payload.code_context,
-            payload.similar_cases,
-            payload.call_chain,
-        )
-    ):
-        return None
-    return payload
-
-
-def _try_parse_payload(candidate: str) -> DiagnosisResultPayload | None:
-    """尝试把一个候选文本解析为定位结果载荷（支持直接 json / 含散文包裹的 json）。"""
-    text = str(candidate or "").strip()
-    if not text:
-        return None
-
-    # 1) 直接整体解析
-    try:
-        data = json.loads(text)
-        if isinstance(data, dict):
-            if isinstance(data.get("diagnosis"), dict):
-                data = data["diagnosis"]
-            payload = _normalize_payload(data)
-            if payload:
-                return payload
-    except (json.JSONDecodeError, TypeError):
-        pass
-
-    # 2) raw_decode 扫描：从每个 `{` 位置尝试解码（能正确处理字符串内括号与嵌套代码块）
-    decoder = json.JSONDecoder()
-    scanned = 0
-    for match in re.finditer(r"\{", text):
-        scanned += 1
-        if scanned > _MAX_RAW_DECODE_SCANS:
-            break
-        try:
-            data, _ = decoder.raw_decode(text, match.start())
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        if isinstance(data.get("diagnosis"), dict):
-            data = data["diagnosis"]
-        payload = _normalize_payload(data)
-        if payload:
-            return payload
-    return None
-
-
-def extract_payload_from_text(text: str) -> DiagnosisResultPayload | None:
-    """从 AI 回复文本中提取结构化定位结果。
-
-    候选来源（按优先级）：
-    1. fenced JSON 代码块（```json / ```JSON / ```），多个块时取最后一个合法结果；
-    2. 未使用 fence 的裸 JSON（raw_decode 逐 `{` 扫描）。
-    字段级容错：confidence 越界/类型异常、列表项缺失等都不会导致整体失败。
-
-    降级策略：全部失败时返回 summary-only 载荷（内容仍来自 AI 会话原文）。
-    """
-    raw = str(text or "").strip()
-    if not raw:
-        return None
-
-    # fence 候选：最后一个合法块优先
-    fenced_candidates = [block for block in _FENCED_JSON_RE.findall(raw) if block.strip()]
-    for candidate in reversed(fenced_candidates):
-        payload = _try_parse_payload(candidate)
-        if payload:
-            return payload
-
-    # 非 fence 裸 JSON 候选（整段文本）
-    payload = _try_parse_payload(raw)
-    if payload:
-        return payload
-
-    logger.warning("No valid diagnosis JSON block in AI reply; falling back to summary-only payload")
-    return DiagnosisResultPayload(summary=raw[:_SUMMARY_MAX_CHARS])
 
 
 # ────────────────────────── 持久化 ──────────────────────────
@@ -357,7 +100,7 @@ def _apply_payload(result: SddDiagnosisResult, payload: DiagnosisResultPayload) 
     result.evidence_chain = _clean(payload.evidence_chain)
     result.fix_suggestion = _clean(payload.fix_suggestion)
     result.fix_code = _clean(payload.fix_code)
-    result.confidence = _coerce_confidence(payload.confidence)
+    result.confidence = payload.confidence
     result.code_context_json = [item.model_dump(exclude_none=True) for item in payload.code_context] or None
     result.similar_cases_json = [item.model_dump(exclude_none=True) for item in payload.similar_cases] or None
     result.call_chain_json = [item.model_dump(exclude_none=True) for item in payload.call_chain] or None

@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import BaseSelect from "@/components/BaseSelect.vue";
+import DomainMilestones from "@/components/ai/DomainMilestones.vue";
 
 type ThreadAiJob = {
   id: string;
@@ -176,6 +177,7 @@ const doRewrite = () => {
       <template v-else>
         <div class="empty-stage">
           <strong>{{ proposalJobStatusText }}</strong>
+          <DomainMilestones :events="proposalJob?.context_json?.domain_milestones" />
           <p v-if="proposalJob?.progress">{{ proposalJob.progress }}%</p>
           <p v-if="proposalJob?.error_message" class="error">
             {{ proposalJob.error_message }}

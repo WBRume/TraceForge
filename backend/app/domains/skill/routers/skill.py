@@ -10,6 +10,7 @@ from app.core.logging import audit_log
 from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.auth.services import auth_service
+from app.domains.skill.models.skill import SddSkillAnalysis, SkillAnalysisStatus
 from app.domains.skill.schemas.skill import (
     SkillAnalysisCreateRequest,
     SkillAnalysisRefKindValue,
@@ -573,6 +574,31 @@ async def delete_skill(
         skill_name=skill.name,
     )
     return {"msg": "Skill deleted successfully"}
+
+
+@router.get("/analyses/active", response_model=list[SkillAnalysisResponse])
+def list_active_skill_analyses(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    analyses = (
+        db.query(SddSkillAnalysis)
+        .filter(
+            SddSkillAnalysis.created_by_id == current_user.id,
+            SddSkillAnalysis.status.in_([SkillAnalysisStatus.PENDING, SkillAnalysisStatus.RUNNING]),
+        )
+        .order_by(SddSkillAnalysis.created_at.desc())
+        .all()
+    )
+    visible = []
+    for analysis in analyses:
+        if not workspace_service.get_workspace_member(db, analysis.workspace_id, current_user.id):
+            continue
+        if analysis.skill and skill_catalog_policy.ensure_skill_visible_in_workspace(
+            analysis.skill, analysis.workspace_id
+        ):
+            visible.append(_to_analysis_response(analysis))
+    return visible
 
 
 @router.get("/{skill_id}/analyses/latest", response_model=SkillAnalysisResponse | None)

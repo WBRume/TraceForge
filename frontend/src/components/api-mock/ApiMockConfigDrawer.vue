@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { CloudUpload, FolderCog, RefreshCw, Upload, X } from '@/components/icons'
 import { Editor as MonacoEditor } from '@guolao/vue-monaco-editor'
 import type { ApiMockProject, ApiMockSourceVersion } from '@/types/apiMock'
+import DomainMilestones from '@/components/ai/DomainMilestones.vue'
 
 type JobState = {
   id: string
@@ -43,19 +44,6 @@ const uploadFile = ref<File | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const proxyBaseUrl = ref('')
 const proxyEnabled = ref(false)
-const showRawEvents = ref(false)
-
-type JobLiveEvent = {
-  ts?: string
-  type?: string
-  subtype?: string
-  text?: string
-  tool_name?: string
-  tool_use_id?: string
-  session_id?: string
-  is_error?: boolean
-  raw?: Record<string, unknown> | unknown
-}
 
 watch(
   () => props.project,
@@ -83,16 +71,6 @@ const jobLogLines = computed(() => {
     .filter((line) => Boolean(line))
 })
 
-const jobLiveEvents = computed<JobLiveEvent[]>(() => {
-  const payload = props.activeJob?.result_json
-  if (!payload || typeof payload !== 'object') return []
-  const raw = (payload as Record<string, unknown>).live_events
-  if (!Array.isArray(raw)) return []
-  return raw
-    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-    .map((item) => item as JobLiveEvent)
-})
-
 const jobHeadline = computed(() => {
   if (!props.activeJob) return ''
   if (props.activeJob.status === 'SUCCESS') {
@@ -102,65 +80,6 @@ const jobHeadline = computed(() => {
     return props.activeJob.message || 'Sync failed'
   }
   return props.activeJob.message || props.activeJob.job_type
-})
-
-const eventTypeLabel = (event: JobLiveEvent) => {
-  const type = String(event.type || '').toLowerCase()
-  const subtype = String(event.subtype || '').toLowerCase()
-  if (type === 'thinking') return 'thinking'
-  if (type === 'text') return 'assistant'
-  if (type === 'tool_use') return `tool:${event.tool_name || 'use'}`
-  if (type === 'tool_result') return event.is_error ? 'tool:error' : 'tool:result'
-  if (type === 'result') return subtype ? `result:${subtype}` : 'result'
-  if (type === 'system') return subtype ? `system:${subtype}` : 'system'
-  return type || 'event'
-}
-
-const eventBodyText = (event: JobLiveEvent) => {
-  const text = String(event.text || '').trim()
-  if (text) return text
-  if (event.raw && typeof event.raw === 'object') {
-    try {
-      return JSON.stringify(event.raw, null, 2)
-    } catch {
-      return String(event.raw)
-    }
-  }
-  return ''
-}
-
-const eventTimeText = (event: JobLiveEvent) => {
-  const ts = String(event.ts || '').trim()
-  if (!ts) return ''
-  const dt = new Date(ts)
-  if (Number.isNaN(dt.getTime())) return ts
-  return dt.toLocaleTimeString()
-}
-
-const rawEventJson = (event: JobLiveEvent) => {
-  const raw = event.raw ?? event
-  try {
-    return JSON.stringify(raw, null, 2)
-  } catch {
-    return String(raw)
-  }
-}
-
-const jobConversationLines = computed(() => {
-  if (jobLiveEvents.value.length > 0) {
-    return jobLiveEvents.value.map((event, index) => ({
-      id: `${event.ts || 'event'}-${index}`,
-      time: eventTimeText(event),
-      badge: eventTypeLabel(event),
-      text: eventBodyText(event),
-    }))
-  }
-  return jobLogLines.value.map((line, index) => ({
-    id: `log-${index}`,
-    time: '',
-    badge: 'log',
-    text: line,
-  }))
 })
 
 const cancelRequested = computed(() => {
@@ -246,6 +165,7 @@ const saveProxy = () => {
               <div>
                 <span>{{ $t('api_mock.sync_status') }}</span>
                 <h3>{{ jobHeadline }}</h3>
+                <DomainMilestones :events="activeJob?.result_json?.live_events" />
               </div>
               <strong>{{ activeJob.progress }}%</strong>
             </div>
@@ -258,31 +178,12 @@ const saveProxy = () => {
               </button>
               <p v-if="cancelRequested" class="job-cancel-hint">{{ $t('api_mock.cancel_requested') }}</p>
             </div>
-            <div class="job-log-shell">
-              <div class="job-log-head">{{ $t('api_mock.job_flow_title') }}</div>
-              <div v-if="jobConversationLines.length === 0" class="job-log-empty">{{ $t('api_mock.job_flow_empty') }}</div>
-              <div v-else class="job-log-body custom-scrollbar">
-                <div v-for="line in jobConversationLines" :key="line.id" class="job-line">
-                  <span v-if="line.time" class="job-line-time">{{ line.time }}</span>
-                  <span class="job-line-badge">{{ line.badge }}</span>
-                  <p>{{ line.text }}</p>
-                </div>
+            <details v-if="jobLogLines.length" class="job-log-shell">
+              <summary>查看执行日志</summary>
+              <div class="job-log-body custom-scrollbar">
+                <p v-for="(line, index) in jobLogLines" :key="index">{{ line }}</p>
               </div>
-            </div>
-            <div class="job-log-shell raw-shell">
-              <button type="button" class="raw-toggle-btn" @click="showRawEvents = !showRawEvents">
-                {{ showRawEvents ? $t('api_mock.hide_raw_events') : $t('api_mock.show_raw_events') }}
-              </button>
-              <div v-if="showRawEvents">
-                <div class="job-log-head">{{ $t('api_mock.job_raw_event_title') }}</div>
-                <div v-if="jobLiveEvents.length === 0" class="job-log-empty">{{ $t('api_mock.job_raw_event_empty') }}</div>
-                <div v-else class="job-log-body custom-scrollbar raw-body">
-                  <div v-for="(event, index) in jobLiveEvents" :key="`${activeJob.id}-raw-${index}`" class="raw-event">
-                    <pre>{{ rawEventJson(event) }}</pre>
-                  </div>
-                </div>
-              </div>
-            </div>
+            </details>
           </section>
 
           <section class="config-card" v-if="drawerMode === 'sync'">

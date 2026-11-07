@@ -19,9 +19,11 @@ type PendingTaskDocsUpload = {
 export type ProvisionJobStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'TERMINATING' | 'ORPHANED' | 'REVERTED'
 
 /** 浮窗跟踪的作业种类：任务创建 / Requirement AI 拆分预览 / AI 导入预览 */
-export type ProvisionJobKind = 'provision' | 'requirement_split_preview' | 'requirement_import_preview' | 'playbook_promotion'
+export type ProvisionJobKind = 'provision' | 'requirement_split_preview' | 'requirement_import_preview' | 'playbook_promotion' | 'skill_analysis'
 
 export type ProvisionJobView = {
+  analysis?: import('@/types/skillAnalysis').SkillAnalysis
+  domain_milestones?: import('@/utils/domainMilestones').DomainMilestone[]
   jobId: string
   taskId: string
   workspaceId: string
@@ -69,6 +71,7 @@ type ProvisionJobApiPayload = {
 }
 
 type RequirementPreviewJobApiPayload = {
+  domain_milestones?: import('@/utils/domainMilestones').DomainMilestone[]
   dismissed?: boolean
   result?: { review_state?: string }
   cases?: { id: string; title: string }[]
@@ -235,6 +238,7 @@ export const useProvisioningStore = defineStore('provisioning', () => {
       kind: existing?.kind || normalizePreviewKind(payload?.job_kind) || 'requirement_import_preview',
       requirementId: asJobId(payload?.requirement_id) || existing?.requirementId || '',
       requirementTitle: String(payload?.requirement_title || existing?.requirementTitle || ''),
+      domain_milestones: payload.domain_milestones || existing?.domain_milestones,
       batch: payload?.batch || existing?.batch || null,
       viewed: existing?.viewed || false,
       // 新建条目默认 true（restore/深链兜底场景没有弹窗在展示）；弹窗内
@@ -546,6 +550,9 @@ export const useProvisioningStore = defineStore('provisioning', () => {
   /** 深链恢复：把一次作业查询结果直接并入浮窗（刷新后 store 无记录时用） */
   const ingestPreviewJobPayload = (payload: RequirementPreviewJobApiPayload): ProvisionJobView | null => {
     const view = upsertPreviewJobFromPayload(payload)
+    if (view && view.status === 'SUCCESS' && !view.batch && view.kind !== 'playbook_promotion') {
+      void fetchPreviewJob(view.jobId)
+    }
     if (view && !view.terminal && view.kind !== 'playbook_promotion') {
       ensureTimer()
     }

@@ -34,7 +34,7 @@ def test_cancelled_worker_persists_terminal_state_without_partial_outputs(editor
             job_service.request_job_cancel(db, project.id, job_id)
             raise job_service.JobCancelledError("Provider stopped after cancellation")
 
-        monkeypatch.setattr(auto_mock_service, "run_agent_session", cancelled_provider)
+        monkeypatch.setattr(auto_mock_service, "run_domain_turn", cancelled_provider)
     try:
         if kind in {"auto", "provider_cancel"}:
             auto_mock_service.auto_generate_mock_cases_for_endpoint(

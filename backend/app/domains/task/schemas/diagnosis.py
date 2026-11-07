@@ -15,18 +15,20 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DiagnosisCodeContextItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     file_path: str = ""
-    start_line: int | None = None
-    end_line: int | None = None
+    start_line: int | None = Field(default=None, ge=1)
+    end_line: int | None = Field(default=None, ge=1)
     snippet: str | None = None
     note: str | None = None
 
 
 class DiagnosisSimilarCaseItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     title: str = ""
     similarity: str | None = None  # 高/中/低
     summary: str | None = None
@@ -34,6 +36,7 @@ class DiagnosisSimilarCaseItem(BaseModel):
 
 
 class DiagnosisCallChainNode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     seq: int | None = None
     module: str | None = None
     function: str | None = None
@@ -42,7 +45,7 @@ class DiagnosisCallChainNode(BaseModel):
 
 
 class DiagnosisResultPayload(BaseModel):
-    """结构化定位结果载荷（AI 输出 JSON 块与用户编辑共用）。"""
+    """结构化定位结果载荷（领域工具与用户编辑共用）。"""
 
     summary: str | None = None
     root_cause: str | None = None

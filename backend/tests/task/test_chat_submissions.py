@@ -28,7 +28,7 @@ from app.domains.task.models.session_turn import TaskSessionTurn
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_event_outbox import TaskEventOutbox
 from app.domains.task.services import chat_submission_service as service
-from app.domains.task.services import diagnosis_result_service, task_session_service
+from app.domains.task.services import task_session_service
 from app.domains.task.services.provisioning.creation import create_task_record_for_provision
 from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
 
@@ -515,9 +515,18 @@ def test_failed_execution_never_becomes_knowledge(task_db, status):
     for message in task_db.query(ChatMessage).all():
         assert build_search_projection(message, "message") is None
         assert task_db.get(SearchDocumentState, "message:" + message.id) is None
-    from app.domains.ai.services.jobs.executors.diagnosis_summary import collect_diagnosis_transcript_sync
+    from app.domains.ai.services.jobs.executors.diagnosis_summary import _prepare_diagnosis_summary_sync
+    from app.domains.ai.services.jobs.store import create_diagnosis_summary_job
 
-    assert collect_diagnosis_transcript_sync(task_db, "t") == ""
+    task = task_db.get(SddTask, "t")
+    task.task_type = "DIAGNOSIS"
+    task.session_id = "failed-session"
+    task_db.commit()
+    summary = create_diagnosis_summary_job(
+        task_db, workspace_id=task.workspace_id, task_id=task.id, creator_id=task.creator_id
+    )
+    with pytest.raises(ValueError, match="会话上下文"):
+        _prepare_diagnosis_summary_sync(task_db, summary.id)
 
 
 def test_success_publishes_sources_once_with_transactional_outbox(task_db):
@@ -856,10 +865,8 @@ def test_failed_turn_cannot_leak_into_summary_through_provider_fork(task_db, mon
     task_db.commit()
     monkeypatch.setattr(ai_diagnosis_summary, "attempt_is_current_sync", lambda *args, **kwargs: True)
     monkeypatch.setattr(ai_diagnosis_summary, "_resolve_task_project_path", lambda task: "/fake")
-    monkeypatch.setattr(diagnosis_result_service, "build_diagnosis_summary_prompt", lambda task, transcript: transcript)
-    prepared = ai_diagnosis_summary._prepare_diagnosis_summary_sync(task_db, "summary")
-    assert prepared["source_session_id"] == ""
-    assert prepared["prompt"] == ""
+    with pytest.raises(ValueError, match="会话上下文"):
+        ai_diagnosis_summary._prepare_diagnosis_summary_sync(task_db, "summary")
 
 
 def test_confirmation_reply_is_private_until_owning_turn_succeeds(task_db):

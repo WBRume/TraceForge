@@ -8,6 +8,7 @@ import api from '@/utils/api'
 import { useTaskAwarenessStore } from '../taskAwareness'
 import { usePinnedFloatsStore } from '../pinnedFloats'
 import { useNotificationStore } from '../notification'
+import { useSkillAnalysisStore } from '../skillAnalysis'
 import { clearWsCursorMemory } from '@/utils/wsCursor'
 import { useTaskStartActions } from '@/composables/chat/actions/useTaskStartActions'
 
@@ -58,6 +59,24 @@ async function setup() {
   return { router, awareness: useTaskAwarenessStore(pinia), floats: usePinnedFloatsStore(pinia), notifications: useNotificationStore(pinia), socket: Socket.connections[0] }
 }
 describe('root notification socket integration', () => {
+  it('updates skill review across routes through the existing socket without polling', async () => {
+    const { router, socket, notifications } = await setup()
+    const skills = useSkillAnalysisStore()
+    const analysis = { id: 'review', skill_id: 'skill', workspace_id: 'w1',
+      status: 'RUNNING', progress: 60, file_stats: {} }
+    socket.update({ type: 'skill_analysis_updated', analysis }); await flushPromises()
+    await router.push('/settings'); await flushPromises()
+    expect(skills.jobs[0]?.terminal).toBe(false)
+    vi.mocked(api.get).mockClear()
+    socket.update({ type: 'skill_analysis_updated', analysis: { ...analysis, status: 'SUCCESS', progress: 100 } })
+    await flushPromises()
+    expect(skills.jobs[0]?.terminal).toBe(true)
+    expect(api.get).not.toHaveBeenCalled()
+    expect(notifications.unreadCount).toBe(0)
+    expect(Socket.connections).toHaveLength(1)
+    notifications.reset()
+    expect(skills.jobs).toHaveLength(0)
+  })
   it('tracks an explicit run across routes on one existing socket and receives bounded live output', async () => {
     const { router, awareness, floats, notifications, socket } = await setup()
     awareness.arm('t1', 'c1'); socket.update({ type: 'task_runtime_event', event: runtime() }); await flushPromises()
