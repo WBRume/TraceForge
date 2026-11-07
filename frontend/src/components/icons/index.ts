@@ -65,6 +65,7 @@ import {
   ExclamationTriangleIcon as RawExclamationTriangleIcon,
   EyeIcon as RawEyeIcon,
   EyeSlashIcon as RawEyeSlashIcon,
+  FlagIcon as RawFlagIcon,
   FolderIcon as RawFolderIcon,
   FolderOpenIcon as RawFolderOpenIcon,
   FolderPlusIcon as RawFolderPlusIcon,
@@ -229,6 +230,7 @@ export const ExclamationCircleIcon = wrapIcon(RawExclamationCircleIcon, 'Exclama
 export const ExclamationTriangleIcon = wrapIcon(RawExclamationTriangleIcon, 'ExclamationTriangleIcon')
 export const EyeIcon = wrapIcon(RawEyeIcon, 'EyeIcon')
 export const EyeSlashIcon = wrapIcon(RawEyeSlashIcon, 'EyeSlashIcon')
+export const FlagIcon = wrapIcon(RawFlagIcon, 'FlagIcon')
 export const FolderIcon = wrapIcon(RawFolderIcon, 'FolderIcon')
 export const FolderOpenIcon = wrapIcon(RawFolderOpenIcon, 'FolderOpenIcon')
 export const FolderPlusIcon = wrapIcon(RawFolderPlusIcon, 'FolderPlusIcon')
@@ -367,6 +369,7 @@ export const FileText = DocumentTextIcon
 export const FileType = DocumentTextIcon
 export const FileUp = DocumentArrowUpIcon
 export const FileX = DocumentMinusIcon
+export const Flag = FlagIcon
 export const Folder = FolderIcon
 export const FolderCog = FolderIcon
 export const FolderGit2 = FolderIcon

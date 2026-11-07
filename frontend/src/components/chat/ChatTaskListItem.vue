@@ -69,7 +69,7 @@ const toggleFollow = (event?: MouseEvent) => {
             {{ isDiagnosis ? $t('task_types.diagnosis_short') : $t('task_types.development_short') }}
           </span>
           <span class="task-status" :title="t(taskStatusKey(task.status))" :data-status="normalizeTaskStatus(task.status)">
-            <TaskStatusIcon :status="task.status" :size="12" />
+            <TaskStatusIcon :status="task.status" :size="16" />
             {{ t(taskStatusKey(task.status)) }}
           </span>
         </span>
@@ -194,15 +194,15 @@ const toggleFollow = (event?: MouseEvent) => {
 .task-status {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   padding: 3px;
   margin: -3px;
   min-width: 0;
   overflow: hidden;
   color: var(--color-text-muted);
-  font-size: 0.68rem;
+  font-size: 0.65625rem;
   font-weight: 500;
-  line-height: 1;
+  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

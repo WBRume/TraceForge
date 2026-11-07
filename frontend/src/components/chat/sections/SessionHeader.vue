@@ -93,7 +93,7 @@ onBeforeUnmount(() => {
         :title="t(taskStatusKey(props.vm.currentTask.status))"
         :aria-label="t(taskStatusKey(props.vm.currentTask.status))"
         :data-status="normalizeTaskStatus(props.vm.currentTask.status)">
-        <TaskStatusIcon :status="props.vm.currentTask.status" />
+        <TaskStatusIcon :status="props.vm.currentTask.status" :size="20" />
       </span>
       <span
         v-if="props.vm.isLocalTask"
@@ -272,8 +272,8 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 30px;
+  height: 30px;
 }
 .chat-header .interrupt-btn.active {
   color: #b45309;

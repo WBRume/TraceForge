@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Check, CheckCircle2, CircleHelp, Clock, Loader2, OctagonPause, Play, XCircle } from '@/components/icons'
+import { CheckCircle2, CircleHelp, Clock, Flag, Loader2, OctagonPause, Play, XCircle } from '@/components/icons'
 import { normalizeTaskStatus } from '@/utils/taskStatus'
 
 const props = withDefaults(defineProps<{
@@ -9,11 +9,13 @@ const props = withDefaults(defineProps<{
 }>(), { size: 18 })
 
 const status = computed(() => normalizeTaskStatus(props.status))
+// 轮次完成用旗标表达“阶段性完成”，已完成用圆勾表达“终态”，
+// 避免工具栏纯图标模式下两个对号难以区分。
 const icons = {
   PROVISIONING: Clock,
   INITIALIZED: Play,
   RUNNING: Loader2,
-  ROUND_COMPLETED: Check,
+  ROUND_COMPLETED: Flag,
   AWAITING_INPUT: CircleHelp,
   INTERRUPTED: OctagonPause,
   COMPLETED: CheckCircle2,
@@ -25,7 +27,7 @@ const icon = computed(() => icons[status.value as keyof typeof icons] || CircleH
 <template>
   <span class="task-status-icon" :data-status="status" aria-hidden="true"
     :style="{ width: `${props.size}px`, height: `${props.size}px` }">
-    <component :is="icon" class="task-status-glyph" :size="props.size" />
+    <component :is="icon" class="task-status-glyph" :size="props.size" stroke-width="1.8" />
   </span>
 </template>
 
@@ -43,15 +45,16 @@ const icon = computed(() => icons[status.value as keyof typeof icons] || CircleH
   display: block;
   transform-origin: center;
 }
-.task-status-icon[data-status="INITIALIZED"] { color: #475569; }
-.task-status-icon[data-status="RUNNING"] { color: #1d4ed8; }
-.task-status-icon[data-status="ROUND_COMPLETED"],
-.task-status-icon[data-status="COMPLETED"] { color: #166534; }
-.task-status-icon[data-status="AWAITING_INPUT"] { color: #9a3412; }
-.task-status-icon[data-status="INTERRUPTED"] { color: #854d0e; }
-.task-status-icon[data-status="FAILED"] { color: #991b1b; }
+.task-status-icon[data-status="PROVISIONING"] { color: #7c3aed; }
+.task-status-icon[data-status="INITIALIZED"] { color: #64748b; }
+.task-status-icon[data-status="RUNNING"] { color: #0284c7; }
+.task-status-icon[data-status="ROUND_COMPLETED"] { color: #0d9488; }
+.task-status-icon[data-status="AWAITING_INPUT"] { color: #d97706; }
+.task-status-icon[data-status="INTERRUPTED"] { color: #ea580c; }
+.task-status-icon[data-status="COMPLETED"] { color: #16a34a; }
+.task-status-icon[data-status="FAILED"] { color: #dc2626; }
 .task-status-icon[data-status="RUNNING"] .task-status-glyph {
-  animation: task-status-spin 1.2s linear infinite;
+  animation: task-status-spin 1s linear infinite;
 }
 .task-status-icon[data-status="AWAITING_INPUT"] .task-status-glyph {
   animation: task-status-breathe 1.8s ease-in-out infinite;
