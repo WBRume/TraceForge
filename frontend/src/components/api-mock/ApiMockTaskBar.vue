@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Settings2, RefreshCw, Clock, Globe, FileUp } from '@/components/icons'
+import { Settings2, RefreshCw, Clock, Globe, FileUp, Loader2, Square } from '@/components/icons'
 import CollabPresenceBar from '@/components/api-mock/CollabPresenceBar.vue'
 
 type JobState = {
@@ -121,13 +121,24 @@ const jobLabel = computed(() => {
         <strong>{{ currentSourceLabel }}</strong>
       </div>
       <div v-if="activeJob" class="meta-strip job-strip" :class="`tone-${jobTone}`" role="status" aria-live="polite">
-        <span class="meta-label">{{ $t('api_mock.sync_status') }}</span>
-        <strong>{{ jobLabel }}</strong>
-        <span class="job-progress">{{ activeJob.progress }}%</span>
-        <button v-if="jobRunning && canManage" type="button" class="job-cancel"
-          :disabled="cancelBusy || cancelRequested" @click="emit('cancel-job')">
-          {{ cancelBusy || cancelRequested ? $t('api_mock.cancelling') : $t('api_mock.cancel_sync') }}
-        </button>
+        <div class="job-strip-copy">
+          <span class="meta-label">{{ $t('api_mock.sync_status') }}</span>
+          <strong>{{ jobLabel }}</strong>
+        </div>
+        <div class="job-strip-actions">
+          <span class="job-progress">{{ activeJob.progress }}%</span>
+          <Transition name="action-swap" mode="out-in">
+            <button v-if="jobRunning && canManage" key="stop" type="button" class="job-cancel"
+              :class="{ 'is-interrupting': cancelBusy || cancelRequested }"
+              :disabled="cancelBusy || cancelRequested"
+              :title="cancelBusy || cancelRequested ? $t('api_mock.cancelling') : $t('api_mock.cancel_sync')"
+              :aria-label="cancelBusy || cancelRequested ? $t('api_mock.cancelling') : $t('api_mock.cancel_sync')"
+              @click="emit('cancel-job')">
+              <Loader2 v-if="cancelBusy || cancelRequested" :size="16" class="spin" />
+              <Square v-else :size="13" class="stop-icon" />
+            </button>
+          </Transition>
+        </div>
       </div>
       <CollabPresenceBar :connected="collabConnected" :users="onlineUsers" />
     </div>
@@ -280,31 +291,114 @@ const jobLabel = computed(() => {
 }
 
 .job-strip {
-  position: relative;
-  padding-right: 4rem;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
+.job-strip-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.job-strip-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+}
+
+/* ── 中断按钮：复用输入框停止按钮的样式与呼吸动效 ── */
 .job-cancel {
-  align-self: flex-start;
-  border: 0;
-  padding: 0.2rem 0;
-  background: transparent;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  background: #ffffff;
   color: #b91c1c;
-  font-size: 0.75rem;
+  border: 1px solid #fecaca;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+  animation: job-stop-breathe 1.8s ease-in-out infinite;
+}
+
+.job-cancel svg {
+  width: 14px;
+  height: 14px;
+}
+
+.job-cancel:hover:not(:disabled) {
+  background: #fef2f2;
+  transform: scale(1.06);
 }
 
 .job-cancel:disabled {
-  opacity: 0.6;
-  cursor: default;
+  opacity: 0.75;
+  cursor: not-allowed;
+  animation: none;
+}
+
+.job-cancel.is-interrupting {
+  color: #dc2626;
+  animation: none;
+}
+
+.stop-icon {
+  fill: currentColor;
+}
+
+@keyframes job-stop-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(185, 28, 28, 0.28);
+  }
+
+  50% {
+    box-shadow: 0 0 0 6px rgba(185, 28, 28, 0);
+  }
+}
+
+/* ── 中断控件的出现/消失动效 ── */
+.action-swap-enter-active,
+.action-swap-leave-active {
+  transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.18s ease;
+}
+
+.action-swap-enter-from {
+  transform: scale(0.5) rotate(-90deg);
+  opacity: 0;
+}
+
+.action-swap-leave-to {
+  transform: scale(0.5) rotate(90deg);
+  opacity: 0;
+}
+
+.spin {
+  animation: job-stop-spin 1s linear infinite;
+}
+
+@keyframes job-stop-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .job-progress {
-  position: absolute;
-  top: 0.85rem;
-  right: 0.95rem;
   min-width: 2.7rem;
   text-align: center;
   padding: 0.2rem 0.48rem;
