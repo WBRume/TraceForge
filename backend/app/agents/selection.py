@@ -28,36 +28,10 @@ from app.agents.contract import (
 from app.agents.run_logging import run_agent_backend_with_logging
 from app.core.feature_settings import feature_settings as settings
 from app.core.logging import get_logger
-from app.engine.claude_bridge import create_cli_bridge
 
 logger = get_logger(__name__, category="agent")
 
-#: 可在工作区设置中选择的 backend（不含 mock）
-SELECTABLE_AGENT_BACKENDS = ("claude-code", "opencode", "dsh")
-
 DEFAULT_AGENT_BACKEND = "claude-code"
-
-#: backend 展示元信息（用于 API 输出）
-AGENT_BACKEND_META: dict[str, dict[str, Any]] = {
-    "claude-code": {
-        "value": "claude-code",
-        "label": "Claude Code CLI",
-        "supports_resume": True,
-        "preferred_mode": "subprocess",
-    },
-    "opencode": {
-        "value": "opencode",
-        "label": "OpenCode (Server)",
-        "supports_resume": True,
-        "preferred_mode": "server",
-    },
-    "dsh": {
-        "value": "dsh",
-        "label": "DSH (Web Host)",
-        "supports_resume": True,
-        "preferred_mode": "server",
-    },
-}
 
 
 def default_backend_name() -> str:
@@ -75,23 +49,26 @@ def normalize_backend_name(name: str | None) -> str | None:
     normalized = _normalize(name)
     if normalized is None:
         return None
-    from app.agents.adapters import register_all
-    from app.agents.registry import AGENT_BACKENDS
+    from app.agents.registry import registered_backends
 
-    if not AGENT_BACKENDS:
-        register_all()
-    if normalized not in AGENT_BACKENDS:
-        return None
-    return normalized
+    return normalized if normalized in registered_backends() else None
 
 
 def list_agent_backends() -> list[dict[str, Any]]:
-    options: list[dict[str, Any]] = []
-    for meta in AGENT_BACKEND_META.values():
-        item = dict(meta)
-        item["supports_fork"] = backend_supports_fork(meta["value"])
-        options.append(item)
-    return options
+    from app.agents.registry import registered_backends
+
+    return [
+        {
+            "value": name,
+            "label": entry.label,
+            "supports_resume": entry.backend_cls.capabilities.supports_resume,
+            "supports_fork": backend_supports_fork(name),
+            "supports_tool_binding": entry.backend_cls.capabilities.supports_tool_binding,
+            "preferred_mode": entry.backend_cls.capabilities.preferred_mode,
+        }
+        for name, entry in registered_backends().items()
+        if entry.selectable
+    ]
 
 
 def resolve_workspace_backend(db: Session, workspace_id: str | None) -> str:
@@ -124,25 +101,15 @@ def resolve_task_backend(db: Session, task_id: str) -> str:
 
 
 def opencode_server_kwargs() -> dict[str, str]:
-    """服务端 OpenCode 适配器参数：URL + 可选 HTTP Basic 认证。
+    """Compatibility helper; values come from the same registered settings."""
+    from app.agents.registry import backend_config_kwargs
 
-    ``opencode serve`` 设置 ``OPENCODE_SERVER_PASSWORD`` 后会要求 Basic 认证；
-    平台侧必须用同一组凭据访问，否则 ``/api/info`` 返回 401 被误判为协议不兼容。
-    """
-    return {
-        "server_url": str(getattr(settings, "OPENCODE_SERVER_URL", "") or "http://127.0.0.1:4097"),
-        "username": str(getattr(settings, "OPENCODE_SERVER_USERNAME", "") or "opencode"),
-        "password": str(getattr(settings, "OPENCODE_SERVER_PASSWORD", "") or ""),
-    }
+    return backend_config_kwargs("opencode")
 
 
 def create_agent_backend_by_name(backend_name: str | None = None, *, task_id: str | None = None):
-    """按名称创建统一 AgentBackend 实例（engine 路径使用）。
-
-    claude-code 返回双接口 ClaudeCodeAdapter；dsh 固定走 Web Host server 模式
-    （支持 resume/事件/usage/流式），不会再回退 headless CLI。
-    """
-    from app.agents.registry import get_agent_backend
+    """Construct the registered runtime, preserving task-local routing."""
+    from app.agents.registry import create_runtime_backend
 
     if task_id:
         from app.domains.local_resource.service import provider_for_task
@@ -150,32 +117,15 @@ def create_agent_backend_by_name(backend_name: str | None = None, *, task_id: st
         local = provider_for_task(task_id)
         if local is not None:
             return local
-    name = normalize_backend_name(backend_name) or default_backend_name()
-    if name in ("claude-code", "mock"):
-        return create_cli_bridge()
-    if name == "opencode":
-        return get_agent_backend("opencode", runtime_credentials=True, **opencode_server_kwargs())
-    if name == "dsh":
-        return get_agent_backend(
-            "dsh",
-            server_url=str(settings.DSH_SERVER_URL).strip(),
-            browser_token=settings.DSH_BROWSER_TOKEN,
-            browser_cookie=settings.DSH_BROWSER_COOKIE,
-            runtime_credentials=True,
-        )
-    return get_agent_backend(name)
+    return create_runtime_backend(normalize_backend_name(backend_name) or default_backend_name())
 
 
 def create_legacy_bridge(backend_name: str | None = None, *, task_id: str | None = None):
-    """创建满足旧 CliBridgeBase 鸠尾接口的 bridge。
-
-    - claude-code/mock：沿用 create_cli_bridge()（含 SDD_CLI_MODE mock 兼容）
-    - opencode/dsh：AgentBackend + LegacyBridgeShim
-    """
+    """Adapt any registered backend to the existing auxiliary turn lifecycle."""
     name = normalize_backend_name(backend_name) or default_backend_name()
-    if name in ("claude-code", "mock"):
-        return create_cli_bridge()
     backend = create_agent_backend_by_name(name, task_id=task_id)
+    if callable(getattr(backend, "start_session", None)) and callable(getattr(backend, "wait", None)):
+        return backend
     return LegacyBridgeShim(backend, backend_name=name)
 
 

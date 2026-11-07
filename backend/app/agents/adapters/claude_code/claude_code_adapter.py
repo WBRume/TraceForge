@@ -10,6 +10,8 @@ import asyncio
 import os
 import re
 import shutil
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from functools import partial
 from typing import Any
 
@@ -32,6 +34,7 @@ from app.agents.errors import (
     SessionForkError,
 )
 from app.agents.supervision import agent_stop_result_from_termination
+from app.agents.tools import AgentToolContext
 from app.config import settings
 from app.engine.claude_bridge import SubprocessCliBridge
 
@@ -96,6 +99,19 @@ class ClaudeCodeAdapter(AgentBackend):
         self._legacy_run_task: asyncio.Task | None = None
         self._legacy_session_id: str | None = None
         self.last_termination = None
+
+    @asynccontextmanager
+    async def bind_tools(self, request: AgentRunRequest, tools: AgentToolContext):
+        from app.agents.tool_transports.mcp import serve_tools
+
+        from .tool_binding import provider_environment
+
+        async with serve_tools(tools) as binding:
+            yield replace(
+                request,
+                env={**provider_environment(), **request.env},
+                provider_options={**request.provider_options, "domain_mcp": binding},
+            )
 
     async def _handle_raw_event(self, event: dict[str, Any], on_event: AgentEventSink) -> None:
         for agent_event in map_claude_event(event):

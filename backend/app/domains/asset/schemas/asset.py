@@ -377,6 +377,7 @@ class WorkspaceAgentBackendOption(BaseModel):
     label: str
     supports_resume: bool
     supports_fork: bool = False
+    supports_tool_binding: bool = False
     preferred_mode: str
 
 

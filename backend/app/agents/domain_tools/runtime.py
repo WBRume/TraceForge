@@ -14,6 +14,8 @@ from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.agents.tools import AgentToolDefinition, AgentToolResult
+
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -44,16 +46,16 @@ class DomainTool(Generic[T]):
     input_model: type[T]
     validate: Callable[[T], Awaitable[None] | None] | None = None
 
-    def schema(self) -> dict:
-        return {
-            "name": self.name,
-            "description": self.description + " 成功后本次提交结束；校验失败时依据工具错误修正并再次调用。",
-            "inputSchema": self.input_model.model_json_schema(),
-        }
+    def definition(self) -> AgentToolDefinition:
+        return AgentToolDefinition(
+            self.name,
+            self.description + " 成功后本次提交结束；校验失败时依据工具错误修正并再次调用。",
+            self.input_model.model_json_schema(),
+        )
 
 
-def tool_reply(*, error: bool = False, **payload) -> dict:
-    return {"isError": error, "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
+def tool_reply(*, error: bool = False, **payload) -> AgentToolResult:
+    return AgentToolResult(data=payload, is_error=error)
 
 
 class DomainToolRun(Generic[T]):
@@ -73,10 +75,16 @@ class DomainToolRun(Generic[T]):
         self.failure: Exception | None = None
         self.events: list[Milestone] = []
         self._digest: str | None = None
-        self._receipt: dict | None = None
+        self._receipt: AgentToolResult | None = None
         self._lock = asyncio.Lock()
         self._closed = False
         self.project_path: str = ""
+
+    @property
+    def definitions(self) -> tuple[AgentToolDefinition, ...]:
+        from .workspace import READ_TOOL
+
+        return READ_TOOL, self.tool.definition()
 
     async def emit(self, stage, message, *, call_id="", issues=None):
         event = Milestone(
@@ -101,7 +109,7 @@ class DomainToolRun(Generic[T]):
         if self.failure:
             raise DomainRunUnavailable("DOMAIN_RUN_FAILED")
 
-    async def invoke(self, name: str, arguments: dict, call_id: str) -> dict:
+    async def invoke(self, name: str, arguments: dict, call_id: str) -> AgentToolResult:
         async with self._lock:
             try:
                 self.ensure_active()

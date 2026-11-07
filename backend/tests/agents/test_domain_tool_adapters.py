@@ -6,10 +6,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.agents.adapters.claude_code.tool_binding import provider_environment
+from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+from app.agents.adapters.opencode.tool_binding import scoped_request
 from app.agents.contract import AgentRunRequest
-from app.agents.domain_tools.claude import provider_environment
-from app.agents.domain_tools.invocation import active_domain_binding, bound_request
-from app.agents.domain_tools.opencode import scoped_request
+from app.agents.domain_tools import DomainTool, DomainToolRun
+from app.agents.domain_tools.contracts import RequirementSubmission
+from app.agents.domain_tools.invocation import active_domain_run, bound_request
 from app.agents.errors import AgentConfigurationError
 
 
@@ -49,7 +52,9 @@ async def test_opencode_scope_forks_preserves_history_and_cleans_after_failure(t
     request = AgentRunRequest(project_path=str(tmp_path), session_id="original")
     binding = {"url": "http://127.0.0.1:1234/mcp", "headers": {"Authorization": "Bearer scoped"}}
     with pytest.raises(RuntimeError, match="turn failed"):
-        async with scoped_request(backend, request, binding) as scoped:
+        async with scoped_request(
+            backend, request, binding, tool_names=["read_workspace", "submit_requirements"]
+        ) as scoped:
             directory = scoped.project_path
             assert Path(directory).is_dir()
             assert directory != request.project_path
@@ -68,7 +73,10 @@ async def test_opencode_scope_forks_preserves_history_and_cleans_after_failure(t
 async def test_successful_child_restores_directory_and_permissions_for_followup(tmp_path):
     backend, client = backend_stub()
     async with scoped_request(
-        backend, AgentRunRequest(project_path=str(tmp_path), session_id="original"), {"url": "local", "headers": {}}
+        backend,
+        AgentRunRequest(project_path=str(tmp_path), session_id="original"),
+        {"url": "local", "headers": {}},
+        tool_names=["submit"],
     ) as scoped:
         directory = scoped.project_path
     backend._fork_move.assert_awaited_once_with(client, "forked", str(tmp_path))
@@ -87,7 +95,7 @@ async def test_concurrent_opencode_turns_have_different_configuration_scopes(tmp
 
     async def run():
         async with scoped_request(
-            backend, AgentRunRequest(project_path=str(tmp_path)), {"url": "local", "headers": {}}
+            backend, AgentRunRequest(project_path=str(tmp_path)), {"url": "local", "headers": {}}, tool_names=["submit"]
         ) as scoped:
             scopes.append(scoped.project_path)
             if len(scopes) == 2:
@@ -103,13 +111,13 @@ async def test_concurrent_opencode_turns_have_different_configuration_scopes(tmp
 
 @pytest.mark.asyncio
 async def test_unsupported_backend_fails_without_running_or_mutating_request():
-    token = active_domain_binding.set({"url": "local", "headers": {}})
+    token = active_domain_run.set(DomainToolRun(DomainTool("submit", "Submit", RequirementSubmission)))
     try:
         with pytest.raises(AgentConfigurationError, match="DOMAIN_TOOLS_UNSUPPORTED"):
-            async with bound_request(SimpleNamespace(name="dsh"), AgentRunRequest()):
+            async with bound_request(DshServerAdapter(), AgentRunRequest()):
                 pytest.fail("An unsupported backend must not run a text fallback")
     finally:
-        active_domain_binding.reset(token)
+        active_domain_run.reset(token)
 
 
 @pytest.mark.asyncio
@@ -117,7 +125,7 @@ async def test_remote_opencode_rejected_before_tool_credential_transfer():
     backend, client = backend_stub()
     backend.server_url = "https://remote.example.test"
     with pytest.raises(AgentConfigurationError, match="COLOCATED"):
-        async with scoped_request(backend, AgentRunRequest(), {"url": "local", "headers": {}}):
+        async with scoped_request(backend, AgentRunRequest(), {"url": "local", "headers": {}}, tool_names=["submit"]):
             pytest.fail("Remote host cannot use this invocation's loopback listener")
     client.put.assert_not_called()
 

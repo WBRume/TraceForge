@@ -1,11 +1,21 @@
 """Typed configuration fields shared by the feature catalog and provider plugins."""
 
+import os
 from dataclasses import dataclass
+from functools import lru_cache
 from urllib.parse import urlsplit
 
 from pydantic import SecretStr
+from pydantic_settings.sources import DotEnvSettingsSource
 
 from app.config import settings
+
+
+@lru_cache(maxsize=1)
+def _registered_env_defaults():
+    # Plugin fields are intentionally absent from Settings. Read the same env
+    # file once, like Settings itself, while process variables take precedence.
+    return DotEnvSettingsSource(type(settings)).env_vars
 
 
 @dataclass(frozen=True)
@@ -21,13 +31,22 @@ class ConfigField:
     visible_when: tuple[tuple[str, tuple[str, ...]], ...] = ()
     option_labels: tuple[tuple[str, str], ...] = ()
     group: str = ""
+    default_value: str | int | bool = ""
 
     def default(self):
         if self.env == "SPEECH_MODE":
             return settings.SPEECH_MODE or ("api" if settings.SPEECH_API_ENABLED else "off")
         if self.env == "OAUTH_GITHUB_ENABLED":
             return bool(settings.OAUTH_GITHUB_CLIENT_ID and settings.OAUTH_GITHUB_CLIENT_SECRET)
-        value = getattr(settings, self.env)
+        value = getattr(settings, self.env, None)
+        if value is None:
+            value = os.environ.get(self.env, _registered_env_defaults().get(self.env, self.default_value))
+            if isinstance(value, str) and self.kind == "number":
+                value = int(value)
+            elif isinstance(value, str) and self.kind == "boolean":
+                if value.lower() not in {"true", "false", "1", "0"}:
+                    raise ValueError(f"Invalid boolean environment setting: {self.env}")
+                value = value.lower() in {"true", "1"}
         return value.get_secret_value() if isinstance(value, SecretStr) else value
 
     def validate(self, value):

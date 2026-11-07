@@ -227,40 +227,29 @@ async def probe_search(values, app, draft):
 
 
 def make_agent(values):
-    from app.agents.registry import get_agent_backend
+    from app.agents.registry import backend_config_kwargs, create_agent_backend
 
     name = values["backend"]
-    if name == "opencode":
-        return get_agent_backend(
-            name,
-            server_url=values["opencode_url"],
-            username=values["opencode_username"],
-            password=values["opencode_password"],
-        )
-    if name == "dsh":
-        return get_agent_backend(
-            name,
-            server_url=values["dsh_url"],
-            browser_token=values["dsh_browser_token"],
-            browser_cookie=values["dsh_browser_cookie"],
-        )
-    return get_agent_backend(name)
+    return create_agent_backend(name, **backend_config_kwargs(name, values))
 
 
 async def probe_agent(values, app, draft):
-    if values["backend"] == "mock":
-        return result("agent", "DEGRADED", "mock", "当前使用模拟 Agent", "配置真实 Agent 后端")
+    from app.agents.registry import backend_registration
+
+    entry = backend_registration(values["backend"])
+    if entry.probe_scope == "simulation":
+        return result("agent", "DEGRADED", values["backend"], "当前使用模拟 Agent", "配置真实 Agent 后端")
     backend = make_agent(values)
     try:
         await backend.probe()
     finally:
         await backend.close()
-    if values["backend"] == "claude-code":
+    if entry.probe_scope == "binary":
         return result(
             "agent",
             "DEGRADED",
-            "claude-code",
-            "Claude Code CLI 可用，模型认证与会话连通尚未验证",
+            values["backend"],
+            f"{entry.label} 可用，模型认证与会话连通尚未验证",
             "完成 CLI 登录或配置服务端模型凭据，再通过实际任务验证",
             binary_available=True,
             authentication_verified=False,

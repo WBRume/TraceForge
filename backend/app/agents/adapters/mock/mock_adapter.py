@@ -23,6 +23,7 @@ class MockAdapter(AgentBackend):
         supports_resume=True,
         supports_streaming_text=False,
         supports_tool_events=True,
+        supports_tool_binding=False,
         hitl_modes=["turn_based"],
         supports_usage=True,
         skill_layouts=["mock-skills"],

@@ -1,13 +1,12 @@
 import asyncio
-import json
 
 import httpx
 import pytest
 
 from app.agents.domain_tools import DomainTool, DomainToolError, DomainToolRun
 from app.agents.domain_tools.contracts import DocumentRewrite, RequirementSubmission, SkillReview
-from app.agents.domain_tools.server import create_app, serve_tools
 from app.agents.domain_tools.validators import skill_review_validator, validate_mock_cases, validate_openapi
+from app.agents.tool_transports.mcp import create_app, serve_tools
 
 
 def requirement(title="Login"):
@@ -34,11 +33,11 @@ async def test_invalid_then_valid_submission_repairs_in_the_same_run():
     invalid = requirement()
     invalid["items"][0]["priority"] = "urgent"
     rejected = await run.invoke(run.tool.name, invalid, "bad")
-    assert rejected["isError"] is True
-    assert "items.0.priority" in rejected["content"][0]["text"]
+    assert rejected.is_error is True
+    assert "items.0.priority" in str(rejected.data["issues"])
     assert run.value is None
     accepted = await run.invoke(run.tool.name, requirement(), "good")
-    assert not accepted["isError"]
+    assert not accepted.is_error
     assert run.require_result().items[0].title == "Login"
     assert [event.stage for event in run.events] == ["validating", "repairing", "validating", "accepted"]
     assert {event.run_id for event in run.events} == {run.run_id}
@@ -53,7 +52,7 @@ async def test_duplicate_and_conflicting_submissions_cannot_replace_result():
     )
     assert first == duplicate
     assert len(run.events) == 2
-    assert (await run.invoke(run.tool.name, requirement("different"), "three"))["isError"]
+    assert (await run.invoke(run.tool.name, requirement("different"), "three")).is_error
     assert run.require_result().items[0].title == "Login"
 
 
@@ -69,7 +68,7 @@ async def test_cancel_during_validation_discards_result():
         DomainTool("submit", "Submit", RequirementSubmission, validate), should_cancel=lambda: cancelled
     )
     result = await run.invoke("submit", requirement(), "one")
-    assert result["isError"]
+    assert result.is_error
     assert run.value is None
     with pytest.raises(DomainToolError, match="REVOKED"):
         run.require_result()
@@ -82,7 +81,7 @@ async def test_operational_failure_is_not_a_correctable_or_successful_result():
 
     run = DomainToolRun(DomainTool("submit", "Submit", RequirementSubmission, validate))
     result = await run.invoke("submit", requirement(), "one")
-    assert json.loads(result["content"][0]["text"])["retryable"] is False
+    assert result.data["retryable"] is False
     with pytest.raises(OSError, match="database unavailable"):
         run.require_result()
 
@@ -113,8 +112,9 @@ async def test_mcp_authorization_scope_and_real_socket_lifecycle(tmp_path):
                 "isError"
             ]
             assert run.require_result().items
-    with pytest.raises(DomainToolError, match="REVOKED"):
-        run.require_result()
+    async with httpx.AsyncClient(trust_env=False) as client:
+        with pytest.raises(httpx.ConnectError):
+            await client.post(binding["url"], headers=binding["headers"], json=rpc)
 
 
 @pytest.mark.asyncio
@@ -123,9 +123,9 @@ async def test_workspace_reader_rejects_escape_and_does_not_expose_secrets(tmp_p
     run.project_path = str(tmp_path)
     (tmp_path / "source.py").write_text("hello\nworld\n", encoding="utf-8")
     result = await run.invoke("read_workspace", {"path": "source.py", "start_line": 2}, "read")
-    assert json.loads(result["content"][0]["text"])["text"] == "world"
+    assert result.data["text"] == "world"
     for path in ("../outside", ".env", ".git/config"):
-        assert (await run.invoke("read_workspace", {"path": path}, "bad"))["isError"]
+        assert (await run.invoke("read_workspace", {"path": path}, "bad")).is_error
 
 
 @pytest.mark.asyncio

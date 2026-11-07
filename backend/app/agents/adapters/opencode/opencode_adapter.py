@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -33,9 +34,22 @@ from app.agents.errors import (
 )
 from app.agents.events import AgentEvent
 from app.agents.http_transport import agent_ssl_context
+from app.agents.tools import AgentToolContext
 
 
 class OpenCodeAdapter(AgentBackend):
+    @asynccontextmanager
+    async def bind_tools(self, request: AgentRunRequest, tools: AgentToolContext):
+        from app.agents.tool_transports.mcp import serve_tools
+
+        from .tool_binding import scoped_request
+
+        async with serve_tools(tools) as binding:
+            async with scoped_request(
+                self, request, binding, tool_names=[tool.name for tool in tools.definitions]
+            ) as scoped:
+                yield scoped
+
     def get_runtime_control(self):
         from app.agents.runtime_control import runtime_control_for
 
@@ -299,13 +313,10 @@ class OpenCodeAdapter(AgentBackend):
             configured = await client.patch(self._session_url(session_id), json={"permissions": permissions})
             self._check_response(configured, "session permissions")
         if request.provider_options.get("domain_mcp"):
-            from app.agents.domain_tools.invocation import active_domain_run
-
-            run = active_domain_run.get()
             permissions = [{"action": "*", "resource": "*", "effect": "deny"}]
             permissions.extend(
                 {"action": f"traceforge_domain_{tool}", "resource": "*", "effect": "allow"}
-                for tool in ("read_workspace", run.tool.name)
+                for tool in request.provider_options["domain_tool_names"]
             )
             configured = await client.patch(self._session_url(session_id), json={"permissions": permissions})
             self._check_response(configured, "domain permissions")

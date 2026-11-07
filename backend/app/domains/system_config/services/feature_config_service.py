@@ -36,6 +36,10 @@ def cipher():
 def fields_for(feature):
     if feature not in CATALOG:
         raise SystemConfigError("未知业务特性", 404)
+    if feature == "agent":
+        from app.agents.registration import agent_config_fields
+
+        return agent_config_fields()
     return CATALOG[feature][1]
 
 

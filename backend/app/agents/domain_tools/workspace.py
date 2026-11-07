@@ -4,6 +4,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agents.tools import AgentToolDefinition
+
 from .runtime import DomainToolError
 
 
@@ -14,11 +16,11 @@ class ReadWorkspace(BaseModel):
     max_lines: int = Field(default=200, ge=1, le=500)
 
 
-READ_TOOL = {
-    "name": "read_workspace",
-    "description": "只读查看挂载工作区内的目录或文件。目录返回直接子项；文件按行分页，禁止读取工作区外路径。",
-    "inputSchema": ReadWorkspace.model_json_schema(),
-}
+READ_TOOL = AgentToolDefinition(
+    "read_workspace",
+    "只读查看挂载工作区内的目录或文件。目录返回直接子项；文件按行分页，禁止读取工作区外路径。",
+    ReadWorkspace.model_json_schema(),
+)
 
 
 def read_workspace(root: str, arguments: dict) -> dict:

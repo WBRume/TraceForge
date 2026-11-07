@@ -67,6 +67,47 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 管理员也可在系统配置中管理受支持的功能和连接，已保存的配置会覆盖对应环境默认值。任务使用其绑定的 Agent；修改平台默认值不会自动迁移既有任务。
 
+### 接入新的 Agent
+
+实现 [AgentBackend](app/agents/contract.py) 的执行、停止和资源释放接口，以及 `bind_tools(request, tools)` 异步上下文管理器。在应用启动时通过 [register_backend](app/agents/registry.py) 注册；内置接入入口是 [adapters/register_all](app/agents/adapters/__init__.py)。注册后，工作区选项、平台配置、连接测试和模型选择读取同一份元数据，不需要在业务 domain 或前端增加 Agent 名称分支。
+
+`tools` 遵循 [AgentToolContext](app/agents/tools.py)：`definitions` 提供工具名、说明和 JSON Schema，`await tools.invoke(name, arguments, call_id)` 返回 `AgentToolResult(data, is_error)`。Adapter 将定义交给 Agent，并把每次调用结果送回同一模型回合；校验失败允许模型修正参数。MCP Adapter 可复用 [serve_tools](app/agents/tool_transports/mcp.py)，原生工具 Adapter 直接绑定回调，无需启动 HTTP 服务。
+
+```python
+register_backend(
+    "my-agent",
+    MyAgentAdapter,
+    label="My Agent",
+    settings=(
+        AgentSetting(
+            "server_url",
+            ConfigField(
+                "my_agent_url",
+                "服务地址",
+                "MY_AGENT_URL",
+                "url",
+                default_value="http://127.0.0.1:9000",
+            ),
+        ),
+        AgentSetting(
+            "api_key",
+            ConfigField(
+                "my_agent_key",
+                "访问密钥",
+                "MY_AGENT_KEY",
+                "secret",
+            ),
+        ),
+    ),
+)
+```
+
+`AgentSetting` 来自 `app.agents.registration`，`ConfigField` 来自 `app.domains.system_config.services.config_fields`。字段同时用于环境默认值、加密保存、脱敏展示、连接测试与构造参数映射；新增字段无需修改全局 `Settings`。`model_format="provider/model"` 可声明模型标识格式，否则由 Adapter 接收不透明模型名。带凭据热更新逻辑的 Adapter 可通过 `runtime_kwargs` 配置运行实例；配置草稿测试使用独立参数，不覆盖运行配置。
+
+工具绑定必须限制在本次调用，隔离会话权限，并在成功、失败、超时及取消时清理；运行结束后的调用由领域执行器拒绝。领域工具只确认业务产物通过校验，现有业务服务负责落库。新 Adapter 默认声明工具绑定能力，未实现 `bind_tools` 会在注册时失败。既有 DSH 与 Mock 明确声明不支持领域工具绑定，普通会话仍可使用；OpenCode 当前采用本机 MCP 与独立目录，保留其同机部署限制。
+
+接入回归可参考 [原生 Adapter 契约测试](tests/agents/test_tool_registration.py)，其中验证了注册后执行现有领域回合、校验修正、重复提交、并发隔离、退出撤销，以及配置保存和连接草稿隔离。
+
 ### 本机 Agent 资源
 
 本机资源任务由 Electron / Tauri 客户端创建，使用桌面内置资源服务。服务器必须能访问客户端所在内网，需要配置：

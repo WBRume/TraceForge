@@ -221,49 +221,6 @@ CATALOG = {
             ),
         ),
     ),
-    "agent": (
-        "Agent 引擎",
-        (
-            ConfigField(
-                "backend",
-                "默认 Agent 后端",
-                "AGENT_BACKEND",
-                "select",
-                ("claude-code", "opencode", "dsh", "mock"),
-                hint=(
-                    "作用：新建会话默认使用的 Agent 引擎，可在具体会话中单独切换。\n"
-                    "前提：所选引擎需已配置且可连通"
-                    "（如 OpenCode/DSH 服务地址或 Claude Code 本地环境），否则会话启动会失败。"
-                ),
-            ),
-            ConfigField(
-                "opencode_url",
-                "OpenCode 服务地址",
-                "OPENCODE_SERVER_URL",
-                "url",
-                maximum=500,
-                hint=(
-                    "作用：OpenCode Server 的访问地址，供 Agent 引擎调用。\n"
-                    "前提：仅在默认后端或会话选择 OpenCode 时生效；"
-                    "需包含协议与端口，且服务已启动并可从后端访问。"
-                ),
-            ),
-            ConfigField("opencode_username", "OpenCode 用户名", "OPENCODE_SERVER_USERNAME", maximum=200),
-            ConfigField("opencode_password", "OpenCode 密码", "OPENCODE_SERVER_PASSWORD", "secret"),
-            ConfigField(
-                "dsh_url",
-                "DSH Web Host 地址",
-                "DSH_SERVER_URL",
-                "url",
-                maximum=500,
-                hint=(
-                    "作用：DSH Web Host 的访问地址，供 Agent 引擎调用。\n"
-                    "前提：仅在选用 DSH 后端时生效；"
-                    "需包含协议与端口，且服务已启动并可从后端访问。"
-                ),
-            ),
-            ConfigField("dsh_browser_token", "DSH 启动令牌", "DSH_BROWSER_TOKEN", "secret"),
-            ConfigField("dsh_browser_cookie", "DSH 会话 Cookie", "DSH_BROWSER_COOKIE", "secret"),
-        ),
-    ),
+    # Agent fields are resolved at request time from the adapter registry.
+    "agent": ("Agent 引擎", ()),
 }

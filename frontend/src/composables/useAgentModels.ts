@@ -3,7 +3,7 @@ import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 
 export interface AgentModelSelection {
-  backend: 'claude-code' | 'opencode' | 'dsh'
+  backend: string
   model: string
 }
 export interface AgentModelOption { value: string; label: string }
@@ -37,7 +37,7 @@ export function useAgentModels(context: () => ModelContext) {
         signal: controller.signal,
       })
       if (current !== sequence) return
-      if (!['claude-code', 'opencode', 'dsh'].includes(data?.backend) || !Array.isArray(data?.options)) {
+      if (typeof data?.backend !== 'string' || !data.backend.trim() || !Array.isArray(data?.options)) {
         throw new Error('模型列表响应无效')
       }
       backend.value = data.backend

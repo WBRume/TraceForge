@@ -18,8 +18,8 @@ async def test_interface_analysis_uses_one_provider_turn_and_typed_tool(monkeypa
         calls.append(kwargs)
         run = active_domain_run.get()
         assert run.project_path == str(tmp_path)
-        assert (await run.invoke(run.tool.name, {"unexpected": True}, "bad"))["isError"]
-        assert not (await run.invoke(run.tool.name, {"document": {"openapi": "3.1.0"}}, "good"))["isError"]
+        assert (await run.invoke(run.tool.name, {"unexpected": True}, "bad")).is_error
+        assert not (await run.invoke(run.tool.name, {"document": {"openapi": "3.1.0"}}, "good")).is_error
         return {"session_id": "same-session", "text": "This prose is ignored"}
 
     monkeypatch.setattr(provider_turn, "run_cli_single_turn", provider)

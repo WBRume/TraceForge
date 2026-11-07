@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -13,6 +14,7 @@ from typing import Any, Literal
 
 from app.agents.errors import AgentConfigurationError, AgentError
 from app.agents.events import AgentEvent
+from app.agents.tools import AgentToolContext
 
 AgentEventSink = Callable[[AgentEvent], Awaitable[None]]
 AgentProcessStartedCallback = Callable[["AgentProcessIdentity"], Awaitable[bool] | bool]
@@ -735,6 +737,7 @@ class AgentCapabilities:
     supports_resume: bool = True
     supports_streaming_text: bool = False
     supports_tool_events: bool = True
+    supports_tool_binding: bool = True
     # 是否支持把既有会话 fork 成独立新会话（baseline 复制上下文给评审线程）
     supports_fork: bool = False
     hitl_modes: list[Literal["turn_based", "long_connection"]] = field(default_factory=list)
@@ -752,6 +755,16 @@ class AgentBackend(ABC):
 
     name: str
     capabilities: AgentCapabilities
+
+    def bind_tools(
+        self, request: AgentRunRequest, tools: AgentToolContext
+    ) -> AbstractAsyncContextManager[AgentRunRequest]:
+        """Bind this invocation's tools before run(), then clean up on exit.
+
+        Implementations may use native callbacks or an MCP transport. Existing
+        engines without injection support explicitly declare the capability false.
+        """
+        raise AgentConfigurationError(f"DOMAIN_TOOLS_UNSUPPORTED: {self.name} has no invocation-scoped tool binding")
 
     async def model_catalog(self, *, project_path: str = "", session_id: str | None = None) -> dict:
         """Return selectable models and the provider's configured default."""

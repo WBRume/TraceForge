@@ -102,7 +102,7 @@ def test_semantic_review_uses_selected_backend_and_typed_submission(monkeypatch,
                 },
                 "one",
             )
-        )["isError"]
+        ).is_error
         return {"session_id": "provider-session"}
 
     monkeypatch.setattr(provider_turn, "run_cli_single_turn", provider)

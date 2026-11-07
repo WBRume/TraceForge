@@ -296,17 +296,17 @@ async def test_workspace_agent_backend(
     db: Session = Depends(get_db),
 ):
     _ensure_workspace_member(db, ws_id, current_user.id)
+    from app.agents.registry import selectable_backend_names
     from app.agents.selection import (
-        SELECTABLE_AGENT_BACKENDS,
         create_agent_backend_by_name,
         normalize_backend_name,
     )
 
     backend_name = normalize_backend_name(data.backend)
-    if not backend_name or backend_name not in SELECTABLE_AGENT_BACKENDS:
+    if not backend_name or backend_name not in selectable_backend_names():
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported agent backend: {data.backend!r}; expected one of {list(SELECTABLE_AGENT_BACKENDS)}",
+            detail=f"Unsupported agent backend: {data.backend!r}; expected one of {list(selectable_backend_names())}",
         )
 
     backend = None
@@ -349,8 +349,8 @@ def update_workspace_agent_backend(
     db: Session = Depends(get_db),
 ):
     _ensure_member_manager(db, ws_id, current_user.id)
+    from app.agents.registry import selectable_backend_names
     from app.agents.selection import (
-        SELECTABLE_AGENT_BACKENDS,
         default_backend_name,
         normalize_backend_name,
         resolve_workspace_backend,
@@ -364,10 +364,10 @@ def update_workspace_agent_backend(
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     requested = str(data.agent_backend or "").strip() or None
-    if requested is not None and requested not in SELECTABLE_AGENT_BACKENDS:
+    if requested is not None and requested not in selectable_backend_names():
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported agent backend: {requested!r}; expected one of {list(SELECTABLE_AGENT_BACKENDS)}",
+            detail=f"Unsupported agent backend: {requested!r}; expected one of {list(selectable_backend_names())}",
         )
     ws.agent_backend = requested
     db.commit()

@@ -6,14 +6,21 @@ Runtime model observations remain separate from the requested model.
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, Field, field_validator
 
 
 class ModelSelection(BaseModel):
-    backend: Literal["claude-code", "opencode", "dsh"]
+    backend: str = Field(min_length=1, max_length=100)
     model: str = Field(min_length=1, max_length=500)
+
+    @field_validator("backend")
+    @classmethod
+    def registered_backend(cls, value: str) -> str:
+        from app.agents.registry import selectable_backend_names
+
+        if value not in selectable_backend_names():
+            raise ValueError("未知 Agent 引擎")
+        return value
 
     @field_validator("model")
     @classmethod
@@ -33,7 +40,9 @@ def validate_selection(value, backend: str) -> dict:
     selection = ModelSelection.model_validate(value)
     if selection.backend != backend:
         raise ValueError("Agent 引擎已改变，请重新选择模型")
-    if backend in {"opencode", "dsh"}:
+    from app.agents.registry import backend_registration
+
+    if backend_registration(backend).model_format == "provider/model":
         provider, sep, model = selection.model.partition("/")
         if not sep or not provider or not model:
             raise ValueError("模型必须包含 provider/model")

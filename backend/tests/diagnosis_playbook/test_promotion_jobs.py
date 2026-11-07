@@ -196,7 +196,7 @@ def test_runner_calls_workspace_cli_with_snapshot_and_records_model_output(db, m
 
         run = active_domain_run.get()
         reply = await run.invoke(run.tool.name, result([case.id]).model_dump(), "call-1")
-        assert not reply["isError"]
+        assert not reply.is_error
         return {"text": "submitted"}
 
     cli = AsyncMock(side_effect=submit)

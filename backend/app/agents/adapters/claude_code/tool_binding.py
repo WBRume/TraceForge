@@ -1,4 +1,4 @@
-"""Preserve user-level provider settings while disabling hooks and extra tools."""
+"""Provider settings for isolated Claude Code tool turns."""
 
 import json
 import os

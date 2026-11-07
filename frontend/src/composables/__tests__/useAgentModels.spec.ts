@@ -22,6 +22,14 @@ function setup(initial = { workspaceId: 'w', taskId: 't1', resourceId: '' }) {
 }
 
 describe('Agent model selection', () => {
+  it('accepts a registered backend without a frontend allowlist change', async () => {
+    api.get.mockResolvedValue(catalogue('native-fixture', 'native-model'))
+    const { models } = setup()
+    await flushPromises()
+    expect(models.error.value).toBe('')
+    expect(models.selection.value).toEqual({ backend: 'native-fixture', model: 'native-model' })
+  })
+
   it('defaults to the active model and preserves a user choice during refresh', async () => {
     api.get.mockResolvedValue(catalogue())
     const { models } = setup()

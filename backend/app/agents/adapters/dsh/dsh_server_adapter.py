@@ -227,6 +227,7 @@ class DshServerAdapter(AgentBackend):
         supports_resume=True,  # web host prompt 隐式 resume 冷会话
         supports_streaming_text=True,
         supports_tool_events=True,
+        supports_tool_binding=False,
         supports_fork=True,  # 文件级 fork（session_files）
         hitl_modes=["turn_based", "long_connection"],
         supports_usage=True,

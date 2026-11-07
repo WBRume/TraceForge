@@ -14,7 +14,7 @@ from app.agents.errors import AgentConfigurationError
 
 
 @asynccontextmanager
-async def scoped_request(backend, request, binding):
+async def scoped_request(backend, request, binding, *, tool_names):
     # The MCP listener and the workspace reader run on this application host.
     # A remote host cannot reach our loopback endpoint; do not leak credentials
     # or silently configure an unusable tool in a shared remote environment.
@@ -35,7 +35,11 @@ async def scoped_request(backend, request, binding):
             request,
             project_path=directory,
             session_id=session_id,
-            provider_options={**request.provider_options, "domain_mcp": binding},
+            provider_options={
+                **request.provider_options,
+                "domain_mcp": binding,
+                "domain_tool_names": tuple(tool_names),
+            },
         )
         configured = False
         try:
