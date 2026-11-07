@@ -177,7 +177,7 @@ const doRewrite = () => {
       <template v-else>
         <div class="empty-stage">
           <strong>{{ proposalJobStatusText }}</strong>
-          <DomainMilestones :events="proposalJob?.context_json?.domain_milestones" />
+          <DomainMilestones :active="isProposalJobBusy" :events="proposalJob?.context_json?.domain_milestones" />
           <p v-if="proposalJob?.progress">{{ proposalJob.progress }}%</p>
           <p v-if="proposalJob?.error_message" class="error">
             {{ proposalJob.error_message }}

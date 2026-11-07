@@ -57,7 +57,7 @@ const canShowStatusSummary = computed(() => (
           <Sparkles v-else class="w-3 h-3" />
           {{ props.vm.isDiagnosisAdopted ? t('diagnosis.case_adopted_label') : props.vm.diagnosisSummarizingLabel }}
         </button>
-        <DomainMilestones :events="props.vm.diagnosisMilestones" />
+        <DomainMilestones :active="props.vm.diagnosisSummarizing" :events="props.vm.diagnosisMilestones" />
       </template>
     </div>
 

@@ -62,9 +62,6 @@ from .api_mock.job_service import (
     JobCancelledError as JobCancelledError,
 )
 from .api_mock.job_service import (
-    _append_job_log as _append_job_log,
-)
-from .api_mock.job_service import (
     _clear_cancel_event as _clear_cancel_event,
 )
 from .api_mock.job_service import (
@@ -161,7 +158,7 @@ def _mark_job_queue_failed(job_id: str, message: str) -> None:
         job = db.query(SddApiMockJob).filter(SddApiMockJob.id == str(job_id or "").strip()).first()
         if not job or _is_terminal_status(job.status):
             return
-        _append_job_log(db, job.project_id, job, message)
+
         _set_job_failed(db, job.project_id, job, message)
     finally:
         db.close()

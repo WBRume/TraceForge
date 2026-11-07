@@ -48,10 +48,8 @@ def test_mock_batch_rolls_back_before_terminal_job_commit(db, monkeypatch, failu
 
     for name in ("_set_job_running", "_set_job_progress"):
         monkeypatch.setattr(service, name, lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(service, "_append_job_log", lambda *_args, **_kwargs: db.commit())
     # Cancellation logging commits the job; pending business writes must have
     # been rolled back before that independent commit.
-    monkeypatch.setattr(job_service, "_append_job_log", lambda *_args, **_kwargs: db.commit())
     monkeypatch.setattr(
         job_service, "_is_cancel_requested", lambda _: failure == "cancel_after_insert" and inserted == 2
     )

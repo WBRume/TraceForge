@@ -28,13 +28,15 @@ const props = defineProps<{
   currentSourceLabel: string
   canView: boolean
   activeJob: JobState | null
-  swaggerMutationLocked: boolean
+  canManage: boolean
+  cancelBusy: boolean
   collabConnected: boolean
   onlineUsers: OnlinePresenceUser[]
 }>()
 
 const emit = defineEmits<{
   (e: 'open-config', mode: ConfigMode): void
+  (e: 'cancel-job'): void
 }>()
 
 const { t } = useI18n()
@@ -53,8 +55,12 @@ const jobTone = computed(() => {
   return 'running'
 })
 
+const jobRunning = computed(() => props.activeJob?.status === 'PENDING' || props.activeJob?.status === 'RUNNING')
+const cancelRequested = computed(() => props.activeJob?.result_json?.cancel_requested === true)
+
 const jobLabel = computed(() => {
   if (!props.activeJob) return ''
+  if (jobRunning.value && cancelRequested.value) return t('api_mock.cancel_requested')
   const message = String(props.activeJob.message || '').trim()
   if (message) return message
   if (props.activeJob.status === 'PENDING') return t('api_mock.job_status_pending')
@@ -114,14 +120,14 @@ const jobLabel = computed(() => {
         <span class="meta-label">{{ $t('api_mock.current_source_label') }}</span>
         <strong>{{ currentSourceLabel }}</strong>
       </div>
-      <div v-if="activeJob" class="meta-strip job-strip" :class="`tone-${jobTone}`">
+      <div v-if="activeJob" class="meta-strip job-strip" :class="`tone-${jobTone}`" role="status" aria-live="polite">
         <span class="meta-label">{{ $t('api_mock.sync_status') }}</span>
         <strong>{{ jobLabel }}</strong>
         <span class="job-progress">{{ activeJob.progress }}%</span>
-      </div>
-      <div v-if="swaggerMutationLocked" class="meta-strip lock-strip">
-        <span class="meta-label">{{ $t('api_mock.sync_status') }}</span>
-        <strong>{{ $t('api_mock.ai_auto_mock_running') }}</strong>
+        <button v-if="jobRunning && canManage" type="button" class="job-cancel"
+          :disabled="cancelBusy || cancelRequested" @click="emit('cancel-job')">
+          {{ cancelBusy || cancelRequested ? $t('api_mock.cancelling') : $t('api_mock.cancel_sync') }}
+        </button>
       </div>
       <CollabPresenceBar :connected="collabConnected" :users="onlineUsers" />
     </div>
@@ -268,15 +274,6 @@ const jobLabel = computed(() => {
   border: 1px solid #e2e8f0;
 }
 
-.lock-strip {
-  border: 1px solid rgba(251, 146, 60, 0.35);
-  background: rgba(255, 247, 237, 0.9);
-}
-
-.lock-strip strong {
-  color: #9a3412;
-}
-
 .meta-strip strong {
   color: #0f172a;
   font-size: 0.95rem;
@@ -285,6 +282,23 @@ const jobLabel = computed(() => {
 .job-strip {
   position: relative;
   padding-right: 4rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.job-cancel {
+  align-self: flex-start;
+  border: 0;
+  padding: 0.2rem 0;
+  background: transparent;
+  color: #b91c1c;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.job-cancel:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .job-progress {

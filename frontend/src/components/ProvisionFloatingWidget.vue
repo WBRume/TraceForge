@@ -266,7 +266,7 @@ const openSkillAnalysis = (job: ProvisionJobView) => {
             <span class="widget-job-stage">{{ stageText(job) }}</span>
           </div>
 
-          <DomainMilestones v-if="!job.terminal" :events="job.domain_milestones" />
+          <DomainMilestones :active="!job.terminal" :events="job.domain_milestones" />
 
           <div v-if="!job.terminal" class="widget-job-progress">
             <el-progress

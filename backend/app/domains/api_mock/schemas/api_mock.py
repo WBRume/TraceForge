@@ -5,7 +5,7 @@ API MOCK schemas.
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 ApiMockSourceTypeValue = Literal["CODE_ANALYSIS", "SWAGGER_IMPORT", "CLAUDE_SYNC"]
 ApiMockRuleModeValue = Literal["STATIC", "MOCKJS", "PROXY"]
@@ -213,6 +213,22 @@ class ApiMockContextResponse(BaseModel):
     mock_case_count: int
 
 
+class ApiMockJobResult(BaseModel):
+    """Business result and cancellation metadata, shared by HTTP and WebSocket."""
+
+    job_kind: str | None = None
+    target_endpoint_id: str | None = None
+    source_url: str | None = None
+    endpoints_imported: int | None = None
+    cases_created: int | None = None
+    created_count: int | None = None
+    updated_count: int | None = None
+    cancel_requested: bool | None = None
+    cancel_requested_at: str | None = None
+    cancelled: bool | None = None
+    cancelled_at: str | None = None
+
+
 class ApiMockJobResponse(BaseModel):
     id: str
     project_id: str
@@ -226,6 +242,13 @@ class ApiMockJobResponse(BaseModel):
     updated_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+
+    @field_validator("result_json")
+    @classmethod
+    def business_result(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        return ApiMockJobResult.model_validate(value).model_dump(exclude_unset=True)
 
     model_config = {"from_attributes": True}
 

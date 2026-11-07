@@ -15,15 +15,10 @@ from sqlalchemy.orm import Session
 from app.core.background_tasks import retain_background_task
 from app.core.logging import get_logger
 from app.domains.api_mock.models.api_mock import ApiMockJobStatus, SddApiMockJob, SddApiMockProject
+from app.domains.api_mock.schemas.api_mock import ApiMockJobResult
 from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
 
-from .constants import (
-    AUTO_MOCK_JOB_TYPE,
-    JOB_EVENT_MAX_ITEMS,
-    JOB_EVENT_TEXT_MAX_LEN,
-    JOB_LOG_MAX_LINE_LEN,
-    JOB_LOG_MAX_LINES,
-)
+from .constants import AUTO_MOCK_JOB_TYPE
 
 logger = get_logger(__name__, category="api_mock")
 
@@ -44,7 +39,6 @@ def create_job(
     job_type: str,
     message: str | None = None,
 ) -> SddApiMockJob:
-    initial_result: dict[str, Any] = {"live_logs": [], "live_events": []}
     job = SddApiMockJob(
         project_id=project.id,
         creator_id=creator_id,
@@ -52,15 +46,11 @@ def create_job(
         status=ApiMockJobStatus.PENDING,
         progress=0,
         message=message,
-        result_json=initial_result,
+        result_json={},
     )
     db.add(job)
     _commit_job_state(db, project.id, job)
     _get_or_create_cancel_event(job.id)
-    if message:
-        _append_job_log(db, project.id, job, message)
-    else:
-        _commit_job_state(db, project.id, job)
     return job
 
 
@@ -159,8 +149,6 @@ def set_auto_mock_job_target(
     payload = _job_result_payload(job)
     payload["job_kind"] = AUTO_MOCK_JOB_TYPE
     payload["target_endpoint_id"] = endpoint_id
-    payload.setdefault("live_logs", _job_logs_from_payload(payload))
-    payload.setdefault("live_events", _job_events_from_payload(payload))
     job.result_json = payload
     _commit_job_state(db, project_id, job)
     return job
@@ -168,92 +156,8 @@ def set_auto_mock_job_target(
 
 def _job_result_payload(job: SddApiMockJob) -> dict[str, Any]:
     if isinstance(job.result_json, dict):
-        return dict(job.result_json)
+        return ApiMockJobResult.model_validate(job.result_json).model_dump(exclude_unset=True)
     return {}
-
-
-def _job_logs_from_payload(payload: dict[str, Any]) -> list[str]:
-    raw_logs = payload.get("live_logs")
-    if not isinstance(raw_logs, list):
-        return []
-    logs: list[str] = []
-    for item in raw_logs:
-        text = str(item or "").strip()
-        if text:
-            logs.append(text)
-    return logs
-
-
-def _job_events_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_events = payload.get("live_events")
-    if not isinstance(raw_events, list):
-        return []
-    events: list[dict[str, Any]] = []
-    for item in raw_events:
-        if isinstance(item, dict):
-            events.append(dict(item))
-    return events
-
-
-def _append_job_log(db: Session, project_id: str, job: SddApiMockJob, text: str) -> None:
-    line = str(text or "").strip()
-    if not line:
-        return
-    if len(line) > JOB_LOG_MAX_LINE_LEN:
-        line = f"{line[:JOB_LOG_MAX_LINE_LEN]}..."
-    payload = _job_result_payload(job)
-    logs = _job_logs_from_payload(payload)
-    timestamp = datetime.utcnow().strftime("%H:%M:%S")
-    logs.append(f"{timestamp} {line}")
-    if len(logs) > JOB_LOG_MAX_LINES:
-        logs = logs[-JOB_LOG_MAX_LINES:]
-    payload["live_logs"] = logs
-    payload["latest_log"] = logs[-1]
-    job.result_json = payload
-    logger.info(f"[API MOCK JOB {job.id}] {line}")
-    _commit_job_state(db, project_id, job)
-
-
-def _trim_event_payload(value: Any, *, max_len: int = JOB_EVENT_TEXT_MAX_LEN) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, (bool, int, float)):
-        return value
-    if isinstance(value, str):
-        text = value.strip()
-        if len(text) > max_len:
-            return f"{text[:max_len]}..."
-        return text
-    if isinstance(value, dict):
-        trimmed: dict[str, Any] = {}
-        for key, item in value.items():
-            key_text = str(key)[:120]
-            trimmed[key_text] = _trim_event_payload(item, max_len=max_len)
-        return trimmed
-    if isinstance(value, list):
-        return [_trim_event_payload(item, max_len=max_len) for item in value[:200]]
-    text = str(value)
-    if len(text) > max_len:
-        return f"{text[:max_len]}..."
-    return text
-
-
-def _append_job_event(db: Session, project_id: str, job: SddApiMockJob, event_payload: dict[str, Any]) -> None:
-    payload = _job_result_payload(job)
-    events = _job_events_from_payload(payload)
-    safe_event = _trim_event_payload(event_payload)
-    if not isinstance(safe_event, dict):
-        safe_event = {"type": "unknown", "text": str(safe_event)}
-    safe_event.setdefault("ts", datetime.utcnow().isoformat() + "Z")
-    safe_event.setdefault("type", "unknown")
-    events.append(safe_event)
-    if len(events) > JOB_EVENT_MAX_ITEMS:
-        events = events[-JOB_EVENT_MAX_ITEMS:]
-    payload["live_events"] = events
-    payload["latest_event_type"] = str(safe_event.get("type") or "unknown")
-    payload["latest_event_at"] = str(safe_event.get("ts") or datetime.utcnow().isoformat() + "Z")
-    job.result_json = payload
-    _commit_job_state(db, project_id, job)
 
 
 def _serialize_job(job: SddApiMockJob) -> dict[str, Any]:
@@ -346,7 +250,7 @@ def _clear_cancel_event(job_id: str) -> None:
 def _raise_if_cancel_requested(db: Session, project_id: str, job: SddApiMockJob, job_id: str) -> None:
     if _is_cancel_requested(job_id):
         db.rollback()
-        _append_job_log(db, project_id, job, "Cancellation signal received, stopping job.")
+
         raise JobCancelledError("Job cancelled by user")
 
 
@@ -360,7 +264,6 @@ def request_job_cancel(db: Session, project_id: str, job_id: str) -> SddApiMockJ
 
     _get_or_create_cancel_event(job_id).set()
     _mark_job_cancel_requested(job)
-    _append_job_log(db, project_id, job, "Cancellation requested by user.")
 
     already_committed = False
     if job.status == ApiMockJobStatus.PENDING:
@@ -401,6 +304,7 @@ def _set_job_success(db: Session, project_id: str, job: SddApiMockJob, result: d
 
 
 def _set_job_failed(db: Session, project_id: str, job: SddApiMockJob, message: str) -> None:
+    logger.warning(f"API Mock job {job.id} failed: {message}")
     job.status = ApiMockJobStatus.FAILED
     job.message = message
     job.finished_at = datetime.utcnow()

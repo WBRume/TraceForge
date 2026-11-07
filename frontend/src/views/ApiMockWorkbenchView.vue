@@ -39,10 +39,7 @@ const sources = useProjectSources(context, notifications, jobs, refreshProjectCo
 const editing = useProjectEditing(context, notifications, jobs, collaboration, refreshProjectContext)
 const { tasks, permissionsReady, pageError, canView, canManage, canPublish, loadPermissions, loadWorkspaceMembers, loadTasks } = workspace
 const { project, sourceVersions, endpoints, entities, mockCases, selectedEndpointId, selectedMockCaseId, documentData, documentLoading, endpointKeyword, contextVersion, selectedEndpoint, currentSourceLabel, resetTaskContext, loadMockCases } = context
-const { activeJob, observedJobs, isAutoMockRunning, isCurrentEndpointAutoMockLocked, isProjectSwaggerMutationLocked } = jobs
-const endpointMockJob = computed(() => Object.values(observedJobs.value).reverse().find(job =>
-  job.job_type === jobs.AUTO_MOCK_JOB_TYPE && job.result_json?.target_endpoint_id === selectedEndpointId.value,
-) || null)
+const { activeJob, isAutoMockRunning, isCurrentEndpointAutoMockLocked, isProjectSwaggerMutationLocked } = jobs
 const { notifyError, notifyProjectSwaggerLocked } = notifications
 const { collabConnected, onlineUsers, connectCollab, closeSocket, sendCollabEvent } = collaboration
 const { syncBusy, importBusy, cancelJobBusy, autoMockStartBusy, onSync, onImportSwagger, onStartAutoMock, onCancelActiveJob, onActivateSource, onUpdateProxy } = sources
@@ -159,7 +156,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onShortcuts))
       :current-source-label="currentSourceLabel"
       :can-view="canView"
       :active-job="activeJob"
-      :swagger-mutation-locked="isProjectSwaggerMutationLocked"
+      :can-manage="canManage"
+      :cancel-busy="cancelJobBusy"
+      @cancel-job="onCancelActiveJob"
       :collab-connected="collabConnected"
       :online-users="onlineUsers"
       @open-config="(mode: string) => { configDrawerMode = mode as 'sync' | 'versions' | 'proxy' | 'import'; showConfigDrawer = true }"
@@ -234,11 +233,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onShortcuts))
         :document-loading="documentLoading"
         :can-manage="canManageSwagger"
         :can-manage-mock="canManage"
-        :swagger-mutation-locked="isProjectSwaggerMutationLocked"
         :project-auto-mock-locked="isAutoMockRunning"
         :current-endpoint-auto-mock-locked="isCurrentEndpointAutoMockLocked"
         :auto-mock-busy="autoMockStartBusy"
-        :auto-mock-job="endpointMockJob"
         :saving-endpoint="savingEndpoint"
         :saving-document="savingDocument"
         :cases="mockCases"
@@ -270,15 +267,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onShortcuts))
       :can-publish="canPublish"
       :sync-busy="syncBusy"
       :import-busy="importBusy"
-      :cancel-busy="cancelJobBusy"
-      :active-job="activeJob"
       :swagger-mutation-locked="isProjectSwaggerMutationLocked"
       @close="showConfigDrawer = false"
-      @sync="onSync"
-      @cancel-job="onCancelActiveJob"
+      @sync="showConfigDrawer = false; onSync()"
       @activate-source="onActivateSource"
       @update-proxy="onUpdateProxy"
-      @import-swagger="onImportSwagger"
+      @import-swagger="(payload) => { showConfigDrawer = false; onImportSwagger(payload) }"
     />
 
     <ApiMockGlobalEntityDrawer

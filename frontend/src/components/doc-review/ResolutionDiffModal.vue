@@ -637,7 +637,7 @@ const doRegenerate = () => {
             <div v-if="isRevisionWaiting" class="revision-waiting">
               <Loader2 class="waiting-spinner" />
               <strong>{{ proposalJobStatusText }}</strong>
-              <DomainMilestones :events="proposalJob?.context_json?.domain_milestones" />
+              <DomainMilestones :active="isJobBusy" :events="proposalJob?.context_json?.domain_milestones" />
               <div class="progress-wrap">
                 <div class="progress-track">
                   <div class="progress-fill" :style="{ width: `${proposalProgress}%` }"></div>
@@ -834,7 +834,7 @@ const doRegenerate = () => {
       <template v-else>
         <div class="empty-stage">
           <strong>{{ isJobBusy ? proposalJobStatusText : t("doc_review.revision_unavailable_title") }}</strong>
-          <DomainMilestones :events="proposalJob?.context_json?.domain_milestones" />
+          <DomainMilestones :active="isJobBusy" :events="proposalJob?.context_json?.domain_milestones" />
           <p v-if="proposalJob?.progress">{{ proposalJob.progress }}%</p>
           <p v-if="proposalJob?.error_message" class="error">
             {{ proposalJob.error_message }}

@@ -1,8 +1,10 @@
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
 
 from app.domains.api_mock.models.api_mock import ApiMockJobStatus
+from app.domains.api_mock.schemas.api_mock import ApiMockJobResponse
 from app.domains.api_mock.services.api_mock import job_service
 
 
@@ -38,7 +40,6 @@ def test_request_job_cancel_pending_marks_failed_and_commits(monkeypatch: pytest
     monkeypatch.setattr(job_service, "get_job", lambda *_args, **_kwargs: job)
     monkeypatch.setattr(job_service, "_get_or_create_cancel_event", lambda *_args, **_kwargs: cancel_signal)
     monkeypatch.setattr(job_service, "_mark_job_cancel_requested", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(job_service, "_append_job_log", lambda *_args, **_kwargs: None)
 
     def _fake_set_job_failed(*args, **_kwargs):
         failed_calls.append(args)
@@ -81,7 +82,6 @@ def test_request_job_cancel_running_only_marks_requested(monkeypatch: pytest.Mon
     monkeypatch.setattr(job_service, "get_job", lambda *_args, **_kwargs: job)
     monkeypatch.setattr(job_service, "_get_or_create_cancel_event", lambda *_args, **_kwargs: cancel_signal)
     monkeypatch.setattr(job_service, "_mark_job_cancel_requested", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(job_service, "_append_job_log", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(job_service, "_set_job_failed", lambda *args, **_kwargs: failed_calls.append(args))
     monkeypatch.setattr(job_service, "_mark_job_cancelled", lambda *args, **_kwargs: mark_cancelled_calls.append(args))
     monkeypatch.setattr(
@@ -99,3 +99,41 @@ def test_request_job_cancel_running_only_marks_requested(monkeypatch: pytest.Mon
     assert len(commit_calls) == 1
     assert commit_calls[0][0] == (db, project_id, job)
     assert commit_calls[0][1] == {"done": False}
+
+
+def test_job_snapshots_only_expose_business_results():
+    job = _build_job(status=ApiMockJobStatus.SUCCESS)
+    job.project_id = "project"
+    job.creator_id = "user"
+    job.job_type = "AUTO_GENERATE_MOCK_CASES"
+    job.progress = 100
+    job.created_at = datetime.now()
+    job.updated_at = job.started_at = None
+    job.result_json = {
+        "target_endpoint_id": "endpoint",
+        "created_count": 3,
+        "cancel_requested": False,
+        "live_logs": ["old CLI log"],
+        "live_events": [{"type": "domain_milestone"}],
+        "latest_log": "old",
+        "latest_event_type": "domain_milestone",
+        "latest_event_at": "old",
+    }
+    expected = {"target_endpoint_id": "endpoint", "created_count": 3, "cancel_requested": False}
+    assert job_service._serialize_job(job)["result_json"] == expected
+    assert ApiMockJobResponse.model_validate(job).result_json == expected
+    # Existing records are preserved; neither HTTP nor WS returns historical execution output.
+    assert "live_events" in job.result_json
+
+
+def test_current_phase_replaces_status_without_appending_execution_content(monkeypatch):
+    job = _build_job(status=ApiMockJobStatus.RUNNING)
+    job.result_json = {"target_endpoint_id": "endpoint"}
+    snapshots = []
+    monkeypatch.setattr(
+        job_service, "_commit_job_state", lambda *_: snapshots.append((job.message, dict(job.result_json)))
+    )
+    for message in ["正在生成 Mock 场景", "正在校验业务产物", "正在保存 Mock 用例"]:
+        job_service._set_job_progress(object(), "project", job, 30, message)
+    assert [entry[0] for entry in snapshots] == ["正在生成 Mock 场景", "正在校验业务产物", "正在保存 Mock 用例"]
+    assert all(entry[1] == {"target_endpoint_id": "endpoint"} for entry in snapshots)

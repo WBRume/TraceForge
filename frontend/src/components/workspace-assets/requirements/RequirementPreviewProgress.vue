@@ -67,7 +67,7 @@ const progressWidth = computed(() => `${Math.max(0, Math.min(100, props.job.prog
         <dd>{{ props.job.error || props.job.message || t('workspace_assets.requirements.preview_progress.waiting_message') }}</dd>
       </div>
     </dl>
-    <DomainMilestones :events="job.domain_milestones" />
+    <DomainMilestones :active="job.status === 'PENDING' || job.status === 'RUNNING'" :events="job.domain_milestones" />
 
     <p v-if="!promotion" class="boundary-note">{{ t('workspace_assets.requirements.preview_progress.boundary') }}</p>
 

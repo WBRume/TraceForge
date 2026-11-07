@@ -147,7 +147,7 @@ describe('API Mock websocket lifecycle', () => {
     await vi.advanceTimersByTimeAsync(10_000)
     expect(mocks.get).toHaveBeenCalledTimes(requests)
     await emitJob(socket, job('SUCCESS', 'AUTO_GENERATE_MOCK_CASES'))
-    expect(wrapper!.findComponent({ name: 'ApiMockEndpointWorkspace' }).props('autoMockJob').status).toBe('SUCCESS')
+    expect(wrapper!.findComponent({ name: 'ApiMockTaskBar' }).props('activeJob').status).toBe('SUCCESS')
     expect(wrapper!.findComponent({ name: 'ApiMockEndpointWorkspace' }).props('projectAutoMockLocked')).toBe(false)
     expect(mocks.get).toHaveBeenLastCalledWith('/workspaces/ws/api-mock/endpoints/endpoint/mock-cases')
     const completedRequests = mocks.get.mock.calls.length
@@ -197,7 +197,7 @@ describe('API Mock websocket lifecycle', () => {
     expect(socket.close).toHaveBeenCalledOnce()
     expect(Socket.instances).toHaveLength(2)
     expect(Socket.instances[1]!.url).toContain('other-project')
-    expect(wrapper!.findComponent({ name: 'ApiMockConfigDrawer' }).props('activeJob')).toBeNull()
+    expect(wrapper!.findComponent({ name: 'ApiMockTaskBar' }).props('activeJob')).toBeNull()
   })
 
   it('does not regress a completed auto Mock job when its initial snapshot arrives late', async () => {
@@ -213,7 +213,7 @@ describe('API Mock websocket lifecycle', () => {
     await emitJob(socket, job('SUCCESS', 'AUTO_GENERATE_MOCK_CASES'))
     resolveSnapshot({ data: job('RUNNING', 'AUTO_GENERATE_MOCK_CASES') })
     await flushPromises()
-    expect(wrapper!.findComponent({ name: 'ApiMockEndpointWorkspace' }).props('autoMockJob').status).toBe('SUCCESS')
+    expect(wrapper!.findComponent({ name: 'ApiMockTaskBar' }).props('activeJob').status).toBe('SUCCESS')
     expect(wrapper!.findComponent({ name: 'ApiMockEndpointWorkspace' }).props('projectAutoMockLocked')).toBe(false)
     const requests = mocks.get.mock.calls.length
     await vi.advanceTimersByTimeAsync(10_000)

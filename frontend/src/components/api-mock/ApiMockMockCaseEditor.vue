@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import DomainMilestones from '@/components/ai/DomainMilestones.vue'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { Plus, Save, Trash2, ArrowLeft, ExternalLink } from '@/components/icons'
 import { VueMonacoEditor } from '@guolao/vue-monaco-editor'
@@ -15,7 +14,6 @@ const props = defineProps<{
   projectAutoMockLocked: boolean
   currentEndpointAutoMockLocked: boolean
   autoMockBusy: boolean
-  autoMockJob: { id: string; job_type: string; status: string; progress: number; message?: string | null; result_json?: Record<string, unknown> | null } | null
   savingCase: boolean
   deletingCase: boolean
   mockBaseUrl: string
@@ -51,12 +49,6 @@ const viewMode = ref<'list' | 'detail'>('list')
 
 const currentCase = computed(() => props.cases.find((item) => item.id === props.selectedCaseId) || null)
 const isAutoMockRunning = computed(() => props.autoMockBusy || props.projectAutoMockLocked || props.currentEndpointAutoMockLocked)
-const autoMockStatusText = computed(() => {
-  if (!props.autoMockJob) return ''
-  if (props.autoMockJob.status === 'PENDING') return 'api_mock.ai_auto_mock_queued'
-  if (props.autoMockJob.status === 'RUNNING') return 'api_mock.ai_auto_mock_running'
-  return ''
-})
 
 const form = reactive({
   id: '',
@@ -683,9 +675,6 @@ defineExpose({
         <div>
           <span class="mock-kicker">{{ $t('api_mock.mock_cases_title') }}</span>
           <h3>{{ endpoint ? endpoint.path : $t('api_mock.mock_cases_title') }}</h3>
-          <p v-if="isAutoMockRunning" class="auto-mock-inline-hint">
-            {{ $t(autoMockStatusText || 'api_mock.ai_auto_mock_running') }}
-          </p>
         </div>
         <div class="mock-head-actions">
           <button
@@ -707,8 +696,6 @@ defineExpose({
           </button>
         </div>
       </header>
-
-      <DomainMilestones :events="autoMockJob?.result_json?.live_events" />
 
       <div v-if="!endpoint" class="empty-box">{{ $t('api_mock.select_endpoint_hint') }}</div>
       <div v-else class="case-grid">
@@ -963,13 +950,6 @@ defineExpose({
   background: #cbd5e1;
   border-color: #cbd5e1;
   box-shadow: none;
-}
-
-.auto-mock-inline-hint {
-  margin: 0.35rem 0 0;
-  color: #0f766e;
-  font-size: 0.76rem;
-  font-weight: 600;
 }
 
 .mock-kicker {

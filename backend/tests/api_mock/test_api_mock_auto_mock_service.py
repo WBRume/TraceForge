@@ -69,7 +69,6 @@ def test_auto_generate_mock_cases_persists_request_matchers_and_prompt_fields(mo
     monkeypatch.setattr(auto_mock_service, "get_job", lambda *_args, **_kwargs: job)
     monkeypatch.setattr(auto_mock_service, "get_endpoint", lambda *_args, **_kwargs: endpoint)
     monkeypatch.setattr(auto_mock_service, "_set_job_running", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(auto_mock_service, "_append_job_log", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(auto_mock_service, "_raise_if_cancel_requested", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(auto_mock_service, "_set_job_progress", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(auto_mock_service, "_set_job_success", _fake_set_job_success)

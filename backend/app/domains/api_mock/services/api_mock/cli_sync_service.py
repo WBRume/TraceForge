@@ -10,14 +10,10 @@ from sqlalchemy.orm import Session
 
 from app.agents.errors import AgentCancelledError
 from app.agents.selection import resolve_workspace_backend
-from app.core.logging import get_logger
-from app.domains.ai.services.jobs.domain_turn import persisted_milestones
 from app.domains.api_mock.models.api_mock import ApiMockSourceType, SddApiMockProject
 
 from .job_service import (
     JobCancelledError,
-    _append_job_event,
-    _append_job_log,
     _raise_if_cancel_requested,
     _set_job_cancelled,
     _set_job_failed,
@@ -33,8 +29,6 @@ from .utils import (
     _read_text_from_url,
     _temp_workspace_path,
 )
-
-logger = get_logger(__name__, category="api_mock")
 
 
 def run_import_job_internal(
@@ -53,7 +47,6 @@ def run_import_job_internal(
         raise ValueError("Job not found")
 
     _set_job_running(db, project.id, job, "Import started: validating source input")
-    _append_job_log(db, project.id, job, "Starting import job.")
 
     try:
         _raise_if_cancel_requested(db, project.id, job, job_id)
@@ -61,7 +54,7 @@ def run_import_job_internal(
         content = (raw_content or "").strip()
         if not content and source_url:
             _set_job_progress(db, project.id, job, 24, "Downloading OpenAPI document")
-            _append_job_log(db, project.id, job, f"Downloading OpenAPI from URL: {source_url}")
+
             _raise_if_cancel_requested(db, project.id, job, job_id)
             content = _read_text_from_url(source_url)
 
@@ -95,16 +88,15 @@ def run_import_job_internal(
             {"source_url": source_url, "endpoints_imported": len(normalized_oas.get("paths") or {})},
             "Import completed successfully",
         )
-        _append_job_log(db, project.id, job, "Import successful.")
 
     except JobCancelledError:
         db.rollback()
         _set_job_cancelled(db, project.id, job, "Import cancelled by user")
-        _append_job_log(db, project.id, job, "Import cancelled.")
+
     except Exception as exc:
         db.rollback()
         msg = f"Import failed: {exc}"
-        _append_job_log(db, project.id, job, msg)
+
         _set_job_failed(db, project.id, job, msg)
 
 
@@ -150,7 +142,6 @@ def analyze_workspace_and_sync(
         raise ValueError("Job not found")
 
     _set_job_running(db, project.id, job, "Copying workspace for analysis...")
-    _append_job_log(db, project.id, job, "Starting workspace extraction.")
 
     try:
         from .job_service import _is_cancel_requested
@@ -161,15 +152,11 @@ def analyze_workspace_and_sync(
         _raise_if_cancel_requested(db, project.id, job, job_id)
         temp_path = _temp_workspace_path(project.workspace_id, project.task_id)
         _copy_task_workspace(project.task.project_path, temp_path)
-        _append_job_log(db, project.id, job, "Workspace extracted. Starting interface analysis...")
+
         _set_job_progress(db, project.id, job, 30, "正在分析接口定义")
 
-        milestones = []
-
         def on_milestone(event):
-            milestones.append(event.model_dump())
-            job.message = event.message
-            _append_job_event(db, project.id, job, {"type": "domain_milestone", **event.model_dump()})
+            _set_job_progress(db, project.id, job, job.progress, event.message)
 
         raw_yaml, normalized_oas = analyze_workspace(
             temp_path,
@@ -193,8 +180,6 @@ def analyze_workspace_and_sync(
             clone_from_source_id=clone_from_source_id,
         )
 
-        if milestones:
-            _append_job_event(db, project.id, job, {"type": "domain_milestone", **persisted_milestones(milestones)[-1]})
         _set_job_success(
             db,
             project.id,
@@ -202,14 +187,13 @@ def analyze_workspace_and_sync(
             {"endpoints_imported": len(normalized_oas.get("paths") or {})},
             "Sync completed successfully",
         )
-        _append_job_log(db, project.id, job, "Sync successful.")
 
     except (JobCancelledError, AgentCancelledError):
         db.rollback()
         _set_job_cancelled(db, project.id, job, "Sync cancelled by user")
-        _append_job_log(db, project.id, job, "Sync cancelled.")
+
     except Exception as exc:
         db.rollback()
         msg = f"Sync failed: {exc}"
-        _append_job_log(db, project.id, job, msg)
+
         _set_job_failed(db, project.id, job, msg)

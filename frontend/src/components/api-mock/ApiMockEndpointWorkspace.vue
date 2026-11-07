@@ -27,11 +27,9 @@ const props = defineProps<{
   documentLoading: boolean
   canManage: boolean
   canManageMock: boolean
-  swaggerMutationLocked: boolean
   projectAutoMockLocked: boolean
   currentEndpointAutoMockLocked: boolean
   autoMockBusy: boolean
-  autoMockJob: { id: string; job_type: string; status: string; progress: number; message?: string | null; result_json?: Record<string, unknown> | null } | null
   savingEndpoint: boolean
   savingDocument: boolean
   cases: ApiMockMockCase[]
@@ -491,10 +489,6 @@ defineExpose({
         </button>
       </nav>
 
-      <div v-if="swaggerMutationLocked" class="lock-banner">
-        {{ $t('api_mock.ai_auto_mock_locked_project_swagger_mutation') }}
-      </div>
-
       <!-- ===== Tab: Structure ===== -->
       <!-- ===== Tab: Structure (Postman Concept) ===== -->
       <section v-if="activeTab === 'structure'" class="tab-content structure-tab-layout">
@@ -671,7 +665,6 @@ defineExpose({
           :project-auto-mock-locked="projectAutoMockLocked"
           :current-endpoint-auto-mock-locked="currentEndpointAutoMockLocked"
           :auto-mock-busy="autoMockBusy"
-          :auto-mock-job="autoMockJob"
           :saving-case="savingCase"
           :deleting-case="deletingCase"
           :mock-base-url="mockBaseUrl"
@@ -875,16 +868,6 @@ defineExpose({
 
 .tab-spacer {
   flex: 1;
-}
-
-.lock-banner {
-  border: 1px solid rgba(251, 146, 60, 0.45);
-  background: rgba(255, 247, 237, 0.95);
-  color: #9a3412;
-  border-radius: 12px;
-  padding: 0.62rem 0.78rem;
-  font-size: 0.82rem;
-  font-weight: 600;
 }
 
 .tab-btn {

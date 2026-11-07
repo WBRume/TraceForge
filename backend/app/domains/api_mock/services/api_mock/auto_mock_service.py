@@ -12,14 +12,12 @@ from app.agents.domain_tools.contracts import MockSubmission
 from app.agents.domain_tools.validators import validate_mock_cases
 from app.agents.errors import AgentCancelledError
 from app.agents.selection import resolve_workspace_backend
-from app.domains.ai.services.jobs.domain_turn import persisted_milestones, run_domain_turn
+from app.domains.ai.services.jobs.domain_turn import run_domain_turn
 from app.domains.api_mock.models.api_mock import ApiMockRuleMode, SddApiMockProject
 
 from .endpoint_service import get_endpoint
 from .job_service import (
     JobCancelledError,
-    _append_job_event,
-    _append_job_log,
     _is_cancel_requested,
     _raise_if_cancel_requested,
     _set_job_cancelled,
@@ -54,7 +52,6 @@ def auto_generate_mock_cases_for_endpoint(
         return
 
     _set_job_running(db, project.id, job, "Preparing to generate mock cases...")
-    _append_job_log(db, project.id, job, f"Starting generation for {endpoint.method} {endpoint.path}")
 
     try:
 
@@ -65,7 +62,6 @@ def auto_generate_mock_cases_for_endpoint(
 
         temp_path = _temp_workspace_path(project.workspace_id, project.task_id)
         if workspace_sync_needed:
-            _append_job_log(db, project.id, job, "Copying workspace for context...")
             _set_job_progress(db, project.id, job, 10, "Extracting workspace context")
             _copy_task_workspace(project.task.project_path, temp_path)
 
@@ -94,11 +90,8 @@ def auto_generate_mock_cases_for_endpoint(
         if file_matchers:
             prompt += "\n优先查看匹配这些路径的源码：" + json.dumps(file_matchers, ensure_ascii=False)
 
-        _append_job_log(db, project.id, job, f"Sending prompt to Agent: {backend_name}")
-
         def on_milestone(event):
-            job.message = event.message
-            _append_job_event(db, project.id, job, {"type": "domain_milestone", **event.model_dump()})
+            _set_job_progress(db, project.id, job, job.progress, event.message)
 
         result = asyncio.run(
             run_domain_turn(
@@ -113,7 +106,6 @@ def auto_generate_mock_cases_for_endpoint(
             )
         )
 
-        _append_job_log(db, project.id, job, f"{backend_name} submitted validated mock cases.")
         _set_job_progress(db, project.id, job, 80, "正在保存 Mock 用例")
 
         _raise_if_cancel_requested(db, project.id, job, job_id)
@@ -140,13 +132,6 @@ def auto_generate_mock_cases_for_endpoint(
         created_count = len(result["artifact"].cases)
         _raise_if_cancel_requested(db, project.id, job, job_id)
         db.commit()
-        if result["domain_milestones"]:
-            _append_job_event(
-                db,
-                project.id,
-                job,
-                {"type": "domain_milestone", **persisted_milestones(result["domain_milestones"])[-1]},
-            )
         _set_job_success(
             db,
             project.id,
@@ -154,14 +139,13 @@ def auto_generate_mock_cases_for_endpoint(
             {"cases_created": created_count, "created_count": created_count, "updated_count": 0},
             f"Successfully created {created_count} mock cases",
         )
-        _append_job_log(db, project.id, job, f"Generation complete. Created {created_count} mock cases.")
 
     except (JobCancelledError, AgentCancelledError):
         db.rollback()
         _set_job_cancelled(db, project.id, job, "Generation cancelled by user")
-        _append_job_log(db, project.id, job, "Generation cancelled.")
+
     except Exception as exc:
         db.rollback()
         msg = f"Auto mock failed: {exc}"
-        _append_job_log(db, project.id, job, msg)
+
         _set_job_failed(db, project.id, job, msg)

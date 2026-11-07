@@ -3,16 +3,6 @@ import { computed, ref, watch } from 'vue'
 import { CloudUpload, FolderCog, RefreshCw, Upload, X } from '@/components/icons'
 import { Editor as MonacoEditor } from '@guolao/vue-monaco-editor'
 import type { ApiMockProject, ApiMockSourceVersion } from '@/types/apiMock'
-import DomainMilestones from '@/components/ai/DomainMilestones.vue'
-
-type JobState = {
-  id: string
-  job_type: string
-  status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
-  progress: number
-  message?: string | null
-  result_json?: Record<string, unknown> | null
-}
 
 const props = defineProps<{
   open: boolean
@@ -24,15 +14,12 @@ const props = defineProps<{
   canPublish: boolean
   syncBusy: boolean
   importBusy: boolean
-  cancelBusy: boolean
-  activeJob: JobState | null
   swaggerMutationLocked: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'sync'): void
-  (e: 'cancel-job'): void
   (e: 'activate-source', sourceVersionId: string): void
   (e: 'update-proxy', payload: { proxy_enabled: boolean; proxy_base_url: string }): void
   (e: 'import-swagger', payload: { source_name?: string; raw_content?: string; file?: File | null }): void
@@ -53,46 +40,6 @@ watch(
   },
   { immediate: true },
 )
-
-const jobTone = computed(() => {
-  if (!props.activeJob) return 'idle'
-  if (props.activeJob.status === 'FAILED') return 'failed'
-  if (props.activeJob.status === 'SUCCESS') return 'success'
-  return 'running'
-})
-
-const jobLogLines = computed(() => {
-  const payload = props.activeJob?.result_json
-  if (!payload || typeof payload !== 'object') return []
-  const raw = (payload as Record<string, unknown>).live_logs
-  if (!Array.isArray(raw)) return []
-  return raw
-    .map((line) => String(line || '').trim())
-    .filter((line) => Boolean(line))
-})
-
-const jobHeadline = computed(() => {
-  if (!props.activeJob) return ''
-  if (props.activeJob.status === 'SUCCESS') {
-    return props.activeJob.message || 'Sync completed successfully'
-  }
-  if (props.activeJob.status === 'FAILED') {
-    return props.activeJob.message || 'Sync failed'
-  }
-  return props.activeJob.message || props.activeJob.job_type
-})
-
-const cancelRequested = computed(() => {
-  const payload = props.activeJob?.result_json
-  if (!payload || typeof payload !== 'object') return false
-  return Boolean((payload as Record<string, unknown>).cancel_requested)
-})
-
-const canCancelJob = computed(() => {
-  if (!props.canManage || !props.activeJob || props.cancelBusy) return false
-  if (props.activeJob.status !== 'PENDING' && props.activeJob.status !== 'RUNNING') return false
-  return !cancelRequested.value
-})
 
 const showSwaggerLockHint = computed(() => props.swaggerMutationLocked)
 
@@ -160,32 +107,6 @@ const saveProxy = () => {
         </header>
 
         <div class="drawer-body custom-scrollbar">
-          <section v-if="drawerMode === 'sync' && activeJob" class="config-card job-card" :class="`tone-${jobTone}`">
-            <div class="card-head inline">
-              <div>
-                <span>{{ $t('api_mock.sync_status') }}</span>
-                <h3>{{ jobHeadline }}</h3>
-                <DomainMilestones :events="activeJob?.result_json?.live_events" />
-              </div>
-              <strong>{{ activeJob.progress }}%</strong>
-            </div>
-            <div class="job-progress">
-              <span :style="{ width: `${Math.max(6, Math.min(100, activeJob.progress))}%` }"></span>
-            </div>
-            <div class="job-actions">
-              <button type="button" class="btn-danger mini" :disabled="!canCancelJob" @click="emit('cancel-job')">
-                {{ cancelBusy ? $t('api_mock.cancelling') : $t('api_mock.cancel_sync') }}
-              </button>
-              <p v-if="cancelRequested" class="job-cancel-hint">{{ $t('api_mock.cancel_requested') }}</p>
-            </div>
-            <details v-if="jobLogLines.length" class="job-log-shell">
-              <summary>查看执行日志</summary>
-              <div class="job-log-body custom-scrollbar">
-                <p v-for="(line, index) in jobLogLines" :key="index">{{ line }}</p>
-              </div>
-            </details>
-          </section>
-
           <section class="config-card" v-if="drawerMode === 'sync'">
             <div class="card-head inline">
               <div>
@@ -403,167 +324,6 @@ const saveProxy = () => {
   flex-direction: row;
   justify-content: space-between;
   align-items: flex-start;
-}
-
-.job-card strong {
-  color: #0369a1;
-  font-size: 1.2rem;
-}
-
-.job-progress {
-  width: 100%;
-  height: 0.58rem;
-  border-radius: 999px;
-  background: #e2e8f0;
-  overflow: hidden;
-}
-
-.job-progress span {
-  display: block;
-  height: 100%;
-  background: linear-gradient(90deg, #0ea5e9, #2563eb);
-}
-
-.tone-success .job-progress span {
-  background: linear-gradient(90deg, #22c55e, #16a34a);
-}
-
-.tone-failed .job-progress span {
-  background: linear-gradient(90deg, #ef4444, #f97316);
-}
-
-.job-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
-  margin-top: 0.75rem;
-}
-
-.btn-danger {
-  border: 1px solid rgba(248, 113, 113, 0.72);
-  background: #ffffff;
-  color: #b91c1c;
-  font-weight: 700;
-  border-radius: 16px;
-  padding: 0 0.95rem;
-}
-
-.btn-danger:disabled {
-  opacity: 0.6;
-}
-
-.job-cancel-hint {
-  margin: 0;
-  color: #b45309;
-  font-size: 0.8rem;
-  line-height: 1.5;
-}
-
-.job-log-shell {
-  margin-top: 0.85rem;
-  border-radius: 16px;
-  border: 1px solid #e2e8f0;
-  background: rgba(248, 250, 252, 0.78);
-  overflow: hidden;
-}
-
-.job-log-head {
-  padding: 0.55rem 0.75rem;
-  border-bottom: 1px solid #e2e8f0;
-  color: #0369a1;
-  font-size: 0.74rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.job-log-empty {
-  padding: 0.72rem 0.75rem;
-  color: #64748b;
-  font-size: 0.8rem;
-}
-
-.job-log-body {
-  max-height: 12rem;
-  overflow: auto;
-  padding: 0.62rem 0.75rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.42rem;
-}
-
-.job-line {
-  display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
-  gap: 0.4rem;
-  align-items: flex-start;
-}
-
-.job-line-time {
-  color: #64748b;
-  font-size: 0.72rem;
-  padding-top: 0.12rem;
-  min-width: 3.2rem;
-}
-
-.job-line-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.08rem 0.42rem;
-  border-radius: 999px;
-  border: 1px solid rgba(125, 211, 252, 0.92);
-  background: #f1f5f9;
-  color: #0369a1;
-  font-size: 0.68rem;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.job-log-body p {
-  margin: 0;
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 0.77rem;
-  line-height: 1.5;
-  color: #334155;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.raw-shell {
-  background: rgba(241, 245, 249, 0.86);
-}
-
-.raw-toggle-btn {
-  width: 100%;
-  border: none;
-  border-bottom: 1px solid #e2e8f0;
-  background: rgba(255, 255, 255, 0.9);
-  color: #0369a1;
-  font-size: 0.78rem;
-  font-weight: 700;
-  padding: 0.56rem 0.72rem;
-  text-align: left;
-}
-
-.raw-body {
-  max-height: 11rem;
-}
-
-.raw-event {
-  border-radius: 12px;
-  border: 1px solid #e2e8f0;
-  background: rgba(255, 255, 255, 0.96);
-  padding: 0.45rem 0.55rem;
-}
-
-.raw-event pre {
-  margin: 0;
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 0.72rem;
-  color: #334155;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .version-list {
