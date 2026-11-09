@@ -5,7 +5,7 @@ Workspace API routes.
 import asyncio
 import time
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import (
@@ -70,7 +70,6 @@ def _ensure_member_manager(db: Session, ws_id: str, user_id: str):
 @router.post("", response_model=ProvisionJobAcceptedResponse, status_code=202)
 async def create_workspace(
     data: WorkspaceCreate,
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -129,7 +128,7 @@ async def create_workspace(
             workspace_name=data.name,
             job_id=job.id,
         )
-        background_tasks.add_task(provision_job_service.run_create_workspace_job, job.id)
+        provision_job_service.schedule_job(job.id)
         return provision_job_service.serialize_accepted(job)
     except ValueError as exc:
         audit_log(

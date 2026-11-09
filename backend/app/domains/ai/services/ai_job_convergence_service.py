@@ -572,8 +572,18 @@ def _derive_termination_business_status(
     # 打回 PENDING，队列会在 CLI 被杀掉的同一瞬间重新认领并二次拉起 CLI，
     # 且此时取消事件已被 runner 清空，第二个 CLI 会跑完整流程（P0 回归）。
     if job.cancel_requested_at is not None:
+        if (
+            (job.context_json or {}).get("job_kind") == "PROVISION"
+            and request.intent == ConvergenceIntent.REAPER_FINALIZE
+            and int(job.attempt_count or 0) < int(job.max_attempts or 1)
+        ):
+            # Resume the cancelled workflow only to finish its compensating
+            # cleanup. The durable cancel flag survives the next claim.
+            return AiJobStatus.PENDING
         return AiJobStatus.CANCELLED
-    if queue_key.startswith("REQUIREMENT_PREVIEW:") and int(job.attempt_count or 0) < int(job.max_attempts or 1):
+    if queue_key.startswith(("REQUIREMENT_PREVIEW:", "DOMAIN_JOB:")) and int(job.attempt_count or 0) < int(
+        job.max_attempts or 1
+    ):
         return AiJobStatus.PENDING
     if queue_key.startswith("TASK_BASELINE:"):
         return AiJobStatus.FAILED
@@ -712,6 +722,9 @@ def _apply_business_status_in_txn(
         job.next_reap_at = None
     _finalize_submission_in_txn(db, job, final_status)
     _converge_task_status_in_txn(db, job, final_status)
+    from app.domains.ai.services.jobs.domain_jobs import settle_business_state
+
+    settle_business_state(db, job)
 
 
 def _converge_task_status_in_txn(db: Session, job: SddAiJob, final_status: AiJobStatus) -> None:
@@ -1166,7 +1179,8 @@ def request_attempt_termination_in_txn(
                 job.context_json = _merge_json(job.context_json, request.interrupt_context_patch)
         return _result(True)
 
-    job.cancel_requested_at = now
+    if request.mode != "WORKER_SHUTDOWN" or job.channel != AiJobChannel.BACKGROUND:
+        job.cancel_requested_at = now
     job.status = AiJobStatus.TERMINATING
     if request.mode == "INTERRUPT":
         job.message = request.message or "AI session interrupted by user"

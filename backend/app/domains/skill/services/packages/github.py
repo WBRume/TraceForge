@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -30,6 +31,7 @@ def import_skill_from_github(
     dimension_value: str,
     workspace_id: str | None,
     follow_official_source: bool = False,
+    before_commit: Callable[[SddSkill], None] | None = None,
 ) -> SddSkill:
     dimension, target_workspace_id = skill_catalog_policy._resolve_creation_target_scope(
         db,
@@ -93,6 +95,7 @@ def import_skill_from_github(
                 package_initializer=_import_layout,
                 auto_publish_initial_version=True,
                 initial_change_note=import_note,
+                before_commit=before_commit,
             )
     except github_import_service.GithubImportError as exc:
         raise ValueError(str(exc)) from exc

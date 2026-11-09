@@ -79,6 +79,7 @@ def run_import_job_internal(
             creator_id=creator_id,
             activate=True,
             clone_from_source_id=clone_from_source_id,
+            commit=False,
         )
 
         _set_job_success(
@@ -89,7 +90,7 @@ def run_import_job_internal(
             "Import completed successfully",
         )
 
-    except JobCancelledError:
+    except (JobCancelledError, AgentCancelledError):
         db.rollback()
         _set_job_cancelled(db, project.id, job, "Import cancelled by user")
 
@@ -147,7 +148,9 @@ def analyze_workspace_and_sync(
         from .job_service import _is_cancel_requested
 
         def _should_cancel() -> bool:
-            return _is_cancel_requested(job_id)
+            from app.domains.ai.services.jobs import domain_jobs
+
+            return domain_jobs.should_cancel() or _is_cancel_requested(job_id)
 
         _raise_if_cancel_requested(db, project.id, job, job_id)
         temp_path = _temp_workspace_path(project.workspace_id, project.task_id)
@@ -178,6 +181,7 @@ def analyze_workspace_and_sync(
             creator_id=creator_id,
             activate=True,
             clone_from_source_id=clone_from_source_id,
+            commit=False,
         )
 
         _set_job_success(

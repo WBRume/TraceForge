@@ -82,6 +82,7 @@ class ManagedAgentProcess:
     _inspection_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _last_termination: TerminationResult | None = None
     _monitor_wake: asyncio.Event | None = None
+    owner_loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def pid(self) -> int:
@@ -217,6 +218,18 @@ class ManagedAgentProcess:
             # Already-authoritative death proof for this identity: repeated
             # close calls must be idempotent and cheap.
             return self._last_termination
+        if self.owner_loop is not None and asyncio.get_running_loop() is not self.owner_loop:
+            if not self.owner_loop.is_running():
+                return TerminationResult(
+                    confirmed_dead=False,
+                    root_return_code=self.process.returncode,
+                    error_code="PROCESS_OWNER_LOOP_CLOSED",
+                    error_message="The process owner loop is unavailable; persisted cleanup is required",
+                )
+            # Domain jobs may execute their provider on a worker thread. Its
+            # asyncio Process, readers and locks must be stopped on that loop.
+            future = asyncio.run_coroutine_threadsafe(self.close(reason=reason), self.owner_loop)
+            return await asyncio.wrap_future(future)
         result = await self._terminate(reason=reason, graceful=True)
         if result.confirmed_dead:
             await self._reap_readers(timeout=2.0)

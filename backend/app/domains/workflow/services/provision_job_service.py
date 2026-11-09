@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.agents.errors import AgentCancelledError
 from app.core.distributed_lock import (
     LockAcquireTimeout,
     QueueWaitCancelled,
@@ -20,8 +21,9 @@ from app.core.distributed_lock import (
     queue_workspace_task_creation,
 )
 from app.core.logging import audit_log, bind_log_context, get_logger
-from app.core.offload import run_git_job
 from app.database import SessionLocal
+from app.domains.ai.services.jobs import domain_jobs
+from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 from app.domains.auth.models.user import User, Workspace
 from app.domains.local_resource.client import ResourceError
 from app.domains.skill.services.packages import github as skill_packages_github
@@ -115,9 +117,52 @@ def create_job(
     if job_id is not None:
         job.id = job_id
     db.add(job)
+    db.flush()
+    domain_jobs.enqueue(
+        db,
+        job_id=job.id,
+        kind="PROVISION",
+        creator_id=job.creator_id,
+        workspace_id=job.workspace_id,
+        resource_id=job.id,
+        inputs={"job_type": _enum_value(job_type)},
+    )
     db.commit()
     db.refresh(job)
     return job
+
+
+def schedule_job(job_id: str) -> None:
+    domain_jobs.schedule("PROVISION", job_id)
+
+
+def resume_resource_job(db: Session, job: SddProvisionJob) -> None:
+    """An explicit resource verification may resume the original task receipt."""
+    from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+
+    receipt = db.query(SddAiJob).filter_by(id=job.id).with_for_update().first()
+    if receipt is not None and receipt.status not in {AiJobStatus.FAILED, AiJobStatus.CANCELLED}:
+        return
+    if receipt is None:
+        domain_jobs.enqueue(
+            db,
+            job_id=job.id,
+            kind="PROVISION",
+            creator_id=job.creator_id,
+            workspace_id=job.workspace_id,
+            resource_id=job.id,
+            inputs={"job_type": _enum_value(job.job_type)},
+        )
+    else:
+        receipt.status = AiJobStatus.PENDING
+        receipt.cancel_requested_at = None
+        receipt.finished_at = None
+        receipt.attempt_count = 0
+    job.status = ProvisionJobStatus.PENDING
+    job.cancel_requested = False
+    job.finished_at = None
+    db.commit()
+    schedule_job(job.id)
 
 
 def retry_job(
@@ -198,6 +243,7 @@ def _set_job_state(
     started_at: datetime | None = None,
     finished_at: datetime | None = None,
 ) -> SddProvisionJob:
+    db.info["domain_allow_cancel"] = status == ProvisionJobStatus.FAILED or stage in {"CANCELLING", "CANCELLED"}
     if status is not None:
         job.status = status
     if progress is not None:
@@ -224,7 +270,7 @@ def _set_job_state(
 
 
 def mark_running(job_id: str, *, stage: str, progress: int, message: str | None = None) -> None:
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal)
     try:
         job = get_job(db, job_id)
         if not job:
@@ -244,7 +290,7 @@ def mark_running(job_id: str, *, stage: str, progress: int, message: str | None 
 
 
 def mark_progress(job_id: str, *, stage: str, progress: int, message: str | None = None) -> None:
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal)
     try:
         job = get_job(db, job_id)
         if not job:
@@ -269,7 +315,7 @@ def mark_success(
     workspace_id: str | None = None,
     task_id: str | None = None,
 ) -> None:
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal)
     try:
         job = get_job(db, job_id)
         if not job:
@@ -298,7 +344,7 @@ def mark_failed(
     error_message: str,
     result_json: dict[str, Any] | None = None,
 ) -> None:
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal)
     try:
         job = get_job(db, job_id)
         if not job:
@@ -324,6 +370,7 @@ def request_cancel(db: Session, job: SddProvisionJob, *, message: str | None = N
     返回 True 表示标记成功（后台工作流会在下一个检查点终止并回滚）；
     返回 False 表示 job 已终态（SUCCESS/FAILED），无可取消内容。
     """
+    domain_jobs.request_cancel(db, job.id)
     if job.status in (ProvisionJobStatus.SUCCESS, ProvisionJobStatus.FAILED):
         return False
     job.cancel_requested = True
@@ -338,7 +385,7 @@ def request_cancel(db: Session, job: SddProvisionJob, *, message: str | None = N
 
 def is_cancel_requested(job_id: str) -> bool:
     """读取取消标记（供工作流检查点调用，短会话避免长事务）。"""
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal)
     try:
         job = get_job(db, job_id)
         if not job or not job.cancel_requested:
@@ -396,7 +443,7 @@ def serialize_active_job(db: Session, job: SddProvisionJob) -> dict[str, Any]:
 
 
 def _get_job_payload(job_id: str) -> dict[str, Any] | None:
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal)
     try:
         job = get_job(db, job_id)
         if not job:
@@ -407,7 +454,7 @@ def _get_job_payload(job_id: str) -> dict[str, Any] | None:
 
 
 def _create_workspace_sync(*, job_id: str, creator_id: str, context: dict[str, Any]) -> dict[str, Any]:
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal)
     try:
         user = db.query(User).filter(User.id == str(creator_id or "").strip()).first()
         if not user:
@@ -462,7 +509,7 @@ def _materialize_workspace_repos_sync(*, workspace_id: str, job_id: str = "") ->
         WorkspaceRepositoryState,
     )
 
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal)
     try:
         workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
         if not workspace or not workspace.project_path:
@@ -499,6 +546,8 @@ def _materialize_workspace_repos_sync(*, workspace_id: str, job_id: str = "") ->
                         "base_dir": row.base_dir,
                     }
                 )
+            except AgentAttemptFencedError:
+                raise
             except Exception as exc:
                 row.state = WorkspaceRepositoryState.FAILED
                 row.base_commit_sha = None
@@ -521,7 +570,7 @@ def _materialize_workspace_repos_sync(*, workspace_id: str, job_id: str = "") ->
 
 
 def _prepare_task_sync(*, workspace_id: str, task_id: str, job_id: str = "") -> dict[str, Any]:
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal)
     try:
         cancel_check = (lambda: is_cancel_requested(job_id)) if job_id else None
         task = task_provisioning_resources.prepare_task_resources_for_provision(
@@ -553,7 +602,7 @@ def _register_task_sync(*, workspace_id: str, task_id: str, job_id: str) -> None
     from app.domains.task.services.provisioning.worktrees import register_worktrees
 
     _ensure_not_cancelled(job_id)
-    with SessionLocal() as db:
+    with domain_jobs.business_session(SessionLocal) as db:
         register_worktrees(db, workspace_id=workspace_id, task_id=task_id)
 
 
@@ -561,14 +610,22 @@ def _task_is_local(task_id: str) -> bool:
     from app.domains.local_resource.service import is_local
     from app.domains.task.models.task import SddTask
 
-    with SessionLocal() as db:
+    with domain_jobs.business_session(SessionLocal) as db:
         task = db.get(SddTask, task_id)
         return bool(task and is_local(task))
 
 
-def _import_skill_sync(*, creator_id: str, context: dict[str, Any]) -> dict[str, Any]:
-    db = SessionLocal()
+def _import_skill_sync(*, creator_id: str, context: dict[str, Any], job_id: str = "") -> dict[str, Any]:
+    db = domain_jobs.business_session(SessionLocal)
     try:
+        job = get_job(db, job_id) if job_id else None
+        if job and (job.result_json or {}).get("skill_id"):
+            return dict(job.result_json)
+
+        def checkpoint(skill):
+            if job:
+                job.result_json = _imported_skill_result(skill)
+
         user = db.query(User).filter(User.id == str(creator_id or "").strip()).first()
         if not user:
             raise ValueError("Skill import user not found")
@@ -583,23 +640,27 @@ def _import_skill_sync(*, creator_id: str, context: dict[str, Any]) -> dict[str,
             dimension_value=str(context.get("dimension") or "WORKSPACE").strip() or "WORKSPACE",
             workspace_id=context.get("workspace_id"),
             follow_official_source=bool(context.get("follow_official_source")),
+            before_commit=checkpoint,
         )
-        dimension = skill.dimension.value if hasattr(skill.dimension, "value") else str(skill.dimension)
-        return {
-            "skill_id": skill.id,
-            "skill_name": skill.name,
-            "dimension": dimension,
-            "workspace_id": skill.workspace_id,
-            "source_repo_url": skill.source_repo_url,
-            "source_subdir": skill.source_subdir,
-            "source_commit_sha": skill.source_commit_sha,
-        }
+        return _imported_skill_result(skill)
     finally:
         db.close()
 
 
+def _imported_skill_result(skill) -> dict[str, Any]:
+    return {
+        "skill_id": skill.id,
+        "skill_name": skill.name,
+        "dimension": _enum_value(skill.dimension),
+        "workspace_id": skill.workspace_id,
+        "source_repo_url": skill.source_repo_url,
+        "source_subdir": skill.source_subdir,
+        "source_commit_sha": skill.source_commit_sha,
+    }
+
+
 def _rollback_provision_task_sync(*, workspace_id: str, task_id: str) -> None:
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal, allow_cancel=True)
     try:
         task_provisioning_resources.rollback_provision_task(db, workspace_id=workspace_id, task_id=task_id)
     except Exception as exc:
@@ -619,6 +680,8 @@ async def _rollback_task_resources(*, workspace_id: str, task_id: str, job_id: s
     失败/取消发生时仓库锁已被释放，重新获取后才注销 worktree。
     本地任务的注册/删除互斥由桌面资源服务负责。
     """
+    with domain_jobs.business_session(SessionLocal, allow_cancel=True) as ownership_db:
+        domain_jobs.check_ownership(ownership_db, allow_cancel=True)
     use_repo_lock = _workspace_uses_git(workspace_id) and not _task_is_local(task_id)
     if not use_repo_lock:
         await run_provision_io(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
@@ -644,7 +707,7 @@ async def _rollback_task_resources(*, workspace_id: str, task_id: str, job_id: s
 def _workspace_uses_git(workspace_id: str) -> bool:
     from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
 
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal)
     try:
         workspace = db.query(Workspace).filter(Workspace.id == str(workspace_id or "").strip()).first()
         if not workspace:
@@ -700,7 +763,7 @@ async def run_create_workspace_job(job_id: str) -> None:
                                 mark_progress(
                                     job_id, stage="CREATING_WORKSPACE", progress=25, message="Creating workspace"
                                 )
-                                result = await run_git_job(
+                                result = await run_provision_io(
                                     _create_workspace_sync,
                                     job_id=job_id,
                                     creator_id=creator_id,
@@ -712,7 +775,7 @@ async def run_create_workspace_job(job_id: str) -> None:
                                     progress=40,
                                     message="Materializing workspace repositories",
                                 )
-                                repo_result = await run_git_job(
+                                repo_result = await run_provision_io(
                                     _materialize_workspace_repos_sync,
                                     workspace_id=str(result.get("workspace_id") or "").strip(),
                                     job_id=job_id,
@@ -741,7 +804,7 @@ async def run_create_workspace_job(job_id: str) -> None:
                                     progress=30,
                                     message="Cloning workspace repository",
                                 )
-                                result = await run_git_job(
+                                result = await run_provision_io(
                                     _create_workspace_sync,
                                     job_id=job_id,
                                     creator_id=creator_id,
@@ -751,7 +814,7 @@ async def run_create_workspace_job(job_id: str) -> None:
                         raise ValueError("Workspace repository is busy. Please retry later.") from exc
                 else:
                     mark_progress(job_id, stage="CREATING_WORKSPACE", progress=40, message="Creating workspace")
-                    result = await run_git_job(
+                    result = await run_provision_io(
                         _create_workspace_sync,
                         job_id=job_id,
                         creator_id=creator_id,
@@ -796,6 +859,8 @@ async def run_create_workspace_job(job_id: str) -> None:
                 job_id=job_id,
                 reason=err,
             )
+        except AgentAttemptFencedError:
+            raise
         except Exception as exc:
             logger.exception("Workspace provision job failed: job_id={}, error={}", job_id, str(exc))
             mark_failed(
@@ -822,7 +887,7 @@ def _ensure_not_cancelled(job_id: str) -> None:
 
 
 def _mark_job_cancelled(job_id: str) -> None:
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal)
     try:
         job = get_job(db, job_id)
         if not job:
@@ -951,7 +1016,7 @@ async def _run_create_task_job(job_id: str) -> None:
             await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id, job_id=job_id)
             _mark_job_cancelled(job_id)
             raise
-        except (ProvisionJobCancelled, QueueWaitCancelled):
+        except (ProvisionJobCancelled, QueueWaitCancelled, AgentCancelledError):
             await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id, job_id=job_id)
             _mark_job_cancelled(job_id)
             audit_log(
@@ -1004,6 +1069,8 @@ async def _run_create_task_job(job_id: str) -> None:
                 message="本地资源暂不可用；在个人设置重新检测后恢复准备",
                 error_message=str(exc),
             )
+        except AgentAttemptFencedError:
+            raise
         except Exception as exc:
             await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id, job_id=job_id)
             mark_failed(
@@ -1064,8 +1131,9 @@ async def run_import_skill_job(job_id: str) -> None:
                     progress=20,
                     message=f"Importing {skill_name or 'skill'} from GitHub",
                 )
-                result = await run_git_job(
+                result = await run_provision_io(
                     _import_skill_sync,
+                    job_id=job_id,
                     creator_id=creator_id,
                     context=context,
                 )
@@ -1117,6 +1185,8 @@ async def run_import_skill_job(job_id: str) -> None:
                 source="github",
                 job_id=job_id,
             )
+        except AgentAttemptFencedError:
+            raise
         except Exception as exc:
             logger.exception("Skill import provision job failed: job_id={}, error={}", job_id, str(exc))
             mark_failed(

@@ -8,7 +8,6 @@ import os
 import re
 import shutil
 import tempfile
-import threading
 from collections import Counter
 from collections.abc import Iterable
 from contextvars import ContextVar
@@ -21,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.agents.selection import resolve_workspace_backend
 from app.core.background_tasks import retain_background_task
 from app.database import SessionLocal
+from app.domains.ai.services.jobs import domain_jobs
 from app.domains.auth.models.user import User
 from app.domains.skill.models.skill import (
     SddSkill,
@@ -250,6 +250,15 @@ def create_analysis_job(
         created_by_id=user.id,
     )
     db.add(analysis)
+    db.flush()
+    domain_jobs.enqueue(
+        db,
+        job_id=analysis.id,
+        kind="SKILL_ANALYSIS",
+        creator_id=user.id,
+        workspace_id=workspace_id,
+        resource_id=analysis.id,
+    )
     db.commit()
     db.refresh(analysis)
     return analysis
@@ -268,31 +277,32 @@ def retry_analysis_job(db: Session, *, source: SddSkillAnalysis, user_id: str) -
         created_by_id=user_id,
     )
     db.add(analysis)
+    db.flush()
+    domain_jobs.enqueue(
+        db,
+        job_id=analysis.id,
+        kind="SKILL_ANALYSIS",
+        creator_id=user_id,
+        workspace_id=source.workspace_id,
+        resource_id=analysis.id,
+    )
     db.commit()
     db.refresh(analysis)
     return analysis
 
 
 def schedule_analysis_job(analysis_id: str) -> None:
-    try:
-        loop = asyncio.get_running_loop()
-        retain_background_task(loop.create_task(_run_analysis_in_thread(analysis_id)))
-    except RuntimeError:
-        # FastAPI sync routes run in AnyIO worker threads. Schedule back on the
-        # application loop so WS delivery shares the live socket's event loop.
-        from anyio import from_thread
-
-        try:
-            from_thread.run_sync(schedule_analysis_job, analysis_id)
-        except RuntimeError:
-            thread = threading.Thread(target=run_analysis_job, args=(analysis_id,), daemon=True)
-            thread.start()
+    # The dispatcher reads the committed receipt; scheduling never starts work
+    # directly and is safe when invoked from a sync route without an event loop.
+    domain_jobs.schedule("SKILL_ANALYSIS", analysis_id)
 
 
 async def _run_analysis_in_thread(analysis_id: str) -> None:
     token = _notification_loop.set(asyncio.get_running_loop())
     try:
-        await asyncio.to_thread(run_analysis_job, analysis_id)
+        from app.domains.ai.services.jobs.executors.domain_job import run_sync
+
+        await run_sync(run_analysis_job, analysis_id)
     finally:
         _notification_loop.reset(token)
 
@@ -823,13 +833,14 @@ async def _run_semantic_analysis(package_root: str, *, backend_name: str, on_mil
         permission_mode="read-only",
         tool=DomainTool("submit_skill_review", "正在审查技能包", SkillReview, skill_review_validator(package_root)),
         on_milestone=on_milestone,
+        should_cancel=domain_jobs.should_cancel,
         timeout_seconds=SEMANTIC_TIMEOUT_SECONDS,
     )
     return {**result["artifact"].model_dump(), "_provider_session_id": result.get("session_id")}
 
 
 def run_analysis_job(analysis_id: str) -> None:
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal)
     tmp_root: str | None = None
     try:
         analysis = db.query(SddSkillAnalysis).filter(SddSkillAnalysis.id == analysis_id).first()

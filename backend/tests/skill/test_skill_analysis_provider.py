@@ -55,9 +55,7 @@ async def test_analysis_notification_serializes_persisted_timestamps(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_sync_route_worker_publishes_milestones_on_application_loop(monkeypatch):
-    import anyio
-
+async def test_queue_worker_publishes_milestones_on_application_loop(monkeypatch):
     from app.domains.notification.ws.notification_manager import notification_ws_manager
 
     expected_loop = asyncio.get_running_loop()
@@ -76,7 +74,7 @@ async def test_sync_route_worker_publishes_milestones_on_application_loop(monkey
     monkeypatch.setattr(service, "run_analysis_job", run)
     monkeypatch.setattr(service, "serialize_analysis", lambda value: {"id": value.id, "status": "RUNNING"})
     monkeypatch.setattr(notification_ws_manager, "send_message_to_user", send)
-    await anyio.to_thread.run_sync(service.schedule_analysis_job, "analysis")
+    await service._run_analysis_in_thread("analysis")
     await asyncio.wait_for(received.wait(), timeout=5)
     assert messages == [
         ("user", {"type": "skill_analysis_updated", "analysis": {"id": "analysis", "status": "RUNNING"}})

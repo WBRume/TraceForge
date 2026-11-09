@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -52,7 +52,6 @@ def update_resource(
 def verify_resource(
     ws_id: str,
     resource_id: str,
-    background_tasks: BackgroundTasks,
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -81,7 +80,7 @@ def verify_resource(
             .first()
         )
         if job:
-            background_tasks.add_task(provision_job_service.run_create_task_job, job.id)
+            provision_job_service.resume_resource_job(db, job)
     return service.serialize(row)
 
 

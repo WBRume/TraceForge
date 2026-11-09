@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
+from contextvars import copy_context
 from typing import Any, TypeVar
 
 from app.core.offload import run_git_job
@@ -10,7 +11,8 @@ T = TypeVar("T")
 
 
 async def run_provision_io(fn: Callable[..., T], **kwargs: Any) -> T:
-    worker = asyncio.create_task(run_git_job(fn, **kwargs))
+    context = copy_context()
+    worker = asyncio.create_task(run_git_job(lambda: context.run(fn, **kwargs)))
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:

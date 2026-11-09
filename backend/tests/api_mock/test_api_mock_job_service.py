@@ -38,6 +38,7 @@ def test_request_job_cancel_pending_marks_failed_and_commits(monkeypatch: pytest
     mark_cancelled_calls = []
 
     monkeypatch.setattr(job_service, "get_job", lambda *_args, **_kwargs: job)
+    monkeypatch.setattr(job_service.domain_jobs, "request_cancel", lambda *_: None)
     monkeypatch.setattr(job_service, "_get_or_create_cancel_event", lambda *_args, **_kwargs: cancel_signal)
     monkeypatch.setattr(job_service, "_mark_job_cancel_requested", lambda *_args, **_kwargs: None)
 
@@ -80,6 +81,7 @@ def test_request_job_cancel_running_only_marks_requested(monkeypatch: pytest.Mon
     commit_calls = []
 
     monkeypatch.setattr(job_service, "get_job", lambda *_args, **_kwargs: job)
+    monkeypatch.setattr(job_service.domain_jobs, "request_cancel", lambda *_: None)
     monkeypatch.setattr(job_service, "_get_or_create_cancel_event", lambda *_args, **_kwargs: cancel_signal)
     monkeypatch.setattr(job_service, "_mark_job_cancel_requested", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(job_service, "_set_job_failed", lambda *args, **_kwargs: failed_calls.append(args))

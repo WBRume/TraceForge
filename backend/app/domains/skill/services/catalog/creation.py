@@ -60,6 +60,7 @@ def _persist_new_skill(
     package_initializer: Callable[[SddSkill], None],
     auto_publish_initial_version: bool = False,
     initial_change_note: str | None = None,
+    before_commit: Callable[[SddSkill], None] | None = None,
 ) -> SddSkill:
     try:
         db.add(skill)
@@ -81,6 +82,8 @@ def _persist_new_skill(
                 change_note=initial_change_note,
             )
 
+        if before_commit:
+            before_commit(skill)
         db.commit()
         db.refresh(skill)
         return skill

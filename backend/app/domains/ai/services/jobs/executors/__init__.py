@@ -158,6 +158,11 @@ async def execute_job(job_id: str) -> JobExecutionOutcome:
 
     with bind_ai_context(job_id=job_id, event_type="execute_job"):
         try:
+            if channel == AiJobChannel.BACKGROUND:
+                from .domain_job import execute
+
+                await execute(job_id)
+                return JobExecutionOutcome(requested_status=None)
             if job_kind == "PLAYBOOK_PROMOTION":
                 from app.domains.diagnosis_playbook.promotion import run
 

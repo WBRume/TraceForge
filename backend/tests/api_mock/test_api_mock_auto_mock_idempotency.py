@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
 
-from fastapi import BackgroundTasks, HTTPException
+from fastapi import HTTPException
 
 from app.domains.api_mock.models.api_mock import ApiMockJobStatus
 from app.domains.api_mock.routers import api_mock as api_mock_router
@@ -57,7 +57,9 @@ class _AutoMockRaceState:
                 self._condition.notify_all()
             return active_job_at_query_start
 
-    def create_job(self, _db, project, *, creator_id: str, job_type: str, message: str | None = None):
+    def create_job(
+        self, _db, project, *, creator_id: str, job_type: str, message: str | None = None, execution_input=None
+    ):
         job_no = len(self.jobs) + 1
         job = SimpleNamespace(
             id=f"job-{job_no}",
@@ -109,7 +111,6 @@ def test_start_auto_mock_concurrent_requests_create_single_job(monkeypatch):
                 "ws-1",
                 "task-1",
                 "endpoint-1",
-                BackgroundTasks(),
                 current_user=_override_user(),
                 db=_FakeDb(),
             )

@@ -90,6 +90,7 @@ def persist_source_version(
     clone_from_source_id: str | None = None,
     case_endpoint_overrides: dict[str, tuple[str, str]] | None = None,
     entity_endpoint_overrides: dict[str, tuple[str, str] | None] | None = None,
+    commit: bool = True,
 ) -> SddApiMockSourceVersion:
     project = lock_project_source(db, project, clone_from_source_id)
     endpoints_payload, entities_payload = extract_endpoints_and_entities(normalized_oas)
@@ -211,10 +212,11 @@ def persist_source_version(
         source_version.is_active = True
         project.active_source_version_id = source_version.id
 
-    logger.info("Committing all changes...")
-    db.commit()
-    logger.info("Commit successful.")
-    db.refresh(source_version)
+    if commit:
+        db.commit()
+        db.refresh(source_version)
+    else:
+        db.flush()
     return source_version
 
 

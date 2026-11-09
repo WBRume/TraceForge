@@ -300,6 +300,7 @@ async def spawn_supervised(
     # callback await so no unowned window can exist.
     managed = ManagedAgentProcess(
         process=process,
+        owner_loop=asyncio.get_running_loop(),
         run_token=run_token,
         worker_boot_id=worker_boot_id,
         job_handle=windows.create_kill_on_close_job() if os.name == "nt" else None,

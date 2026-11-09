@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import AsyncExitStack
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_task, lock_workspace_repo
@@ -53,7 +53,6 @@ router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 def create_task(
     ws_id: str,
     data: TaskCreate,
-    background_tasks: BackgroundTasks,
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -92,7 +91,7 @@ def create_task(
             stage="QUEUED",
             message="Task provisioning queued",
         )
-        background_tasks.add_task(provision_job_service.run_create_task_job, job.id)
+        provision_job_service.schedule_job(job.id)
         audit_log(
             action="create_task",
             outcome="accepted",

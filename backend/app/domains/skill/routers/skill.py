@@ -2,7 +2,7 @@
 Skill API routes (package + git version model).
 """
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_skill, make_resource_busy_error
@@ -346,7 +346,6 @@ def create_skill(
 @router.post("/import/github", response_model=ProvisionJobAcceptedResponse, status_code=202)
 def import_skill_from_github(
     data: SkillGithubImportRequest,
-    background_tasks: BackgroundTasks,
     workspace_id: str | None = Query(default=None, min_length=1),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -386,7 +385,7 @@ def import_skill_from_github(
             source="github",
             job_id=job.id,
         )
-        background_tasks.add_task(provision_job_service.run_import_skill_job, job.id)
+        provision_job_service.schedule_job(job.id)
         return provision_job_service.serialize_accepted(job)
     except PermissionError as exc:
         audit_log(

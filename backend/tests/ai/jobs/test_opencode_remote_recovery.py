@@ -1,7 +1,7 @@
 """Recovery owns the existing job; cancellation and old writers stay fenced."""
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -107,6 +107,7 @@ def test_persisted_stop_intent_closes_check_to_interrupt_takeover_race(jobs):
     with jobs() as db:
         job = db.get(SddAiJob, owner.job_id)
         job.worker_boot_id = "owner-crashed-before-interrupt"
+        job.lease_expires_at = datetime.utcnow() - timedelta(seconds=1)
         job.next_reap_at = None
         db.commit()
     assert remote_recovery.claim_existing_sync(owner.job_id, owner.run_token) is None

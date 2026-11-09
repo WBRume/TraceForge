@@ -868,3 +868,39 @@ def test_concurrent_inspect_tree_keeps_event_loop_responsive(monkeypatch):
     # 5 个并发 50ms 假检查全部发生在 inspection executor 中；
     # 事件循环 heartbeat 不应被阻塞超过调度余量。
     assert max_lag < 0.1, f"event loop stalled: max heartbeat lag={max_lag:.3f}s"
+
+
+def test_supervisor_close_returns_to_process_owner_loop():
+    from concurrent.futures import Future
+    from threading import Event
+
+    async def run():
+        ready = Future()
+        finish = Event()
+
+        def worker():
+            async def own_process():
+                owner = asyncio.get_running_loop()
+                managed = ManagedAgentProcess(process=SimpleNamespace(pid=123, returncode=0), owner_loop=owner)
+
+                async def terminate(**_kwargs):
+                    assert asyncio.get_running_loop() is owner
+                    return TerminationResult(confirmed_dead=True, root_return_code=0)
+
+                managed._terminate_locked = terminate
+                ready.set_result(managed)
+                await asyncio.to_thread(finish.wait)
+
+            asyncio.run(own_process())
+
+        worker_task = asyncio.create_task(asyncio.to_thread(worker))
+        managed = await asyncio.wrap_future(ready)
+        try:
+            result = await managed.close("LEASE_LOST")
+            assert result.confirmed_dead
+            assert await managed.close("SECOND_CLOSE") is result
+        finally:
+            finish.set()
+            await worker_task
+
+    asyncio.run(run())

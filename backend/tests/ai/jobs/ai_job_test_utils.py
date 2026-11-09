@@ -43,6 +43,7 @@ AI_JOB_DB_MODULES = (
     "app.domains.ai.services.jobs.remote_recovery",
     "app.domains.ai.services.jobs.queue_runner",
     "app.domains.ai.services.jobs.executors",
+    "app.domains.ai.services.jobs.executors.domain_job",
     "app.domains.ai.services.jobs.executors.task_chat",
 )
 

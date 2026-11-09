@@ -10,7 +10,6 @@ from typing import Any
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -244,7 +243,6 @@ def update_project(
 def start_sync(
     ws_id: str,
     task_id: str,
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -259,13 +257,7 @@ def start_sync(
         message="Queued for sync",
     )
 
-    background_tasks.add_task(
-        api_mock_service.run_sync_job_background,
-        job.id,
-        ws_id,
-        task_id,
-        current_user.id,
-    )
+    api_mock_service.schedule_job(project.id)
     return ApiMockSyncStartResponse(
         job_id=job.id,
         project_id=project.id,
@@ -278,7 +270,6 @@ def start_sync(
 async def import_swagger(
     ws_id: str,
     task_id: str,
-    background_tasks: BackgroundTasks,
     source_name: str | None = Form(default=None),
     source_url: str | None = Form(default=None),
     raw_content: str | None = Form(default=None),
@@ -315,17 +306,9 @@ async def import_swagger(
         creator_id=current_user.id,
         job_type="IMPORT_SWAGGER",
         message="Queued for import",
+        execution_input={"source_name": source_name, "source_url": source_url, "raw_content": body_content},
     )
-    background_tasks.add_task(
-        api_mock_service.run_import_job_background,
-        job.id,
-        ws_id,
-        task_id,
-        current_user.id,
-        source_name=source_name,
-        source_url=source_url,
-        raw_content=body_content,
-    )
+    api_mock_service.schedule_job(project.id)
 
     return ApiMockSyncStartResponse(
         job_id=job.id,
@@ -703,7 +686,6 @@ async def start_auto_mock(
     ws_id: str,
     task_id: str,
     endpoint_id: str,
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -734,6 +716,7 @@ async def start_auto_mock(
                 creator_id=current_user.id,
                 job_type=api_mock_service.AUTO_MOCK_JOB_TYPE,
                 message="Queued for AI auto mock",
+                execution_input={"endpoint_id": endpoint_id},
             )
             api_mock_service.set_auto_mock_job_target(
                 db,
@@ -744,14 +727,7 @@ async def start_auto_mock(
     except LockAcquireTimeout as exc:
         _raise_auto_mock_start_locked(exc, endpoint_id=endpoint_id)
 
-    background_tasks.add_task(
-        api_mock_service.run_auto_mock_job_background,
-        job.id,
-        ws_id,
-        task_id,
-        current_user.id,
-        endpoint_id=endpoint_id,
-    )
+    api_mock_service.schedule_job(project.id)
 
     return ApiMockSyncStartResponse(
         job_id=job.id,

@@ -56,7 +56,9 @@ def auto_generate_mock_cases_for_endpoint(
     try:
 
         def _should_cancel() -> bool:
-            return _is_cancel_requested(job_id)
+            from app.domains.ai.services.jobs import domain_jobs
+
+            return domain_jobs.should_cancel() or _is_cancel_requested(job_id)
 
         _raise_if_cancel_requested(db, project.id, job, job_id)
 
@@ -131,7 +133,6 @@ def auto_generate_mock_cases_for_endpoint(
             )
         created_count = len(result["artifact"].cases)
         _raise_if_cancel_requested(db, project.id, job, job_id)
-        db.commit()
         _set_job_success(
             db,
             project.id,

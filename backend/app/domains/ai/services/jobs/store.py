@@ -784,7 +784,7 @@ def heartbeat_job_sync(job_id: str, run_token: str) -> bool:
                 SddAiJob.status == AiJobStatus.RUNNING,
                 SddAiJob.run_token == run_token,
                 SddAiJob.worker_boot_id == WORKER_BOOT_ID,
-                SddAiJob.cancel_requested_at.is_(None),
+                (SddAiJob.cancel_requested_at.is_(None) | (SddAiJob.channel == AiJobChannel.BACKGROUND)),
             )
             .update(
                 {
@@ -846,12 +846,17 @@ def take_next_pending_job_id_sync(queue_key: str) -> str | None:
 
         # Claim 必须在同一事务内解析并写入显式 execution kind，
         # 运行中的 job 不允许长期保持 None。
-        claim_target = db.query(SddAiJob.workspace_id, SddAiJob.task_id).filter(SddAiJob.id == job_id).first()
+        claim_target = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
         execution_kind = resolve_execution_kind_for_claim(
             db,
-            task_id=str(claim_target[1]) if claim_target and claim_target[1] else None,
-            workspace_id=str(claim_target[0]) if claim_target and claim_target[0] else None,
+            task_id=claim_target.task_id,
+            workspace_id=claim_target.workspace_id,
         )
+        context = claim_target.context_json or {}
+        if context.get("job_kind") == "PROVISION" or (
+            context.get("job_kind") == "API_MOCK" and (context.get("inputs") or {}).get("job_type") == "IMPORT_SWAGGER"
+        ):
+            execution_kind = EXECUTION_KIND_LOCAL_PROCESS
         now = datetime.utcnow()
         run_token = str(uuid.uuid4())
         lease_expires_at = now + timedelta(seconds=lease_ttl_seconds())
@@ -874,7 +879,9 @@ def take_next_pending_job_id_sync(queue_key: str) -> str | None:
                     SddAiJob.worker_boot_id: WORKER_BOOT_ID,
                     SddAiJob.heartbeat_at: now,
                     SddAiJob.lease_expires_at: lease_expires_at,
-                    SddAiJob.cancel_requested_at: None,
+                    SddAiJob.cancel_requested_at: (
+                        SddAiJob.cancel_requested_at if queue_key.startswith("DOMAIN_JOB:") else None
+                    ),
                     SddAiJob.process_pid: None,
                     SddAiJob.process_started_at: None,
                     SddAiJob.process_group_id: None,
@@ -924,6 +931,7 @@ def list_pending_queue_keys_sync() -> list[str]:
             f"{constants.QUEUE_KEY_DIAGNOSIS_SUMMARY}:",
             "REQUIREMENT_PREVIEW:",
             "PLAYBOOK_PROMOTION:",
+            "DOMAIN_JOB:",
             f"{constants.QUEUE_KEY_TASK_BASELINE}:",
         )
         return [str(row[0] or "").strip() for row in rows if str(row[0] or "").strip().startswith(managed_prefixes)]

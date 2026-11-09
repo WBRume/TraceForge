@@ -61,6 +61,9 @@ class _FakeQueueDb:
     def refresh(self, _job):
         self.refreshed = True
 
+    def get(self, *_args):
+        return None
+
 
 def test_list_queue_jobs_returns_items(monkeypatch):
     app = FastAPI()
@@ -87,6 +90,7 @@ def test_stale_import_skill_provision_job_is_marked_failed(monkeypatch):
     monkeypatch.setattr(queue_service.settings, "SKILL_GITHUB_IMPORT_GIT_TIMEOUT_SECONDS", 1)
     monkeypatch.setattr(queue_service.settings, "SKILL_GITHUB_IMPORT_STALE_GRACE_SECONDS", 0)
     job = SimpleNamespace(
+        id="legacy-import",
         job_type=ProvisionJobType.IMPORT_SKILL,
         status=ProvisionJobStatus.RUNNING,
         progress=20,
@@ -113,6 +117,7 @@ def test_stale_import_skill_job_uses_started_at_before_local_updated_at(monkeypa
     monkeypatch.setattr(queue_service.settings, "SKILL_GITHUB_IMPORT_GIT_TIMEOUT_SECONDS", 1)
     monkeypatch.setattr(queue_service.settings, "SKILL_GITHUB_IMPORT_STALE_GRACE_SECONDS", 0)
     job = SimpleNamespace(
+        id="legacy-import",
         job_type=ProvisionJobType.IMPORT_SKILL,
         status=ProvisionJobStatus.RUNNING,
         progress=20,

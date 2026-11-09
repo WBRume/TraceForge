@@ -4,7 +4,6 @@ Unified background queue aggregation and management service.
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from collections.abc import Sequence
 from datetime import datetime, timedelta
@@ -13,7 +12,6 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.core.background_tasks import retain_background_task
 from app.core.logging import audit_log
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.ai.schemas.queue import QueueJobActions, QueueJobItem
@@ -377,6 +375,9 @@ def _mark_stale_import_skill_job_failed(db: Session, job: SddProvisionJob) -> No
     if job.job_type != ProvisionJobType.IMPORT_SKILL:
         return
     if job.status not in {ProvisionJobStatus.PENDING, ProvisionJobStatus.RUNNING}:
+        return
+    if db.get(SddAiJob, job.id) is not None:
+        # The leased executor owns timeout/recovery for durable jobs.
         return
 
     timeout_seconds = max(1, int(getattr(settings, "SKILL_GITHUB_IMPORT_GIT_TIMEOUT_SECONDS", 240) or 240))
@@ -968,60 +969,13 @@ def get_queue_job(
 
 
 def start_provision_job(new_job_id: str, job_type: str) -> None:
-    loop = asyncio.get_running_loop()
-    if job_type == ProvisionJobType.CREATE_WORKSPACE.value:
-        retain_background_task(loop.create_task(provision_job_service.run_create_workspace_job(new_job_id)))
-        return
-    if job_type == ProvisionJobType.CREATE_TASK.value:
-        retain_background_task(loop.create_task(provision_job_service.run_create_task_job(new_job_id)))
-        return
-    if job_type == ProvisionJobType.IMPORT_SKILL.value:
-        retain_background_task(loop.create_task(provision_job_service.run_import_skill_job(new_job_id)))
-        return
-    raise ValueError("Unsupported provision job type for retry")
+    provision_job_service.schedule_job(new_job_id)
 
 
-def _start_api_mock_job(
-    *,
-    job_type: str,
-    job_id: str,
-    workspace_id: str,
-    task_id: str,
-    user_id: str,
-    endpoint_id: str | None = None,
-) -> None:
-    loop = asyncio.get_running_loop()
-    if job_type == API_MOCK_JOB_SYNC:
-        retain_background_task(
-            loop.create_task(
-                asyncio.to_thread(
-                    api_mock_service.run_sync_job_background,
-                    job_id,
-                    workspace_id,
-                    task_id,
-                    user_id,
-                )
-            )
-        )
-        return
-    if job_type == API_MOCK_JOB_AUTO:
-        eid = str(endpoint_id or "").strip()
-        if not eid:
-            raise ValueError("Missing endpoint_id for auto mock retry")
-        retain_background_task(
-            loop.create_task(
-                asyncio.to_thread(
-                    api_mock_service.run_auto_mock_job_background,
-                    job_id,
-                    workspace_id,
-                    task_id,
-                    user_id,
-                    endpoint_id=eid,
-                )
-            )
-        )
-        return
-    raise ValueError("Unsupported API MOCK job type for retry")
+def _start_api_mock_job(**kwargs) -> None:
+    from app.domains.ai.services.jobs import domain_jobs
+
+    domain_jobs.schedule_by_id(kwargs["job_id"])
 
 
 def stop_queue_job(
@@ -1159,6 +1113,7 @@ def _retry_api_mock_job(db, job_id, normalized_user_id, normalized_source):
         creator_id=normalized_user_id,
         job_type=str(source_job.job_type or ""),
         message="Retry queued",
+        execution_input={"endpoint_id": endpoint_id} if endpoint_id else None,
     )
 
     if str(source_job.job_type or "") == API_MOCK_JOB_AUTO:

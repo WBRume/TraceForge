@@ -21,6 +21,7 @@ import anyio
 from app.core.distributed_lock import LockAcquireTimeout, queue_api_mock_jobs
 from app.core.logging import get_logger
 from app.database import SessionLocal
+from app.domains.ai.services.jobs import domain_jobs
 from app.domains.api_mock.models.api_mock import ApiMockJobStatus, SddApiMockJob
 
 from .api_mock.collab_service import (
@@ -143,6 +144,10 @@ from .api_mock.source_version_service import (
 logger = get_logger(__name__, category="api_mock")
 
 
+def schedule_job(project_id: str) -> None:
+    domain_jobs.schedule("API_MOCK", project_id)
+
+
 def _status_text(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
@@ -153,7 +158,7 @@ def _is_terminal_status(value: Any) -> bool:
 
 
 def _mark_job_queue_failed(job_id: str, message: str) -> None:
-    db = SessionLocal()
+    db = domain_jobs.business_session(SessionLocal)
     try:
         job = db.query(SddApiMockJob).filter(SddApiMockJob.id == str(job_id or "").strip()).first()
         if not job or _is_terminal_status(job.status):
@@ -203,7 +208,7 @@ def run_auto_mock_job_background(
     from .api_mock.auto_mock_service import auto_generate_mock_cases_for_endpoint
 
     def _run() -> None:
-        db = SessionLocal()
+        db = domain_jobs.business_session(SessionLocal)
         try:
             job = db.query(SddApiMockJob).filter(SddApiMockJob.id == str(job_id or "").strip()).first()
             if not job or _is_terminal_status(job.status):
@@ -225,7 +230,7 @@ def run_sync_job_background(job_id: str, workspace_id: str, task_id: str, user_i
     from .api_mock.cli_sync_service import analyze_workspace_and_sync
 
     def _run() -> None:
-        db = SessionLocal()
+        db = domain_jobs.business_session(SessionLocal)
         try:
             job = db.query(SddApiMockJob).filter(SddApiMockJob.id == str(job_id or "").strip()).first()
             if not job or _is_terminal_status(job.status):
@@ -254,7 +259,7 @@ def run_import_job_background(
     from .api_mock.cli_sync_service import run_import_job_internal
 
     def _run() -> None:
-        db = SessionLocal()
+        db = domain_jobs.business_session(SessionLocal)
         try:
             job = db.query(SddApiMockJob).filter(SddApiMockJob.id == str(job_id or "").strip()).first()
             if not job or _is_terminal_status(job.status):

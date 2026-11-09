@@ -27,6 +27,7 @@ from app.domains.auth.models.user import generate_uuid
 class AiJobChannel(str, PyEnum):
     ASSET_THREAD = "ASSET_THREAD"
     TASK_CHAT = "TASK_CHAT"
+    BACKGROUND = "BACKGROUND"
 
 
 class AiJobStatus(str, PyEnum):
@@ -54,7 +55,7 @@ class SddAiJob(Base):
     workspace_id = Column(
         String(36),
         ForeignKey("workspaces.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     task_id = Column(

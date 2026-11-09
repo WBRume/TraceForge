@@ -91,7 +91,9 @@ def list_reclaimable_jobs_sync(task_id: str | None = None) -> list[dict[str, Any
             else:
                 owner_gone = str(job.worker_boot_id or "") != WORKER_BOOT_ID
                 lease_expired = bool(job.lease_expires_at and job.lease_expires_at <= now)
-                if not owner_gone and not lease_expired:
+                # A different boot ID can belong to another healthy API process.
+                # Only the durable lease proves its ownership has expired.
+                if job.lease_expires_at is not None and not lease_expired:
                     continue
                 reason = "WORKER_RESTART" if owner_gone else "LEASE_EXPIRED"
             result.append(
@@ -137,6 +139,11 @@ def adopt_reclaimable_job_sync(
             SddAiJob.run_token == expected_run_token if expected_run_token else SddAiJob.run_token.is_(None)
         )
         affected = query.filter(
+            or_(
+                SddAiJob.lease_expires_at.is_(None),
+                SddAiJob.lease_expires_at <= datetime.utcnow(),
+                and_(SddAiJob.status == AiJobStatus.INTERRUPTED, _dirty_interrupted_ownership_predicate()),
+            ),
             or_(
                 SddAiJob.status.in_(
                     [

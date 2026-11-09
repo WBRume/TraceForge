@@ -4,7 +4,6 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from fastapi import BackgroundTasks
 from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
 from workspace import test_workspace_provision_readiness as workspace_fixtures
@@ -39,9 +38,7 @@ def test_failed_dual_task_retry_recreates_bindings_and_prepares_both_repos(db, w
         repository_ids=["repo-0", "repo-1"],
         repository_branches=[{"repository_id": "repo-0", "branch_name": "main"}],
     )
-    accepted = create_task(
-        workspace_receipt.workspace_id, data, BackgroundTasks(), Request({"type": "http", "headers": []}), user, db
-    )
+    accepted = create_task(workspace_receipt.workspace_id, data, Request({"type": "http", "headers": []}), user, db)
     job = db.get(SddProvisionJob, accepted["job_id"])
     old_id = job.task_id
     old_path = db.get(SddTask, old_id).project_path
