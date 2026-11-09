@@ -24,6 +24,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from app.database import Base
+from app.domains.ai.models.job_projection import JobExecutionProjection
 from app.domains.auth.models.user import generate_uuid
 
 
@@ -148,7 +149,7 @@ class SddSkillVersion(Base):
     analyses = relationship("SddSkillAnalysis", back_populates="version")
 
 
-class SddSkillAnalysis(Base):
+class SddSkillAnalysis(JobExecutionProjection, Base):
     __tablename__ = "sdd_skill_analyses"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
@@ -157,10 +158,6 @@ class SddSkillAnalysis(Base):
     version_id = Column(String(36), ForeignKey("sdd_skill_versions.id", ondelete="SET NULL"), nullable=True, index=True)
     commit_sha = Column(String(64), nullable=True, index=True)
     ref_kind = Column(Enum(SkillAnalysisRefKind), nullable=False, default=SkillAnalysisRefKind.WORKTREE)
-    status = Column(Enum(SkillAnalysisStatus), nullable=False, default=SkillAnalysisStatus.PENDING, index=True)
-    progress = Column(Integer, nullable=False, default=0)
-    message = Column(Text, nullable=True)
-    error_message = Column(Text, nullable=True)
     risk_level = Column(Enum(SkillRiskLevel), nullable=True)
     complexity = Column(Enum(SkillRiskLevel), nullable=True)
     review_priority = Column(Enum(SkillRiskLevel), nullable=True)
@@ -170,10 +167,7 @@ class SddSkillAnalysis(Base):
     risk_items_json = Column(JSON, nullable=True)
     review_suggestions_json = Column(JSON, nullable=True)
     created_by_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
-    started_at = Column(DateTime, nullable=True)
-    finished_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     workspace = relationship("Workspace")
     skill = relationship("SddSkill", back_populates="analyses")

@@ -23,6 +23,7 @@ import {
   shortQueueId,
 } from '@/composables/queue/queueJobPresentation'
 import type { QueueJobItem, QueueSource } from '@/types/queue'
+import { acceptsJobSnapshot } from '@/utils/jobSnapshot'
 
 const route = useRoute()
 const router = useRouter()
@@ -36,6 +37,8 @@ const loadingAction = ref('')
 const errorMessage = ref('')
 const fetching = ref(false)
 let timer: number | null = null
+let requestGeneration = 0
+let disposed = false
 
 const source = computed(() => String(route.params.source || '').trim() as QueueSource)
 const jobId = computed(() => String(route.params.jobId || '').trim())
@@ -63,33 +66,48 @@ const stopPolling = () => {
 
 const startPolling = () => {
   stopPolling()
+  if (disposed) return
   timer = window.setInterval(() => {
     void loadJob({ silent: true })
   }, 1500)
 }
 
 const loadJob = async ({ silent = false }: { silent?: boolean } = {}) => {
-  if (fetching.value || !isSupportedSource.value || !jobId.value) return
+  if (disposed || (silent && fetching.value) || !isSupportedSource.value || !jobId.value) return
+  const request = ++requestGeneration
+  const requestedId = jobId.value
+  const requestedSource = source.value
   fetching.value = true
   if (!silent) loading.value = true
   errorMessage.value = ''
   try {
-    job.value = await fetchQueueJob(source.value, jobId.value)
+    const incoming = await fetchQueueJob(requestedSource, requestedId)
+    if (request !== requestGeneration || requestedId !== jobId.value || requestedSource !== source.value) return
+    if (job.value?.job_id !== incoming.job_id || acceptsJobSnapshot(
+      job.value ? { ...job.value, version: job.value.version ?? undefined } : null,
+      { ...incoming, version: incoming.version ?? undefined },
+    )) job.value = incoming
   } catch (err) {
+    if (request !== requestGeneration) return
     job.value = null
     errorMessage.value = formatApiError(err, t('queue_ops.detail_load_failed'), t)
   } finally {
-    loading.value = false
-    fetching.value = false
+    if (request === requestGeneration) {
+      loading.value = false
+      fetching.value = false
+    }
   }
 }
 
 const runAction = async (action: 'stop' | 'retry') => {
   if (!job.value) return
+  const requestedSource = source.value
+  const requestedId = jobId.value
   const actionKey = `${job.value.source}:${job.value.job_id}:${action}`
   loadingAction.value = actionKey
   try {
     const res = await runQueueJobAction(job.value.source, job.value.job_id, action)
+    if (disposed || requestedSource !== source.value || requestedId !== jobId.value) return
     const message = String(res.message || '').trim()
     if (message) {
       ElMessage.success(message)
@@ -102,14 +120,17 @@ const runAction = async (action: 'stop' | 'retry') => {
     }
     await loadJob()
   } catch (err) {
+    if (disposed || requestedSource !== source.value || requestedId !== jobId.value) return
     ElMessage.error(formatApiError(err, t('workspaces.queue.action_failed'), t))
   } finally {
-    loadingAction.value = ''
+    if (loadingAction.value === actionKey) loadingAction.value = ''
   }
 }
 
 const openTarget = async () => {
   if (!job.value) return
+  const requestedSource = source.value
+  const requestedId = jobId.value
   const actionKey = `${job.value.source}:${job.value.job_id}:open`
   loadingAction.value = actionKey
   try {
@@ -117,12 +138,13 @@ const openTarget = async () => {
       router,
       provisioningStore,
       t,
+      isCurrent: () => !disposed && requestedSource === source.value && requestedId === jobId.value,
     })
     if (result.warningMessage) {
       ElMessage.warning(result.warningMessage)
     }
   } finally {
-    loadingAction.value = ''
+    if (loadingAction.value === actionKey) loadingAction.value = ''
   }
 }
 
@@ -133,6 +155,7 @@ const isActionLoading = (action: 'stop' | 'retry' | 'open') => {
 
 onMounted(async () => {
   await workspaceStore.fetchWorkspaces()
+  if (disposed) return
   if (!isSupportedSource.value) {
     errorMessage.value = t('queue_ops.invalid_source')
     loading.value = false
@@ -143,12 +166,16 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  requestGeneration += 1
   stopPolling()
 })
 
 watch(
   () => [route.params.source, route.params.jobId],
   async () => {
+    requestGeneration += 1
+    job.value = null
     if (!isSupportedSource.value) {
       errorMessage.value = t('queue_ops.invalid_source')
       job.value = null

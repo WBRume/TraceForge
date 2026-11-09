@@ -43,6 +43,7 @@ def _override_user():
 def _fake_job(**overrides):
     now = datetime.utcnow()
     payload = {
+        "execution": SimpleNamespace(version=1, attempt_count=0, completion_json=None),
         "id": "job-1",
         "job_type": ProvisionJobType.CREATE_WORKSPACE,
         "status": "PENDING",

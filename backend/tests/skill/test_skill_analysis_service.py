@@ -24,7 +24,7 @@ import app.domains.workflow.models.provision_job
 import app.domains.workflow.models.task_change
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
 from app.database import Base
-from app.domains.skill.models.skill import SddSkillAnalysis, SkillAnalysisRefKind, SkillAnalysisStatus, SkillRiskLevel
+from app.domains.skill.models.skill import SkillAnalysisRefKind, SkillAnalysisStatus, SkillRiskLevel
 from app.domains.skill.services.skill_analysis_service import (
     SemanticAnalysisContractError,
     _merge_semantic_result,
@@ -34,6 +34,7 @@ from app.domains.skill.services.skill_analysis_service import (
     get_latest_analysis,
     serialize_analysis,
 )
+from tests.ai.jobs.domain_job_test_utils import bound_domain_attempt, make_analysis
 
 
 class SkillAnalysisDeterministicScanTest(unittest.TestCase):
@@ -193,7 +194,7 @@ class SkillAnalysisDeterministicScanTest(unittest.TestCase):
             SkillReview.model_validate('```json\n{"risk_level":"LOW"}\n```', strict=True)
 
     def test_semantic_failure_is_not_reported_as_success(self):
-        analysis = SddSkillAnalysis(
+        analysis = make_analysis(
             workspace_id="ws1",
             skill_id="skill1",
             created_by_id="user1",
@@ -208,7 +209,7 @@ class SkillAnalysisDeterministicScanTest(unittest.TestCase):
         self.assertEqual(payload["error_message"], "No tool submission")
 
     def test_serialize_analysis_backfills_legacy_risk_detail_fields(self):
-        analysis = SddSkillAnalysis(
+        analysis = make_analysis(
             workspace_id="ws1",
             skill_id="skill1",
             created_by_id="user1",
@@ -239,7 +240,7 @@ class SkillAnalysisDeterministicScanTest(unittest.TestCase):
         self.assertTrue(risk["recommendation"])
 
     def test_serializer_preserves_persisted_status_without_inventing_transitions(self):
-        analysis = SddSkillAnalysis(
+        analysis = make_analysis(
             id="analysis-high-empty",
             workspace_id="ws1",
             skill_id="skill1",
@@ -267,7 +268,7 @@ class SkillAnalysisDeterministicScanTest(unittest.TestCase):
         now = datetime.utcnow()
         db.add_all(
             [
-                SddSkillAnalysis(
+                make_analysis(
                     id="analysis-v2",
                     workspace_id="ws1",
                     skill_id="skill1",
@@ -279,7 +280,7 @@ class SkillAnalysisDeterministicScanTest(unittest.TestCase):
                     created_by_id="user1",
                     created_at=now,
                 ),
-                SddSkillAnalysis(
+                make_analysis(
                     id="analysis-v1-newer",
                     workspace_id="ws1",
                     skill_id="skill1",
@@ -307,7 +308,7 @@ class SkillAnalysisDeterministicScanTest(unittest.TestCase):
 
     def test_payload_state_update_fully_overwrites_json_fields(self):
         db = self._db()
-        analysis = SddSkillAnalysis(
+        analysis = make_analysis(
             id="analysis-1",
             workspace_id="ws1",
             skill_id="skill1",
@@ -324,20 +325,23 @@ class SkillAnalysisDeterministicScanTest(unittest.TestCase):
         db.add(analysis)
         db.commit()
 
-        _set_analysis_state(
-            db,
-            analysis,
-            payload={
-                "risk_level": "LOW",
-                "complexity": "LOW",
-                "review_priority": "LOW",
-                "file_stats": {"total_files": 1},
-                "file_type_distribution": {},
-                "key_files": [],
-                "risk_items": [],
-                "review_suggestions": [],
-            },
-        )
+        analysis.execution.status = SkillAnalysisStatus.PENDING
+        db.commit()
+        with bound_domain_attempt(db, analysis.id):
+            _set_analysis_state(
+                db,
+                analysis,
+                payload={
+                    "risk_level": "LOW",
+                    "complexity": "LOW",
+                    "review_priority": "LOW",
+                    "file_stats": {"total_files": 1},
+                    "file_type_distribution": {},
+                    "key_files": [],
+                    "risk_items": [],
+                    "review_suggestions": [],
+                },
+            )
 
         self.assertEqual(analysis.file_stats_json, {"total_files": 1})
         self.assertEqual(analysis.file_type_distribution_json, {})

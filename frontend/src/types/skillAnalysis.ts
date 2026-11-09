@@ -1,4 +1,4 @@
-export type SkillAnalysisStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
+export type SkillAnalysisStatus = import('@/types/queue').QueueStatus
 export type SkillAnalysisRefKind = 'WORKTREE' | 'LATEST' | 'VERSION'
 export type SkillAnalysisLevel = 'LOW' | 'MEDIUM' | 'HIGH'
 
@@ -29,6 +29,8 @@ export type SkillAnalysisRiskItem = {
 }
 
 export type SkillAnalysis = {
+  version?: number
+  attempt_count?: number
   id: string
   workspace_id: string
   skill_id: string

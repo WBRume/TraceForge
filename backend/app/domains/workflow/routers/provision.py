@@ -38,6 +38,8 @@ def cancel_provision_job(
 
     if str(job.creator_id or "") != str(current_user.id or ""):
         raise HTTPException(status_code=403, detail="Only the provision job creator can cancel it")
+    if job.workspace_id and not workspace_service.get_workspace_member(db, job.workspace_id, current_user.id):
+        raise HTTPException(status_code=403, detail="No access to this provision job")
 
     if str(getattr(job.job_type, "value", job.job_type)) != str(ProvisionJobType.CREATE_TASK.value):
         raise HTTPException(status_code=400, detail="Only task provisioning jobs can be cancelled")
@@ -59,11 +61,10 @@ def get_provision_job(
         raise HTTPException(status_code=404, detail="Provision job not found")
 
     is_creator = str(job.creator_id or "") == str(current_user.id or "")
-    if not is_creator:
-        if not job.workspace_id:
+    if job.workspace_id:
+        if not workspace_service.get_workspace_member(db, str(job.workspace_id), current_user.id):
             raise HTTPException(status_code=403, detail="No access to this provision job")
-        member = workspace_service.get_workspace_member(db, str(job.workspace_id), current_user.id)
-        if not member:
-            raise HTTPException(status_code=403, detail="No access to this provision job")
+    elif not is_creator:
+        raise HTTPException(status_code=403, detail="No access to this provision job")
 
     return ProvisionJobResponse(**provision_job_service.serialize_job(job))

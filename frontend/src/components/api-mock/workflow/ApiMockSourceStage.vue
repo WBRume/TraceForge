@@ -9,7 +9,7 @@ type TaskOption = {
 type JobState = {
   id: string
   job_type: string
-  status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
+  status: import('@/types/queue').QueueStatus
   progress: number
   message?: string | null
 }

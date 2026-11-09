@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session, object_session
 
 from app.agents import (
@@ -134,13 +135,11 @@ def resolve_execution_kind_for_backend(backend_name: str | None) -> str:
     if name in ("claude-code", "mock"):
         return EXECUTION_KIND_LOCAL_PROCESS
     try:
-        from app.agents.adapters import register_all
-        from app.agents.registry import AGENT_BACKENDS
+        from app.agents.registry import registered_backends
 
-        if not AGENT_BACKENDS:
-            register_all()
-        backend_cls = AGENT_BACKENDS.get(name)
-        kind = str(getattr(getattr(backend_cls, "capabilities", None), "execution_kind", "") or "").strip()
+        entry = registered_backends().get(name)
+        capabilities = entry.backend_cls.capabilities if entry else None
+        kind = str(getattr(capabilities, "execution_kind", "") or "").strip()
         if kind in (EXECUTION_KIND_LOCAL_PROCESS, EXECUTION_KIND_REMOTE_SESSION):
             return kind
     except Exception:
@@ -190,6 +189,10 @@ def serialize_job(job: SddAiJob) -> dict[str, Any]:
         "channel": as_status(job.channel),
         "queue_key": job.queue_key,
         "status": as_status(job.status),
+        "version": int(job.version or 1),
+        "stage": job.stage,
+        "completion": job.completion_json,
+        "execution_backend": job.execution_backend,
         "task_snapshot": sm.snapshot(task) if task else None,
         "progress": int(job.progress or 0),
         "message": job.message,
@@ -653,14 +656,16 @@ def create_task_baseline_job(
     workspace_id: str,
     task_id: str,
     creator_id: str,
+    retry_of_job_id: str | None = None,
 ) -> SddAiJob:
-    """Create/reuse the durable baseline job for the current spec revision."""
+    """Reuse active work; each new build retains an independent history."""
     record = (
         db.query(SddTaskCliBootstrap)
         .filter(
             SddTaskCliBootstrap.task_id == task_id,
             SddTaskCliBootstrap.workspace_id == workspace_id,
         )
+        .with_for_update()
         .first()
     )
     if not record:
@@ -671,40 +676,21 @@ def create_task_baseline_job(
         db.query(SddAiJob)
         .filter(SddAiJob.task_id == task_id, SddAiJob.queue_key == key)
         .order_by(SddAiJob.created_at.desc())
+        .with_for_update()
         .all()
     )
+    if retry_of_job_id:
+        previous = db.query(SddAiJob).filter_by(command_key=f"rerun:{retry_of_job_id}").with_for_update().first()
+        if previous:
+            return previous
     for existing in existing_jobs:
         context = existing.context_json if isinstance(existing.context_json, dict) else {}
         if str(context.get("input_revision") or "") != input_revision:
             continue
-        baseline_active_statuses = {
-            AiJobStatus.PENDING,
-            AiJobStatus.RUNNING,
-            AiJobStatus.WAITING_HITL,
-            AiJobStatus.TERMINATING,
-            AiJobStatus.ORPHANED,
-        }
-        if existing.status in baseline_active_statuses or existing.status == AiJobStatus.SUCCESS:
+        if existing.status in BLOCKING_STATUSES or existing.status == AiJobStatus.PENDING:
             return existing
-        # A failed/cancelled attempt for the same immutable input revision is
-        # safely reusable as a manual retry; do not create duplicate baselines.
-        existing.status = AiJobStatus.PENDING
-        existing.progress = 0
-        existing.message = "Baseline build queued"
-        existing.error_message = None
-        existing.finished_at = None
-        existing.run_token = None
-        existing.worker_id = None
-        existing.worker_boot_id = None
-        existing.attempt_count = 0
-        existing.context_json = {
-            **context,
-            "job_kind": JOB_KIND_TASK_BASELINE,
-            "input_revision": input_revision,
-        }
-        db.commit()
-        db.refresh(existing)
-        return existing
+        if existing.status == AiJobStatus.SUCCESS and record.status.value == "READY" and not retry_of_job_id:
+            return existing
 
     job = SddAiJob(
         workspace_id=workspace_id,
@@ -717,14 +703,22 @@ def create_task_baseline_job(
         prompt_text="[TASK_BASELINE]",
         context_json={
             "source": "task_specification",
+            "input_policy": "CURRENT_SPECIFICATION",
             "job_kind": JOB_KIND_TASK_BASELINE,
             "input_revision": input_revision,
             "bootstrap_id": record.id,
         },
         creator_id=creator_id,
         max_attempts=1,
+        queue_source="bootstrap",
+        job_type="TASK_CLI_BOOTSTRAP",
+        resource_id=record.id,
+        retry_of_job_id=retry_of_job_id,
+        command_key=f"rerun:{retry_of_job_id}" if retry_of_job_id else None,
     )
     db.add(job)
+    db.flush()
+    record.execution_job_id = job.id
     db.commit()
     db.refresh(job)
     return job
@@ -822,6 +816,7 @@ def take_next_pending_job_id_sync(queue_key: str) -> str | None:
             db.query(SddAiJob)
             .filter(
                 SddAiJob.queue_key == queue_key,
+                SddAiJob.execution_backend == "durable",
                 SddAiJob.status.in_(list(BLOCKING_STATUSES)),
             )
             .order_by(SddAiJob.created_at.asc())
@@ -834,6 +829,7 @@ def take_next_pending_job_id_sync(queue_key: str) -> str | None:
             .filter(
                 SddAiJob.queue_key == queue_key,
                 SddAiJob.status == AiJobStatus.PENDING,
+                SddAiJob.execution_backend == "durable",
             )
             .order_by(SddAiJob.created_at.asc())
             .first()
@@ -869,6 +865,8 @@ def take_next_pending_job_id_sync(queue_key: str) -> str | None:
             .update(
                 {
                     SddAiJob.status: AiJobStatus.RUNNING,
+                    SddAiJob.version: SddAiJob.version + 1,
+                    SddAiJob.state_changed_at: func.now(),
                     SddAiJob.started_at: now,
                     SddAiJob.finished_at: None,
                     SddAiJob.progress: 5,
@@ -905,6 +903,9 @@ def take_next_pending_job_id_sync(queue_key: str) -> str | None:
         from app.domains.notification.services.task_awareness import capture_job
 
         capture_job(db, db.get(SddAiJob, job_id), allow_start=True)
+        from app.domains.ai.models.job_history import record_event
+
+        record_event(db, db.get(SddAiJob, job_id))
         db.commit()
         return job_id
     finally:
@@ -924,7 +925,12 @@ def list_pending_queue_keys_sync() -> list[str]:
     """List queue keys in a worker thread; never open ORM sessions on-loop."""
     db = SessionLocal()
     try:
-        rows = db.query(SddAiJob.queue_key).filter(SddAiJob.status == AiJobStatus.PENDING).distinct().all()
+        rows = (
+            db.query(SddAiJob.queue_key)
+            .filter(SddAiJob.status == AiJobStatus.PENDING, SddAiJob.execution_backend == "durable")
+            .distinct()
+            .all()
+        )
         managed_prefixes = (
             f"{AiJobChannel.TASK_CHAT.value}:",
             f"{AiJobChannel.ASSET_THREAD.value}:",

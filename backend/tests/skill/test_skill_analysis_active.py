@@ -1,8 +1,9 @@
 from types import SimpleNamespace
 
-from app.domains.skill.models.skill import SddSkill, SddSkillAnalysis, SkillAnalysisStatus, SkillDimension
+from app.domains.skill.models.skill import SddSkill, SkillAnalysisStatus, SkillDimension
 from app.domains.skill.routers.skill import list_active_skill_analyses
 from app.domains.workspace.services import workspace_service
+from tests.ai.jobs.domain_job_test_utils import make_analysis
 from tests.skill import test_skill_analysis_service as scan_tests
 
 
@@ -37,7 +38,7 @@ def test_active_analyses_only_restore_owned_accessible_running_jobs(monkeypatch)
             ("moved-skill", "user", "ws", "hidden", SkillAnalysisStatus.RUNNING),
         ]:
             db.add(
-                SddSkillAnalysis(
+                make_analysis(
                     id=analysis_id, created_by_id=owner, workspace_id=workspace, skill_id=skill_id, status=status
                 )
             )

@@ -46,12 +46,28 @@ class AiJobStatus(str, PyEnum):
 class SddAiJob(Base):
     __tablename__ = "sdd_ai_jobs"
     __table_args__ = (
+        Index("ix_sdd_ai_jobs_listing", "queue_source", "workspace_id", "status", "state_changed_at", "id"),
         Index("ix_sdd_ai_jobs_reclaim", "status", "lease_expires_at"),
         Index("ix_sdd_ai_jobs_queue_claim", "queue_key", "status", "created_at", "id"),
         Index("ix_sdd_ai_jobs_worker_active", "worker_id", "worker_boot_id", "status"),
     )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
+    queue_source = Column(String(40), nullable=True, index=True)
+    job_type = Column(String(80), nullable=True)
+    resource_id = Column(String(190), nullable=True)
+    execution_backend = Column(String(40), nullable=False, default="durable", server_default="durable")
+    external_task_id = Column(String(190), nullable=True)
+    visibility = Column(String(20), nullable=False, default="workspace", server_default="workspace")
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    state_changed_at = Column(DateTime, nullable=False, default=func.now(), server_default=func.now())
+    stage = Column(String(128), nullable=True)
+    # A validated business commit can precede confirmed execution cleanup.
+    completion_json = Column(JSON, nullable=True)
+    retry_of_job_id = Column(String(36), nullable=True, index=True)
+    command_key = Column(String(190), nullable=True, unique=True)
+    schedule_id = Column(String(80), nullable=True)
+    scheduled_for = Column(DateTime, nullable=True)
     workspace_id = Column(
         String(36),
         ForeignKey("workspaces.id", ondelete="CASCADE"),
@@ -60,19 +76,19 @@ class SddAiJob(Base):
     )
     task_id = Column(
         String(36),
-        ForeignKey("sdd_tasks.id", ondelete="CASCADE"),
+        ForeignKey("sdd_tasks.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
     asset_id = Column(
         String(36),
-        ForeignKey("sdd_assets.id", ondelete="CASCADE"),
+        ForeignKey("sdd_assets.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
     thread_id = Column(
         String(36),
-        ForeignKey("sdd_asset_threads.id", ondelete="CASCADE"),
+        ForeignKey("sdd_asset_threads.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -172,3 +188,7 @@ class SddAiJob(Base):
     session_turn = relationship("TaskSessionTurn", foreign_keys=[session_turn_id])
     outputs = relationship("SddAiOutput", back_populates="ai_job", cascade="all, delete-orphan")
     evidence_items = relationship("SddEvidence", back_populates="ai_job")
+
+
+# Register the transactional audit hook for every runtime importing this model.
+from app.domains.ai.models import job_history as _job_history  # noqa: E402,F401

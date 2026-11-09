@@ -4,9 +4,10 @@ import api from '@/utils/api'
 import { domainMilestones } from '@/utils/domainMilestones'
 import type { SkillAnalysis } from '@/types/skillAnalysis'
 import type { ProvisionJobView } from '@/stores/provisioning'
+import { acceptsJobSnapshot, isJobTerminal } from '@/utils/jobSnapshot'
 
 export const isSkillAnalysisRunning = (analysis: SkillAnalysis) =>
-  analysis.status === 'PENDING' || analysis.status === 'RUNNING'
+  !isJobTerminal(analysis.status)
 
 export const useSkillAnalysisStore = defineStore('skillAnalysis', () => {
   const analyses = ref<Record<string, SkillAnalysis>>({})
@@ -19,13 +20,7 @@ export const useSkillAnalysisStore = defineStore('skillAnalysis', () => {
     if (!payload?.id || !payload.skill_id || !payload.workspace_id) return null
     const previous = analyses.value[payload.id]
     // POST/GET responses can arrive after a newer notification for the same run.
-    const stale = previous && (
-      (!isSkillAnalysisRunning(previous) && isSkillAnalysisRunning(payload))
-      || (isSkillAnalysisRunning(previous) && isSkillAnalysisRunning(payload)
-        && (previous.progress > payload.progress
-          || (previous.progress === payload.progress
-            && domainMilestones(previous.file_stats.domain_milestones).length > domainMilestones(payload.file_stats.domain_milestones).length)))
-    )
+    const stale = !acceptsJobSnapshot(previous, payload)
     const current = stale ? previous : payload
     analyses.value = { ...analyses.value, [payload.id]: current }
     if (track && !dismissed.has(payload.id) && !tracked.value.includes(payload.id)) {

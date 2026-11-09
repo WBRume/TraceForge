@@ -685,6 +685,7 @@ def _apply_business_status_in_txn(
     else:
         job.status = final_status
         job.progress = 100
+        job.stage = {AiJobStatus.SUCCESS: "COMPLETED", AiJobStatus.CANCELLED: "CANCELLED"}.get(final_status, job.stage)
         if final_status == AiJobStatus.CANCELLED:
             job.message = request.message or "Job cancelled by user"
             job.error_message = request.error_message
@@ -722,9 +723,6 @@ def _apply_business_status_in_txn(
         job.next_reap_at = None
     _finalize_submission_in_txn(db, job, final_status)
     _converge_task_status_in_txn(db, job, final_status)
-    from app.domains.ai.services.jobs.domain_jobs import settle_business_state
-
-    settle_business_state(db, job)
 
 
 def _converge_task_status_in_txn(db: Session, job: SddAiJob, final_status: AiJobStatus) -> None:
@@ -878,7 +876,7 @@ def _decide_final_status(
     return AiJobStatus.ORPHANED, evidence.failure_code or PROCESS_TREE_STILL_ALIVE
 
 
-def converge_job_attempt_in_txn(
+def converge_job_attempt_in_txn(  # noqa: PLR0912
     db: Session,
     request: AttemptConvergenceRequest,
 ) -> ConvergenceResult:
@@ -962,6 +960,18 @@ def converge_job_attempt_in_txn(
     # 6. 读取显式 execution kind。
     execution_kind = _job_row_execution_kind(job, request.evidence)
 
+    # A committed result survives loss of the worker/notification. Reaping
+    # still proves cleanup, then consumes the result instead of rerunning it.
+    if job.completion_json:
+        from dataclasses import replace
+
+        request = replace(
+            request,
+            requested_status=AiJobStatus(job.completion_json["outcome"]),
+            message=job.completion_json["summary"],
+            error_message=None if job.completion_json["outcome"] == "SUCCESS" else job.error_message,
+        )
+
     # 7. 决策表。
     final_status, orphan_failure_code = _decide_final_status(job, request, execution_kind)
 
@@ -982,6 +992,7 @@ def converge_job_attempt_in_txn(
             str(request.reason or ""),
             now,
         )
+    db.flush()
     payload = _serialize_converged_job(job)
     is_final = final_status in {
         AiJobStatus.SUCCESS,
@@ -1225,6 +1236,10 @@ def _serialize_converged_job(job: SddAiJob) -> dict[str, Any]:
         "channel": _as_text(job.channel),
         "queue_key": job.queue_key,
         "status": _as_text(job.status),
+        "version": int(job.version or 1),
+        "stage": job.stage,
+        "completion": job.completion_json,
+        "execution_backend": job.execution_backend,
         "progress": int(job.progress or 0),
         "message": job.message,
         "prompt_text": job.prompt_text,

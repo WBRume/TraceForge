@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import api from '@/utils/api'
+import { acceptsJobSnapshot } from '@/utils/jobSnapshot'
 import type { RequirementImportBatch } from '@/types/workspaceAssets'
 
 type PendingTaskSpecUpload = {
@@ -16,12 +17,13 @@ type PendingTaskDocsUpload = {
 }
 
 /** 预览作业状态含后端收敛态（CANCELLED/TERMINATING/ORPHANED/REVERTED） */
-export type ProvisionJobStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'TERMINATING' | 'ORPHANED' | 'REVERTED'
+export type ProvisionJobStatus = import('@/types/queue').QueueStatus
 
 /** 浮窗跟踪的作业种类：任务创建 / Requirement AI 拆分预览 / AI 导入预览 */
 export type ProvisionJobKind = 'provision' | 'requirement_split_preview' | 'requirement_import_preview' | 'playbook_promotion' | 'skill_analysis'
 
 export type ProvisionJobView = {
+  version?: number
   analysis?: import('@/types/skillAnalysis').SkillAnalysis
   domain_milestones?: import('@/utils/domainMilestones').DomainMilestone[]
   jobId: string
@@ -34,7 +36,7 @@ export type ProvisionJobView = {
   message: string
   errorMessage: string
   cancelRequested: boolean
-  /** job SUCCESS 且任务状态已确认走到 PENDING（可进入会话） */
+  /** job SUCCESS 且任务已完成资源准备（可进入会话） */
   ready: boolean
   /** 轮询终态：SUCCESS / FAILED（含被取消）或连续拉取失败 */
   terminal: boolean
@@ -56,6 +58,7 @@ export type ProvisionJobView = {
 }
 
 type ProvisionJobApiPayload = {
+  version?: number
   job_id?: string | null
   job_type?: string | null
   status?: string | null
@@ -94,8 +97,8 @@ const pendingDocsByJob = new Map<string, PendingTaskDocsUpload>()
 
 const POLL_INTERVAL_MS = 1200
 const MAX_CONSECUTIVE_FETCH_ERRORS = 10
-const TASK_PENDING_POLL_ATTEMPTS = 20
-const TASK_PENDING_POLL_INTERVAL_MS = 500
+const TASK_READY_POLL_ATTEMPTS = 20
+const TASK_READY_POLL_INTERVAL_MS = 500
 const EXPAND_PREF_KEY = 'provisionWidgetExpanded'
 
 // Requirement preview 作业的前端终态集合：后端 converge 业务终态
@@ -190,8 +193,10 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     const jobId = asJobId(payload?.job_id)
     if (!jobId) return null
     const existing = jobs.value[jobId]
+    if (!acceptsJobSnapshot(existing, { ...payload, status: payload.status ?? undefined })) return existing
     const status = (String(payload?.status || '').toUpperCase() as ProvisionJobStatus) || existing?.status || 'PENDING'
     const view: ProvisionJobView = {
+      version: payload.version,
       jobId,
       taskId: asJobId(payload?.task_id) || existing?.taskId || '',
       workspaceId: asJobId(payload?.workspace_id) || existing?.workspaceId || '',
@@ -271,20 +276,20 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     timer = null
   }
 
-  /** 任务资源 job SUCCESS 后，确认任务状态真正从 PROVISIONING 走到 PENDING */
-  const waitForTaskPending = async (workspaceId: string, taskId: string): Promise<boolean> => {
+  /** 任务资源 job SUCCESS 后，确认任务已退出资源准备阶段。 */
+  const waitForTaskReady = async (workspaceId: string, taskId: string): Promise<boolean> => {
     if (!workspaceId || !taskId) return false
-    for (let attempt = 0; attempt < TASK_PENDING_POLL_ATTEMPTS; attempt++) {
+    for (let attempt = 0; attempt < TASK_READY_POLL_ATTEMPTS; attempt++) {
       try {
         const res = await api.get(`/workspaces/${workspaceId}/tasks/${taskId}`)
         const status = String(res.data?.status || '')
-        if (status === 'PENDING') return true
-        if (['FAILED', 'DONE', 'BASELINED'].includes(status)) return false
+        if (['INITIALIZED', 'RUNNING', 'ROUND_COMPLETED', 'AWAITING_INPUT', 'INTERRUPTED', 'COMPLETED'].includes(status)) return true
+        if (status === 'FAILED') return false
       } catch (err: unknown) {
         // 任务已被回滚删除（取消/失败）时直接结束
         if ((err as { response?: { status?: number } })?.response?.status === 404) return false
       }
-      await new Promise((resolve) => window.setTimeout(resolve, TASK_PENDING_POLL_INTERVAL_MS))
+      await new Promise((resolve) => window.setTimeout(resolve, TASK_READY_POLL_INTERVAL_MS))
     }
     return false
   }
@@ -325,7 +330,7 @@ export const useProvisioningStore = defineStore('provisioning', () => {
 
   const finalizeSuccess = async (job: ProvisionJobView) => {
     await uploadPendingFiles(job)
-    const taskReady = await waitForTaskPending(job.workspaceId, job.taskId)
+    const taskReady = await waitForTaskReady(job.workspaceId, job.taskId)
     const current = jobs.value[job.jobId]
     if (current) {
       jobs.value = {
@@ -353,14 +358,14 @@ export const useProvisioningStore = defineStore('provisioning', () => {
       fetchErrors.delete(normalizedJobId)
       if (!view) return
 
-      const isCancelledJob = String(view.stage || '').toUpperCase() === 'CANCELLED'
+      const isCancelledJob = view.status === 'CANCELLED'
       if (view.status === 'SUCCESS') {
         const current = jobs.value[normalizedJobId]
         if (current && !current.ready && !current.terminal) {
           await finalizeSuccess(view)
         }
         stopTimerIfIdle()
-      } else if (view.status === 'FAILED') {
+      } else if (view.status === 'FAILED' || view.status === 'CANCELLED' || view.status === 'REVERTED') {
         const current = jobs.value[normalizedJobId]
         if (current) {
           jobs.value = {

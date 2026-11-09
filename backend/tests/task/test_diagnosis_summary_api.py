@@ -44,6 +44,9 @@ def _build_app(SessionLocal, user, monkeypatch=None):
     app.dependency_overrides[task_router.get_db] = _override_db
     app.dependency_overrides[task_router.get_current_user] = lambda: user
     if monkeypatch is not None:
+        patch_ai_job_db(monkeypatch, SessionLocal)
+        monkeypatch.setattr("app.domains.ai.services.jobs.registry.runtime.schedule_queue", lambda *_args: None)
+
         # 触发总结的入口现在持有 lock_task（与会话创建路径串行化）；
         # 单测环境无 Redis，替换为空锁（模式与 test_agent_api.py 一致）。
         @asynccontextmanager

@@ -7,9 +7,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
+from app.domains.ai.schemas.job_result import JobSnapshotFields
+from app.domains.ai.schemas.queue import QueueStatusValue
+
 ApiMockSourceTypeValue = Literal["CODE_ANALYSIS", "SWAGGER_IMPORT", "CLAUDE_SYNC"]
 ApiMockRuleModeValue = Literal["STATIC", "MOCKJS", "PROXY"]
-ApiMockJobStatusValue = Literal["PENDING", "RUNNING", "SUCCESS", "FAILED"]
+ApiMockJobStatusValue = QueueStatusValue
 
 
 class ApiMockProjectResponse(BaseModel):
@@ -229,13 +232,14 @@ class ApiMockJobResult(BaseModel):
     cancelled_at: str | None = None
 
 
-class ApiMockJobResponse(BaseModel):
+class ApiMockJobResponse(JobSnapshotFields):
     id: str
     project_id: str
     creator_id: str
     job_type: str
     status: ApiMockJobStatusValue
     progress: int
+    cancel_requested: bool = False
     message: str | None = None
     result_json: dict[str, Any] | None = None
     created_at: datetime

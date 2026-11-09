@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
@@ -118,9 +119,11 @@ def update_job_state_sync(
     is_terminal_write = bool(finalize) or status in FINAL_STATUSES
     db = SessionLocal()
     try:
-        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).with_for_update().first()
         if not job:
             return None
+        if not is_terminal_write and job.completion_json:
+            return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
         if is_terminal_write:
             resolved_evidence = evidence
             if resolved_evidence is None:
@@ -176,6 +179,8 @@ def update_job_state_sync(
         values = _active_job_values(
             job, status, progress, message, error_message, session_id, agent_backend, context_patch, result_patch
         )
+        values["version"] = SddAiJob.version + 1
+        values["state_changed_at"] = func.now()
 
         # 单条 affected-row CAS：token/boot/状态/取消位全部在
         # UPDATE 谓词中判定，消除 SELECT 与 UPDATE 之间的窗口。affected != 1
@@ -186,6 +191,8 @@ def update_job_state_sync(
                 SddAiJob.id == job_id,
                 SddAiJob.run_token == token_text,
                 SddAiJob.worker_boot_id == WORKER_BOOT_ID,
+                SddAiJob.execution_backend == "durable",
+                or_(SddAiJob.lease_expires_at.is_(None), SddAiJob.lease_expires_at > datetime.utcnow()),
                 SddAiJob.status.in_(writable_statuses),
                 SddAiJob.cancel_requested_at.is_(None),
             )
@@ -196,6 +203,9 @@ def update_job_state_sync(
             from app.domains.notification.services.task_awareness import capture_job
 
             capture_job(db, db.get(SddAiJob, job_id))
+            from app.domains.ai.models.job_history import record_event
+
+            record_event(db, db.get(SddAiJob, job_id))
         db.commit()
         # synchronize_session=False 不会同步 identity map；expire 后重读，
         # 保证返回的 payload 反映 CAS 后的真实行状态。

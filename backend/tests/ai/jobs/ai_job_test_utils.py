@@ -58,9 +58,9 @@ def _db_modules() -> Iterator[Any]:
 def patch_ai_job_db(monkeypatch, factory) -> None:
     """monkeypatch 风格：把 jobs 子包所有模块的 SessionLocal 换成测试工厂。
 
-    注意：不改动 ``app.database.SessionLocal``——``run_db_txn`` 的惰性导入
-    语义与旧单体外洋试图保持一致，需要时由测试显式 patch。
+    同时隔离 ``run_db_txn`` 的惰性工厂，提交后事件与收尾不得访问开发库。
     """
+    monkeypatch.setattr("app.database.SessionLocal", factory)
     for module in _db_modules():
         monkeypatch.setattr(module, "SessionLocal", factory)
 
@@ -72,6 +72,7 @@ def patched_ai_job_db(factory):
     from contextlib import ExitStack
 
     with ExitStack() as stack:
+        stack.enter_context(unittest.mock.patch("app.database.SessionLocal", factory))
         for module in _db_modules():
             stack.enter_context(unittest.mock.patch.object(module, "SessionLocal", factory))
         yield

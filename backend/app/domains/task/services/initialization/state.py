@@ -22,6 +22,9 @@ def require_available(task, allowed_id=None):
 
 
 def save(db, task, operation):
+    from app.domains.ai.services.jobs.journal_jobs import report_initialization
+
+    report_initialization(db, task, operation)
     operation = {**operation, "updated_at": datetime.utcnow().isoformat()}
     task.task_meta_json = {**(task.task_meta_json or {}), "initialization": operation}
     db.commit()
@@ -58,15 +61,28 @@ def complete_with_turn(task, operation_id, job_id, checkpoint):
             "finished_at": datetime.utcnow().isoformat(),
         },
     }
+    from sqlalchemy.orm import object_session
+
+    from app.domains.ai.services.jobs.journal_jobs import report_initialization
+
+    report_initialization(object_session(task), task, current(task))
 
 
 def public(task):
     operation = current(task)
     if not operation:
         return {"operation": None}
+    from sqlalchemy.orm import object_session
+
+    from app.domains.ai.models.ai_job import SddAiJob
+    from app.domains.ai.services.jobs.store import serialize_job
+
+    db = object_session(task)
+    job = db.get(SddAiJob, operation["id"]) if db else None
     operation["repositories"] = [
         {key: value for key, value in repo.items() if key != "url"} for repo in operation.get("repositories", [])
     ]
     return {
-        "operation": {key: value for key, value in operation.items() if key not in {"roots", "resource", "protected"}}
+        "operation": {key: value for key, value in operation.items() if key not in {"roots", "resource", "protected"}},
+        "job": serialize_job(job) if job else None,
     }

@@ -29,7 +29,7 @@ describe('API Mock status and cancellation', () => {
 
   it('disables repeated cancellation while the worker stops', async () => {
     const wrapper = create()
-    await wrapper.setProps({ activeJob: { ...wrapper.props('activeJob')!, result_json: { cancel_requested: true } } })
+    await wrapper.setProps({ activeJob: { ...wrapper.props('activeJob')!, cancel_requested: true } })
     expect(wrapper.get('.job-cancel').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('api_mock.cancel_requested')
   })

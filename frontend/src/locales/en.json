@@ -1279,7 +1279,13 @@
         "pending": "Pending",
         "running": "Running",
         "success": "Success",
-        "failed": "Failed"
+        "failed": "Failed",
+        "waiting_hitl": "Waiting for input",
+        "interrupted": "Interrupted",
+        "terminating": "Stopping",
+        "orphaned": "Needs verification",
+        "cancelled": "Cancelled",
+        "reverted": "Reverted"
       },
       "filter_view": "View",
       "filter_workspace": "Workspace",
@@ -1302,6 +1308,7 @@
         "task": "Task"
       },
       "job_type": {
+        "task_initialization": "Task initialization",
         "create_workspace": "Create Workspace",
         "create_task": "Create Task",
         "import_skill": "Import GitHub Skill",
@@ -1314,6 +1321,7 @@
         "unknown": "Background Job"
       },
       "job_desc": {
+        "task_initialization": "Refresh the task workspace and prepare a new session.",
         "create_workspace": "Create and prepare a new workspace (optionally clone repository)",
         "create_task": "Create task and prepare runtime working directory",
         "import_skill": "Import a Skill package from GitHub and publish its initial version",
@@ -1326,6 +1334,7 @@
         "unknown": "Background asynchronous job"
       },
       "stage": {
+        "result_committed": "Result committed; awaiting cleanup",
         "queued": "Queued",
         "indexing": "Indexing",
         "indexed": "Indexed",

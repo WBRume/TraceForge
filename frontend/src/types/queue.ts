@@ -1,5 +1,5 @@
 export type QueueSource = 'provision' | 'api_mock' | 'bootstrap' | 'skill_analysis'
-export type QueueStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
+export type QueueStatus = 'PENDING' | 'RUNNING' | 'WAITING_HITL' | 'INTERRUPTED' | 'TERMINATING' | 'ORPHANED' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'REVERTED'
 export type QueueView = 'mine' | 'workspace_all'
 
 export type QueueJobActions = {
@@ -26,6 +26,11 @@ export type QueueJobItem = {
   case_id?: string | null
   doc_key?: string | null
   version?: number | null
+  attempt_count?: number
+  cancel_requested?: boolean
+  result_available?: boolean
+  completion?: { outcome: string; summary: string; artifacts: { kind: string; id: string; version?: string | null }[] } | null
+  retry_of_job_id?: string | null
   retry_count?: number | null
   actions: QueueJobActions
 }

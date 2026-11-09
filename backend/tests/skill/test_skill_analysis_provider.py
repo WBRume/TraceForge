@@ -1,5 +1,4 @@
 import asyncio
-import json
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,24 +8,16 @@ import pytest
 from app.agents.domain_tools.invocation import active_domain_run
 from app.domains.ai.services.jobs import provider_turn
 from app.domains.skill.services import skill_analysis_service as service
+from tests.ai.jobs.domain_job_test_utils import make_analysis
 
 
-@pytest.mark.asyncio
-async def test_analysis_notification_serializes_persisted_timestamps(monkeypatch):
-    from app.domains.notification.ws.notification_manager import notification_ws_manager
-    from app.domains.skill.models.skill import SddSkillAnalysis, SkillAnalysisRefKind, SkillAnalysisStatus
+def test_analysis_snapshot_serializes_persisted_timestamps():
+    from fastapi.encoders import jsonable_encoder
 
-    received = asyncio.Event()
-    messages = []
+    from app.domains.skill.models.skill import SkillAnalysisRefKind, SkillAnalysisStatus
 
-    def broadcast(room, text, **kwargs):
-        messages.append((room, json.loads(text)))
-        received.set()
-        return 1
-
-    monkeypatch.setattr(notification_ws_manager.registry, "broadcast_text", broadcast)
     now = datetime(2026, 11, 7, 2, 0, 0)
-    analysis = SddSkillAnalysis(
+    analysis = make_analysis(
         id="analysis",
         workspace_id="workspace",
         skill_id="skill",
@@ -39,16 +30,7 @@ async def test_analysis_notification_serializes_persisted_timestamps(monkeypatch
         started_at=now,
         file_stats_json={"domain_milestones": [{"stage": "started", "sequence": 1}]},
     )
-    token = service._notification_loop.set(asyncio.get_running_loop())
-    try:
-        service._publish_analysis(analysis)
-        await asyncio.wait_for(received.wait(), timeout=5)
-    finally:
-        service._notification_loop.reset(token)
-
-    room, message = messages[0]
-    assert room == "notification:user"
-    payload = message["payload"]["analysis"]
+    payload = jsonable_encoder(service.serialize_analysis(analysis))
     assert payload["started_at"] == "2026-11-07T02:00:00"
     assert payload["created_at"] == "2026-11-07T02:00:00"
     assert payload["file_stats"]["domain_milestones"] == [{"stage": "started", "sequence": 1}]
@@ -56,29 +38,26 @@ async def test_analysis_notification_serializes_persisted_timestamps(monkeypatch
 
 @pytest.mark.asyncio
 async def test_queue_worker_publishes_milestones_on_application_loop(monkeypatch):
-    from app.domains.notification.ws.notification_manager import notification_ws_manager
+    from app.domains.ai.services.jobs import publishing
 
     expected_loop = asyncio.get_running_loop()
     received = asyncio.Event()
     messages = []
 
-    async def send(user_id, payload):
+    async def publish(job_id):
         assert asyncio.get_running_loop() is expected_loop
-        messages.append((user_id, payload))
+        messages.append(job_id)
         received.set()
 
     def run(analysis_id):
         assert service._notification_loop.get() is expected_loop
-        service._publish_analysis(SimpleNamespace(id=analysis_id, created_by_id="user"))
+        service._publish_analysis(SimpleNamespace(id=analysis_id))
 
     monkeypatch.setattr(service, "run_analysis_job", run)
-    monkeypatch.setattr(service, "serialize_analysis", lambda value: {"id": value.id, "status": "RUNNING"})
-    monkeypatch.setattr(notification_ws_manager, "send_message_to_user", send)
+    monkeypatch.setattr(publishing, "publish_domain_snapshot", publish)
     await service._run_analysis_in_thread("analysis")
     await asyncio.wait_for(received.wait(), timeout=5)
-    assert messages == [
-        ("user", {"type": "skill_analysis_updated", "analysis": {"id": "analysis", "status": "RUNNING"}})
-    ]
+    assert messages == ["analysis"]
 
 
 def test_semantic_review_uses_selected_backend_and_typed_submission(monkeypatch, tmp_path):

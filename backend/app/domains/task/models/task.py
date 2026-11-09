@@ -121,7 +121,7 @@ class SddTask(Base):
     dashboard_metrics = relationship("SddDashboardMetric", back_populates="task", cascade="all, delete-orphan")
     skill_links = relationship("SddTaskSkill", back_populates="task", cascade="all, delete-orphan")
     api_mock_projects = relationship("SddApiMockProject", back_populates="task", cascade="all, delete-orphan")
-    ai_jobs = relationship("SddAiJob", back_populates="task", cascade="all, delete-orphan")
+    ai_jobs = relationship("SddAiJob", back_populates="task", passive_deletes=True)
     session_turns = relationship("TaskSessionTurn", back_populates="task", cascade="all, delete-orphan")
     session_operations = relationship("TaskSessionOperation", back_populates="task", cascade="all, delete-orphan")
     requirement_links = relationship("SddTaskRequirement", back_populates="task", cascade="all, delete-orphan")

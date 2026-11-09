@@ -7,8 +7,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.domains.ai.schemas.job_result import JobSnapshotFields
 
-class AiJobResponse(BaseModel):
+
+class AiJobResponse(JobSnapshotFields):
     id: str
     workspace_id: str
     task_id: str | None = None

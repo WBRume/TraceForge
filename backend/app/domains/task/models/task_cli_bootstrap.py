@@ -66,6 +66,8 @@ class SddTaskCliBootstrap(Base):
     )
     progress = Column(Integer, nullable=False, default=0)
     message = Column(Text, nullable=True)
+    execution_job_id = Column(String(36), ForeignKey("sdd_ai_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    execution = relationship("SddAiJob", foreign_keys=[execution_job_id])
     baseline_dir = Column(String(700), nullable=True)
     baseline_session_id = Column(String(120), nullable=True)
     # baseline 粘性 agent backend：baseline 会话建立后固定，不随后端配置切换

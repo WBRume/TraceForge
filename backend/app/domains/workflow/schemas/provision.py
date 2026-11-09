@@ -5,13 +5,14 @@ Provision job schemas.
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from app.domains.ai.schemas.job_result import JobSnapshotFields
+from app.domains.ai.schemas.queue import QueueStatusValue
 
 ProvisionJobTypeValue = Literal["CREATE_WORKSPACE", "CREATE_TASK", "IMPORT_SKILL"]
-ProvisionJobStatusValue = Literal["PENDING", "RUNNING", "SUCCESS", "FAILED"]
+ProvisionJobStatusValue = QueueStatusValue
 
 
-class ProvisionJobAcceptedResponse(BaseModel):
+class ProvisionJobAcceptedResponse(JobSnapshotFields):
     job_id: str
     job_type: ProvisionJobTypeValue
     status: ProvisionJobStatusValue
@@ -23,7 +24,7 @@ class ProvisionJobAcceptedResponse(BaseModel):
     created_at: datetime
 
 
-class ProvisionJobResponse(BaseModel):
+class ProvisionJobResponse(JobSnapshotFields):
     job_id: str
     job_type: ProvisionJobTypeValue
     status: ProvisionJobStatusValue

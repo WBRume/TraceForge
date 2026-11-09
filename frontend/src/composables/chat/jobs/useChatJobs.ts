@@ -1,15 +1,16 @@
 import { ref } from 'vue'
 import api from '@/utils/api'
+import { acceptsJobSnapshot } from '@/utils/jobSnapshot'
 import type { ChatAiJob, ChatAiJobStatus } from '../types'
 
 /** 活跃 AI job 生命周期状态（排队/执行中/HITL 挂起/中断）。 */
 export const isJobActive = (status?: ChatAiJobStatus) => (
-  status === 'PENDING' || status === 'RUNNING' || status === 'WAITING_HITL' || status === 'INTERRUPTED'
+  status === 'PENDING' || status === 'RUNNING' || status === 'WAITING_HITL' || status === 'INTERRUPTED' || status === 'TERMINATING' || status === 'ORPHANED'
 )
 
 /** 引擎实际执行中（不含已中断）。 */
 export const isJobExecuting = (status?: ChatAiJobStatus) => (
-  status === 'PENDING' || status === 'RUNNING' || status === 'WAITING_HITL'
+  status === 'PENDING' || status === 'RUNNING' || status === 'WAITING_HITL' || status === 'TERMINATING' || status === 'ORPHANED'
 )
 
 /**
@@ -25,6 +26,7 @@ export function useChatJobs(options: {
   const activeChatJobs = ref<Record<string, ChatAiJob>>({})
   // 请求代次：新 job 事件或新请求都会使更早的在途快照失效
   let requestSeq = 0
+  const observed = new Map<string, ChatAiJob>()
 
   const jobList = () => Object.values(activeChatJobs.value)
 
@@ -32,7 +34,8 @@ export function useChatJobs(options: {
 
   const upsert = (job: ChatAiJob) => {
     requestSeq += 1
-    if (!job?.id) return
+    if (!job?.id || !acceptsJobSnapshot(observed.get(job.id), job)) return false
+    observed.set(job.id, job)
     const nextJobs = { ...activeChatJobs.value }
     if (isJobActive(job.status)) {
       nextJobs[job.id] = job
@@ -40,11 +43,13 @@ export function useChatJobs(options: {
       delete nextJobs[job.id]
     }
     activeChatJobs.value = nextJobs
+    return true
   }
 
   const reset = () => {
     requestSeq += 1
     activeChatJobs.value = {}
+    observed.clear()
   }
 
   /** 拉取当前活跃 job 列表并整体重建；onLoaded 由组合根注入（运行面板收敛）。 */

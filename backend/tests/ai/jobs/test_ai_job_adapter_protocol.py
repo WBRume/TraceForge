@@ -36,12 +36,9 @@ from tests.ai.jobs.ai_job_test_utils import (
 
 
 def test_claim_persists_execution_kind_for_task_backend(monkeypatch):
-    from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
-    from app.agents.registry import AGENT_BACKENDS
     from app.domains.auth.models.user import User, Workspace
     from app.domains.task.models.task import SddTask
 
-    monkeypatch.setitem(AGENT_BACKENDS, "opencode", OpenCodeAdapter)
     factory = _session_factory()
     db = factory()
     user = User(id="user-1", email="c@example.com", hashed_password="x", display_name="C")

@@ -28,6 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from app.database import Base
+from app.domains.ai.models.job_projection import JobResultProjection
 from app.domains.auth.models.user import generate_uuid
 
 
@@ -258,7 +259,7 @@ class SddApiMockCollabEvent(Base):
     user = relationship("User", back_populates="api_mock_collab_events")
 
 
-class SddApiMockJob(Base):
+class SddApiMockJob(JobResultProjection, Base):
     __tablename__ = "sdd_api_mock_jobs"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
@@ -270,14 +271,7 @@ class SddApiMockJob(Base):
     )
     creator_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     job_type = Column(String(64), nullable=False)
-    status = Column(Enum(ApiMockJobStatus), nullable=False, default=ApiMockJobStatus.PENDING)
-    progress = Column(Integer, nullable=False, default=0)
-    message = Column(Text, nullable=True)
-    result_json = Column(JSON, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    started_at = Column(DateTime, nullable=True)
-    finished_at = Column(DateTime, nullable=True)
 
     project = relationship("SddApiMockProject", back_populates="jobs")
     creator = relationship("User", back_populates="api_mock_jobs")

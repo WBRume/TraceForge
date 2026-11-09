@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,7 @@ from app.domains.task.services.task_records.queries import list_tasks
 from app.domains.workflow.models.provision_job import ProvisionJobType, SddProvisionJob
 from app.domains.workflow.routers import provision as provision_router
 from app.domains.workflow.services import provision_job_service
+from tests.ai.jobs.domain_job_test_utils import run_provision_job
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _session
 
 
@@ -105,7 +107,7 @@ def _fake_worktree_creator(job_id=None, session_factory=None):
         if session_factory is not None and job_id:
             with _session(session_factory) as s:
                 row = s.query(SddProvisionJob).filter(SddProvisionJob.id == job_id).first()
-                row.cancel_requested = True
+                row.execution.cancel_requested_at = datetime.utcnow()
                 s.commit()
 
     return _create
@@ -133,7 +135,7 @@ def test_git_failure_deletes_task_and_keeps_no_failed_record(tmp_path, monkeypat
 
         monkeypatch.setattr(git_worktree_service, "create_task_worktree", _raise_auth_error)
 
-        asyncio.run(provision_job_service.run_create_task_job(job.id))
+        asyncio.run(run_provision_job(provision_job_service, job.id))
 
         with _session(SessionLocal) as db:
             job_row = provision_job_service.get_job(db, job.id)
@@ -161,7 +163,7 @@ def test_cancel_before_prepare_deletes_task(tmp_path, monkeypatch):
             job = _seed_provision_job(db, user=user, workspace=workspace, task=task)
             # 任务尚未开始准备即请求取消
             job_row = db.query(SddProvisionJob).filter(SddProvisionJob.id == job.id).first()
-            job_row.cancel_requested = True
+            job_row.execution.cancel_requested_at = datetime.utcnow()
             db.commit()
             task_id, project_path = task.id, task.project_path
 
@@ -170,11 +172,11 @@ def test_cancel_before_prepare_deletes_task(tmp_path, monkeypatch):
 
         monkeypatch.setattr(git_worktree_service, "create_task_worktree", _fail_if_called)
 
-        asyncio.run(provision_job_service.run_create_task_job(job.id))
+        asyncio.run(run_provision_job(provision_job_service, job.id))
 
         with _session(SessionLocal) as db:
             job_row = provision_job_service.get_job(db, job.id)
-            assert str(job_row.status.value) == "FAILED"
+            assert str(job_row.status.value) == "CANCELLED"
             assert str(job_row.stage) == "CANCELLED"
             assert db.query(SddTask).filter(SddTask.id == task_id).first() is None
             assert not os.path.exists(project_path)
@@ -219,7 +221,7 @@ def test_cancel_after_worktree_creation_cleans_worktree_and_task(tmp_path, monke
             task_row = db.query(SddTask).filter(SddTask.id == task_id).first()
             task_project_path = task_row.project_path
 
-        asyncio.run(provision_job_service.run_create_task_job(job.id))
+        asyncio.run(run_provision_job(provision_job_service, job.id))
 
         with _session(SessionLocal) as db:
             job_row = provision_job_service.get_job(db, job.id)
@@ -250,7 +252,7 @@ def test_success_path_still_moves_task_to_pending(tmp_path, monkeypatch):
 
         monkeypatch.setattr(git_worktree_service, "create_task_worktree", _fake_worktree_creator())
 
-        asyncio.run(provision_job_service.run_create_task_job(job.id))
+        asyncio.run(run_provision_job(provision_job_service, job.id))
 
         with _session(SessionLocal) as db:
             task_row = db.query(SddTask).filter(SddTask.id == task_id).first()
@@ -293,11 +295,11 @@ def test_snapshot_failure_or_cancel_never_publishes_ready_task(tmp_path, monkeyp
             original(db, ws, task)
             roots.append(task.task_meta_json["initial_workspace_checkpoint"])
             with _session(SessionLocal) as check:
-                check.get(SddProvisionJob, job.id).cancel_requested = True
+                check.get(SddProvisionJob, job.id).execution.cancel_requested_at = datetime.utcnow()
                 check.commit()
 
         monkeypatch.setattr(task_provisioning_resources, "_prepare_initial_workspace_checkpoint", initialize)
-        asyncio.run(provision_job_service.run_create_task_job(job.id))
+        asyncio.run(run_provision_job(provision_job_service, job.id))
         with _session(SessionLocal) as db:
             assert db.get(SddTask, task_id) is None
             row = db.get(SddProvisionJob, job.id)
@@ -407,7 +409,7 @@ def test_non_git_failure_removes_directory_and_task(tmp_path, monkeypatch):
             # 预创建任务目录，使 prepare 抛出 "already exists"
             os.makedirs(task.project_path, exist_ok=True)
 
-        asyncio.run(provision_job_service.run_create_task_job(job.id))
+        asyncio.run(run_provision_job(provision_job_service, job.id))
 
         with _session(SessionLocal) as db:
             assert db.query(SddTask).filter(SddTask.id == task_id).first() is None

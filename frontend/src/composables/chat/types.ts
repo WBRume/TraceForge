@@ -3,9 +3,11 @@
  * 仅放被多个子域使用的类型；单一模块内部的类型留在各自模块中。
  */
 
-export type ChatAiJobStatus = 'PENDING' | 'RUNNING' | 'WAITING_HITL' | 'INTERRUPTED' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'REVERTED'
+export type ChatAiJobStatus = import('@/types/queue').QueueStatus
 
 export type ChatAiJob = {
+  version?: number
+  attempt_count?: number
   id: string
   task_id?: string | null
   task_snapshot?: import('@/utils/taskStatusProjection').TaskStatusSnapshot | null
@@ -25,6 +27,9 @@ export type ChatAiJob = {
 export type SpecBootstrapStatus = 'PENDING' | 'RUNNING' | 'READY' | 'FAILED' | 'STALE'
 
 export type TaskSpecBootstrap = {
+  job_id?: string | null
+  job_version?: number | null
+  job_status?: ChatAiJobStatus | null
   task_id: string
   workspace_id: string
   spec_asset_id?: string | null

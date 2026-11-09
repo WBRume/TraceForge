@@ -3,11 +3,13 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Settings2, RefreshCw, Clock, Globe, FileUp, Loader2, Square } from '@/components/icons'
 import CollabPresenceBar from '@/components/api-mock/CollabPresenceBar.vue'
+import { queueStatusLabel } from '@/composables/queue/queueJobPresentation'
 
 type JobState = {
   id: string
   job_type: string
-  status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
+  status: import('@/types/queue').QueueStatus
+  cancel_requested?: boolean
   progress: number
   message?: string | null
   result_json?: Record<string, unknown> | null
@@ -56,7 +58,7 @@ const jobTone = computed(() => {
 })
 
 const jobRunning = computed(() => props.activeJob?.status === 'PENDING' || props.activeJob?.status === 'RUNNING')
-const cancelRequested = computed(() => props.activeJob?.result_json?.cancel_requested === true)
+const cancelRequested = computed(() => props.activeJob?.cancel_requested === true)
 
 const jobLabel = computed(() => {
   if (!props.activeJob) return ''
@@ -67,7 +69,7 @@ const jobLabel = computed(() => {
   if (props.activeJob.status === 'RUNNING') return t('api_mock.job_status_running')
   if (props.activeJob.status === 'SUCCESS') return t('api_mock.job_status_success')
   if (props.activeJob.status === 'FAILED') return t('api_mock.job_status_failed')
-  return `${props.activeJob.job_type} ${props.activeJob.progress}%`
+  return queueStatusLabel(props.activeJob.status, t)
 })
 </script>
 

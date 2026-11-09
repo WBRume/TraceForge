@@ -27,7 +27,7 @@ export type PermissionFlags = {
   publish_api_mock?: boolean
 }
 
-export type ActiveJobState = Pick<ApiMockJob, 'id' | 'job_type' | 'status' | 'progress' | 'message' | 'result_json'>
+export type ActiveJobState = Pick<ApiMockJob, 'id' | 'job_type' | 'status' | 'progress' | 'message' | 'result_json' | 'version' | 'attempt_count' | 'cancel_requested'>
 
 export type ApiMockLockedDetail = {
   code?: unknown

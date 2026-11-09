@@ -17,6 +17,7 @@ from app.domains.task.services.provisioning import resources
 from app.domains.workflow.models.provision_job import ProvisionJobStatus, ProvisionJobType, SddProvisionJob
 from app.domains.workflow.services import provision_job_service as provision
 from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
+from tests.ai.jobs.domain_job_test_utils import run_provision_job
 
 workspace_job = workspace_fixtures.workspace_job
 _git = workspace_fixtures._git
@@ -28,7 +29,7 @@ def test_failed_dual_task_retry_recreates_bindings_and_prepares_both_repos(db, w
     # shared connection and must not roll back implicitly flushed bindings.
     monkeypatch.setattr(provision, "SessionLocal", sessionmaker(bind=db.get_bind(), autoflush=False))
     monkeypatch.setattr(settings, "TASK_SESSION_SNAPSHOT_ROOT", str(tmp_path / "snapshots"))
-    asyncio.run(provision.run_create_workspace_job(workspace_receipt.id))
+    asyncio.run(run_provision_job(provision, workspace_receipt.id))
     db.refresh(workspace_receipt)
     assert workspace_receipt.status == ProvisionJobStatus.SUCCESS
     data = TaskCreate(
@@ -56,7 +57,7 @@ def test_failed_dual_task_retry_recreates_bindings_and_prepares_both_repos(db, w
         raise OSError("Controlled checkpoint failure")
 
     monkeypatch.setattr(resources, "_prepare_initial_workspace_checkpoint", fail_after_both_worktrees)
-    asyncio.run(provision.run_create_task_job(job.id))
+    asyncio.run(run_provision_job(provision, job.id))
     db.expire_all()
     assert job.status == ProvisionJobStatus.FAILED
     assert db.get(SddTask, old_id) is None
@@ -71,11 +72,10 @@ def test_failed_dual_task_retry_recreates_bindings_and_prepares_both_repos(db, w
     assert task.description == "original description" and task.requirement_duration_hours == 3.5
     assert retry.context_json["task_id"] == task.id
     assert retry.context_json["task_create_request"] == saved_request
-    with pytest.raises(ValueError, match="已发起重试"):
-        provision.retry_job(db, source_job=job, creator_id=user.id)
+    assert provision.retry_job(db, source_job=job, creator_id=user.id).id == retry.id
     db.rollback()
     monkeypatch.setattr(resources, "_prepare_initial_workspace_checkpoint", original_checkpoint)
-    asyncio.run(provision.run_create_task_job(retry.id))
+    asyncio.run(run_provision_job(provision, retry.id))
     db.expire_all()
     assert retry.status == ProvisionJobStatus.SUCCESS
     assert task.status == TaskStatus.INITIALIZED
@@ -96,7 +96,7 @@ def test_legacy_deleted_task_rejects_retry_without_creating_a_broken_job(db, wor
         creator_id=user.id,
         context_json={"task_id": "deleted", "task_name": "Legacy"},
     )
-    job.status = ProvisionJobStatus.FAILED
+    job.execution.status = ProvisionJobStatus.FAILED
     db.commit()
     count = db.query(SddProvisionJob).count()
     with pytest.raises(ValueError, match="未保存创建参数"):

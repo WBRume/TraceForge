@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.core.background_tasks import retain_background_task
-from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import (
     reaper as ai_reaper,
 )
@@ -282,7 +282,7 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
             task = db.get(SddTask, task_id)
             assert task.session_id is None
             assert task.session_generation == 1
-            jobs = db.query(SddAiJob).filter_by(task_id=task_id).all()
+            jobs = db.query(SddAiJob).filter_by(task_id=task_id, channel=AiJobChannel.TASK_CHAT).all()
             assert len(jobs) == 2
             assert db.get(SddAiJob, old_id).status in {AiJobStatus.FAILED, AiJobStatus.CANCELLED}
             assert next(j for j in jobs if j.id != old_id).status == AiJobStatus.PENDING

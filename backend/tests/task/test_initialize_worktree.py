@@ -8,7 +8,7 @@ import pytest
 from app import database
 from app.agents import selection
 from app.config import settings
-from app.domains.ai.models.ai_job import SddAiJob
+from app.domains.ai.models.ai_job import AiJobChannel, SddAiJob
 from app.domains.ai.services.jobs import publishing
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_repository import SddTaskRepository, TaskRepositoryState
@@ -139,7 +139,7 @@ async def test_dual_reset_removes_all_output_and_reuses_git_and_snapshot_store(e
     again = await initialize(factory)
     assert again["job"]["id"] == result["job"]["id"]
     with factory() as db:
-        assert db.query(SddAiJob).count() == 1
+        assert db.query(SddAiJob).filter(SddAiJob.channel == AiJobChannel.TASK_CHAT).count() == 1
         assert db.get(SddTask, "task-1").session_generation == 3
 
 
@@ -165,7 +165,7 @@ async def test_interruption_keeps_heads_pinned_and_fences_writes_then_resumes(en
         assert operation["state"] == "RESETTING"
         assert operation["repositories"][0]["completed"] is True
         assert not operation["repositories"][1].get("completed")
-        assert db.query(SddAiJob).count() == 0
+        assert db.query(SddAiJob).filter(SddAiJob.channel == AiJobChannel.TASK_CHAT).count() == 0
         assert task.session_generation == 2
         with pytest.raises(chat_submission_service.SubmissionError):
             chat_submission_service.assert_no_preparing_submission(db, task.id)
@@ -193,12 +193,12 @@ async def test_failed_baseline_retries_without_advancing_generation_twice(enviro
     with factory() as db:
         assert state.current(db.get(SddTask, "task-1"))["state"] == "STARTING"
         assert db.get(SddTask, "task-1").session_generation == 3
-        assert db.query(SddAiJob).count() == 0
+        assert db.query(SddAiJob).filter(SddAiJob.channel == AiJobChannel.TASK_CHAT).count() == 0
     monkeypatch.setattr(snapshots, "create_checkpoint", original)
     await initialize(factory)
     with factory() as db:
         assert db.get(SddTask, "task-1").session_generation == 3
-        assert db.query(SddAiJob).count() == 1
+        assert db.query(SddAiJob).filter(SddAiJob.channel == AiJobChannel.TASK_CHAT).count() == 1
 
 
 @pytest.mark.asyncio

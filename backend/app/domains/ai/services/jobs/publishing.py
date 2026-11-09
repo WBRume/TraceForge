@@ -25,6 +25,13 @@ async def broadcast_job_payload(payload: dict[str, Any]) -> None:
     status = str(payload.get("status") or "")
     final = status in {item.value for item in constants.FINAL_STATUSES}
     channel = str(payload.get("channel") or "")
+    if channel == AiJobChannel.BACKGROUND.value and (payload.get("context_json") or {}).get("job_kind") in {
+        "SKILL_ANALYSIS",
+        "API_MOCK",
+        "PROVISION",
+    }:
+        await publish_domain_snapshot(str(payload["id"]))
+        return
     if (payload.get("context_json") or {}).get("job_kind") in {
         "REQUIREMENT_IMPORT_PREVIEW",
         "REQUIREMENT_SPLIT_PREVIEW",
@@ -115,6 +122,10 @@ async def broadcast_job_payload(payload: dict[str, Any]) -> None:
         task_id = str(payload.get("task_id") or "")
         if not task_id:
             return
+        if (payload.get("context_json") or {}).get("job_kind") == "TASK_BASELINE":
+            from app.domains.task.services.task_cli_state_service import publish_bootstrap_snapshot
+
+            await publish_bootstrap_snapshot(task_id)
         if status in {"SUCCESS", "FAILED", "CANCELLED", "INTERRUPTED", "ORPHANED"}:
             from app.domains.workspace_collaboration.hooks import settle_job
 
@@ -145,6 +156,99 @@ async def broadcast_job_payload(payload: dict[str, Any]) -> None:
             )
 
             await notify_task_shares_history_changed(task_id)
+
+
+async def publish_domain_snapshot(job_id: str) -> None:
+    from app.domains.notification.ws.notification_manager import notification_ws_manager
+
+    def load():
+        with SessionLocal() as db:
+            job = db.get(SddAiJob, job_id)
+            if job is None:
+                return None
+            if job.queue_source == "api_mock":
+                from app.domains.api_mock.models.api_mock import SddApiMockJob
+                from app.domains.api_mock.services.api_mock.job_service import _serialize_job
+
+                row = db.get(SddApiMockJob, job_id)
+                return ("api_mock", row.project_id, _serialize_job(row)) if row else None
+            if job.queue_source == "skill_analysis":
+                from app.domains.skill.models.skill import SddSkillAnalysis
+                from app.domains.skill.services.skill_analysis_service import serialize_analysis
+
+                row = db.get(SddSkillAnalysis, job_id)
+                from app.domains.skill.services.catalog import policy as skill_policy
+                from app.domains.workspace.services import workspace_service
+
+                if not row or not workspace_service.get_workspace_member(db, row.workspace_id, job.creator_id):
+                    return None
+                if not row.skill or not skill_policy.ensure_skill_visible_in_workspace(row.skill, row.workspace_id):
+                    return None
+                return ("skill_analysis", job.creator_id, serialize_analysis(row)) if row else None
+            return None
+
+    snapshot = await run_db(load)
+    if snapshot is None:
+        return
+    kind, recipient, data = snapshot
+    from fastapi.encoders import jsonable_encoder
+
+    data = jsonable_encoder(data)
+    if kind == "api_mock":
+        from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
+
+        final = data["status"] in {s.value for s in constants.FINAL_STATUSES}
+        await api_mock_ws_manager.broadcast_job_state(
+            recipient,
+            {
+                "type": "job_done" if final else "job_update",
+                "project_id": recipient,
+                "job": data,
+            },
+        )
+    else:
+        await notification_ws_manager.send_message_to_user(
+            recipient, {"type": "skill_analysis_updated", "analysis": data}
+        )
+
+
+async def publish_pending_job_events() -> int:
+    """Retry committed notifications after a worker or transport failure.
+
+    Duplicate delivery is expected: snapshots carry monotonically increasing
+    versions. Delivery never re-executes a business operation.
+    """
+    from datetime import datetime
+
+    from app.domains.ai.models.job_history import JobEvent
+
+    def pending():
+        with SessionLocal() as db:
+            return [
+                (e.id, e.job_id)
+                for e in db.query(JobEvent)
+                .filter(
+                    JobEvent.published_at.is_(None),
+                )
+                .order_by(JobEvent.created_at, JobEvent.id)
+                .limit(100)
+                .all()
+            ]
+
+    count = 0
+    for event_id, job_id in await run_db(pending):
+        payload = await run_db(_load_job_payload_sync, job_id)
+        if payload:
+            await broadcast_job_payload(payload)
+
+        def acknowledge(event_id=event_id):
+            with SessionLocal() as db:
+                db.query(JobEvent).filter_by(id=event_id).update({"published_at": datetime.utcnow()})
+                db.commit()
+
+        await run_db(acknowledge)
+        count += 1
+    return count
 
 
 def _load_job_payload_sync(job_id: str) -> dict[str, Any] | None:

@@ -6,14 +6,12 @@ from app.core.offload import run_db
 from app.database import SessionLocal
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import state
-from app.domains.ai.services.jobs.domain_job_results import business_row
 
 
 def load(job_id):
     with SessionLocal() as db:
         receipt = db.get(SddAiJob, job_id)
-        row = business_row(db, receipt)
-        return dict(receipt.context_json or {}), row.status.value if row else "FAILED"
+        return dict(receipt.context_json or {}), (receipt.completion_json or {}).get("outcome")
 
 
 async def run_sync(fn, *args, **kwargs):
@@ -38,7 +36,7 @@ async def run_sync(fn, *args, **kwargs):
 async def dispatch(job_id: str, context: dict, status: str) -> None:
     kind = context["job_kind"]
     inputs = context.get("inputs") or {}
-    if status not in {"SUCCESS", "FAILED"}:
+    if status not in {"SUCCESS", "FAILED", "CANCELLED"}:
         if kind == "SKILL_ANALYSIS":
             from app.domains.skill.services import skill_analysis_service
 
@@ -93,7 +91,7 @@ async def execute(job_id: str) -> None:
     _, status = await run_db(load, job_id)
     await state.update_job_state(
         job_id,
-        status=AiJobStatus.SUCCESS if status == "SUCCESS" else AiJobStatus.FAILED,
+        status=AiJobStatus(status) if status else AiJobStatus.FAILED,
         progress=100,
         finalize=True,
     )

@@ -7,11 +7,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.domains.ai.schemas.job_result import JobSnapshotFields
+from app.domains.ai.schemas.queue import QueueStatusValue
+
 SkillDimensionValue = Literal["GLOBAL", "WORKSPACE"]
 SkillFileNodeType = Literal["file", "directory"]
 SkillRefValue = str
 SkillPublishStateValue = Literal["PUBLISHED", "DRAFT"]
-SkillAnalysisStatusValue = Literal["PENDING", "RUNNING", "SUCCESS", "FAILED"]
+SkillAnalysisStatusValue = QueueStatusValue
 SkillAnalysisRefKindValue = Literal["WORKTREE", "LATEST", "VERSION"]
 SkillRiskLevelValue = Literal["LOW", "MEDIUM", "HIGH"]
 
@@ -204,7 +207,7 @@ class SkillAnalysisCreateRequest(BaseModel):
     version_id: str | None = None
 
 
-class SkillAnalysisResponse(BaseModel):
+class SkillAnalysisResponse(JobSnapshotFields):
     id: str
     workspace_id: str
     skill_id: str

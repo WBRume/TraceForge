@@ -116,9 +116,10 @@ def auto_generate_mock_cases_for_endpoint(
         from .mock_case_service import next_mock_case_sort_order
 
         next_order = next_mock_case_sort_order(db, project.id, endpoint_id)
+        artifacts = []
         for index, item in enumerate(result["artifact"].cases):
             fields = item.model_dump(exclude={"mode"})
-            create_mock_case(
+            case = create_mock_case(
                 db,
                 project,
                 endpoint_id=endpoint_id,
@@ -131,6 +132,7 @@ def auto_generate_mock_cases_for_endpoint(
                 commit=False,
                 **fields,
             )
+            artifacts.append({"kind": "api_mock_case", "id": case.id})
         created_count = len(result["artifact"].cases)
         _raise_if_cancel_requested(db, project.id, job, job_id)
         _set_job_success(
@@ -139,6 +141,7 @@ def auto_generate_mock_cases_for_endpoint(
             job,
             {"cases_created": created_count, "created_count": created_count, "updated_count": 0},
             f"Successfully created {created_count} mock cases",
+            artifacts=artifacts,
         )
 
     except (JobCancelledError, AgentCancelledError):

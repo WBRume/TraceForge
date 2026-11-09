@@ -15,6 +15,7 @@ const JOB_TYPE_KEY_MAP: Record<QueueSource, Record<string, string>> = {
   },
   bootstrap: {
     TASK_CLI_BOOTSTRAP: 'workspaces.queue.job_type.task_cli_bootstrap',
+    TASK_INITIALIZATION: 'workspaces.queue.job_type.task_initialization',
   },
   skill_analysis: {
     SKILL_ANALYSIS: 'workspaces.queue.job_type.skill_analysis',
@@ -34,6 +35,7 @@ const JOB_DESC_KEY_MAP: Record<QueueSource, Record<string, string>> = {
   },
   bootstrap: {
     TASK_CLI_BOOTSTRAP: 'workspaces.queue.job_desc.task_cli_bootstrap',
+    TASK_INITIALIZATION: 'workspaces.queue.job_desc.task_initialization',
   },
   skill_analysis: {
     SKILL_ANALYSIS: 'workspaces.queue.job_desc.skill_analysis',
@@ -54,6 +56,9 @@ const STAGE_KEY_MAP: Record<string, string> = {
   PREPARING_LOCAL_WORKSPACE: 'workspaces.queue.stage.preparing_local_workspace',
   RUNNING: 'workspaces.queue.stage.running',
   COMPLETED: 'workspaces.queue.stage.completed',
+  RESULT_COMMITTED: 'workspaces.queue.stage.result_committed',
+  CANCELLING: 'workspaces.queue.status.terminating',
+  CANCELLED: 'workspaces.queue.status.cancelled',
   SUCCESS: 'workspaces.queue.stage.completed',
   FAILED: 'workspaces.queue.stage.failed',
   READY: 'workspaces.queue.stage.ready',
@@ -77,6 +82,9 @@ export const queueStatusLabel = (status: string, t: TranslateFn): string => {
   if (normalized === 'running') return t('workspaces.queue.status.running')
   if (normalized === 'success') return t('workspaces.queue.status.success')
   if (normalized === 'failed') return t('workspaces.queue.status.failed')
+  if (['waiting_hitl', 'interrupted', 'terminating', 'orphaned', 'cancelled', 'reverted'].includes(normalized)) {
+    return t(`workspaces.queue.status.${normalized}`)
+  }
   return status || '-'
 }
 
@@ -93,7 +101,7 @@ export const queueJobDescription = (item: QueueJobItem, t: TranslateFn): string 
 }
 
 export const queueStageLabel = (item: QueueJobItem, t: TranslateFn): string => {
-  if (item.source === 'api_mock') {
+  if (item.source === 'api_mock' && !item.stage) {
     return t('workspaces.queue.stage.api_mock')
   }
   const stageCode = normalizeCode(item.stage || item.status)

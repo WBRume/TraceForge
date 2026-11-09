@@ -95,7 +95,10 @@ export type ApiMockJob = {
   project_id: string
   creator_id: string
   job_type: string
-  status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
+  status: import('@/types/queue').QueueStatus
+  version?: number
+  attempt_count?: number
+  cancel_requested?: boolean
   progress: number
   message: string | null
   result_json: Record<string, unknown> | null

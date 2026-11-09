@@ -38,6 +38,7 @@ def test_mock_batch_rolls_back_before_terminal_job_commit(db, monkeypatch, failu
         db.execute(text("INSERT INTO domain_batch_probe (id) VALUES (:id)"), {"id": inserted})
         if failure == "second_insert" and inserted == 2:
             raise RuntimeError("Second insert failed")
+        return SimpleNamespace(id=str(inserted))
 
     def finish(state):
         def commit(*_args, **_kwargs):

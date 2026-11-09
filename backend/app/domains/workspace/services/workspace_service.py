@@ -650,6 +650,12 @@ def create_workspace(
         # Publish the association atomically with the workspace so polling and
         # retries can find it before any repository has finished cloning.
         job.workspace_id = workspace.id
+        job.execution.workspace_id = workspace.id
+        db.flush()
+        if not workspace.repositories:
+            from app.domains.workflow.services.provision_job_service import complete_workspace_in_txn
+
+            complete_workspace_in_txn(db, job.id, workspace)
     try:
         db.commit()
         db.refresh(workspace)

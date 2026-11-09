@@ -58,6 +58,8 @@ const queueActioningKey = ref('')
 const queueRequestInFlight = ref(false)
 const syncingWorkspaceFromRoute = ref(false)
 let queuePollTimer: number | null = null
+let queueRequest = 0
+let disposed = false
 
 const queueTotalPages = computed(() => {
   const total = Math.max(0, Number(queueTotal.value || 0))
@@ -80,6 +82,8 @@ const queueStatusOptions = computed(() => [
   { value: 'RUNNING', label: t('workspaces.queue.status.running') },
   { value: 'SUCCESS', label: t('workspaces.queue.status.success') },
   { value: 'FAILED', label: t('workspaces.queue.status.failed') },
+  ...(['WAITING_HITL', 'INTERRUPTED', 'TERMINATING', 'ORPHANED', 'CANCELLED', 'REVERTED'] as const)
+    .map(value => ({ value, label: queueStatusLabel(value, t) })),
 ])
 
 const queueViewOptions = computed(() => [
@@ -134,13 +138,15 @@ const stopQueuePolling = () => {
 
 const startQueuePolling = () => {
   stopQueuePolling()
+  if (disposed) return
   queuePollTimer = window.setInterval(() => {
     void loadQueueJobs({ silent: true })
   }, 1500)
 }
 
 const loadQueueJobs = async ({ silent = false }: { silent?: boolean } = {}) => {
-  if (queueRequestInFlight.value) return
+  if (disposed || (silent && queueRequestInFlight.value)) return
+  const request = ++queueRequest
   queueRequestInFlight.value = true
   if (!silent) {
     queueLoading.value = true
@@ -156,13 +162,17 @@ const loadQueueJobs = async ({ silent = false }: { silent?: boolean } = {}) => {
     if (queueStatus.value !== 'all') params.status = queueStatus.value
     if (queueWorkspaceId.value) params.workspace_id = queueWorkspaceId.value
     const data = await fetchQueueJobs(params)
+    if (request !== queueRequest) return
     queueItems.value = Array.isArray(data?.items) ? data.items : []
     queueTotal.value = Number(data?.total || 0)
   } catch (err) {
+    if (request !== queueRequest) return
     queueError.value = formatApiError(err, t('workspaces.queue.load_failed'), t)
   } finally {
-    queueLoading.value = false
-    queueRequestInFlight.value = false
+    if (request === queueRequest) {
+      queueLoading.value = false
+      queueRequestInFlight.value = false
+    }
   }
 }
 
@@ -190,10 +200,12 @@ const openQueueJobDetail = (item: QueueJobItem) => {
 }
 
 const runQueueAction = async (item: QueueJobItem, action: 'stop' | 'retry') => {
+  const workspace = queueWorkspaceId.value
   const actionKey = `${item.source}:${item.job_id}:${action}`
   queueActioningKey.value = actionKey
   try {
     const res = await runQueueJobAction(item.source, item.job_id, action)
+    if (disposed || workspace !== queueWorkspaceId.value) return
     const message = String(res?.message || '').trim()
     if (message) {
       ElMessage.success(message)
@@ -204,15 +216,17 @@ const runQueueAction = async (item: QueueJobItem, action: 'stop' | 'retry') => {
     }
     await loadQueueJobs()
   } catch (err) {
+    if (disposed || workspace !== queueWorkspaceId.value) return
     ElMessage.error(formatApiError(err, t('workspaces.queue.action_failed'), t))
   } finally {
-    queueActioningKey.value = ''
+    if (queueActioningKey.value === actionKey) queueActioningKey.value = ''
   }
 }
 
 const openQueueTarget = async (item: QueueJobItem) => {
   const targetPath = String(item.target_path || '').trim()
   if (!targetPath) return
+  const workspace = queueWorkspaceId.value
 
   const actionKey = `${item.source}:${item.job_id}:open`
   queueActioningKey.value = actionKey
@@ -221,12 +235,13 @@ const openQueueTarget = async (item: QueueJobItem) => {
       router,
       provisioningStore,
       t,
+      isCurrent: () => !disposed && workspace === queueWorkspaceId.value,
     })
     if (result.warningMessage) {
       ElMessage.warning(result.warningMessage)
     }
   } finally {
-    queueActioningKey.value = ''
+    if (queueActioningKey.value === actionKey) queueActioningKey.value = ''
   }
 }
 
@@ -237,6 +252,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  queueRequest += 1
   stopQueuePolling()
 })
 

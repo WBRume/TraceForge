@@ -286,7 +286,7 @@ describe('ProvisionFloatingWidget', () => {
     wrapper.unmount()
   })
 
-  it('uploads pending files and becomes ready after success', async () => {
+  it.each(['INITIALIZED', 'RUNNING'])('uploads pending files and becomes ready when the task is %s', async (taskStatus) => {
     vi.useFakeTimers()
     apiMock.get
       .mockResolvedValueOnce({
@@ -295,14 +295,14 @@ describe('ProvisionFloatingWidget', () => {
       .mockResolvedValueOnce({
         data: { job_id: 'job-1', job_type: 'CREATE_TASK', status: 'SUCCESS', progress: 100, stage: 'COMPLETED' },
       })
-      .mockResolvedValue({ data: { id: 'task-1', status: 'PENDING' } })
+      .mockResolvedValue({ data: { id: 'task-1', status: taskStatus } })
 
     const store = useProvisioningStore()
     store.setPendingTaskSpec('job-1', { workspaceId: 'ws-1', taskId: 'task-1', file: new File(['spec'], 'req.md') })
     store.startWatching({ jobId: 'job-1', taskId: 'task-1', workspaceId: 'ws-1', taskName: 'test-task' })
     // 首轮拉取（RUNNING）
     await vi.advanceTimersByTimeAsync(0)
-    // 推进轮询 → SUCCESS → 上传暂存文件 → 确认任务 PENDING
+    // 推进轮询 → SUCCESS → 上传暂存文件 → 确认任务已完成准备
     await vi.advanceTimersByTimeAsync(1300)
 
     const job = store.jobs['job-1']

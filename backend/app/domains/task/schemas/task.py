@@ -263,6 +263,8 @@ class TaskSkillRuntimeFileWriteRequest(BaseModel):
 
 
 class TaskCliBootstrapResponse(BaseModel):
+    job_version: int | None = None
+    job_status: str | None = None
     task_id: str
     workspace_id: str
     spec_asset_id: str | None = None

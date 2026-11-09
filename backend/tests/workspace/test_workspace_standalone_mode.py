@@ -20,6 +20,7 @@ from app.domains.task.services import git_worktree_service
 from app.domains.task.services.provisioning import creation as task_provisioning_creation
 from app.domains.workspace.routers import workspace as workspace_router
 from app.domains.workspace.services import workspace_service
+from tests.ai.jobs.domain_job_test_utils import run_provision_job
 
 
 def _seed_user(db) -> User:
@@ -238,6 +239,7 @@ def test_run_create_workspace_job_standalone_materializes_repos(monkeypatch):
     monkeypatch.setattr(provision_job_service, "queue_provision_jobs", _passthrough)
     monkeypatch.setattr(provision_job_service, "lock_workspace_repo_creation", _passthrough)
 
+    monkeypatch.setattr(provision_job_service, "is_cancel_requested", lambda _job_id: False)
     asyncio.run(provision_job_service.run_create_workspace_job("job-standalone-1"))
 
     assert calls["created_repositories"] == context["repositories"]
@@ -318,7 +320,7 @@ def test_standalone_multi_repo_job_clones_repos_end_to_end(db, tmp_path, monkeyp
         },
     )
 
-    asyncio.run(provision_job_service.run_create_workspace_job(job.id))
+    asyncio.run(run_provision_job(provision_job_service, job.id))
 
     # job 执行器在独立 Session 中更新了状态，丢弃 fixture 会话的旧快照
     db.rollback()
@@ -515,6 +517,7 @@ def _fake_job():
 
     now = datetime.utcnow()
     return SimpleNamespace(
+        execution=SimpleNamespace(version=1, attempt_count=0, completion_json=None),
         id="job-1",
         job_type=ProvisionJobType.CREATE_WORKSPACE,
         status="PENDING",

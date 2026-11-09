@@ -58,6 +58,7 @@ export const openQueueJobTarget = async (
     router: Router
     provisioningStore: ProvisioningStoreLike
     t: TranslateFn
+    isCurrent?: () => boolean
   },
 ): Promise<{ warningMessage?: string }> => {
   const targetPath = String(item.target_path || '').trim()
@@ -81,6 +82,7 @@ export const openQueueJobTarget = async (
     }
   }
 
+  if (deps.isCurrent?.() === false) return {}
   await deps.router.push(targetPath)
   return warningMessage ? { warningMessage } : {}
 }

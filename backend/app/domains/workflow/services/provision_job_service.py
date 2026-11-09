@@ -23,6 +23,7 @@ from app.core.distributed_lock import (
 from app.core.logging import audit_log, bind_log_context, get_logger
 from app.database import SessionLocal
 from app.domains.ai.services.jobs import domain_jobs
+from app.domains.ai.services.jobs.constants import ACTIVE_STATUSES
 from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 from app.domains.auth.models.user import User, Workspace
 from app.domains.local_resource.client import ResourceError
@@ -56,6 +57,9 @@ def get_job(db: Session, job_id: str) -> SddProvisionJob | None:
 
 def serialize_job(job: SddProvisionJob) -> dict[str, Any]:
     return {
+        "version": int(job.execution.version or 1),
+        "attempt_count": int(job.execution.attempt_count or 0),
+        "completion": job.execution.completion_json,
         "job_id": job.id,
         "job_type": _enum_value(job.job_type),
         "status": _enum_value(job.status),
@@ -105,10 +109,6 @@ def create_job(
 ) -> SddProvisionJob:
     job = SddProvisionJob(
         job_type=job_type,
-        status=ProvisionJobStatus.PENDING,
-        progress=0,
-        stage=str(stage or "QUEUED").strip() or "QUEUED",
-        message=message,
         context_json=context_json or {},
         creator_id=str(creator_id or "").strip(),
         workspace_id=(str(workspace_id).strip() if workspace_id else None),
@@ -116,9 +116,10 @@ def create_job(
     )
     if job_id is not None:
         job.id = job_id
-    db.add(job)
-    db.flush()
-    domain_jobs.enqueue(
+    from app.domains.auth.models.user import generate_uuid
+
+    job.id = job.id or generate_uuid()
+    job.execution = domain_jobs.enqueue(
         db,
         job_id=job.id,
         kind="PROVISION",
@@ -126,7 +127,13 @@ def create_job(
         workspace_id=job.workspace_id,
         resource_id=job.id,
         inputs={"job_type": _enum_value(job_type)},
+        task_id=job.task_id,
+        message=message,
+        stage=stage,
+        retry_of_job_id=(context_json or {}).get("retry_of_job_id"),
+        command_key=f"rerun:{context_json['retry_of_job_id']}" if (context_json or {}).get("retry_of_job_id") else None,
     )
+    db.add(job)
     db.commit()
     db.refresh(job)
     return job
@@ -137,32 +144,9 @@ def schedule_job(job_id: str) -> None:
 
 
 def resume_resource_job(db: Session, job: SddProvisionJob) -> None:
-    """An explicit resource verification may resume the original task receipt."""
-    from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
-
-    receipt = db.query(SddAiJob).filter_by(id=job.id).with_for_update().first()
-    if receipt is not None and receipt.status not in {AiJobStatus.FAILED, AiJobStatus.CANCELLED}:
-        return
-    if receipt is None:
-        domain_jobs.enqueue(
-            db,
-            job_id=job.id,
-            kind="PROVISION",
-            creator_id=job.creator_id,
-            workspace_id=job.workspace_id,
-            resource_id=job.id,
-            inputs={"job_type": _enum_value(job.job_type)},
-        )
-    else:
-        receipt.status = AiJobStatus.PENDING
-        receipt.cancel_requested_at = None
-        receipt.finished_at = None
-        receipt.attempt_count = 0
-    job.status = ProvisionJobStatus.PENDING
-    job.cancel_requested = False
-    job.finished_at = None
-    db.commit()
-    schedule_job(job.id)
+    """Resume through a new execution; retain the original terminal history."""
+    successor = retry_job(db, source_job=job, creator_id=job.creator_id)
+    schedule_job(successor.id)
 
 
 def retry_job(
@@ -172,6 +156,14 @@ def retry_job(
     creator_id: str,
     message: str | None = None,
 ) -> SddProvisionJob:
+    from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+
+    receipt = db.query(SddAiJob).filter_by(id=source_job.id).populate_existing().with_for_update().one()
+    previous = db.query(SddAiJob).filter_by(command_key=f"rerun:{source_job.id}").with_for_update().first()
+    if previous:
+        return get_job(db, previous.id)
+    if receipt.status not in {AiJobStatus.FAILED, AiJobStatus.CANCELLED}:
+        raise ValueError("Only ended unsuccessful jobs can be rerun")
     # Serialize retries of the same failed job. The task and successor receipt
     # commit together so a failed retry never leaves an unqueued pending task.
     source_job = (
@@ -184,8 +176,8 @@ def retry_job(
     context_json = dict(source_job.context_json or {}) if isinstance(source_job.context_json, dict) else {}
     previous_id = context_json.pop("retry_job_id", None)
     previous = get_job(db, previous_id) if previous_id else None
-    if previous and previous.status != ProvisionJobStatus.FAILED:
-        raise ValueError("此任务已发起重试，请查看已有重试任务")
+    if previous:
+        return previous
     task_id = source_job.task_id
     if source_job.job_type == ProvisionJobType.CREATE_TASK:
         from app.domains.auth.models.user import WorkspacePermission
@@ -244,26 +236,25 @@ def _set_job_state(
     finished_at: datetime | None = None,
 ) -> SddProvisionJob:
     db.info["domain_allow_cancel"] = status == ProvisionJobStatus.FAILED or stage in {"CANCELLING", "CANCELLED"}
-    if status is not None:
-        job.status = status
-    if progress is not None:
-        job.progress = max(0, min(int(progress), 100))
-    if stage is not None:
-        job.stage = str(stage or "").strip() or job.stage
-    if message is not None:
-        job.message = message
-    if error_message is not None:
-        job.error_message = error_message
-    if result_json is not None:
-        job.result_json = result_json
+    execution = domain_jobs.report(
+        db,
+        job.id,
+        status=status,
+        progress=progress,
+        stage=stage,
+        message=message,
+        error_message=error_message,
+        result=result_json,
+        artifacts=[{"kind": "task" if task_id else "workspace", "id": task_id or workspace_id}]
+        if status == ProvisionJobStatus.SUCCESS and (task_id or workspace_id)
+        else [],
+    )
     if workspace_id is not None:
         job.workspace_id = workspace_id
+        execution.workspace_id = workspace_id
     if task_id is not None:
         job.task_id = task_id
-    if started_at is not None:
-        job.started_at = started_at
-    if finished_at is not None:
-        job.finished_at = finished_at
+        execution.task_id = task_id
     db.commit()
     db.refresh(job)
     return job
@@ -370,14 +361,11 @@ def request_cancel(db: Session, job: SddProvisionJob, *, message: str | None = N
     返回 True 表示标记成功（后台工作流会在下一个检查点终止并回滚）；
     返回 False 表示 job 已终态（SUCCESS/FAILED），无可取消内容。
     """
-    domain_jobs.request_cancel(db, job.id)
-    if job.status in (ProvisionJobStatus.SUCCESS, ProvisionJobStatus.FAILED):
+    if not domain_jobs.request_cancel(db, job.id):
         return False
-    job.cancel_requested = True
-    if str(job.stage or "").strip().upper() not in {"CANCELLING", "CANCELLED"}:
-        job.stage = "CANCELLING"
+    job.execution.stage = "CANCELLING"
     if message:
-        job.message = message
+        job.execution.message = message
     db.commit()
     db.refresh(job)
     return True
@@ -390,7 +378,7 @@ def is_cancel_requested(job_id: str) -> bool:
         job = get_job(db, job_id)
         if not job or not job.cancel_requested:
             return False
-        return job.status in (ProvisionJobStatus.PENDING, ProvisionJobStatus.RUNNING)
+        return job.status in ACTIVE_STATUSES
     finally:
         db.close()
 
@@ -402,7 +390,7 @@ def get_latest_active_job_for_task(db: Session, task_id: str) -> SddProvisionJob
         .filter(
             SddProvisionJob.task_id == str(task_id or "").strip(),
             SddProvisionJob.job_type == ProvisionJobType.CREATE_TASK,
-            SddProvisionJob.status.in_([ProvisionJobStatus.PENDING, ProvisionJobStatus.RUNNING]),
+            SddProvisionJob.status.in_(list(ACTIVE_STATUSES)),
         )
         .order_by(SddProvisionJob.created_at.desc())
         .first()
@@ -411,12 +399,19 @@ def get_latest_active_job_for_task(db: Session, task_id: str) -> SddProvisionJob
 
 def list_active_jobs_for_creator(db: Session, creator_id: str) -> list[SddProvisionJob]:
     """列出创建人名下所有未终态的任务创建 job（用于前端浮窗状态恢复）。"""
+    from sqlalchemy import select
+
+    from app.domains.auth.models.user import WorkspaceMember
+
     return (
         db.query(SddProvisionJob)
         .filter(
             SddProvisionJob.creator_id == str(creator_id or "").strip(),
+            SddProvisionJob.workspace_id.in_(
+                select(WorkspaceMember.workspace_id).where(WorkspaceMember.user_id == creator_id)
+            ),
             SddProvisionJob.job_type == ProvisionJobType.CREATE_TASK,
-            SddProvisionJob.status.in_([ProvisionJobStatus.PENDING, ProvisionJobStatus.RUNNING]),
+            SddProvisionJob.status.in_(list(ACTIVE_STATUSES)),
         )
         .order_by(SddProvisionJob.created_at.asc())
         .all()
@@ -501,6 +496,31 @@ def _json_safe_value(value: Any) -> Any:
     return value
 
 
+def complete_workspace_in_txn(db, job_id, workspace, repository_result=None):
+    repositories = [
+        {key: _json_safe_value(value) for key, value in workspace_service.serialize_workspace_repository(row).items()}
+        for row in workspace.repositories
+    ]
+    result = {
+        "workspace_id": workspace.id,
+        "workspace_name": workspace.name,
+        "project_path": workspace.project_path,
+        "project_id": workspace.project_id,
+        "repositories": repositories,
+    }
+    if repository_result is not None:
+        result["repository_materialization"] = repository_result
+    domain_jobs.report(
+        db,
+        job_id,
+        status="SUCCESS",
+        progress=100,
+        message="Workspace is ready",
+        result=result,
+        artifacts=[{"kind": "workspace", "id": workspace.id}],
+    )
+
+
 def _materialize_workspace_repos_sync(*, workspace_id: str, job_id: str = "") -> dict[str, Any]:
     import os as _os
 
@@ -561,6 +581,8 @@ def _materialize_workspace_repos_sync(*, workspace_id: str, job_id: str = "") ->
                     }
                 )
             # Persist each outcome so a later timeout does not hide earlier work.
+            if job_id and index == len(rows) - 1 and all(item["state"] == "READY" for item in results["repositories"]):
+                complete_workspace_in_txn(db, job_id, workspace, results)
             db.commit()
         if job_id:
             mark_progress(job_id, stage="MATERIALIZE_REPOS", progress=90, message="Checking repository results")
@@ -573,11 +595,24 @@ def _prepare_task_sync(*, workspace_id: str, task_id: str, job_id: str = "") -> 
     db = domain_jobs.business_session(SessionLocal)
     try:
         cancel_check = (lambda: is_cancel_requested(job_id)) if job_id else None
+
+        def submit(task):
+            domain_jobs.report(
+                db,
+                job_id,
+                status="SUCCESS",
+                progress=100,
+                message="Task is ready",
+                result={"workspace_id": task.workspace_id, "task_id": task.id, "task_name": task.name},
+                artifacts=[{"kind": "task", "id": task.id}],
+            )
+
         task = task_provisioning_resources.prepare_task_resources_for_provision(
             db,
             workspace_id=workspace_id,
             task_id=task_id,
             cancel_check=cancel_check,
+            before_ready_commit=submit if job_id else None,
             snapshot_progress=(
                 lambda: mark_progress(
                     job_id,
@@ -624,7 +659,16 @@ def _import_skill_sync(*, creator_id: str, context: dict[str, Any], job_id: str 
 
         def checkpoint(skill):
             if job:
-                job.result_json = _imported_skill_result(skill)
+                domain_jobs.report(
+                    db,
+                    job.id,
+                    status="SUCCESS",
+                    result=_imported_skill_result(skill),
+                    progress=100,
+                    stage="COMPLETED",
+                    message="Skill import completed",
+                    artifacts=[{"kind": "skill", "id": skill.id, "version": skill.source_commit_sha}],
+                )
 
         user = db.query(User).filter(User.id == str(creator_id or "").strip()).first()
         if not user:
@@ -675,6 +719,12 @@ def _rollback_provision_task_sync(*, workspace_id: str, task_id: str) -> None:
 
 
 async def _rollback_task_resources(*, workspace_id: str, task_id: str, job_id: str = "") -> None:
+    if job_id:
+        with SessionLocal() as db:
+            job = get_job(db, job_id)
+            if job and (job.execution.completion_json or {}).get("outcome") == "SUCCESS":
+                # A late cancellation cannot compensate an accepted result.
+                return
     """任务创建失败/被取消后的终局回滚：清理磁盘资源并删除任务记录。
 
     失败/取消发生时仓库锁已被释放，重新获取后才注销 worktree。

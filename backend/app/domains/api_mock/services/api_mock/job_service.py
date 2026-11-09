@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from datetime import datetime
 from typing import Any
 
 import anyio
@@ -16,7 +15,8 @@ from app.core.background_tasks import retain_background_task
 from app.core.logging import get_logger
 from app.database import SessionLocal
 from app.domains.ai.services.jobs import domain_jobs
-from app.domains.api_mock.models.api_mock import ApiMockJobStatus, SddApiMockJob, SddApiMockProject
+from app.domains.ai.services.jobs.constants import ACTIVE_STATUSES
+from app.domains.api_mock.models.api_mock import SddApiMockJob, SddApiMockProject
 from app.domains.api_mock.schemas.api_mock import ApiMockJobResult
 from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
 
@@ -41,6 +41,7 @@ def create_job(
     job_type: str,
     message: str | None = None,
     execution_input: dict[str, Any] | None = None,
+    retry_of_job_id: str | None = None,
 ) -> SddApiMockJob:
     target = (execution_input or {}).get("endpoint_id")
     result = {"job_kind": AUTO_MOCK_JOB_TYPE, "target_endpoint_id": target} if target else {}
@@ -48,14 +49,11 @@ def create_job(
         project_id=project.id,
         creator_id=creator_id,
         job_type=job_type,
-        status=ApiMockJobStatus.PENDING,
-        progress=0,
-        message=message,
-        result_json=result,
     )
-    db.add(job)
-    db.flush()
-    domain_jobs.enqueue(
+    from app.domains.auth.models.user import generate_uuid
+
+    job.id = generate_uuid()
+    job.execution = domain_jobs.enqueue(
         db,
         job_id=job.id,
         kind="API_MOCK",
@@ -63,13 +61,19 @@ def create_job(
         workspace_id=project.workspace_id,
         resource_id=project.id,
         inputs={
+            **(execution_input or {}),
             "job_type": job_type,
             "workspace_id": project.workspace_id,
             "task_id": project.task_id,
             "user_id": creator_id,
-            **(execution_input or {}),
         },
+        task_id=project.task_id,
+        message=message,
+        result=result,
+        retry_of_job_id=retry_of_job_id,
+        command_key=f"rerun:{retry_of_job_id}" if retry_of_job_id else None,
     )
+    db.add(job)
     _commit_job_state(db, project.id, job)
     _get_or_create_cancel_event(job.id)
     return job
@@ -98,7 +102,7 @@ def list_jobs(
     if job_type:
         query = query.filter(SddApiMockJob.job_type == job_type)
     if active_only:
-        query = query.filter(SddApiMockJob.status.in_([ApiMockJobStatus.PENDING, ApiMockJobStatus.RUNNING]))
+        query = query.filter(SddApiMockJob.status.in_(list(ACTIVE_STATUSES)))
     safe_limit = max(1, min(int(limit), 200))
     return query.order_by(SddApiMockJob.created_at.desc()).limit(safe_limit).all()
 
@@ -106,7 +110,7 @@ def list_jobs(
 def _is_job_active(job: SddApiMockJob | None) -> bool:
     if not job:
         return False
-    return job.status in (ApiMockJobStatus.PENDING, ApiMockJobStatus.RUNNING)
+    return job.status in ACTIVE_STATUSES
 
 
 def _job_target_endpoint_id(job: SddApiMockJob) -> str | None:
@@ -126,7 +130,7 @@ def get_active_auto_mock_job(
         .filter(
             SddApiMockJob.project_id == project_id,
             SddApiMockJob.job_type == AUTO_MOCK_JOB_TYPE,
-            SddApiMockJob.status.in_([ApiMockJobStatus.PENDING, ApiMockJobStatus.RUNNING]),
+            SddApiMockJob.status.in_(list(ACTIVE_STATUSES)),
         )
         .order_by(SddApiMockJob.created_at.desc())
         .all()
@@ -170,7 +174,13 @@ def set_auto_mock_job_target(
     payload = _job_result_payload(job)
     payload["job_kind"] = AUTO_MOCK_JOB_TYPE
     payload["target_endpoint_id"] = endpoint_id
-    job.result_json = payload
+    if job.execution.status.value != "PENDING":
+        raise ValueError("Job input is immutable after execution starts")
+    job.execution.result_json = payload
+    job.execution.context_json = {
+        **job.execution.context_json,
+        "inputs": {**job.execution.context_json["inputs"], "endpoint_id": endpoint_id},
+    }
     _commit_job_state(db, project_id, job)
     return job
 
@@ -184,11 +194,15 @@ def _job_result_payload(job: SddApiMockJob) -> dict[str, Any]:
 def _serialize_job(job: SddApiMockJob) -> dict[str, Any]:
     status = job.status.value if hasattr(job.status, "value") else str(job.status)
     return {
+        "version": int(job.execution.version or 1),
+        "attempt_count": int(job.execution.attempt_count or 0),
+        "completion": job.execution.completion_json,
         "id": job.id,
         "project_id": job.project_id,
         "creator_id": job.creator_id,
         "job_type": job.job_type,
         "status": status,
+        "cancel_requested": job.cancel_requested,
         "progress": int(job.progress or 0),
         "message": job.message,
         "result_json": _job_result_payload(job),
@@ -234,20 +248,6 @@ def _commit_job_state(db: Session, project_id: str, job: SddApiMockJob, *, done:
     _broadcast_job_state(project_id, job, done=done)
 
 
-def _mark_job_cancel_requested(job: SddApiMockJob) -> None:
-    payload = _job_result_payload(job)
-    payload["cancel_requested"] = True
-    payload["cancel_requested_at"] = datetime.utcnow().isoformat() + "Z"
-    job.result_json = payload
-
-
-def _mark_job_cancelled(job: SddApiMockJob) -> None:
-    payload = _job_result_payload(job)
-    payload["cancelled"] = True
-    payload["cancelled_at"] = datetime.utcnow().isoformat() + "Z"
-    job.result_json = payload
-
-
 def _get_or_create_cancel_event(job_id: str) -> threading.Event:
     with _JOB_CANCEL_LOCK:
         event = _JOB_CANCEL_EVENTS.get(job_id)
@@ -262,10 +262,11 @@ def _is_cancel_requested(job_id: str) -> bool:
         event = _JOB_CANCEL_EVENTS.get(job_id)
         if event and event.is_set():
             return True
-    # A fresh short transaction sees cancellation issued by any API process.
+    from app.domains.ai.models.ai_job import SddAiJob
+
     with SessionLocal() as db:
-        row = db.query(SddApiMockJob.result_json).filter(SddApiMockJob.id == job_id).first()
-        return bool(row and (row[0] or {}).get("cancel_requested"))
+        row = db.get(SddAiJob, job_id)
+        return bool(row and row.cancel_requested_at)
 
 
 def _clear_cancel_event(job_id: str) -> None:
@@ -282,68 +283,58 @@ def _raise_if_cancel_requested(db: Session, project_id: str, job: SddApiMockJob,
 
 
 def request_job_cancel(db: Session, project_id: str, job_id: str) -> SddApiMockJob:
-    domain_jobs.request_cancel(db, job_id)
     job = get_job(db, project_id, job_id)
     if not job:
         raise ValueError("Job not found")
-
-    if job.status in (ApiMockJobStatus.SUCCESS, ApiMockJobStatus.FAILED):
-        return job
-
-    _mark_job_cancel_requested(job)
-
-    already_committed = False
-    if job.status == ApiMockJobStatus.PENDING:
-        _set_job_failed(db, project_id, job, "Job cancelled before execution")
-        _mark_job_cancelled(job)
-        already_committed = True
-
-    if already_committed:
-        _commit_job_state(db, project_id, job, done=True)
-    else:
-        _commit_job_state(db, project_id, job, done=job.status == ApiMockJobStatus.FAILED)
-    _get_or_create_cancel_event(job_id).set()
+    if domain_jobs.request_cancel(db, job_id):
+        _commit_job_state(db, project_id, job)
+        _get_or_create_cancel_event(job_id).set()
     return job
 
 
 def _set_job_running(db: Session, project_id: str, job: SddApiMockJob, message: str) -> None:
-    job.status = ApiMockJobStatus.RUNNING
-    job.progress = 1
-    job.started_at = datetime.utcnow()
-    job.message = message
+    domain_jobs.report(db, job.id, progress=1, message=message)
     _commit_job_state(db, project_id, job)
 
 
 def _set_job_progress(db: Session, project_id: str, job: SddApiMockJob, progress: int, message: str) -> None:
-    job.progress = max(0, min(100, int(progress)))
-    job.message = message
+    domain_jobs.report(db, job.id, progress=progress, message=message)
     _commit_job_state(db, project_id, job)
 
 
-def _set_job_success(db: Session, project_id: str, job: SddApiMockJob, result: dict[str, Any], message: str) -> None:
+def _set_job_success(
+    db: Session,
+    project_id: str,
+    job: SddApiMockJob,
+    result: dict[str, Any],
+    message: str,
+    *,
+    artifacts: list[dict[str, Any]] | None = None,
+) -> None:
     _raise_if_cancel_requested(db, project_id, job, job.id)
     merged_result = _job_result_payload(job)
     merged_result.update(result)
-    job.status = ApiMockJobStatus.SUCCESS
-    job.progress = 100
-    job.result_json = merged_result
-    job.message = message
-    job.finished_at = datetime.utcnow()
-    _commit_job_state(db, project_id, job, done=True)
+    domain_jobs.report(
+        db,
+        job.id,
+        status="SUCCESS",
+        progress=100,
+        result=merged_result,
+        message=message,
+        artifacts=artifacts or [{"kind": "api_mock_project", "id": project_id}],
+    )
+    _commit_job_state(db, project_id, job)
 
 
 def _set_job_failed(db: Session, project_id: str, job: SddApiMockJob, message: str) -> None:
     logger.warning(f"API Mock job {job.id} failed: {message}")
-    job.status = ApiMockJobStatus.FAILED
-    job.message = message
-    job.finished_at = datetime.utcnow()
-    _commit_job_state(db, project_id, job, done=True)
+    db.info["domain_allow_cancel"] = True
+    domain_jobs.report(db, job.id, status="FAILED", message=message, error_message=message)
+    _commit_job_state(db, project_id, job)
 
 
 def _set_job_cancelled(db: Session, project_id: str, job: SddApiMockJob, message: str) -> None:
     """Finalize cancellation only after the worker has stopped its provider work."""
     db.info["domain_allow_cancel"] = True
-    # This job table represents cancellation as FAILED plus durable result flags.
-    _mark_job_cancelled(job)
-    job.progress = 100
-    _set_job_failed(db, project_id, job, message)
+    domain_jobs.report(db, job.id, status="CANCELLED", progress=100, message=message)
+    _commit_job_state(db, project_id, job)

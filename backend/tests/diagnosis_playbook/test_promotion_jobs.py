@@ -29,7 +29,7 @@ def result(ids):
 
 
 def test_independent_submissions_do_not_share_an_execution_queue(db, monkeypatch):
-    from types import SimpleNamespace
+    from sqlalchemy.orm import sessionmaker
 
     from app.domains.ai.services.jobs import store
 
@@ -41,18 +41,7 @@ def test_independent_submissions_do_not_share_an_execution_queue(db, monkeypatch
     assert promotion.create(db, workspace.id, [case.id], user.id, "two").id == second.id
     first.status = AiJobStatus.ORPHANED
     db.commit()
-    monkeypatch.setattr(
-        store,
-        "SessionLocal",
-        lambda: SimpleNamespace(
-            query=db.query,
-            get=db.get,
-            commit=db.commit,
-            rollback=db.rollback,
-            expire_all=db.expire_all,
-            close=lambda: None,
-        ),
-    )
+    monkeypatch.setattr(store, "SessionLocal", sessionmaker(bind=db.get_bind(), autoflush=False))
     assert store.take_next_pending_job_id_sync(second.queue_key) == second.id
 
 

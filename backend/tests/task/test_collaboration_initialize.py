@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import database
 from app.dependencies import get_current_user, get_db
-from app.domains.ai.models.ai_job import SddAiJob
+from app.domains.ai.models.ai_job import AiJobChannel, SddAiJob
 from app.domains.ai.services.jobs import publishing
 from app.domains.auth.models.user import User
 from app.domains.task.models.chat_submission import TaskChatSubmission
@@ -136,7 +136,7 @@ async def test_initialize_requires_local_receipt_before_new_generation(initializ
         db.expire_all()
         assert db.get(SddTask, "t").session_generation == 1
         assert not state.enabled and state.binding_id != "binding"
-        assert db.query(SddAiJob).count() == 0
+        assert db.query(SddAiJob).filter(SddAiJob.channel == AiJobChannel.TASK_CHAT).count() == 0
         scheduled.assert_not_awaited()
         status = (await client.get("/api/workspaces/w/tasks/t/initialize")).json()["operation"]
         assert status["state"] == "WAITING_LOCAL"
@@ -151,7 +151,7 @@ async def test_initialize_requires_local_receipt_before_new_generation(initializ
     db.expire_all()
     job = db.get(SddAiJob, done.json()["job"]["id"])
     assert db.get(SddTask, "t").session_generation == job.session_generation == 2
-    assert db.query(SddAiJob).count() == 1
+    assert db.query(SddAiJob).filter(SddAiJob.channel == AiJobChannel.TASK_CHAT).count() == 1
     assert state.enabled and state.sync_phase == "RUNNING" and state.run_id == job.id
     assert job.context_json["collaboration"]["binding_id"] == command["binding_id"]
     assert state.input_snapshot_id != "input"
@@ -200,7 +200,7 @@ async def test_checkpoint_failure_resumes_after_local_receipt_once(initialize_ap
         assert retried.status_code == 200, retried.text
     db.expire_all()
     assert db.get(SddTask, "t").session_generation == 2
-    assert db.query(SddAiJob).count() == 1
-    assert db.query(SddAiJob).one().prompt_text == "Check cloud code"
+    assert db.query(SddAiJob).filter(SddAiJob.channel == AiJobChannel.TASK_CHAT).count() == 1
+    assert db.query(SddAiJob).filter(SddAiJob.channel == AiJobChannel.TASK_CHAT).one().prompt_text == "Check cloud code"
     assert db.get(CollaborationState, "t").instance_id == "restarted"
     scheduled.assert_awaited_once()

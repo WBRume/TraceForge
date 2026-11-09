@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 
 from app.agents import (
     EXECUTION_KIND_REMOTE_SESSION,
@@ -57,6 +57,7 @@ def list_reclaimable_jobs_sync(task_id: str | None = None) -> list[dict[str, Any
         rows = (
             db.query(SddAiJob)
             .filter(
+                SddAiJob.execution_backend == "durable",
                 SddAiJob.task_id == task_id if task_id is not None else True,
                 or_(
                     and_(
@@ -134,7 +135,7 @@ def adopt_reclaimable_job_sync(
 ) -> bool:
     db = SessionLocal()
     try:
-        query = db.query(SddAiJob).filter(SddAiJob.id == job_id)
+        query = db.query(SddAiJob).filter(SddAiJob.id == job_id, SddAiJob.execution_backend == "durable")
         query = query.filter(
             SddAiJob.run_token == expected_run_token if expected_run_token else SddAiJob.run_token.is_(None)
         )
@@ -161,6 +162,8 @@ def adopt_reclaimable_job_sync(
         ).update(
             {
                 SddAiJob.status: AiJobStatus.TERMINATING,
+                SddAiJob.version: SddAiJob.version + 1,
+                SddAiJob.state_changed_at: func.now(),
                 SddAiJob.worker_id: WORKER_ID,
                 SddAiJob.worker_boot_id: WORKER_BOOT_ID,
                 SddAiJob.run_token: adopted_run_token,
@@ -171,6 +174,11 @@ def adopt_reclaimable_job_sync(
             },
             synchronize_session=False,
         )
+        if int(affected or 0) == 1:
+            db.expire_all()
+            from app.domains.ai.models.job_history import record_event
+
+            record_event(db, db.get(SddAiJob, job_id))
         db.commit()
         return int(affected or 0) == 1
     finally:

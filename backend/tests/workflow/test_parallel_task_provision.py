@@ -6,6 +6,7 @@ import os
 import subprocess
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -26,6 +27,7 @@ from app.domains.task.services.task_records.commands import delete_task
 from app.domains.workflow.models.provision_job import ProvisionJobStatus, ProvisionJobType
 from app.domains.workflow.services import provision_job_service as jobs
 from app.domains.workspace.services.workspace_service import delete_workspace
+from tests.ai.jobs.domain_job_test_utils import run_provision_job
 
 
 def command(directory, *args):
@@ -200,9 +202,9 @@ def test_fixed_commits_checkout_and_snapshots_overlap(scenario, monkeypatch, tmp
 
     async def second_job():
         assert await asyncio.to_thread(first_started.wait, 45)
-        await jobs.run_create_task_job(job_b.id)
+        await run_provision_job(jobs, job_b.id)
 
-    run(jobs.run_create_task_job(job_a.id), second_job())
+    run(run_provision_job(jobs, job_a.id), second_job())
     with factory() as db:
         for task, job in ((first, job_a), (second, job_b)):
             assert jobs.get_job(db, job.id).status == ProvisionJobStatus.SUCCESS
@@ -218,7 +220,7 @@ def test_fixed_commits_checkout_and_snapshots_overlap(scenario, monkeypatch, tmp
     # Re-delivery must preserve edits rather than reset a ready worktree.
     marker = Path(first.project_path) / "file-0.txt"
     marker.write_text("user edit", encoding="utf-8")
-    run(jobs.run_create_task_job(job_a.id), jobs.run_create_task_job(job_a.id))
+    run(run_provision_job(jobs, job_a.id), run_provision_job(jobs, job_a.id))
     assert marker.read_text() == "user edit"
     report = {
         "database": provision_engine_name(factory),
@@ -263,7 +265,10 @@ def test_cleanup_waits_past_repository_lock_timeout(scenario, monkeypatch):
                 assert jobs.get_job(db, job.id).stage == "CANCELLING"
         await cleanup
 
-    run(cleanup_while_busy())
+    from tests.ai.jobs.domain_job_test_utils import bound_domain_attempt
+
+    with factory() as db, bound_domain_attempt(db, job.id):
+        run(cleanup_while_busy())
     assert not Path(task.project_path).exists()
     with factory() as db:
         assert db.get(SddTask, task.id) is None
@@ -284,11 +289,11 @@ def test_snapshot_failure_or_cancel_only_removes_its_own_task(scenario, monkeypa
             if outcome == "failure":
                 raise OSError("Injected snapshot failure after real capture")
             with factory() as session:
-                jobs.get_job(session, job_a.id).cancel_requested = True
+                jobs.get_job(session, job_a.id).execution.cancel_requested_at = datetime.utcnow()
                 session.commit()
 
     monkeypatch.setattr(resources, "_prepare_initial_workspace_checkpoint", checkpoint)
-    run(jobs.run_create_task_job(job_a.id), jobs.run_create_task_job(job_b.id))
+    run(run_provision_job(jobs, job_a.id), run_provision_job(jobs, job_b.id))
     with factory() as db:
         assert db.get(SddTask, first.id) is None
         assert jobs.get_job(db, job_a.id).stage == ("CANCELLED" if outcome == "cancel" else "FAILED")
@@ -316,7 +321,7 @@ def test_duplicate_dispatch_materializes_once(scenario, monkeypatch):
         return original(**kwargs)
 
     monkeypatch.setattr(git, "checkout_registered_worktree", checkout)
-    run(jobs.run_create_task_job(job.id), jobs.run_create_task_job(job.id))
+    run(run_provision_job(jobs, job.id), run_provision_job(jobs, job.id))
     assert checkouts == [task.id]
     assert (base / ".git/checkout-hook-count").read_text().splitlines() == ["1"]
     with factory() as db:
@@ -337,7 +342,7 @@ def test_coroutine_cancellation_drains_checkout_before_removing_worktree(scenari
     monkeypatch.setattr(git, "checkout_registered_worktree", held_checkout)
 
     async def cancel_during_checkout():
-        worker = asyncio.create_task(jobs.run_create_task_job(job.id))
+        worker = asyncio.create_task(run_provision_job(jobs, job.id))
         try:
             assert await asyncio.to_thread(entered.wait, 30)
             worker.cancel()
@@ -369,9 +374,9 @@ def test_creation_batch_timing(scenario):
         started = time.perf_counter()
         if mode == "serial":
             for _, job in batch:
-                run(jobs.run_create_task_job(job.id))
+                run(run_provision_job(jobs, job.id))
         else:
-            run(*(jobs.run_create_task_job(job.id) for _, job in batch))
+            run(*(run_provision_job(jobs, job.id) for _, job in batch))
         measurements[mode] = round(time.perf_counter() - started, 3)
         with factory() as db:
             for task, job in batch:

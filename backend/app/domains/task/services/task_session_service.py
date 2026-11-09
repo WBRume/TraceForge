@@ -37,6 +37,7 @@ from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import status_machine as sm
 from app.domains.task.services import task_confirmation_service, task_session_snapshot_service
 from app.domains.task.services.conversation import history as task_conversation_history
+from app.domains.task.services.reading_capture_service import load_message_reading_info
 from app.domains.task.services.status_policy import is_terminal
 from app.domains.websocket.ws.manager import manager
 from app.domains.workspace_asset.models.workspace_asset import SddAiOutput, SddDecision, SddEvidence
@@ -129,7 +130,7 @@ def _chat_message_event_dto(db: Session, message: ChatMessage) -> dict[str, Any]
         else None
     )
     metadata = message.metadata_json if isinstance(message.metadata_json, dict) else None
-    reading_info = _load_reading_info(db, message)
+    reading_info = load_message_reading_info(db, message)
     return {
         "task_id": message.task_id,
         "role": _enum_text(message.role) if message.role else "user",
@@ -152,23 +153,6 @@ def _chat_message_event_dto(db: Session, message: ChatMessage) -> dict[str, Any]
         else None,
         "can_undo": bool(message.session_turn_id),
     }
-
-
-def _load_reading_info(db: Session, message: ChatMessage) -> dict[str, Any] | None:
-    """读取消息当前阅读身份（已在捕获事务中登记；缺失时返回 None）。"""
-    from app.domains.task.models.reading import TaskReadingItem
-
-    item = (
-        db.query(TaskReadingItem)
-        .filter(
-            TaskReadingItem.task_id == message.task_id,
-            TaskReadingItem.item_key == f"message:{message.id}",
-        )
-        .first()
-    )
-    if item is None:
-        return None
-    return {"item_key": item.item_key, "change_seq": int(item.change_seq)}
 
 
 @dataclass(frozen=True)
@@ -198,6 +182,8 @@ class CreatedConfirmationReply:
     message_id: str
     created_at: datetime | None
     session_generation: int | None
+    reading_item_key: str | None = None
+    reading_change_seq: int | None = None
 
 
 def _prepare_chat_turn_sync(
@@ -630,12 +616,15 @@ def _persist_confirmation_reply_sync(
     ):
         metadata = existing.metadata_json if isinstance(existing.metadata_json, dict) else {}
         if str(metadata.get("interaction_id") or "") == str(interaction_id):
+            reading_info = load_message_reading_info(db, existing) or {}
             return CreatedConfirmationReply(
                 task_id=task_id,
                 workspace_id=str(task.workspace_id),
                 message_id=str(existing.id),
                 created_at=existing.created_at,
                 session_generation=existing.session_generation,
+                reading_item_key=reading_info.get("item_key"),
+                reading_change_seq=reading_info.get("change_seq"),
             )
     message = _new_chat_message(
         db,
@@ -661,6 +650,9 @@ def _persist_confirmation_reply_sync(
         session_generation=int(getattr(task, "session_generation", 0) or 0),
     )
     message.session_turn_id = parent.session_turn_id
+    from app.domains.task.services import reading_capture_service
+
+    reading_info = reading_capture_service.record_message_change(db, task_id=task_id, message=message)
     db.commit()
     db.refresh(message)
     return CreatedConfirmationReply(
@@ -669,6 +661,8 @@ def _persist_confirmation_reply_sync(
         message_id=str(message.id),
         created_at=message.created_at,
         session_generation=message.session_generation,
+        reading_item_key=reading_info.get("item_key"),
+        reading_change_seq=reading_info.get("change_seq"),
     )
 
 

@@ -3,7 +3,7 @@ import api from '@/utils/api'
 export type SkillImportProvisionJob = {
   job_id: string
   job_type: string
-  status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
+  status: import('@/types/queue').QueueStatus
   progress: number
   stage: string
   message?: string | null
@@ -36,7 +36,7 @@ const terminalResultFromJob = (job: SkillImportProvisionJob): SkillImportWaitRes
       message: 'Skill import completed without skill_id',
     }
   }
-  if (job.status === 'FAILED') {
+  if (['FAILED', 'CANCELLED', 'REVERTED'].includes(job.status)) {
     return {
       state: 'failed',
       job,

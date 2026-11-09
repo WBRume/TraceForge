@@ -11,6 +11,11 @@ from tests.diagnosis_playbook.test_promotion_jobs import result
 
 
 def generated(db, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+
+    from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
+
+    patch_ai_job_db(monkeypatch, sessionmaker(bind=db.get_bind(), autoflush=False))
     user, ws, task, first = seed_case(db)
     rest = [SddCase(workspace_id=ws.id, creator_id=user.id, title=f"案例{i}", status="APPROVED") for i in range(2)]
     db.add_all(rest)

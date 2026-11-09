@@ -4,6 +4,8 @@ Unified queue query/management routes.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -279,6 +281,10 @@ def list_queue_jobs(
     workspace_id: str | None = Query(default=None),
     source: QueueSourceValue | None = Query(default=None),
     status: QueueStatusValue | None = Query(default=None),
+    job_type: str | None = Query(default=None),
+    creator_id: str | None = Query(default=None),
+    created_after: datetime | None = Query(default=None),
+    created_before: datetime | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200),
     current_user: User = Depends(get_current_user),
@@ -291,6 +297,10 @@ def list_queue_jobs(
         workspace_id=workspace_id,
         source=source,
         status=status,
+        job_type=job_type,
+        creator_id=creator_id,
+        created_after=created_after,
+        created_before=created_before,
         page=page,
         page_size=page_size,
     )

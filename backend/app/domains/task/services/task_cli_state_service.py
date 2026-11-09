@@ -10,7 +10,6 @@ import os
 import re
 import shutil
 import time
-from datetime import datetime, timedelta
 from functools import partial
 from typing import Any
 
@@ -45,6 +44,18 @@ from app.domains.task.models.task import SddTask
 from app.domains.task.models.task_cli_bootstrap import (
     SddTaskCliBootstrap,
     TaskCliBootstrapStatus,
+)
+from app.domains.task.services.bootstrap_state import (
+    MESSAGE_UNSET as _MESSAGE_UNSET,
+)
+from app.domains.task.services.bootstrap_state import (
+    report_execution as _report_bootstrap_execution,
+)
+from app.domains.task.services.bootstrap_state import (
+    resource_status as _bootstrap_resource_status,
+)
+from app.domains.task.services.bootstrap_state import (
+    serialize_bootstrap as _serialize_bootstrap,
 )
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 from app.domains.websocket.ws.manager import manager as task_ws_manager
@@ -207,25 +218,6 @@ def _resolve_session_context_location(
     return _resolve_claude_context_location(project_path)
 
 
-def _serialize_bootstrap(record: SddTaskCliBootstrap) -> dict[str, Any]:
-    return {
-        "task_id": record.task_id,
-        "workspace_id": record.workspace_id,
-        "spec_asset_id": record.spec_asset_id,
-        "spec_version_id": record.spec_version_id,
-        "status": _status_text(record.status),
-        "progress": int(record.progress or 0),
-        "message": record.message,
-        "baseline_dir": record.baseline_dir,
-        "baseline_session_id": record.baseline_session_id,
-        "agent_backend": record.agent_backend,
-        "error_message": record.error_message,
-        "refresh_mode": str(record.refresh_mode or "FULL"),
-        "refresh_context_json": record.refresh_context_json if isinstance(record.refresh_context_json, dict) else None,
-        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
-    }
-
-
 async def _broadcast_bootstrap(payload: dict[str, Any]) -> None:
     task_id = str(payload.get("task_id") or "")
     if not task_id:
@@ -247,15 +239,12 @@ async def publish_bootstrap_snapshot(task_id: str) -> dict[str, Any] | None:
 def _load_bootstrap_snapshot_sync(task_id: str) -> dict[str, Any] | None:
     db = SessionLocal()
     try:
-        record = mark_running_bootstrap_stale_if_needed(db, task_id)
+        record = get_bootstrap_record(db, task_id)
         if not record:
             return None
         return _serialize_bootstrap(record)
     finally:
         db.close()
-
-
-_MESSAGE_UNSET = object()
 
 
 async def _update_bootstrap_state(
@@ -274,21 +263,28 @@ async def _update_bootstrap_state(
     refresh_mode: str | None = None,
     refresh_context_json: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    from contextvars import copy_context
+    from functools import partial
+
+    context = copy_context()
     payload = await run_db(
-        _update_bootstrap_state_sync,
-        task_id,
-        expected_input_revision=expected_input_revision,
-        status=status,
-        progress=progress,
-        message=message,
-        baseline_dir=baseline_dir,
-        baseline_session_id=baseline_session_id,
-        agent_backend=agent_backend,
-        error_message=error_message,
-        spec_asset_id=spec_asset_id,
-        spec_version_id=spec_version_id,
-        refresh_mode=refresh_mode,
-        refresh_context_json=refresh_context_json,
+        context.run,
+        partial(
+            _update_bootstrap_state_sync,
+            task_id,
+            expected_input_revision=expected_input_revision,
+            status=status,
+            progress=progress,
+            message=message,
+            baseline_dir=baseline_dir,
+            baseline_session_id=baseline_session_id,
+            agent_backend=agent_backend,
+            error_message=error_message,
+            spec_asset_id=spec_asset_id,
+            spec_version_id=spec_version_id,
+            refresh_mode=refresh_mode,
+            refresh_context_json=refresh_context_json,
+        ),
     )
     if payload:
         await _broadcast_bootstrap(payload)
@@ -321,6 +317,8 @@ def _update_bootstrap_state_sync(
         ):
             # The specification changed while this CLI attempt was running.
             # Its late progress/result must not overwrite the newer revision.
+            return _serialize_bootstrap(record)
+        if not _report_bootstrap_execution(db, record, status, progress, message, error_message, baseline_session_id):
             return _serialize_bootstrap(record)
         if status is not None:
             record.status = status
@@ -1028,7 +1026,7 @@ async def run_bootstrap_for_job(
         raise BootstrapNotReadyError("Specification baseline record disappeared")
     if expected_input_revision and str(payload.get("spec_version_id") or "missing") != str(expected_input_revision):
         raise BootstrapStateError("Specification changed while baseline was running; rebuild is required")
-    if payload.get("status") != TaskCliBootstrapStatus.READY.value:
+    if outcome.get("status") != TaskCliBootstrapStatus.READY.value:
         # The typed exception carries the attempt's termination evidence so
         # the job finalizer can distinguish FAILED (confirmed dead / never
         # started) from ORPHANED (unconfirmed tree).
@@ -1046,27 +1044,12 @@ async def run_bootstrap_for_job(
     return payload
 
 
-def mark_running_bootstrap_stale_if_needed(db: Session, task_id: str) -> SddTaskCliBootstrap | None:
-    record = db.query(SddTaskCliBootstrap).filter(SddTaskCliBootstrap.task_id == task_id).first()
-    if not record:
-        return None
-    if record.status != TaskCliBootstrapStatus.RUNNING:
-        return record
-    updated_at = record.updated_at or record.created_at
-    if not updated_at:
-        return record
-    if datetime.utcnow() - updated_at < timedelta(minutes=_RUNNING_STALE_MINUTES):
-        return record
-
-    record.status = TaskCliBootstrapStatus.STALE
-    record.message = "Bootstrap marked stale after restart or prolonged inactivity"
-    db.commit()
-    db.refresh(record)
-    return record
+def get_bootstrap_record(db: Session, task_id: str) -> SddTaskCliBootstrap | None:
+    return db.query(SddTaskCliBootstrap).filter(SddTaskCliBootstrap.task_id == task_id).first()
 
 
 def get_bootstrap_snapshot(db: Session, *, workspace_id: str, task_id: str) -> dict[str, Any] | None:
-    record = mark_running_bootstrap_stale_if_needed(db, task_id)
+    record = get_bootstrap_record(db, task_id)
     if not record:
         return None
     if record.workspace_id != workspace_id:
@@ -1077,18 +1060,18 @@ def get_bootstrap_snapshot(db: Session, *, workspace_id: str, task_id: str) -> d
 def _raise_not_ready(record: SddTaskCliBootstrap | None) -> None:
     if not record:
         raise BootstrapNotReadyError("Specification baseline is not initialized yet")
-    status = _status_text(record.status)
-    if record.status == TaskCliBootstrapStatus.READY:
+    status = _status_text(_bootstrap_resource_status(record))
+    if _bootstrap_resource_status(record) == TaskCliBootstrapStatus.READY:
         return
-    if record.status == TaskCliBootstrapStatus.FAILED:
+    if _bootstrap_resource_status(record) == TaskCliBootstrapStatus.FAILED:
         raise BootstrapNotReadyError(record.error_message or "Specification baseline bootstrap failed")
-    if record.status == TaskCliBootstrapStatus.STALE:
+    if _bootstrap_resource_status(record) == TaskCliBootstrapStatus.STALE:
         raise BootstrapNotReadyError("Specification baseline is stale and must be rebuilt")
     raise BootstrapNotReadyError(f"Specification baseline is not ready (status={status})")
 
 
 def ensure_bootstrap_ready(db: Session, *, workspace_id: str, task_id: str) -> SddTaskCliBootstrap:
-    record = mark_running_bootstrap_stale_if_needed(db, task_id)
+    record = get_bootstrap_record(db, task_id)
     if not record or record.workspace_id != workspace_id:
         raise BootstrapNotReadyError("Specification baseline is not initialized yet")
     _raise_not_ready(record)
@@ -1102,16 +1085,16 @@ def ensure_bootstrap_ready_or_start(
     task_id: str,
 ) -> SddTaskCliBootstrap:
     """评审 AI 入口 gate; it never starts a baseline as a side effect."""
-    record = mark_running_bootstrap_stale_if_needed(db, task_id)
+    record = get_bootstrap_record(db, task_id)
     if not record or record.workspace_id != workspace_id:
         raise BootstrapNotReadyError("Specification baseline is not initialized yet")
-    if record.status == TaskCliBootstrapStatus.READY:
+    if _bootstrap_resource_status(record) == TaskCliBootstrapStatus.READY:
         return record
-    if record.status == TaskCliBootstrapStatus.PENDING:
+    if _bootstrap_resource_status(record) == TaskCliBootstrapStatus.PENDING:
         raise BootstrapNotReadyError("Baseline build is pending; click Build baseline and retry when it completes")
-    if record.status == TaskCliBootstrapStatus.FAILED:
+    if _bootstrap_resource_status(record) == TaskCliBootstrapStatus.FAILED:
         raise BootstrapNotReadyError(record.error_message or "Specification baseline bootstrap failed")
-    if record.status == TaskCliBootstrapStatus.STALE:
+    if _bootstrap_resource_status(record) == TaskCliBootstrapStatus.STALE:
         raise BootstrapNotReadyError("Specification baseline is stale and must be rebuilt")
     raise BootstrapNotReadyError(f"Specification baseline is building (progress={int(record.progress or 0)}%)")
 
@@ -1198,12 +1181,12 @@ def request_bootstrap_run(
     - READY：抛 ValueError（由路由转换为 409）
     - 记录不存在：抛 KeyError（由路由转换为 404）
     """
-    record = mark_running_bootstrap_stale_if_needed(db, task_id)
+    record = get_bootstrap_record(db, task_id)
     if not record or record.workspace_id != workspace_id:
         raise KeyError("Specification baseline is not initialized yet")
-    if record.status == TaskCliBootstrapStatus.RUNNING:
+    if _bootstrap_resource_status(record) == TaskCliBootstrapStatus.RUNNING:
         return record
-    if record.status == TaskCliBootstrapStatus.READY:
+    if _bootstrap_resource_status(record) == TaskCliBootstrapStatus.READY:
         raise ValueError("Specification baseline is already ready")
     record.status = TaskCliBootstrapStatus.PENDING
     record.progress = 0
@@ -1294,7 +1277,7 @@ def _load_thread_fork_inputs(
     thread = _load_thread_with_task(db, thread_id)
     if not thread:
         raise ValueError("Thread not found")
-    record = mark_running_bootstrap_stale_if_needed(db, thread.task_id)
+    record = get_bootstrap_record(db, thread.task_id)
     if require_ready:
         _raise_not_ready(record)
     if not record:
@@ -1449,7 +1432,7 @@ def get_latest_thread_session_id(db: Session, thread_id: str) -> str | None:
 
 
 def get_bootstrap_agent_backend(db: Session, task_id: str) -> str | None:
-    record = mark_running_bootstrap_stale_if_needed(db, task_id)
+    record = get_bootstrap_record(db, task_id)
     if not record or record.status != TaskCliBootstrapStatus.READY:
         return None
     return normalize_backend_name(record.agent_backend)

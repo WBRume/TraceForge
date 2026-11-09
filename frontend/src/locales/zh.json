@@ -1279,7 +1279,13 @@
         "pending": "排队中",
         "running": "执行中",
         "success": "已完成",
-        "failed": "已失败"
+        "failed": "已失败",
+        "waiting_hitl": "等待交互",
+        "interrupted": "已中断",
+        "terminating": "终止处理中",
+        "orphaned": "等待核实",
+        "cancelled": "已取消",
+        "reverted": "已撤回"
       },
       "filter_view": "视图",
       "filter_workspace": "工作区",
@@ -1302,6 +1308,7 @@
         "task": "任务"
       },
       "job_type": {
+        "task_initialization": "任务初始化",
         "create_workspace": "创建工作区",
         "create_task": "创建任务",
         "import_skill": "导入 GitHub Skill",
@@ -1314,6 +1321,7 @@
         "unknown": "后台任务"
       },
       "job_desc": {
+        "task_initialization": "更新任务工作区并准备新的会话。",
         "create_workspace": "创建并准备新工作区（可包含仓库克隆）",
         "create_task": "为工作区创建任务并准备运行目录",
         "import_skill": "从 GitHub 仓库导入 Skill 包并发布初始版本",
@@ -1326,6 +1334,7 @@
         "unknown": "后台异步执行任务"
       },
       "stage": {
+        "result_committed": "产物已提交，等待收尾",
         "queued": "已排队",
         "indexing": "同步中",
         "indexed": "已同步",

@@ -6,6 +6,7 @@ import type { ApiMockJob } from '@/types/apiMock'
 import type { ActiveJobState, ApiMockJobListResponse } from './types'
 import type { ProjectContext } from './useProjectContext'
 import type { WorkbenchNotifications } from './notifications'
+import { acceptsJobSnapshot, isJobTerminal } from '@/utils/jobSnapshot'
 
 export function useProjectJobs(context: ProjectContext, notifications: WorkbenchNotifications) {
   const { wsId, selectedTaskId } = context
@@ -27,7 +28,7 @@ export function useProjectJobs(context: ProjectContext, notifications: Workbench
 
   const isAutoMockRunning = computed(() => {
     const status = activeAutoMockJob.value?.status || ''
-    return status === 'PENDING' || status === 'RUNNING'
+    return !!status && !isJobTerminal(status)
   })
 
   const autoMockTargetEndpointId = computed(() => {
@@ -44,10 +45,10 @@ export function useProjectJobs(context: ProjectContext, notifications: Workbench
 
   const normalizeJobStatus = (value: unknown): ActiveJobState['status'] => {
     const status = String(value || '').toUpperCase()
-    if (status === 'RUNNING' || status === 'SUCCESS' || status === 'FAILED' || status === 'PENDING') {
-      return status
+    if (['PENDING', 'RUNNING', 'WAITING_HITL', 'INTERRUPTED', 'TERMINATING', 'ORPHANED', 'SUCCESS', 'FAILED', 'CANCELLED', 'REVERTED'].includes(status)) {
+      return status as ActiveJobState['status']
     }
-    return 'PENDING'
+    return 'ORPHANED'
   }
 
   const sanitizeJobResultJson = (value: unknown): Record<string, unknown> | null => {
@@ -63,6 +64,9 @@ export function useProjectJobs(context: ProjectContext, notifications: Workbench
     if (!id || !jobType) return null
     return {
       id,
+      version: typeof job.version === 'number' ? job.version : undefined,
+      cancel_requested: job.cancel_requested === true,
+      attempt_count: typeof job.attempt_count === 'number' ? job.attempt_count : undefined,
       job_type: jobType,
       status: normalizeJobStatus(job.status),
       progress: Number(job.progress || 0),
@@ -81,7 +85,7 @@ export function useProjectJobs(context: ProjectContext, notifications: Workbench
       activeJob.value = incoming
       return
     }
-    const currentDone = current.status === 'SUCCESS' || current.status === 'FAILED'
+    const currentDone = isJobTerminal(current.status)
     if (currentDone) {
       activeJob.value = incoming
     }
@@ -89,7 +93,7 @@ export function useProjectJobs(context: ProjectContext, notifications: Workbench
 
   const mergeIncomingAutoMockJobState = (incoming: ActiveJobState) => {
     if (incoming.job_type !== AUTO_MOCK_JOB_TYPE) return
-    if (incoming.status === 'PENDING' || incoming.status === 'RUNNING') {
+    if (!isJobTerminal(incoming.status)) {
       activeAutoMockJob.value = incoming
       return
     }
@@ -100,16 +104,16 @@ export function useProjectJobs(context: ProjectContext, notifications: Workbench
 
   const acceptJobState = (incoming: ActiveJobState) => {
     const previous = observedJobs.value[incoming.id]
-    if (previous?.status === 'SUCCESS' || previous?.status === 'FAILED') return
+    if (!acceptsJobSnapshot(previous, incoming)) return
     observedJobs.value = { ...observedJobs.value, [incoming.id]: incoming }
     mergeIncomingJobState(incoming)
     mergeIncomingAutoMockJobState(incoming)
-    if (incoming.status === 'SUCCESS' || incoming.status === 'FAILED') handleAutoMockJobCompletion(incoming)
+    if (isJobTerminal(incoming.status)) handleAutoMockJobCompletion(incoming)
   }
 
   const handleAutoMockJobCompletion = (parsedJob: ActiveJobState) => {
     if (parsedJob.job_type !== AUTO_MOCK_JOB_TYPE) return
-    if (parsedJob.status !== 'SUCCESS' && parsedJob.status !== 'FAILED') return
+    if (!isJobTerminal(parsedJob.status)) return
 
     if (!handledAutoMockDoneJobIds.has(parsedJob.id)) {
       handledAutoMockDoneJobIds.add(parsedJob.id)
@@ -150,7 +154,7 @@ export function useProjectJobs(context: ProjectContext, notifications: Workbench
     const workspaceId = wsId.value
     const taskId = selectedTaskId.value
     const trackedIds = Object.values(observedJobs.value)
-      .filter((job) => job.status === 'PENDING' || job.status === 'RUNNING').map((job) => job.id)
+      .filter((job) => !isJobTerminal(job.status)).map((job) => job.id)
     const res = await api.get(`/workspaces/${workspaceId}/api-mock/projects/${taskId}/jobs`, {
       params: {
         active_only: true,
@@ -198,8 +202,8 @@ export function useProjectJobs(context: ProjectContext, notifications: Workbench
         if (job?.status === 'SUCCESS') {
           notifySuccess(t('api_mock.job_success'))
           finish(undefined, true)
-        } else if (job?.status === 'FAILED') {
-          finish(new Error(job.result_json?.cancelled ? t('api_mock.job_cancelled') :
+        } else if (job && isJobTerminal(job.status)) {
+          finish(new Error(job.status === 'CANCELLED' ? t('api_mock.job_cancelled') :
             (job.message || t('api_mock.job_failed'))))
         }
       }

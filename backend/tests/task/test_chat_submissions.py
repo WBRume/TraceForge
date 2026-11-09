@@ -887,6 +887,8 @@ def test_confirmation_reply_is_private_until_owning_turn_succeeds(task_db):
     )
     message = task_db.get(ChatMessage, reply.message_id)
     assert message.session_turn_id == "turn"
+    assert reply.reading_item_key == f"message:{message.id}"
+    assert reply.reading_change_seq is not None
     assert build_search_projection(message, "message") is None
     job.status = AiJobStatus.SUCCESS
     task_db.commit()

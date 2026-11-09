@@ -322,9 +322,15 @@ async def recover_pending_queues() -> int:
     from app.domains.task.services import chat_submission_service
 
     await chat_submission_service.recover()
+    from app.domains.ai.services.jobs.publishing import publish_pending_job_events
+
     queue_keys = await run_db(list_pending_queue_keys_sync)
     for queue_key in queue_keys:
         runtime.schedule_queue(queue_key)
+    try:
+        await publish_pending_job_events()
+    except Exception:
+        logger.exception("Committed job notifications will be retried")
     return len(queue_keys)
 
 

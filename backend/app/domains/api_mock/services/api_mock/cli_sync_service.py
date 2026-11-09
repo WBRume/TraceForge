@@ -69,7 +69,7 @@ def run_import_job_internal(
         _set_job_progress(db, project.id, job, 80, "Saving source version")
 
         serialize_document_content(content, normalized_oas)
-        persist_source_version(
+        source_version = persist_source_version(
             db,
             project,
             source_type=ApiMockSourceType.SWAGGER_IMPORT,
@@ -88,6 +88,7 @@ def run_import_job_internal(
             job,
             {"source_url": source_url, "endpoints_imported": len(normalized_oas.get("paths") or {})},
             "Import completed successfully",
+            artifacts=[{"kind": "api_mock_source_version", "id": source_version.id}],
         )
 
     except (JobCancelledError, AgentCancelledError):
@@ -171,7 +172,7 @@ def analyze_workspace_and_sync(
         _raise_if_cancel_requested(db, project.id, job, job_id)
         _set_job_progress(db, project.id, job, 80, "Saving source version")
 
-        persist_source_version(
+        source_version = persist_source_version(
             db,
             project,
             source_type=ApiMockSourceType.CLAUDE_SYNC,
@@ -190,6 +191,7 @@ def analyze_workspace_and_sync(
             job,
             {"endpoints_imported": len(normalized_oas.get("paths") or {})},
             "Sync completed successfully",
+            artifacts=[{"kind": "api_mock_source_version", "id": source_version.id}],
         )
 
     except (JobCancelledError, AgentCancelledError):

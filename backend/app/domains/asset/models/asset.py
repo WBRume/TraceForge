@@ -95,7 +95,7 @@ class SddAsset(Base):
     ai_jobs = relationship(
         "SddAiJob",
         back_populates="asset",
-        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
@@ -225,7 +225,7 @@ class SddAssetThread(Base):
     ai_jobs = relationship(
         "SddAiJob",
         back_populates="thread",
-        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
     anchor_mappings = relationship(
         "SddAssetThreadAnchorMapping",

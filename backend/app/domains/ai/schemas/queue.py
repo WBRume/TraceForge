@@ -5,12 +5,23 @@ Unified queue schemas for background jobs.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
 QueueSourceValue = Literal["provision", "api_mock", "bootstrap", "skill_analysis"]
-QueueStatusValue = Literal["PENDING", "RUNNING", "SUCCESS", "FAILED"]
+QueueStatusValue = Literal[
+    "PENDING",
+    "RUNNING",
+    "WAITING_HITL",
+    "INTERRUPTED",
+    "TERMINATING",
+    "ORPHANED",
+    "SUCCESS",
+    "FAILED",
+    "CANCELLED",
+    "REVERTED",
+]
 QueueViewValue = Literal["mine", "workspace_all"]
 QueueActionValue = Literal["stop", "retry"]
 
@@ -38,7 +49,12 @@ class QueueJobItem(BaseModel):
     target_path: str | None = None
     case_id: str | None = None
     doc_key: str | None = None
-    version: int | None = None
+    version: int = 1
+    attempt_count: int = 0
+    retry_of_job_id: str | None = None
+    completion: dict[str, Any] | None = None
+    cancel_requested: bool = False
+    result_available: bool = False
     retry_count: int | None = None
     actions: QueueJobActions
 

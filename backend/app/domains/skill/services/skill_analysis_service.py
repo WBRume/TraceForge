@@ -11,10 +11,8 @@ import tempfile
 from collections import Counter
 from collections.abc import Iterable
 from contextvars import ContextVar
-from datetime import datetime
 from typing import Any
 
-from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
 from app.agents.selection import resolve_workspace_backend
@@ -112,6 +110,9 @@ def serialize_analysis(analysis: SddSkillAnalysis) -> dict[str, Any]:
     risk_level = _enum_value(analysis.risk_level) or None
     risk_items = _dedupe_risks(analysis.risk_items_json or [])
     return {
+        "version": int(analysis.execution.version or 1),
+        "attempt_count": int(analysis.execution.attempt_count or 0),
+        "completion": analysis.execution.completion_json,
         "id": analysis.id,
         "workspace_id": analysis.workspace_id,
         "skill_id": analysis.skill_id,
@@ -244,48 +245,74 @@ def create_analysis_job(
         version_id=version.id if version else None,
         commit_sha=commit_sha,
         ref_kind=resolved_kind,
-        status=SkillAnalysisStatus.PENDING,
-        progress=0,
-        message="Skill analysis queued",
         created_by_id=user.id,
     )
-    db.add(analysis)
-    db.flush()
-    domain_jobs.enqueue(
+    from app.domains.auth.models.user import generate_uuid
+
+    analysis.id = generate_uuid()
+    analysis.execution = domain_jobs.enqueue(
         db,
         job_id=analysis.id,
         kind="SKILL_ANALYSIS",
         creator_id=user.id,
         workspace_id=workspace_id,
         resource_id=analysis.id,
+        inputs={
+            "input_policy": "CURRENT_WORKTREE"
+            if analysis.ref_kind == SkillAnalysisRefKind.WORKTREE
+            else "PINNED_VERSION",
+            "ref_kind": _enum_value(analysis.ref_kind),
+            "version_id": analysis.version_id,
+            "commit_sha": analysis.commit_sha,
+        },
+        message="Skill analysis queued",
     )
+    db.add(analysis)
     db.commit()
     db.refresh(analysis)
     return analysis
 
 
 def retry_analysis_job(db: Session, *, source: SddSkillAnalysis, user_id: str) -> SddSkillAnalysis:
+    from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+
+    receipt = db.query(SddAiJob).filter_by(id=source.id).populate_existing().with_for_update().one()
+    previous = db.query(SddAiJob).filter_by(command_key=f"rerun:{source.id}").with_for_update().first()
+    if previous:
+        return db.get(SddSkillAnalysis, previous.id)
+    if receipt.status not in {AiJobStatus.FAILED, AiJobStatus.CANCELLED}:
+        raise ValueError("Only ended unsuccessful jobs can be rerun")
     analysis = SddSkillAnalysis(
         workspace_id=source.workspace_id,
         skill_id=source.skill_id,
         version_id=source.version_id,
         commit_sha=source.commit_sha,
         ref_kind=source.ref_kind,
-        status=SkillAnalysisStatus.PENDING,
-        progress=0,
-        message="Skill analysis retry queued",
         created_by_id=user_id,
     )
-    db.add(analysis)
-    db.flush()
-    domain_jobs.enqueue(
+    from app.domains.auth.models.user import generate_uuid
+
+    analysis.id = generate_uuid()
+    analysis.execution = domain_jobs.enqueue(
         db,
         job_id=analysis.id,
         kind="SKILL_ANALYSIS",
         creator_id=user_id,
         workspace_id=source.workspace_id,
         resource_id=analysis.id,
+        inputs={
+            "input_policy": "CURRENT_WORKTREE"
+            if analysis.ref_kind == SkillAnalysisRefKind.WORKTREE
+            else "PINNED_VERSION",
+            "ref_kind": _enum_value(analysis.ref_kind),
+            "version_id": analysis.version_id,
+            "commit_sha": analysis.commit_sha,
+        },
+        message="Skill analysis retry queued",
+        retry_of_job_id=source.id,
+        command_key=f"rerun:{source.id}",
     )
+    db.add(analysis)
     db.commit()
     db.refresh(analysis)
     return analysis
@@ -311,13 +338,9 @@ def _publish_analysis(analysis: SddSkillAnalysis) -> None:
     loop = _notification_loop.get()
     if loop is None or loop.is_closed():
         return
-    from app.domains.notification.ws.notification_manager import notification_ws_manager
+    from app.domains.ai.services.jobs.publishing import publish_domain_snapshot
 
-    payload = {"type": "skill_analysis_updated", "analysis": jsonable_encoder(serialize_analysis(analysis))}
-    user_id = str(analysis.created_by_id)
-    loop.call_soon_threadsafe(
-        lambda: retain_background_task(loop.create_task(notification_ws_manager.send_message_to_user(user_id, payload)))
-    )
+    loop.call_soon_threadsafe(lambda: retain_background_task(loop.create_task(publish_domain_snapshot(analysis.id))))
 
 
 def _set_analysis_state(
@@ -332,18 +355,17 @@ def _set_analysis_state(
     finished: bool = False,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    if status is not None:
-        analysis.status = status
-    if progress is not None:
-        analysis.progress = max(0, min(100, int(progress)))
-    if message is not None:
-        analysis.message = message
-    if error_message is not None:
-        analysis.error_message = error_message
-    if started:
-        analysis.started_at = datetime.utcnow()
-    if finished:
-        analysis.finished_at = datetime.utcnow()
+    domain_jobs.report(
+        db,
+        analysis.id,
+        status=status,
+        progress=progress,
+        message=message,
+        error_message=error_message,
+        artifacts=[{"kind": "skill_analysis", "id": analysis.id, "version": analysis.commit_sha}]
+        if status == SkillAnalysisStatus.SUCCESS
+        else [],
+    )
     if payload is not None:
         analysis.risk_level = SkillRiskLevel(payload["risk_level"]) if payload.get("risk_level") else None
         analysis.complexity = SkillRiskLevel(payload["complexity"]) if payload.get("complexity") else None

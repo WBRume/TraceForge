@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from datetime import datetime, timedelta
+from datetime import datetime
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -7,8 +7,6 @@ from fastapi.testclient import TestClient
 
 from app.domains.ai.routers import queue as queue_router
 from app.domains.ai.services import queue_service
-from app.domains.skill.models.skill import SkillAnalysisStatus
-from app.domains.workflow.models.provision_job import ProvisionJobStatus, ProvisionJobType
 
 
 class _FakeDb:
@@ -50,21 +48,6 @@ def _queue_item(**overrides):
     return payload
 
 
-class _FakeQueueDb:
-    def __init__(self):
-        self.committed = False
-        self.refreshed = False
-
-    def commit(self):
-        self.committed = True
-
-    def refresh(self, _job):
-        self.refreshed = True
-
-    def get(self, *_args):
-        return None
-
-
 def test_list_queue_jobs_returns_items(monkeypatch):
     app = FastAPI()
     app.include_router(queue_router.router, prefix="/api")
@@ -84,116 +67,6 @@ def test_list_queue_jobs_returns_items(monkeypatch):
     assert payload["total"] == 1
     assert len(payload["items"]) == 1
     assert payload["items"][0]["source"] == "provision"
-
-
-def test_stale_import_skill_provision_job_is_marked_failed(monkeypatch):
-    monkeypatch.setattr(queue_service.settings, "SKILL_GITHUB_IMPORT_GIT_TIMEOUT_SECONDS", 1)
-    monkeypatch.setattr(queue_service.settings, "SKILL_GITHUB_IMPORT_STALE_GRACE_SECONDS", 0)
-    job = SimpleNamespace(
-        id="legacy-import",
-        job_type=ProvisionJobType.IMPORT_SKILL,
-        status=ProvisionJobStatus.RUNNING,
-        progress=20,
-        stage="CLONING_REPOSITORY",
-        message="Importing skill from GitHub",
-        error_message=None,
-        updated_at=datetime.utcnow() - timedelta(seconds=5),
-        started_at=datetime.utcnow() - timedelta(seconds=5),
-        created_at=datetime.utcnow() - timedelta(seconds=5),
-        finished_at=None,
-    )
-    db = _FakeQueueDb()
-
-    queue_service._mark_stale_import_skill_job_failed(db, job)
-
-    assert job.status == ProvisionJobStatus.FAILED
-    assert job.stage == "FAILED"
-    assert "timed out" in job.error_message
-    assert db.committed is True
-    assert db.refreshed is True
-
-
-def test_stale_import_skill_job_uses_started_at_before_local_updated_at(monkeypatch):
-    monkeypatch.setattr(queue_service.settings, "SKILL_GITHUB_IMPORT_GIT_TIMEOUT_SECONDS", 1)
-    monkeypatch.setattr(queue_service.settings, "SKILL_GITHUB_IMPORT_STALE_GRACE_SECONDS", 0)
-    job = SimpleNamespace(
-        id="legacy-import",
-        job_type=ProvisionJobType.IMPORT_SKILL,
-        status=ProvisionJobStatus.RUNNING,
-        progress=20,
-        stage="CLONING_REPOSITORY",
-        message="Importing skill from GitHub",
-        error_message=None,
-        updated_at=datetime.utcnow() + timedelta(hours=8),
-        started_at=datetime.utcnow() - timedelta(seconds=5),
-        created_at=datetime.utcnow() + timedelta(hours=8),
-        finished_at=None,
-    )
-    db = _FakeQueueDb()
-
-    queue_service._mark_stale_import_skill_job_failed(db, job)
-
-    assert job.status == ProvisionJobStatus.FAILED
-    assert job.stage == "FAILED"
-    assert db.committed is True
-
-
-class _FakeSkillQuery:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def join(self, *args, **kwargs):
-        return self
-
-    def filter(self, *args, **kwargs):
-        return self
-
-    def order_by(self, *args, **kwargs):
-        return self
-
-    def limit(self, *args, **kwargs):
-        return self
-
-    def all(self):
-        return self._rows
-
-
-class _FakeSkillDb:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def query(self, *args, **kwargs):
-        return _FakeSkillQuery(self._rows)
-
-
-def test_skill_analysis_queue_item_uses_persisted_status():
-    analysis = SimpleNamespace(
-        id="analysis-1",
-        workspace_id="ws-1",
-        skill_id="skill-1",
-        status=SkillAnalysisStatus.FAILED,
-        progress=100,
-        ref_kind="WORKTREE",
-        message="静态包摘要已完成",
-        error_message="semantic provider offline",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-        created_by_id="user-1",
-    )
-    db = _FakeSkillDb([(analysis, SimpleNamespace(name="Demo Skill"))])
-
-    items = queue_service._list_skill_analysis_items(
-        db,
-        user_id="user-1",
-        view="mine",
-        workspace_id=None,
-        status_filter=None,
-    )
-
-    assert len(items) == 1
-    assert items[0].status == "FAILED"
-    assert items[0].message == "静态包摘要已完成"
-    assert items[0].error_message == "semantic provider offline"
 
 
 def test_retry_queue_job_returns_new_job_id(monkeypatch):

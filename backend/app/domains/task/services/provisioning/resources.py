@@ -86,6 +86,14 @@ def _load_provision_task(db: Session, workspace_id: str, task_id: str) -> SddTas
     return task
 
 
+def _commit_prepared_task(db, task, before_ready_commit):
+    if before_ready_commit:
+        before_ready_commit(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
 def prepare_task_resources_for_provision(
     db: Session,
     *,
@@ -93,10 +101,11 @@ def prepare_task_resources_for_provision(
     task_id: str,
     cancel_check: Callable[[], bool] | None = None,
     snapshot_progress: Callable[[], None] | None = None,
+    before_ready_commit: Callable[[SddTask], None] | None = None,
 ) -> SddTask:
     task = _load_provision_task(db, workspace_id, task_id)
     if task.status == TaskStatus.INITIALIZED:
-        return task
+        return _commit_prepared_task(db, task, before_ready_commit)
 
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
@@ -157,9 +166,7 @@ def prepare_task_resources_for_provision(
             sm.dispatch(db, task, sm.Trigger.RESOURCES_READY, event_key="resources-ready")
             task.current_phase = None
             task.error_message = None
-            db.commit()
-            db.refresh(task)
-            return task
+            return _commit_prepared_task(db, task, before_ready_commit)
         except Exception:
             db.rollback()
             # The provision job owns terminal compensation in a fresh transaction.

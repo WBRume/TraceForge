@@ -10,6 +10,28 @@ from app.domains.websocket.ws.connection import ConnectionRegistry, OutboundConn
 logger = get_logger(__name__, category="api_mock")
 
 
+def _authorized_job_recipients(project_id: str, user_ids: set[str]) -> set[str]:
+    from app.database import SessionLocal
+    from app.domains.api_mock.models.api_mock import SddApiMockProject
+    from app.domains.auth.models.user import WorkspacePermission
+    from app.domains.workspace.services import workspace_service
+
+    with SessionLocal() as db:
+        project = db.get(SddApiMockProject, project_id)
+        if project is None:
+            return set()
+        return {
+            user_id
+            for user_id in user_ids
+            if workspace_service.user_has_permission(
+                db,
+                project.workspace_id,
+                user_id,
+                WorkspacePermission.VIEW_API_MOCK,
+            )
+        }
+
+
 class ApiMockConnectionManager:
     def __init__(self) -> None:
         self.registry = ConnectionRegistry()
@@ -66,6 +88,17 @@ class ApiMockConnectionManager:
         await self._broadcast_local(project_id, payload)
 
     async def broadcast_job_state(self, project_id: str, payload: dict) -> None:
+        from app.core.offload import run_db
+
+        room = self._room_key(project_id)
+        presence = dict(self.registry.presence.get(room, {}))
+        if presence:
+            allowed = await run_db(_authorized_job_recipients, project_id, set(presence.values()))
+            for websocket, user_id in presence.items():
+                if user_id not in allowed:
+                    connection = self.registry.disconnect(room, websocket)
+                    if connection:
+                        connection.evict("workspace_access_revoked")
         await self._broadcast_local(project_id, payload)
 
     async def complete_resync(

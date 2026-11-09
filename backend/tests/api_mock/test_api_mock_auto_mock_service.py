@@ -63,8 +63,9 @@ def test_auto_generate_mock_cases_persists_request_matchers_and_prompt_fields(mo
         created_calls.append(kwargs)
         return SimpleNamespace(id=f"case-{len(created_calls)}")
 
-    def _fake_set_job_success(_db, _project_id, _job, result, _message):
+    def _fake_set_job_success(_db, _project_id, _job, result, _message, *, artifacts):
         captured["success_result"] = result
+        assert len(artifacts) == 2 and artifacts[0]["id"] == "case-1"
 
     monkeypatch.setattr(auto_mock_service, "get_job", lambda *_args, **_kwargs: job)
     monkeypatch.setattr(auto_mock_service, "get_endpoint", lambda *_args, **_kwargs: endpoint)

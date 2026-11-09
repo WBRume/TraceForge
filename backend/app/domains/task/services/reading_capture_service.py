@@ -43,6 +43,21 @@ def message_item_key(message_id: str) -> str:
     return f"message:{message_id}"
 
 
+def load_message_reading_info(db: Session, message: ChatMessage) -> dict[str, Any] | None:
+    """Read the persisted identity used by message response and event DTOs."""
+    item = (
+        db.query(TaskReadingItem)
+        .filter(
+            TaskReadingItem.task_id == message.task_id,
+            TaskReadingItem.item_key == message_item_key(message.id),
+        )
+        .first()
+    )
+    if item is None:
+        return None
+    return {"item_key": item.item_key, "change_seq": int(item.change_seq)}
+
+
 def operation_item_key(operation_id: str) -> str:
     return f"operation:{operation_id}"
 

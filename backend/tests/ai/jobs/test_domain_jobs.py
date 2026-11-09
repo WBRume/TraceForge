@@ -18,7 +18,7 @@ from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import attempts, domain_jobs, queue_runner, reaper, registry, store
 from app.domains.ai.services.jobs.executors import domain_job
 from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
-from app.domains.api_mock.models.api_mock import ApiMockJobStatus, SddApiMockJob, SddApiMockProject
+from app.domains.api_mock.models.api_mock import SddApiMockJob, SddApiMockProject
 from app.domains.api_mock.services import api_mock_service
 from app.domains.api_mock.services.api_mock import job_service
 from app.domains.skill.models.skill import SddSkillAnalysis, SkillAnalysisRefKind
@@ -104,23 +104,23 @@ def test_skill_creation_and_retry_commit_execution_receipts(execution_db, monkey
             workspace_id="workspace",
             ref_kind="WORKTREE",
         )
+        analysis.execution.status = AiJobStatus.FAILED
+        db.commit()
         retry = skill_analysis_service.retry_analysis_job(db, source=analysis, user_id="user")
         ids = [analysis.id, retry.id]
     with factory() as db:
         for job_id in ids:
             assert db.get(SddSkillAnalysis, job_id) is not None
             assert db.get(SddAiJob, job_id).context_json["job_kind"] == "SKILL_ANALYSIS"
-    assert len(store.list_pending_queue_keys_sync()) == 2
+    assert len(store.list_pending_queue_keys_sync()) == 1
 
 
 def test_receipt_rolls_back_with_business_row(execution_db):
     factory, _ = execution_db
     with factory() as db:
-        row = SddProvisionJob(job_type=ProvisionJobType.CREATE_TASK, creator_id="user", stage="QUEUED")
-        db.add(row)
-        db.flush()
+        row = SddProvisionJob(id="rolled-back", job_type=ProvisionJobType.CREATE_TASK, creator_id="user")
         job_id = row.id
-        domain_jobs.enqueue(
+        row.execution = domain_jobs.enqueue(
             db,
             job_id=job_id,
             kind="PROVISION",
@@ -129,6 +129,7 @@ def test_receipt_rolls_back_with_business_row(execution_db):
             resource_id=job_id,
             inputs={"job_type": "CREATE_TASK"},
         )
+        db.add(row)
         db.flush()
         db.rollback()
     with factory() as db:
@@ -169,8 +170,6 @@ def test_cancel_from_another_process_is_observed_without_local_event(execution_d
     script = """
 import sqlite3, sys
 with sqlite3.connect(sys.argv[1]) as db:
-    db.execute('UPDATE sdd_api_mock_jobs SET result_json = ? WHERE id = ?',
-               ('{"cancel_requested": true}', sys.argv[2]))
     db.execute('UPDATE sdd_ai_jobs SET cancel_requested_at = ? WHERE id = ?',
                ('2026-11-09 00:00:00', sys.argv[2]))
 """
@@ -187,8 +186,8 @@ with sqlite3.connect(sys.argv[1]) as db:
     finally:
         reset_agent_attempt(token)
     with factory() as db:
-        assert db.get(SddApiMockJob, job_id).status == ApiMockJobStatus.PENDING
-        assert db.get(SddApiMockJob, job_id).result_json == {"cancel_requested": True}
+        assert db.get(SddApiMockJob, job_id).status == AiJobStatus.RUNNING
+        assert db.get(SddAiJob, job_id).cancel_requested_at is not None
 
 
 def test_cancel_queued_provision_runs_cleanup_before_terminal_receipt(execution_db, monkeypatch):
@@ -212,7 +211,7 @@ def test_cancel_queued_provision_runs_cleanup_before_terminal_receipt(execution_
     with factory() as db:
         assert db.get(SddAiJob, job_id).status == AiJobStatus.CANCELLED
         row = db.get(SddProvisionJob, job_id)
-        assert row.status == ProvisionJobStatus.FAILED
+        assert row.status == AiJobStatus.CANCELLED
         assert row.stage == "CANCELLED"
 
 
@@ -237,7 +236,7 @@ def test_stale_attempt_cannot_commit_business_changes(execution_db, change):
     finally:
         reset_agent_attempt(token)
     with factory() as db:
-        assert db.get(SddProvisionJob, job_id).status == ProvisionJobStatus.PENDING
+        assert db.get(SddAiJob, job_id).completion_json is None
 
 
 def test_other_process_with_valid_lease_is_not_reclaimed(execution_db):
@@ -270,7 +269,6 @@ def test_recovery_requeues_or_finishes_business_state(execution_db, monkeypatch,
         receipt.lease_expires_at = datetime.utcnow() - timedelta(seconds=1)
         if exhausted:
             receipt.attempt_count = receipt.max_attempts
-        db.get(SddProvisionJob, job_id).status = ProvisionJobStatus.RUNNING
         db.commit()
 
     async def stop(*_):
@@ -313,64 +311,11 @@ def test_thread_is_drained_before_cancelled_executor_exits():
     asyncio.run(run())
 
 
-def test_upgrade_recovers_old_jobs_and_requires_reupload_for_lost_imports(execution_db):
-    import importlib.util
-    from pathlib import Path
-
-    factory, _ = execution_db
-    path = Path(__file__).parents[3] / "alembic/versions/c84f0e2a9137_domain_job_execution.py"
-    spec = importlib.util.spec_from_file_location("domain_job_migration", path)
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
-    with factory() as db:
-        db.add(SddSkillAnalysis(id="old-analysis", workspace_id="workspace", skill_id="skill", created_by_id="user"))
-        db.add(
-            SddProvisionJob(
-                id="old-provision", job_type=ProvisionJobType.CREATE_WORKSPACE, creator_id="user", stage="QUEUED"
-            )
-        )
-        db.add(
-            SddApiMockProject(
-                id="old-project",
-                workspace_id="workspace",
-                task_id="task",
-                creator_id="user",
-                temp_workspace_path="unused",
-            )
-        )
-        for job_id, job_type in (
-            ("old-sync", "SYNC_TASK_SOURCE"),
-            ("old-auto", "AUTO_GENERATE_MOCK_CASES"),
-            ("old-import", "IMPORT_SWAGGER"),
-        ):
-            db.add(
-                SddApiMockJob(
-                    id=job_id,
-                    project_id="old-project",
-                    creator_id="user",
-                    job_type=job_type,
-                    result_json={"target_endpoint_id": "endpoint"},
-                )
-            )
-        db.commit()
-        migration.backfill_receipts(db.connection())
-        db.commit()
-        migration.backfill_receipts(db.connection())
-        db.commit()
-        assert db.query(SddAiJob).count() == 4
-        assert db.get(SddAiJob, "old-provision").workspace_id is None
-        assert db.get(SddAiJob, "old-auto").context_json["inputs"]["endpoint_id"] == "endpoint"
-        assert db.get(SddAiJob, "old-sync").context_json["inputs"]["job_type"] == "SYNC_TASK_SOURCE"
-        assert db.get(SddApiMockJob, "old-import").status == ApiMockJobStatus.FAILED
-        assert "upload" in db.get(SddApiMockJob, "old-import").message
-
-
 def test_cancellation_during_worker_start_converges_receipt(execution_db, monkeypatch):
     factory, _ = execution_db
     job_id = create_mock(factory)
     with factory() as db:
         row = db.get(SddApiMockJob, job_id)
-        row.status = ApiMockJobStatus.RUNNING
         db.commit()
         job_service.request_job_cancel(db, "project", job_id)
         queue = db.get(SddAiJob, job_id).queue_key
@@ -379,22 +324,25 @@ def test_cancellation_during_worker_start_converges_receipt(execution_db, monkey
     with factory() as db:
         assert db.get(SddAiJob, job_id).status == AiJobStatus.CANCELLED
         row = db.get(SddApiMockJob, job_id)
-        assert row.status == ApiMockJobStatus.FAILED
-        assert row.result_json["cancelled"]
+        assert row.status == AiJobStatus.CANCELLED
+        assert row.execution.cancel_requested_at is not None
 
 
 def test_cancel_after_business_commit_preserves_success(execution_db):
     factory, _ = execution_db
     job_id = create_mock(factory)
-    claim(factory, job_id)
-    with factory() as db:
-        row = db.get(SddApiMockJob, job_id)
-        row.status = ApiMockJobStatus.SUCCESS
-        row.result_json = {"endpoints_imported": 2}
-        db.commit()
+    _, attempt = claim(factory, job_id)
+    token = bind_agent_attempt(attempt)
+    try:
+        with domain_jobs.business_session(factory) as db:
+            row = db.get(SddApiMockJob, job_id)
+            job_service._set_job_success(db, "project", row, {"endpoints_imported": 2}, "Imported")
+    finally:
+        reset_agent_attempt(token)
     with factory() as db:
         row = job_service.request_job_cancel(db, "project", job_id)
-        assert row.status == ApiMockJobStatus.SUCCESS
+        assert row.status == AiJobStatus.RUNNING
+        assert row.execution.completion_json["outcome"] == "SUCCESS"
         assert db.get(SddAiJob, job_id).cancel_requested_at is None
         assert row.result_json == {"endpoints_imported": 2}
 

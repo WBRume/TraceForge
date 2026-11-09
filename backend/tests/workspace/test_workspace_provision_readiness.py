@@ -14,6 +14,7 @@ from app.domains.workflow.models.provision_job import ProvisionJobStatus, Provis
 from app.domains.workflow.services import provision_job_service as provision
 from app.domains.workspace.models.workspace_repository import WorkspaceRepositoryState
 from app.domains.workspace.services import workspace_service
+from tests.ai.jobs.domain_job_test_utils import run_provision_job
 
 
 def _git(path: Path, *args: str) -> str:
@@ -87,7 +88,7 @@ def test_workspace_published_only_after_all_clones_succeed(db, workspace_job, mo
 
     monkeypatch.setattr(git, "prepare_workspace_repository", prepare_or_fail)
     monkeypatch.setattr(provision, "mark_progress", observe_progress)
-    asyncio.run(provision.run_create_workspace_job(job.id))
+    asyncio.run(run_provision_job(provision, job.id))
     db.refresh(job)
     workspace_id = job.workspace_id
     assert workspace_id
@@ -104,7 +105,7 @@ def test_workspace_published_only_after_all_clones_succeed(db, workspace_job, mo
         # Retry reuses the original workspace and safely keeps successful clones.
         job = provision.retry_job(db, source_job=job, creator_id=user.id)
         monkeypatch.setattr(git, "prepare_workspace_repository", prepare)
-        asyncio.run(provision.run_create_workspace_job(job.id))
+        asyncio.run(run_provision_job(provision, job.id))
         db.refresh(job)
 
     assert job.status == ProvisionJobStatus.SUCCESS
@@ -124,7 +125,7 @@ def test_old_false_success_is_hidden_by_repository_state(db, workspace_job):
     workspace = db.get(Workspace, result["workspace_id"])
     for row in workspace.repositories:
         row.state = WorkspaceRepositoryState.FAILED
-    job.status = ProvisionJobStatus.SUCCESS
+    job.execution.status = ProvisionJobStatus.SUCCESS
     db.commit()
     assert workspace_service.list_user_workspaces(db, user) == []
     assert workspace_service.list_user_workspace_summaries(db, user) == []

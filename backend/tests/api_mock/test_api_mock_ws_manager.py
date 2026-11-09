@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
@@ -37,7 +38,8 @@ class ApiMockWsManagerTest(unittest.IsolatedAsyncioTestCase):
                 barrier_sequence=initial["barrier_sequence"],
             )
         )
-        await manager.broadcast_job_state("project-1", {"type": "job_update"})
+        with patch("app.domains.api_mock.ws.api_mock_manager._authorized_job_recipients", return_value={"user-1"}):
+            await manager.broadcast_job_state("project-1", {"type": "job_update"})
         await connection.wait_flushed()
 
         self.assertTrue(socket.accepted)
