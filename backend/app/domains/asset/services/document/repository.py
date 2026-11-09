@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.domains.asset.models.asset import SddAsset, SddAssetVersion
@@ -30,8 +29,15 @@ def get_asset_version(db: Session, asset_id: str, version_id: str) -> SddAssetVe
 
 
 def next_version_no(db: Session, asset_id: str) -> int:
-    max_no = db.query(func.max(SddAssetVersion.version_no)).filter(SddAssetVersion.asset_id == asset_id).scalar()
-    return int(max_no or 0) + 1
+    """Allocate under the asset lock using a current read, even under MySQL REPEATABLE READ."""
+    latest = (
+        db.query(SddAssetVersion.version_no)
+        .filter(SddAssetVersion.asset_id == asset_id)
+        .order_by(SddAssetVersion.version_no.desc())
+        .with_for_update()
+        .first()
+    )
+    return int(latest[0] if latest else 0) + 1
 
 
 def task_for_asset(db: Session, asset: SddAsset) -> SddTask:

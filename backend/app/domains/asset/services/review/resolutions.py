@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.domains.asset.models.asset import SddAssetResolutionProposal
 from app.domains.asset.schemas.asset import AssetManualEditBlockRequest, AssetResolutionApplyRequest
 from app.domains.asset.services import asset_discussion_service, asset_resolution_service, asset_service
+from app.domains.asset.services.document.transactions import DocumentVersionConflict
 from app.domains.asset.services.review import policy as asset_review_policy
 from app.domains.asset.services.review import serialization as asset_review_serialization
 from app.domains.asset.services.review.errors import ReviewError
@@ -48,7 +49,7 @@ def apply_resolution(
             final_blocks_ast=data.final_blocks_ast,
             change_note=data.change_note,
         )
-    except asset_resolution_service.ResolutionServiceError as exc:
+    except (asset_resolution_service.ResolutionServiceError, DocumentVersionConflict) as exc:
         raise ReviewError(status_code=exc.status_code, detail=str(exc)) from exc
 
     if data.decision:
@@ -119,7 +120,7 @@ def edit_document_block(
             context_version_id=data.context_version_id,
             change_note=data.change_note,
         )
-    except asset_resolution_service.ResolutionServiceError as exc:
+    except (asset_resolution_service.ResolutionServiceError, DocumentVersionConflict) as exc:
         raise ReviewError(status_code=exc.status_code, detail=str(exc)) from exc
     db.commit()
     return {

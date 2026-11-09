@@ -1,6 +1,7 @@
 """资产文档版本生命周期：版本创建、激活与历史数据兜底。
 
-四个业务入口共享「写原文件 → 建版本记录 → 激活」核心流程：
+四个业务入口共享「锁资产 → 校验基准 → 写独立原文件 → 建版本记录 → 激活」流程。
+锁与文件清理均跟随调用方事务，服务不自行提交：
 - create_asset_version_from_upload          SPEC 文档上传（任务级唯一）
 - create_diagnosis_doc_asset_version        诊断辅助文档上传（任务+文件名唯一）
 - create_asset_version_from_normalized_content
@@ -11,24 +12,26 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from app.domains.asset.models.asset import AssetType, SddAsset, SddAssetVersion
 from app.domains.asset.services import asset_service
-from app.domains.asset.services.document import markdown_blocks, repository, storage
+from app.domains.asset.services.document import markdown_blocks, repository, storage, transactions
 from app.domains.asset.services.document.docx import DOCX_MIME, build_docx_bytes, looks_like_docx_bytes
 from app.domains.asset.services.document.payload import guess_ext_and_mime, parse_document_payload
 from app.domains.task.models.task import SddTask
 
 
-def _create_version(
+def _write_version(
     db: Session,
     asset: SddAsset,
     *,
-    version_no: int,
+    task: SddTask,
     base_version_id: str | None,
-    original_path: str | None,
+    file_name: str,
+    file_content: bytes,
     original_ext: str | None,
     original_mime: str | None,
     normalized_markdown: str | None,
@@ -36,8 +39,20 @@ def _create_version(
     render_json: dict[str, Any] | None,
     change_note: str | None,
     creator_id: str,
+    activate_content: bool = True,
 ) -> SddAssetVersion:
+    # Uploads and edits also update task.spec_doc_path: keep task -> asset lock order.
+    if activate_content:
+        transactions.lock_task_for_document_write(db, task)
+    transactions.lock_asset(db, asset)
+    if asset.active_version_id != base_version_id:
+        raise transactions.DocumentVersionConflict("Document has a newer version, please refresh and retry")
+    version_no = repository.next_version_no(db, asset.id)
+    version_id = str(uuid4())
+    original_path = storage.write_original_file(task, asset, version_id, file_name, file_content)
+    transactions.track_original_file(db, original_path)
     version = SddAssetVersion(
+        id=version_id,
         asset_id=asset.id,
         version_no=version_no,
         base_version_id=base_version_id,
@@ -50,8 +65,25 @@ def _create_version(
         change_note=change_note,
         created_by=creator_id,
     )
-    db.add(version)
-    db.flush()
+    try:
+        db.add(version)
+        db.flush()
+        if activate_content:
+            _activate_version(
+                asset,
+                version,
+                normalized_markdown=normalized_markdown,
+                block_count=len(blocks_json or []),
+                source_file_name=file_name,
+                source_ext=original_ext,
+                source_mime=original_mime,
+            )
+        else:
+            asset.active_version_id = version.id
+        db.flush()
+    except BaseException:
+        storage.remove_original_file(original_path)
+        raise
     return version
 
 
@@ -87,12 +119,16 @@ def _upsert_spec_asset(
     file_name: str,
     payload: dict[str, Any],
 ) -> SddAsset:
-    asset = asset_service.get_spec_asset_by_task(db, task.id)
+    transactions.lock_task_for_document_write(db, task)
+    asset = (
+        db.query(SddAsset)
+        .filter(SddAsset.task_id == task.id, SddAsset.asset_type == AssetType.SPEC)
+        .order_by(SddAsset.created_at.asc())
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
     if asset:
-        asset.name = file_name
-        asset.source_file_name = payload.get("source_file_name")
-        asset.source_ext = payload.get("source_ext")
-        asset.source_mime = payload.get("source_mime")
         return asset
 
     asset = SddAsset(
@@ -121,14 +157,13 @@ def create_asset_version_from_upload(
 ) -> tuple[SddAsset, SddAssetVersion]:
     payload = parse_document_payload(file_name, file_content)
     asset = _upsert_spec_asset(db, task, creator_id, file_name, payload)
-    version_no = repository.next_version_no(db, asset.id)
-    original_path = storage.write_original_file(task, asset, version_no, file_name, file_content)
-    version = _create_version(
+    version = _write_version(
         db,
         asset,
-        version_no=version_no,
+        task=task,
         base_version_id=asset.active_version_id,
-        original_path=original_path,
+        file_name=payload.get("source_file_name") or storage.normalize_filename(file_name),
+        file_content=file_content,
         original_ext=payload.get("source_ext"),
         original_mime=payload.get("source_mime"),
         normalized_markdown=payload.get("normalized_markdown"),
@@ -137,15 +172,8 @@ def create_asset_version_from_upload(
         change_note=change_note,
         creator_id=creator_id,
     )
-    _activate_version(
-        asset,
-        version,
-        normalized_markdown=payload.get("normalized_markdown"),
-        block_count=len(payload.get("blocks_json") or []),
-        source_file_name=payload.get("source_file_name"),
-        source_ext=payload.get("source_ext"),
-        source_mime=payload.get("source_mime"),
-    )
+    asset.name = file_name
+    db.flush()
     return asset, version
 
 
@@ -167,7 +195,19 @@ def create_diagnosis_doc_asset_version(
     safe_name = storage.normalize_filename(file_name)
     payload = parse_document_payload(safe_name, file_content)
 
-    asset = asset_service.get_diagnosis_doc_asset_by_task_and_name(db, task.id, safe_name)
+    transactions.lock_task_for_document_write(db, task)
+    asset = (
+        db.query(SddAsset)
+        .filter(
+            SddAsset.task_id == task.id,
+            SddAsset.asset_type == AssetType.DIAGNOSIS_DOC,
+            SddAsset.name == safe_name,
+        )
+        .order_by(SddAsset.created_at.asc())
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
     if asset is None:
         asset = SddAsset(
             task_id=task.id,
@@ -182,14 +222,13 @@ def create_diagnosis_doc_asset_version(
         db.add(asset)
         db.flush()
 
-    version_no = repository.next_version_no(db, asset.id)
-    original_path = storage.write_original_file(task, asset, version_no, safe_name, file_content)
-    version = _create_version(
+    version = _write_version(
         db,
         asset,
-        version_no=version_no,
+        task=task,
         base_version_id=asset.active_version_id,
-        original_path=original_path,
+        file_name=safe_name,
+        file_content=file_content,
         original_ext=payload.get("source_ext"),
         original_mime=payload.get("source_mime"),
         normalized_markdown=payload.get("normalized_markdown"),
@@ -197,15 +236,6 @@ def create_diagnosis_doc_asset_version(
         render_json=payload.get("render_json"),
         change_note=change_note,
         creator_id=creator_id,
-    )
-    _activate_version(
-        asset,
-        version,
-        normalized_markdown=payload.get("normalized_markdown"),
-        block_count=len(payload.get("blocks_json") or []),
-        source_file_name=payload.get("source_file_name"),
-        source_ext=payload.get("source_ext"),
-        source_mime=payload.get("source_mime"),
     )
     asset.name = safe_name
 
@@ -228,14 +258,17 @@ def create_asset_version_from_normalized_content(
     output_file_bytes: bytes | None = None,
     output_file_name: str | None = None,
 ) -> SddAssetVersion:
-    task = repository.task_for_asset(db, asset)
-    version_no = repository.next_version_no(db, asset.id)
+    expected_base_version_id = base_version_id if base_version_id is not None else asset.active_version_id
+    with db.no_autoflush:
+        # Applying an AI proposal may have pending review changes. Flush them only
+        # after taking the document locks, so all writers keep the same lock order.
+        task = repository.task_for_asset(db, asset)
     ext = (output_ext or asset.source_ext or ".md").lower()
     mime = output_mime or asset.source_mime or "text/markdown"
     effective_markdown = normalized_markdown
     blocks = blocks_json if blocks_json is not None else markdown_blocks.markdown_to_blocks(effective_markdown)
     render_json: dict[str, Any] = {"format": "markdown", "block_count": len(blocks)}
-    filename = output_file_name or (asset.source_file_name or f"spec-v{version_no}{ext}")
+    filename = output_file_name or asset.source_file_name or f"spec{ext}"
     file_name = storage.normalize_filename(filename, fallback_ext=ext or ".md")
     file_bytes = output_file_bytes
     if file_bytes is None:
@@ -259,14 +292,13 @@ def create_asset_version_from_normalized_content(
                 blocks = reparsed_blocks
             render_json = reparsed_render or {"format": "rich_doc", "block_count": len(blocks), "docx_comments": []}
 
-    original_path = storage.write_original_file(task, asset, version_no, file_name, file_bytes)
-
-    version = _create_version(
+    return _write_version(
         db,
         asset,
-        version_no=version_no,
-        base_version_id=base_version_id or asset.active_version_id,
-        original_path=original_path,
+        task=task,
+        base_version_id=expected_base_version_id,
+        file_name=file_name,
+        file_content=file_bytes,
         original_ext=ext,
         original_mime=mime,
         normalized_markdown=effective_markdown,
@@ -275,16 +307,6 @@ def create_asset_version_from_normalized_content(
         change_note=change_note,
         creator_id=creator_id,
     )
-    _activate_version(
-        asset,
-        version,
-        normalized_markdown=effective_markdown,
-        block_count=len(blocks),
-        source_file_name=file_name,
-        source_ext=ext,
-        source_mime=mime,
-    )
-    return version
 
 
 def create_task_asset_version_from_bytes(
@@ -321,14 +343,13 @@ def create_task_asset_version_from_bytes(
     db.add(asset)
     db.flush()
 
-    version_no = repository.next_version_no(db, asset.id)
-    original_path = storage.write_original_file(task, asset, version_no, file_name, file_content)
-    version = _create_version(
+    version = _write_version(
         db,
         asset,
-        version_no=version_no,
+        task=task,
         base_version_id=None,
-        original_path=original_path,
+        file_name=file_name,
+        file_content=file_content,
         original_ext=effective_ext,
         original_mime=effective_mime,
         normalized_markdown=content_text,
@@ -340,8 +361,8 @@ def create_task_asset_version_from_bytes(
         },
         change_note=change_note,
         creator_id=creator_id,
+        activate_content=False,
     )
-    asset.active_version_id = version.id
     return asset, version
 
 

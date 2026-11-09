@@ -5,8 +5,11 @@ from __future__ import annotations
 import os
 import re
 
+from app.core.logging import get_logger
 from app.domains.asset.models.asset import SddAsset
 from app.domains.task.models.task import SddTask
+
+logger = get_logger(__name__)
 
 
 def normalize_filename(file_name: str | None, fallback_ext: str = ".md") -> str:
@@ -35,11 +38,11 @@ def task_assets_root(task: SddTask) -> str:
     return root
 
 
-def version_dir(task: SddTask, asset: SddAsset, version_no: int) -> str:
+def version_dir(task: SddTask, asset: SddAsset, version_id: str) -> str:
     path = os.path.join(
         task_assets_root(task),
         asset.id,
-        f"v{version_no}",
+        version_id,
     )
     os.makedirs(path, exist_ok=True)
     return path
@@ -48,16 +51,39 @@ def version_dir(task: SddTask, asset: SddAsset, version_no: int) -> str:
 def write_original_file(
     task: SddTask,
     asset: SddAsset,
-    version_no: int,
+    version_id: str,
     file_name: str,
     file_content: bytes,
 ) -> str:
-    storage_dir = version_dir(task, asset, version_no)
+    storage_dir = version_dir(task, asset, version_id)
     safe_name = normalize_filename(file_name)
     target_path = os.path.abspath(os.path.join(storage_dir, safe_name))
-    with open(target_path, "wb") as f:
-        f.write(file_content)
+    # Never overwrite another version, even if version allocation regresses.
+    created = False
+    try:
+        with open(target_path, "xb") as f:
+            created = True
+            f.write(file_content)
+    except BaseException:
+        if created:
+            remove_original_file(target_path)
+        raise
     return target_path
+
+
+def remove_original_file(path: str) -> None:
+    """Remove only this write's original; cleanup failures must not mask a DB failure."""
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.exception("Failed to remove uncommitted document original: {}", path)
+        return
+    try:
+        os.rmdir(os.path.dirname(path))
+    except OSError:
+        pass  # Keep any directory that is no longer empty.
 
 
 def write_cli_workspace_copy(task: SddTask, file_name: str, file_content: bytes) -> str:

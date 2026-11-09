@@ -39,6 +39,7 @@ def test_upload_task_spec_accepts_pdf_and_stores_original(tmp_path):
             version = get_asset_version(db, asset_id, version_id)
             assert version.original_ext == ".pdf"
             assert os.path.isfile(version.original_path)
+            assert _path == version.original_path == task.spec_doc_path
             # 服务层不建基线(基线由路由层按策略决定)
             assert db.query(SddTaskCliBootstrap).filter_by(task_id=task.id).first() is None
     finally:
@@ -50,6 +51,37 @@ def test_spec_bootstrap_enabled_for_ext():
     assert task_task_workspace_specification.spec_bootstrap_enabled_for_ext(".md") is True
     assert task_task_workspace_specification.spec_bootstrap_enabled_for_ext(".txt") is True
     assert task_task_workspace_specification.spec_bootstrap_enabled_for_ext(".pdf") is False
+
+
+def test_failed_upload_preserves_previous_task_document(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from app.domains.asset.models.asset import SddAssetVersion
+    from app.domains.asset.services import asset_discussion_service
+
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            _user, _ws, task = _seed_workspace(db)
+            task.project_path = str(tmp_path)
+            db.commit()
+            path, _asset_id, _version_id = task_task_workspace_specification.upload_task_spec(
+                db, task.id, "spec.md", b"# Committed\n"
+            )
+
+            def reject_comments(*_args, **_kwargs):
+                raise RuntimeError("comment import failed")
+
+            monkeypatch.setattr(asset_discussion_service, "sync_docx_comments_to_threads", reject_comments)
+            with pytest.raises(RuntimeError, match="comment import failed"):
+                task_task_workspace_specification.upload_task_spec(db, task.id, "spec.md", b"# Failed upload\n")
+            db.rollback()
+            assert task.spec_doc_path == path
+            assert Path(path).read_bytes() == b"# Committed\n"
+            assert db.query(SddAssetVersion).count() == 1
+            assert list((tmp_path / ".sdd" / "assets").rglob("spec.md")) == [Path(path)]
+    finally:
+        engine.dispose()
 
 
 def test_serialize_asset_includes_source_ext():
