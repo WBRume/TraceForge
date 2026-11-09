@@ -118,12 +118,7 @@ class OpenCodeAdapter(AgentBackend):
 
     @staticmethod
     def _is_json_response(response: httpx.Response) -> bool:
-        headers = getattr(response, "headers", None)
-        if headers is None:
-            # Keep lightweight test doubles and older adapter transports
-            # compatible; real httpx responses always expose headers.
-            return response.status_code == 200
-        content_type = str(headers.get("content-type") or "").lower()
+        content_type = str(response.headers.get("content-type") or "").lower()
         return response.status_code == 204 or "json" in content_type
 
     async def probe(self) -> str:

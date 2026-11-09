@@ -127,13 +127,9 @@ def raise_session_control_error(exc) -> None:
 
 
 def get_db_bind(db: Session) -> Any:
-    getter = getattr(db, "get_bind", None)
-    return getter() if callable(getter) else None
+    return db.get_bind()
 
 
 async def run_route_db_txn(db: Session, db_bind: Any, body: Callable[[Session], T]) -> T:
     """Run route DB work on the dependency's bind without carrying its Session."""
-    if db_bind is None:
-        # 轻量测试替身没有 SQLAlchemy bind：退回依赖 Session 同步执行。
-        return body(db)
     return await run_db_txn_with_bind(db_bind, body)

@@ -477,20 +477,9 @@ class DSHEventMapperFixtureTest(unittest.TestCase):
 class OpenCodeAdapterRunTest(unittest.IsolatedAsyncioTestCase):
     """用 fake HTTP client 验证 OpenCode server 模式 run() 的流程。"""
 
-    class _FakeResponse:
+    class _FakeResponse(httpx.Response):
         def __init__(self, status_code: int, payload: dict):
-            self.status_code = status_code
-            self._payload = payload
-
-        def json(self):
-            return self._payload
-
-        def raise_for_status(self):
-            httpx.Response(self.status_code, request=httpx.Request("GET", "http://agent")).raise_for_status()
-
-        @property
-        def text(self):
-            return str(self._payload)
+            super().__init__(status_code, json=payload, request=httpx.Request("GET", "http://agent"))
 
     class _FakeStream:
         def __init__(self, lines: list[str]):

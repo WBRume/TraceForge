@@ -9,23 +9,14 @@ import asyncio
 import os
 import sys
 
+import httpx
+
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
 from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter  # noqa: E402
 from app.agents.contract import AgentRunRequest  # noqa: E402
-
-
-class _FakeResponse:
-    status_code = 200
-    text = ""
-
-    def json(self):
-        return {"data": {"id": "msg_test"}}
-
-    def raise_for_status(self):
-        return None
 
 
 class _FakeClient:
@@ -36,7 +27,7 @@ class _FakeClient:
         self._captured.setdefault("calls", []).append((url, kwargs))
         self._captured["url"] = url
         self._captured["kwargs"] = kwargs
-        return _FakeResponse()
+        return httpx.Response(200, json={"data": {"id": "msg_test"}}, request=httpx.Request("POST", url))
 
 
 def _run_send_prompt(permission_mode):

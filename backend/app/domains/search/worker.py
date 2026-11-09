@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import httpx
 from sqlalchemy import and_, or_
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from app.core.feature_settings import feature_settings as settings
 from app.core.offload import run_db_txn
@@ -215,6 +216,13 @@ def prepare_document(doc, target, profile):
     return doc
 
 
+def _enqueue_embedding_job(db, values):
+    """Preserve any existing job with the same durable embedding identity."""
+    table = SearchEmbeddingJob.__table__
+    statement = mysql_insert(table).values(**values).on_duplicate_key_update(id=table.c.id)
+    db.execute(statement)
+
+
 def confirm_body(db, job, documents, targets, profiles, keys):
     row = owns(db, SearchOutbox, job)
     if row is None:
@@ -248,9 +256,6 @@ def confirm_body(db, job, documents, targets, profiles, keys):
             )
             if existing is None:
                 # Outbox row lease serializes this event; unique identity is the final backstop.
-                from sqlalchemy.dialects.mysql import insert as mysql_insert
-                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-
                 values = {
                     "id": str(uuid4()),
                     "target_id": target["target_id"],
@@ -260,12 +265,7 @@ def confirm_body(db, job, documents, targets, profiles, keys):
                     "projection_hash": doc["projection_hash"],
                     "input_hash": digest([doc["projection_hash"], profile["fingerprint"]]),
                 }
-                table = SearchEmbeddingJob.__table__
-                if db.bind.dialect.name == "mysql":
-                    statement = mysql_insert(table).values(**values).on_duplicate_key_update(id=table.c.id)
-                else:
-                    statement = sqlite_insert(table).values(**values).on_conflict_do_nothing()
-                db.execute(statement)
+                _enqueue_embedding_job(db, values)
     if job["event_kind"] != "entity_changed" and keys:
         row.scan_cursor = keys[-1]
         finish(db, SearchOutbox, job, "pending")

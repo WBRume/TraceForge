@@ -728,24 +728,15 @@ async def resume_interrupted_task(
 
 
 def _session_bind(db: Session) -> Any:
-    """Resolve the bind of a (possibly closed) request dependency session.
-
-    轻量测试替身可能没有 get_bind：返回 None 时编排退化为直接同步执行。
-    """
-    getter = getattr(db, "get_bind", None)
-    return getter() if callable(getter) else None
+    """Resolve the bind of a possibly closed request dependency session."""
+    return db.get_bind()
 
 
 def _bind_txn_runner(db: Session, db_bind: Any) -> Callable[[Callable[[Session], Any]], Awaitable[Any]]:
-    """锁内短事务执行器：有 bind 走 DB 线程，无 bind（测试替身）同步执行。"""
-    if db_bind is None:
+    """Run each body in its own worker-thread transaction on the dependency's bind."""
 
-        async def run(body: Callable[[Session], Any]) -> Any:
-            return body(db)
-    else:
-
-        async def run(body: Callable[[Session], Any]) -> Any:
-            return await run_db_txn_with_bind(db_bind, body)
+    async def run(body: Callable[[Session], Any]) -> Any:
+        return await run_db_txn_with_bind(db_bind, body)
 
     return run
 

@@ -8,7 +8,7 @@ from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
@@ -59,8 +59,10 @@ def document_engine(request, tmp_path):
 
 
 @pytest.fixture
-def document_db(document_engine, tmp_path):
+def document_db(document_engine, tmp_path, monkeypatch):
     engine = document_engine
+    if engine.dialect.name == "sqlite":
+        _install_sqlite_write_locks(monkeypatch)
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     with factory() as db:
@@ -74,6 +76,25 @@ def document_db(document_engine, tmp_path):
         db.commit()
         ids = (task.id, asset.id, version.id, user.id)
     return factory, ids
+
+
+def _install_sqlite_write_locks(monkeypatch):
+    """Emulate SQLite writer serialization here; only MySQL verifies real row locks."""
+    lock_asset = transactions.lock_asset
+    lock_task = transactions.lock_task_for_document_write
+
+    def sqlite_lock_asset(db, asset):
+        with db.no_autoflush:
+            db.execute(update(SddAsset).where(SddAsset.id == asset.id).values(id=SddAsset.id))
+        lock_asset(db, asset)
+
+    def sqlite_lock_task(db, task):
+        with db.no_autoflush:
+            db.execute(update(SddTask).where(SddTask.id == task.id).values(id=SddTask.id))
+        lock_task(db, task)
+
+    monkeypatch.setattr(transactions, "lock_asset", sqlite_lock_asset)
+    monkeypatch.setattr(transactions, "lock_task_for_document_write", sqlite_lock_task)
 
 
 def _edit(db, ids, text="# Edited\n"):

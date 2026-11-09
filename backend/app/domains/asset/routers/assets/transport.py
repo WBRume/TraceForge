@@ -27,11 +27,8 @@ class ReviewRoute(APIRoute):
 
 async def _run_asset_route_db_txn(db: Session, db_bind: Any, body):
     """Use a worker-thread transaction without carrying the request Session."""
-    if db_bind is None:
-        return body(db)
     return await run_db_txn_with_bind(db_bind, body)
 
 
 def _get_db_bind(db: Session) -> Any:
-    getter = getattr(db, "get_bind", None)
-    return getter() if callable(getter) else None
+    return db.get_bind()
