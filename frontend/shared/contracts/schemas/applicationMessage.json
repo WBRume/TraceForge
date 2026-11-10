@@ -1,0 +1,1212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ApiMockJobEventContract": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "job_update",
+            "job_done"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "job": {
+          "$ref": "#/$defs/ApiMockJobResponse"
+        }
+      },
+      "required": [
+        "type",
+        "project_id",
+        "job"
+      ],
+      "title": "ApiMockJobEventContract",
+      "type": "object"
+    },
+    "ApiMockJobResponse": {
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "attempt_count": {
+          "default": 0,
+          "title": "Attempt Count",
+          "type": "integer"
+        },
+        "completion": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JobCompletion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "creator_id": {
+          "title": "Creator Id",
+          "type": "string"
+        },
+        "job_type": {
+          "title": "Job Type",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "PENDING",
+            "RUNNING",
+            "WAITING_HITL",
+            "INTERRUPTED",
+            "TERMINATING",
+            "ORPHANED",
+            "SUCCESS",
+            "FAILED",
+            "CANCELLED",
+            "REVERTED"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "progress": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Progress",
+          "type": "integer"
+        },
+        "cancel_requested": {
+          "default": false,
+          "title": "Cancel Requested",
+          "type": "boolean"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "result_json": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApiMockJobResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "created_at": {
+          "format": "iso-date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "format": "iso-date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "iso-date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "format": "iso-date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finished At"
+        }
+      },
+      "required": [
+        "id",
+        "project_id",
+        "creator_id",
+        "job_type",
+        "status",
+        "progress",
+        "created_at"
+      ],
+      "title": "ApiMockJobResponse",
+      "type": "object"
+    },
+    "ApiMockJobResult": {
+      "description": "Business result and cancellation metadata, shared by HTTP and WebSocket.",
+      "properties": {
+        "job_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Kind"
+        },
+        "target_endpoint_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Endpoint Id"
+        },
+        "source_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Url"
+        },
+        "endpoints_imported": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endpoints Imported"
+        },
+        "cases_created": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cases Created"
+        },
+        "created_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created Count"
+        },
+        "updated_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated Count"
+        },
+        "cancel_requested": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cancel Requested"
+        },
+        "cancel_requested_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cancel Requested At"
+        },
+        "cancelled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cancelled"
+        },
+        "cancelled_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cancelled At"
+        }
+      },
+      "title": "ApiMockJobResult",
+      "type": "object"
+    },
+    "ChatMessageMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "const": "chat_message",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/WSChatPayloadContract"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_type",
+        "payload",
+        "contract_version"
+      ],
+      "title": "ChatMessageMessage",
+      "type": "object"
+    },
+    "JobArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "title": "JobArtifact",
+      "type": "object"
+    },
+    "JobCompletion": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "kind": {
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "SUCCESS",
+            "FAILED",
+            "CANCELLED"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/JobArtifact"
+          },
+          "title": "Artifacts",
+          "type": "array"
+        },
+        "attempt": {
+          "minimum": 0,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "committed_at": {
+          "format": "iso-date-time",
+          "title": "Committed At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "outcome",
+        "summary",
+        "attempt",
+        "committed_at"
+      ],
+      "title": "JobCompletion",
+      "type": "object"
+    },
+    "JobDoneMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "const": "job_done",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ApiMockJobEventContract"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_type",
+        "payload",
+        "contract_version"
+      ],
+      "title": "JobDoneMessage",
+      "type": "object"
+    },
+    "JobUpdateMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "const": "job_update",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ApiMockJobEventContract"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_type",
+        "payload",
+        "contract_version"
+      ],
+      "title": "JobUpdateMessage",
+      "type": "object"
+    },
+    "LogMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "const": "log",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/WSLogPayloadContract"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_type",
+        "payload",
+        "contract_version"
+      ],
+      "title": "LogMessage",
+      "type": "object"
+    },
+    "ResultMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "const": "result",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/WSResultPayloadContract"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_type",
+        "payload",
+        "contract_version"
+      ],
+      "title": "ResultMessage",
+      "type": "object"
+    },
+    "StatusMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "const": "status",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/WSStatusPayloadContract"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_type",
+        "payload",
+        "contract_version"
+      ],
+      "title": "StatusMessage",
+      "type": "object"
+    },
+    "ThinkingMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "const": "thinking",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/WSThinkingPayloadContract"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_type",
+        "payload",
+        "contract_version"
+      ],
+      "title": "ThinkingMessage",
+      "type": "object"
+    },
+    "ToolResultMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "const": "tool_result",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/WSToolResultPayloadContract"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_type",
+        "payload",
+        "contract_version"
+      ],
+      "title": "ToolResultMessage",
+      "type": "object"
+    },
+    "ToolUseMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "const": "tool_use",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/WSToolUsePayloadContract"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_type",
+        "payload",
+        "contract_version"
+      ],
+      "title": "ToolUseMessage",
+      "type": "object"
+    },
+    "WSChatPayloadContract": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "message_type": {
+          "default": "text",
+          "title": "Message Type",
+          "type": "string"
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Metadata"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "client_message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Message Id"
+        },
+        "creator_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Creator Id"
+        },
+        "creator_display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Creator Display Name"
+        },
+        "creator_is_workspace_expert": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Creator Is Workspace Expert"
+        },
+        "creator_avatar_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Creator Avatar Url"
+        },
+        "creator_avatar_svg": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Creator Avatar Svg"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "session_turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Turn Id"
+        },
+        "session_generation": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Generation"
+        },
+        "can_undo": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Can Undo"
+        },
+        "reading_item_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reading Item Key"
+        },
+        "reading_change_seq": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reading Change Seq"
+        }
+      },
+      "required": [
+        "task_id",
+        "role",
+        "content"
+      ],
+      "title": "WSChatPayloadContract",
+      "type": "object"
+    },
+    "WSLogPayloadContract": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phase"
+        },
+        "log_type": {
+          "default": "STDOUT",
+          "title": "Log Type",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "content"
+      ],
+      "title": "WSLogPayloadContract",
+      "type": "object"
+    },
+    "WSResultPayloadContract": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "success": {
+          "title": "Success",
+          "type": "boolean"
+        },
+        "session_generation": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Generation"
+        },
+        "session_revision": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Revision"
+        },
+        "result": {
+          "default": "",
+          "title": "Result",
+          "type": "string"
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Usd"
+        }
+      },
+      "required": [
+        "task_id",
+        "success"
+      ],
+      "title": "WSResultPayloadContract",
+      "type": "object"
+    },
+    "WSStatusPayloadContract": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "session_generation": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Generation"
+        },
+        "session_revision": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Revision"
+        },
+        "sub_task": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sub Task"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Usd"
+        }
+      },
+      "required": [
+        "task_id",
+        "status",
+        "message"
+      ],
+      "title": "WSStatusPayloadContract",
+      "type": "object"
+    },
+    "WSThinkingPayloadContract": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "sequence": {
+          "default": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "delta": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delta"
+        },
+        "final": {
+          "default": false,
+          "title": "Final",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "task_id",
+        "content"
+      ],
+      "title": "WSThinkingPayloadContract",
+      "type": "object"
+    },
+    "WSToolResultPayloadContract": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "tool_use_id": {
+          "minLength": 1,
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "output": {
+          "default": "",
+          "title": "Output",
+          "type": "string"
+        },
+        "is_error": {
+          "default": false,
+          "title": "Is Error",
+          "type": "boolean"
+        },
+        "structured_content": {
+          "default": null,
+          "title": "Structured Content"
+        },
+        "content": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Content",
+          "type": "array"
+        }
+      },
+      "required": [
+        "task_id",
+        "tool_use_id"
+      ],
+      "title": "WSToolResultPayloadContract",
+      "type": "object"
+    },
+    "WSToolUsePayloadContract": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "tool_input": {
+          "default": null,
+          "title": "Tool Input"
+        },
+        "tool_use_id": {
+          "minLength": 1,
+          "title": "Tool Use Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "tool_name",
+        "tool_use_id"
+      ],
+      "title": "WSToolUsePayloadContract",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "chat_message": "#/$defs/ChatMessageMessage",
+      "job_done": "#/$defs/JobDoneMessage",
+      "job_update": "#/$defs/JobUpdateMessage",
+      "log": "#/$defs/LogMessage",
+      "result": "#/$defs/ResultMessage",
+      "status": "#/$defs/StatusMessage",
+      "thinking": "#/$defs/ThinkingMessage",
+      "tool_result": "#/$defs/ToolResultMessage",
+      "tool_use": "#/$defs/ToolUseMessage"
+    },
+    "propertyName": "event_type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ToolUseMessage"
+    },
+    {
+      "$ref": "#/$defs/ToolResultMessage"
+    },
+    {
+      "$ref": "#/$defs/ThinkingMessage"
+    },
+    {
+      "$ref": "#/$defs/ResultMessage"
+    },
+    {
+      "$ref": "#/$defs/StatusMessage"
+    },
+    {
+      "$ref": "#/$defs/ChatMessageMessage"
+    },
+    {
+      "$ref": "#/$defs/LogMessage"
+    },
+    {
+      "$ref": "#/$defs/JobUpdateMessage"
+    },
+    {
+      "$ref": "#/$defs/JobDoneMessage"
+    }
+  ]
+}

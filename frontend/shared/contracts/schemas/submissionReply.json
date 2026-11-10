@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "FieldIssue": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "title": "Path",
+          "type": "array"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "code",
+        "message"
+      ],
+      "title": "FieldIssue",
+      "type": "object"
+    },
+    "SubmissionAccepted": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "accepted",
+          "default": "accepted",
+          "title": "Kind",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "receipt_id": {
+          "title": "Receipt Id",
+          "type": "string"
+        },
+        "stage": {
+          "const": "accepted",
+          "default": "accepted",
+          "title": "Stage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "call_id",
+        "receipt_id"
+      ],
+      "title": "SubmissionAccepted",
+      "type": "object"
+    },
+    "ToolFailure": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "error",
+          "default": "error",
+          "title": "Kind",
+          "type": "string"
+        },
+        "code": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "input",
+            "condition",
+            "conflict",
+            "revoked",
+            "transient",
+            "uncertain",
+            "internal"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "action": {
+          "enum": [
+            "correct_arguments",
+            "read_context",
+            "stop",
+            "query_receipt",
+            "execution_policy",
+            "report_defect"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "diagnostic_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diagnostic Id"
+        },
+        "issues": {
+          "items": {
+            "$ref": "#/$defs/FieldIssue"
+          },
+          "maxItems": 100,
+          "title": "Issues",
+          "type": "array"
+        }
+      },
+      "required": [
+        "code",
+        "category",
+        "message",
+        "action",
+        "run_id",
+        "call_id"
+      ],
+      "title": "ToolFailure",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "accepted": "#/$defs/SubmissionAccepted",
+      "error": "#/$defs/ToolFailure"
+    },
+    "propertyName": "kind"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/SubmissionAccepted"
+    },
+    {
+      "$ref": "#/$defs/ToolFailure"
+    }
+  ]
+}

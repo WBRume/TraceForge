@@ -1,3 +1,5 @@
+import { parseContract, supportsApplicationMessage } from '../../shared/contracts/validate'
+
 export interface WsCursor {
   epoch: string
   lastAppliedSequence: number
@@ -173,6 +175,19 @@ export const clearWsCursorMemory = () => {
 export const prepareWsFrame = (room: string, frame: any): WsFrameResult => {
   if (!frame || typeof frame !== 'object') return { kind: 'ignore' }
   if (frame.type !== 'event') return { kind: 'control', frame }
+  try {
+    parseContract('roomEnvelope', frame)
+    if (frame.room !== room) throw new Error('WS_ROOM_MISMATCH')
+    if (supportsApplicationMessage(frame.event_type)) parseContract('applicationMessage', {
+      contract_version: frame.contract_version, event_type: frame.event_type, payload: frame.payload,
+    })
+  } catch {
+    hydrateCursorMemory()
+    cursorMemory.delete(room)
+    discardWsResync(room)
+    persistCursorMemory()
+    return { kind: 'resync', reason: 'contract_invalid', frame }
+  }
 
   const epoch = String(frame.epoch || '')
   const sequence = Number(frame.sequence)
@@ -192,8 +207,7 @@ export const prepareWsFrame = (room: string, frame: any): WsFrameResult => {
     return { kind: 'resync', reason: 'epoch_changed', frame }
   }
 
-  // Keep the legacy synthetic first-event rule for a server that predates the
-  // barrier protocol. Current servers send resync_required before events.
+  // A fresh cursor starts at the first event after its snapshot barrier.
   const previous: WsCursor = cursor || {
     epoch,
     lastAppliedSequence: sequence - 1,

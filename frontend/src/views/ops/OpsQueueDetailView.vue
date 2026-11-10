@@ -106,7 +106,7 @@ const runAction = async (action: 'stop' | 'retry') => {
   const actionKey = `${job.value.source}:${job.value.job_id}:${action}`
   loadingAction.value = actionKey
   try {
-    const res = await runQueueJobAction(job.value.source, job.value.job_id, action)
+    const res = await runQueueJobAction(job.value.source, job.value.job_id, action, job.value.version)
     if (disposed || requestedSource !== source.value || requestedId !== jobId.value) return
     const message = String(res.message || '').trim()
     if (message) {

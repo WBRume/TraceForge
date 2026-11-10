@@ -275,6 +275,8 @@ class OpenCodeAdapter(AgentBackend):
             response = await client.post(self._session_url(session_id, "/agent"), json={"agent": "plan"})
             self._check_response(response, "switch agent")
         if policy is not None and policy.get("enforcement") != "ADVISORY_GUARD":
+            from app.agents.tool_transports.protocol import MCP_VERSION
+
             # Runtime MCP credentials remain restricted to a dedicated host.
             location = {"location[directory]": request.project_path} if request.project_path else {}
             configured = await client.put(
@@ -287,6 +289,7 @@ class OpenCodeAdapter(AgentBackend):
                         "headers": policy["mcp_config"]["headers"],
                         "oauth": False,
                         "codemode": False,
+                        "protocol": MCP_VERSION,
                     },
                 },
             )

@@ -17,7 +17,7 @@ from app.database import SessionLocal
 from app.domains.ai.services.jobs import domain_jobs
 from app.domains.ai.services.jobs.constants import ACTIVE_STATUSES
 from app.domains.api_mock.models.api_mock import SddApiMockJob, SddApiMockProject
-from app.domains.api_mock.schemas.api_mock import ApiMockJobResult
+from app.domains.api_mock.schemas.api_mock import ApiMockJobResponse, ApiMockJobResult
 from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
 
 from .constants import AUTO_MOCK_JOB_TYPE
@@ -192,25 +192,7 @@ def _job_result_payload(job: SddApiMockJob) -> dict[str, Any]:
 
 
 def _serialize_job(job: SddApiMockJob) -> dict[str, Any]:
-    status = job.status.value if hasattr(job.status, "value") else str(job.status)
-    return {
-        "version": int(job.execution.version or 1),
-        "attempt_count": int(job.execution.attempt_count or 0),
-        "completion": job.execution.completion_json,
-        "id": job.id,
-        "project_id": job.project_id,
-        "creator_id": job.creator_id,
-        "job_type": job.job_type,
-        "status": status,
-        "cancel_requested": job.cancel_requested,
-        "progress": int(job.progress or 0),
-        "message": job.message,
-        "result_json": _job_result_payload(job),
-        "created_at": job.created_at.isoformat() if job.created_at else None,
-        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
-    }
+    return ApiMockJobResponse.model_validate(job).model_dump(mode="json", exclude_unset=True)
 
 
 def _broadcast_job_state(project_id: str, job: SddApiMockJob, *, done: bool = False) -> None:

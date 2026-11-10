@@ -31,8 +31,8 @@ describe('serialized WebSocket consumer', () => {
       onFailure: () => undefined,
     })
     const generation = consumer.resetForConnection(socket())
-    consumer.enqueue({ type: 'event', epoch: 'e1', sequence: 1, event_id: 'a', event_type: 'status', payload: {} }, generation)
-    consumer.enqueue({ type: 'event', epoch: 'e1', sequence: 2, event_id: 'b', event_type: 'status', payload: {} }, generation)
+    consumer.enqueue({ type: 'event', contract_version: 2, room: 'task:serial', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'e1', sequence: 1, event_id: 'a', event_type: 'status', payload: { task_id: 'one', status: 'RUNNING', message: 'running' } }, generation)
+    consumer.enqueue({ type: 'event', contract_version: 2, room: 'task:serial', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'e1', sequence: 2, event_id: 'b', event_type: 'status', payload: { task_id: 'one', status: 'RUNNING', message: 'running' } }, generation)
     await tick()
     expect(order).toEqual(['start-1'])
     releaseFirst()
@@ -54,11 +54,11 @@ describe('serialized WebSocket consumer', () => {
       onFailure: () => { failures += 1 },
     })
     const firstGeneration = consumer.resetForConnection(socket())
-    consumer.enqueue({ type: 'event', epoch: 'e1', sequence: 1, event_id: 'old', event_type: 'status', payload: {} }, firstGeneration)
+    consumer.enqueue({ type: 'event', contract_version: 2, room: 'task:generation', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'e1', sequence: 1, event_id: 'old', event_type: 'status', payload: { task_id: 'one', status: 'RUNNING', message: 'running' } }, firstGeneration)
     await tick()
     const currentGeneration = consumer.resetForConnection(socket())
     releaseOld()
-    consumer.enqueue({ type: 'event', epoch: 'e1', sequence: 1, event_id: 'new', event_type: 'status', payload: {} }, currentGeneration)
+    consumer.enqueue({ type: 'event', contract_version: 2, room: 'task:generation', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'e1', sequence: 1, event_id: 'new', event_type: 'status', payload: { task_id: 'one', status: 'RUNNING', message: 'running' } }, currentGeneration)
     await tick()
     await tick()
     expect(failures).toBe(0)
@@ -91,8 +91,8 @@ describe('serialized WebSocket consumer', () => {
       type: 'resync_required', epoch: 'epoch-resync', barrier_sequence: 100,
     }, generation)
     consumer.enqueue({
-      type: 'event', epoch: 'epoch-resync', sequence: 101, event_id: 'event-101',
-      event_type: 'status', payload: {},
+      type: 'event', contract_version: 2, room: 'task:resync', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'epoch-resync', sequence: 101, event_id: 'event-101',
+      event_type: 'status', payload: { task_id: 'one', status: 'RUNNING', message: 'running' },
     }, generation)
     consumer.enqueue({
       type: 'resync_ok', epoch: 'epoch-resync', to_sequence: 101,
@@ -121,9 +121,9 @@ describe('serialized WebSocket consumer', () => {
     })
     const generation = consumer.resetForConnection(socket())
     consumer.enqueue({ type: 'resync_required', epoch: 'server', barrier_sequence: 80, reason: 'cursor_ahead' }, generation)
-    consumer.enqueue({ type: 'event', epoch: 'server', sequence: 81, event_id: 'buffered', event_type: 'chat_message', payload: { content: 'buffered reply' } }, generation)
+    consumer.enqueue({ type: 'event', contract_version: 2, room: 'task:ahead', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'server', sequence: 81, event_id: 'buffered', event_type: 'chat_message', payload: { task_id: 'ahead', role: 'assistant', content: 'buffered reply' } }, generation)
     consumer.enqueue({ type: 'resync_ok', epoch: 'server', high_watermark: 81 }, generation)
-    consumer.enqueue({ type: 'event', epoch: 'server', sequence: 82, event_id: 'live', event_type: 'chat_message', payload: { content: 'live reply' } }, generation)
+    consumer.enqueue({ type: 'event', contract_version: 2, room: 'task:ahead', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'server', sequence: 82, event_id: 'live', event_type: 'chat_message', payload: { task_id: 'ahead', role: 'assistant', content: 'live reply' } }, generation)
     await tick(); await tick()
     expect(failures).toEqual([])
     expect(replies).toEqual(['buffered reply', 'live reply'])

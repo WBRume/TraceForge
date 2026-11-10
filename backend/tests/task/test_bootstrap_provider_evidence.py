@@ -16,14 +16,27 @@ from app.agents.contract import (
     reset_agent_attempt,
     reset_agent_attempt_runtime,
 )
+from app.agents.errors import SessionForkError
 from app.domains.ai.models.ai_job import AiJobStatus
 from app.domains.ai.services import ai_job_convergence_service as convergence
 from app.domains.ai.services.jobs import provider_turn
 from app.domains.task.services import task_cli_state_service as service
 
 
-@pytest.mark.parametrize("terminal", ["success", "error", "missing"])
-def test_remote_baseline_records_outcome_before_ready_and_can_converge(monkeypatch, tmp_path, terminal):
+@pytest.mark.parametrize(
+    ("terminal", "source", "fork_fails", "effective_mode"),
+    [
+        ("success", "", False, "FULL"),
+        ("error", "", False, "FULL"),
+        ("missing", "", False, "FULL"),
+        ("success", "previous-ready", False, "DELTA"),
+        ("error", "previous-ready", False, "DELTA"),
+        ("success", "previous-ready", True, "FULL"),
+    ],
+)
+def test_remote_baseline_records_outcome_before_ready_and_can_converge(
+    monkeypatch, tmp_path, terminal, source, fork_fails, effective_mode
+):
     @asynccontextmanager
     async def unlocked(*args, **kwargs):
         yield
@@ -33,9 +46,9 @@ def test_remote_baseline_records_outcome_before_ready_and_can_converge(monkeypat
         "task_spec_doc_path": str(tmp_path / "spec.md"),
         "version_original_path": "",
         "baseline_dir": str(tmp_path),
-        "refresh_mode": "FULL",
-        "refresh_context": {},
-        "baseline_session_id": "",
+        "refresh_mode": "DELTA" if source else "FULL",
+        "refresh_context": {"old_text": "before", "new_text": "after"},
+        "baseline_session_id": source,
         "agent_backend": "opencode",
         "workspace_id": "w",
         "task_creator_id": "u",
@@ -47,6 +60,10 @@ def test_remote_baseline_records_outcome_before_ready_and_can_converge(monkeypat
         trace.append(("locator", kwargs["backend_name"], session_id))
 
     async def update(*args, **kwargs):
+        if kwargs.get("baseline_session_id"):
+            assert kwargs["status"] == service.TaskCliBootstrapStatus.READY
+        if kwargs.get("refresh_mode"):
+            assert kwargs["refresh_mode"] == effective_mode
         trace.append(("state", kwargs.get("status")))
 
     class Bridge:
@@ -54,6 +71,13 @@ def test_remote_baseline_records_outcome_before_ready_and_can_converge(monkeypat
         process = last_termination = None
 
         async def start_session(self, **kwargs):
+            assert kwargs["session_id"] == (self.session_id if effective_mode == "DELTA" else None)
+            assert not kwargs["fork_session"]
+            if effective_mode == "DELTA":
+                assert "变更后片段: after" in kwargs["prompt"]
+                assert str(tmp_path / "spec.md") not in kwargs["prompt"]
+            else:
+                assert str(tmp_path / "spec.md") in kwargs["prompt"]
             self.callback = kwargs["event_callback"]
             return ""
 
@@ -76,6 +100,11 @@ def test_remote_baseline_records_outcome_before_ready_and_can_converge(monkeypat
     monkeypatch.setattr(service, "run_db", AsyncMock(return_value=context))
     monkeypatch.setattr(service, "_prepare_bootstrap_spec", AsyncMock(return_value=context["task_spec_doc_path"]))
     monkeypatch.setattr(service, "create_legacy_bridge", lambda *args, **kwargs: Bridge())
+    fork = AsyncMock(
+        side_effect=SessionForkError("Source expired") if fork_fails else None, return_value=Bridge.session_id
+    )
+    monkeypatch.setattr(service, "backend_supports_fork", lambda _: True)
+    monkeypatch.setattr(service, "fork_session_for_backend", fork)
     monkeypatch.setattr(service, "probe_session_fork", AsyncMock())
     monkeypatch.setattr(service, "_update_bootstrap_state", update)
     monkeypatch.setattr(provider_turn, "_persist_turn_locator", persist)
@@ -97,6 +126,12 @@ def test_remote_baseline_records_outcome_before_ready_and_can_converge(monkeypat
         binding = bind_agent_attempt_runtime(runtime)
         try:
             result = await service._run_bootstrap("t", expected_input_revision="v1")
+            if source:
+                fork.assert_awaited_once_with(
+                    "opencode", source, source_dir=str(tmp_path), target_dir=str(tmp_path), task_id="t"
+                )
+            else:
+                fork.assert_not_awaited()
             evidence = convergence.resolve_attempt_evidence(execution_kind="REMOTE_SESSION", runtime=runtime)
             request = convergence.AttemptConvergenceRequest(
                 job_id="job",
@@ -110,8 +145,7 @@ def test_remote_baseline_records_outcome_before_ready_and_can_converge(monkeypat
             final, _ = convergence._decide_final_status(SimpleNamespace(), request, "REMOTE_SESSION")
             assert final == (AiJobStatus.SUCCESS if terminal == "success" else AiJobStatus.FAILED)
             assert evidence.provider_outcome_seen is (terminal != "missing")
-            assert trace[0] == ("locator", "opencode", None)
-            assert ("locator", "opencode", "remote-baseline") in trace
+            assert trace.index(("locator", "opencode", None)) < trace.index(("locator", "opencode", "remote-baseline"))
             if terminal == "success":
                 assert result["status"] == "READY"
                 assert trace.index(("locator", "opencode", "remote-baseline")) < trace.index(("state", "READY"))

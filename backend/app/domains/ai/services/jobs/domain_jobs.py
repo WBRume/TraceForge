@@ -181,6 +181,7 @@ def report(
         from app.domains.ai.schemas.job_result import JobCompletion
 
         job.completion_json = JobCompletion(
+            schema_version=2,
             kind=job.job_type,
             outcome="CANCELLED" if job.cancel_requested_at else outcome,
             summary=message or error_message or outcome,

@@ -24,8 +24,7 @@ def _terminal_execution_log_filter():
     """Select replayable terminal records while excluding provider debug noise."""
     return or_(
         SddExecutionLog.log_type != LogType.STDOUT,
-        SddExecutionLog.content.like('{"tool_name":%'),
-        SddExecutionLog.content.like('{"tool_use_id":%'),
+        SddExecutionLog.content.like('{"contract_version": 2, "event_type": "tool_%'),
     )
 
 

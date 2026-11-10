@@ -127,7 +127,8 @@ async def test_registered_native_adapter_runs_existing_domain_turn_without_mcp(n
     ]
     assert active_domain_run.get() is None
     late = await NativeAdapter.contexts[0].invoke("submit_requirements", SUBMISSION, "late")
-    assert late.data == {"code": "DOMAIN_RUN_REVOKED", "retryable": False}
+    assert late.is_error and late.data["code"] == "DOMAIN_RUN_REVOKED"
+    assert late.data["action"] == "stop"
 
 
 def test_one_registration_drives_settings_construction_models_and_probe(native, db, monkeypatch):

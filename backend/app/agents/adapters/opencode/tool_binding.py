@@ -11,6 +11,7 @@ from dataclasses import replace
 from urllib.parse import urlparse
 
 from app.agents.errors import AgentConfigurationError
+from app.agents.tool_transports.protocol import MCP_VERSION
 
 
 @asynccontextmanager
@@ -53,6 +54,7 @@ async def scoped_request(backend, request, binding, *, tool_names):
                         "headers": binding["headers"],
                         "oauth": False,
                         "codemode": False,
+                        "protocol": MCP_VERSION,
                     }
                 },
             )

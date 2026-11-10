@@ -18,6 +18,7 @@ from app.agents.contract import (
 )
 from app.agents.errors import AgentError
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+from app.domains.ai.schemas.job_result import JobArtifact
 from app.domains.ai.services import ai_job_convergence_service as convergence
 from app.domains.ai.services.ai_job_convergence_service import (
     EVIDENCE_CONFLICT,
@@ -28,6 +29,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
 from app.domains.ai.services.jobs import attempts as ai_attempts
 from app.domains.ai.services.jobs import fencing as ai_fencing
 from app.domains.ai.services.jobs import registry as ai_registry
+from app.domains.ai.services.jobs.domain_turn import stage_domain_success
 from tests.ai.jobs.ai_job_test_utils import (
     _identity,
     _job,
@@ -239,6 +241,45 @@ def test_finalize_wins_lock_cancel_becomes_idempotent(monkeypatch):
     saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
     assert saved.status == AiJobStatus.SUCCESS
     assert saved.cancel_requested_at is None
+
+
+def test_committed_domain_artifact_survives_late_cancel_and_finalization():
+    factory = _session_factory()
+    with factory() as db:
+        job = _owned_job(db, status=AiJobStatus.RUNNING)
+        job.context_json = {"job_kind": "RESOLUTION_PROPOSAL"}
+        stage_domain_success(
+            job,
+            message="Proposal saved",
+            result={"proposal_id": "proposal"},
+            artifact=JobArtifact(kind="resolution_proposal", id="proposal"),
+            context_patch={},
+        )
+        db.commit()
+
+        cancelled = convergence.request_attempt_termination_in_txn(
+            db, convergence.AttemptTerminationRequest(job_id=job.id, mode="CANCEL")
+        )
+        assert not cancelled.changed
+        assert job.cancel_requested_at is None
+
+        result = convergence.converge_job_attempt_in_txn(
+            db,
+            AttemptConvergenceRequest(
+                job_id=job.id,
+                run_token=job.run_token,
+                worker_boot_id=job.worker_boot_id,
+                requested_status=AiJobStatus.FAILED,
+                reason="Notification failed after commit",
+                evidence=resolve_attempt_evidence(
+                    execution_kind=EXECUTION_KIND_LOCAL_PROCESS, fallback_started=True, fallback_dead=True
+                ),
+            ),
+        )
+        assert result.status == AiJobStatus.SUCCESS.value
+        assert result.payload["completion"]["artifacts"] == [
+            {"kind": "resolution_proposal", "id": "proposal", "version": None}
+        ]
 
 
 def test_two_finalizers_only_first_writes(monkeypatch):

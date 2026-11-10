@@ -563,9 +563,11 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_model.type, "model")
         self.assertEqual(request_model.payload["model"], "deepseek-official/deepseek-v4-flash")
 
-        tool = map_dsh_event({"type": "tool/call", "data": {"name": "read_file", "arguments": {"path": "a.md"}}})
+        tool = map_dsh_event(
+            {"type": "tool/call", "data": {"name": "read_file", "arguments": {"path": "a.md"}, "callId": "call-read"}}
+        )
         self.assertEqual(tool.type, "tool_use")
-        self.assertEqual(tool.payload["tool"], "read_file")
+        self.assertEqual(tool.payload["tool_name"], "read_file")
 
         text_delta = map_dsh_event(
             {

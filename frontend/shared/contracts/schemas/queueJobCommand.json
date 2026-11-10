@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "const": 2,
+      "title": "Contract Version",
+      "type": "integer"
+    },
+    "command_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Command Id",
+      "type": "string"
+    },
+    "expected_version": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "title": "Expected Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "contract_version",
+    "command_id",
+    "expected_version"
+  ],
+  "title": "QueueJobCommand",
+  "type": "object"
+}

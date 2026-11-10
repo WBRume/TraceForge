@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "completed": {
+      "const": true,
+      "title": "Completed",
+      "type": "boolean"
+    },
+    "reset_seconds": {
+      "title": "Reset Seconds",
+      "type": "number"
+    }
+  },
+  "required": [
+    "completed",
+    "reset_seconds"
+  ],
+  "title": "Reset",
+  "type": "object"
+}

@@ -234,7 +234,7 @@ class AgentRunLoggingTest(unittest.IsolatedAsyncioTestCase):
                 await on_event(
                     AgentEvent(
                         type="log",
-                        payload={"message": "pre-session event"},
+                        payload={"message": "pre-session event", "level": "info"},
                         provider="fake",
                     )
                 )

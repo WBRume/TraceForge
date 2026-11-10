@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "repositories": {
+      "items": {
+        "additionalProperties": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "type": "object"
+      },
+      "title": "Repositories",
+      "type": "array"
+    },
+    "status": {
+      "enum": [
+        "applied",
+        "conflict"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "repositories",
+    "status"
+  ],
+  "title": "AppliedPatch",
+  "type": "object"
+}

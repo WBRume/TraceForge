@@ -9,11 +9,18 @@ class AgentToolDefinition:
     name: str
     description: str
     input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
+
+    def __post_init__(self):
+        from app.protocols.schema import checked_schema
+
+        object.__setattr__(self, "input_schema", checked_schema(self.input_schema))
+        object.__setattr__(self, "output_schema", checked_schema(self.output_schema))
 
 
 @dataclass(frozen=True)
 class AgentToolResult:
-    data: dict[str, Any]
+    data: Any
     is_error: bool = False
 
 

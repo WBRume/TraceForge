@@ -32,7 +32,7 @@ class Socket {
 }
 
 const job = (status = 'RUNNING', job_type = 'SYNC_TASK_SOURCE') => ({
-  id: 'job', job_type, status, progress: 50, result_json: { target_endpoint_id: 'endpoint' },
+  id: 'job', project_id: 'project', creator_id: 'user', created_at: '2026-11-10T09:00:00Z', version: status === 'RUNNING' ? 1 : 2, job_type, status, progress: 50, result_json: { target_endpoint_id: 'endpoint' },
 })
 let activeJobs: ReturnType<typeof job>[]
 let snapshot: ReturnType<typeof job>
@@ -52,8 +52,8 @@ const resync = async (socket: Socket) => {
   await flushPromises()
 }
 const emitJob = async (socket: Socket, value: ReturnType<typeof job>) => {
-  socket.receive({ type: 'event', epoch: 'epoch', sequence: ++socket.sequence,
-    event_id: `event-${socket.sequence}`, payload: { type: 'job_done', job: value } })
+  socket.receive({ type: 'event', contract_version: 2, event_type: 'job_done', room: 'api-mock:project', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'epoch', sequence: ++socket.sequence,
+    event_id: `event-${socket.sequence}`, payload: { type: 'job_done', project_id: 'project', job: value } })
   await flushPromises()
 }
 

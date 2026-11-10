@@ -1,0 +1,1556 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ApplyPatch": {
+      "additionalProperties": false,
+      "properties": {
+        "workspace_root": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Workspace Root",
+          "type": "string"
+        },
+        "repositories": {
+          "items": {
+            "$ref": "#/$defs/PatchRepository"
+          },
+          "title": "Repositories",
+          "type": "array"
+        }
+      },
+      "required": [
+        "workspace_root",
+        "repositories"
+      ],
+      "title": "ApplyPatch",
+      "type": "object"
+    },
+    "ApplyPatchCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "resource_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "task_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "payload_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "kind": {
+          "const": "apply_patch",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ApplyPatch"
+        }
+      },
+      "required": [
+        "contract_version",
+        "operation_id",
+        "resource_id",
+        "task_id",
+        "payload_hash",
+        "kind",
+        "payload"
+      ],
+      "title": "ApplyPatchCommand",
+      "type": "object"
+    },
+    "Contract": {
+      "additionalProperties": false,
+      "properties": {},
+      "title": "Contract",
+      "type": "object"
+    },
+    "DocumentsCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "resource_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "task_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "payload_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "kind": {
+          "const": "documents",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "discriminator": {
+            "mapping": {
+              "list": "#/$defs/DocumentsList",
+              "read": "#/$defs/DocumentsRead",
+              "save": "#/$defs/DocumentsSave"
+            },
+            "propertyName": "action"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DocumentsList"
+            },
+            {
+              "$ref": "#/$defs/DocumentsRead"
+            },
+            {
+              "$ref": "#/$defs/DocumentsSave"
+            }
+          ],
+          "title": "Payload"
+        }
+      },
+      "required": [
+        "contract_version",
+        "operation_id",
+        "resource_id",
+        "task_id",
+        "payload_hash",
+        "kind",
+        "payload"
+      ],
+      "title": "DocumentsCommand",
+      "type": "object"
+    },
+    "DocumentsList": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "list",
+          "title": "Action",
+          "type": "string"
+        },
+        "roots": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Roots",
+          "type": "array"
+        },
+        "initial_checkpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Initial Checkpoint"
+        }
+      },
+      "required": [
+        "action",
+        "roots"
+      ],
+      "title": "DocumentsList",
+      "type": "object"
+    },
+    "DocumentsRead": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "read",
+          "title": "Action",
+          "type": "string"
+        },
+        "roots": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Roots",
+          "type": "array"
+        },
+        "initial_checkpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Initial Checkpoint"
+        },
+        "path": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "section": {
+          "enum": [
+            "plans",
+            "specs"
+          ],
+          "title": "Section",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "roots",
+        "path",
+        "section"
+      ],
+      "title": "DocumentsRead",
+      "type": "object"
+    },
+    "DocumentsSave": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "save",
+          "title": "Action",
+          "type": "string"
+        },
+        "roots": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Roots",
+          "type": "array"
+        },
+        "initial_checkpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Initial Checkpoint"
+        },
+        "path": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "section": {
+          "enum": [
+            "plans",
+            "specs"
+          ],
+          "title": "Section",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "roots",
+        "path",
+        "section",
+        "content"
+      ],
+      "title": "DocumentsSave",
+      "type": "object"
+    },
+    "File": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content",
+        "sha256"
+      ],
+      "title": "File",
+      "type": "object"
+    },
+    "GeneratePatchCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "resource_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "task_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "payload_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "kind": {
+          "const": "generate_patch",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/Contract"
+        }
+      },
+      "required": [
+        "contract_version",
+        "operation_id",
+        "resource_id",
+        "task_id",
+        "payload_hash",
+        "kind",
+        "payload"
+      ],
+      "title": "GeneratePatchCommand",
+      "type": "object"
+    },
+    "InitializeClean": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "clean",
+          "title": "Action",
+          "type": "string"
+        },
+        "protected": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Protected",
+          "type": "array"
+        }
+      },
+      "required": [
+        "action",
+        "protected"
+      ],
+      "title": "InitializeClean",
+      "type": "object"
+    },
+    "InitializeCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "resource_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "task_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "payload_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "kind": {
+          "const": "initialize",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "discriminator": {
+            "mapping": {
+              "clean": "#/$defs/InitializeClean",
+              "fetch": "#/$defs/InitializeFetch",
+              "reset": "#/$defs/InitializeReset"
+            },
+            "propertyName": "action"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/InitializeClean"
+            },
+            {
+              "$ref": "#/$defs/InitializeFetch"
+            },
+            {
+              "$ref": "#/$defs/InitializeReset"
+            }
+          ],
+          "title": "Payload"
+        }
+      },
+      "required": [
+        "contract_version",
+        "operation_id",
+        "resource_id",
+        "task_id",
+        "payload_hash",
+        "kind",
+        "payload"
+      ],
+      "title": "InitializeCommand",
+      "type": "object"
+    },
+    "InitializeFetch": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "fetch",
+          "title": "Action",
+          "type": "string"
+        },
+        "repository": {
+          "$ref": "#/$defs/RepositoryTarget"
+        }
+      },
+      "required": [
+        "action",
+        "repository"
+      ],
+      "title": "InitializeFetch",
+      "type": "object"
+    },
+    "InitializeReset": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "reset",
+          "title": "Action",
+          "type": "string"
+        },
+        "repository": {
+          "$ref": "#/$defs/RepositoryTarget"
+        }
+      },
+      "required": [
+        "action",
+        "repository"
+      ],
+      "title": "InitializeReset",
+      "type": "object"
+    },
+    "Materialize": {
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "items": {
+            "$ref": "#/$defs/File"
+          },
+          "title": "Files",
+          "type": "array"
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "title": "Materialize",
+      "type": "object"
+    },
+    "MaterializeCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "resource_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "task_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "payload_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "kind": {
+          "const": "materialize",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/Materialize"
+        }
+      },
+      "required": [
+        "contract_version",
+        "operation_id",
+        "resource_id",
+        "task_id",
+        "payload_hash",
+        "kind",
+        "payload"
+      ],
+      "title": "MaterializeCommand",
+      "type": "object"
+    },
+    "PatchRepository": {
+      "additionalProperties": false,
+      "properties": {
+        "repository_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Repository Id",
+          "type": "string"
+        },
+        "local_path": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Local Path",
+          "type": "string"
+        },
+        "configured_git_url": {
+          "title": "Configured Git Url",
+          "type": "string"
+        },
+        "repo_slug": {
+          "title": "Repo Slug",
+          "type": "string"
+        },
+        "patch": {
+          "title": "Patch",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "base_commit_sha": {
+          "title": "Base Commit Sha",
+          "type": "string"
+        },
+        "base_branch": {
+          "title": "Base Branch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "local_path",
+        "configured_git_url",
+        "repo_slug",
+        "patch",
+        "sha256",
+        "base_commit_sha",
+        "base_branch"
+      ],
+      "title": "PatchRepository",
+      "type": "object"
+    },
+    "ProviderFork": {
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "drill": {
+          "default": false,
+          "title": "Drill",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "ProviderFork",
+      "type": "object"
+    },
+    "ProviderForkCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "resource_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "task_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "payload_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "kind": {
+          "const": "provider_fork",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ProviderFork"
+        }
+      },
+      "required": [
+        "contract_version",
+        "operation_id",
+        "resource_id",
+        "task_id",
+        "payload_hash",
+        "kind",
+        "payload"
+      ],
+      "title": "ProviderForkCommand",
+      "type": "object"
+    },
+    "Provision": {
+      "additionalProperties": false,
+      "properties": {
+        "workspace_root": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Workspace Root",
+          "type": "string"
+        },
+        "repositories": {
+          "items": {
+            "$ref": "#/$defs/Repository"
+          },
+          "title": "Repositories",
+          "type": "array"
+        }
+      },
+      "required": [
+        "workspace_root",
+        "repositories"
+      ],
+      "title": "Provision",
+      "type": "object"
+    },
+    "ProvisionCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "resource_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "task_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "payload_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "kind": {
+          "const": "provision",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/Provision"
+        }
+      },
+      "required": [
+        "contract_version",
+        "operation_id",
+        "resource_id",
+        "task_id",
+        "payload_hash",
+        "kind",
+        "payload"
+      ],
+      "title": "ProvisionCommand",
+      "type": "object"
+    },
+    "ReleaseCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "resource_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "task_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "payload_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "kind": {
+          "const": "release",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/Contract"
+        }
+      },
+      "required": [
+        "contract_version",
+        "operation_id",
+        "resource_id",
+        "task_id",
+        "payload_hash",
+        "kind",
+        "payload"
+      ],
+      "title": "ReleaseCommand",
+      "type": "object"
+    },
+    "Repository": {
+      "additionalProperties": false,
+      "properties": {
+        "repository_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Repository Id",
+          "type": "string"
+        },
+        "local_path": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Local Path",
+          "type": "string"
+        },
+        "configured_git_url": {
+          "title": "Configured Git Url",
+          "type": "string"
+        },
+        "repo_url": {
+          "title": "Repo Url",
+          "type": "string"
+        },
+        "repo_name": {
+          "title": "Repo Name",
+          "type": "string"
+        },
+        "rel_path": {
+          "title": "Rel Path",
+          "type": "string"
+        },
+        "branch_name": {
+          "title": "Branch Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "local_path",
+        "configured_git_url",
+        "repo_url",
+        "repo_name",
+        "rel_path",
+        "branch_name"
+      ],
+      "title": "Repository",
+      "type": "object"
+    },
+    "RepositoryDetailsCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "resource_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "task_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "payload_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "kind": {
+          "const": "repository_details",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/Contract"
+        }
+      },
+      "required": [
+        "contract_version",
+        "operation_id",
+        "resource_id",
+        "task_id",
+        "payload_hash",
+        "kind",
+        "payload"
+      ],
+      "title": "RepositoryDetailsCommand",
+      "type": "object"
+    },
+    "RepositoryTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "repository_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Repository Id",
+          "type": "string"
+        },
+        "rel_path": {
+          "title": "Rel Path",
+          "type": "string"
+        },
+        "branch": {
+          "title": "Branch",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target"
+        }
+      },
+      "required": [
+        "repository_id",
+        "rel_path",
+        "branch"
+      ],
+      "title": "RepositoryTarget",
+      "type": "object"
+    },
+    "SkillsCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "resource_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "task_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "payload_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "kind": {
+          "const": "skills",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "discriminator": {
+            "mapping": {
+              "manifest": "#/$defs/SkillsManifest",
+              "read": "#/$defs/SkillsRead",
+              "replace": "#/$defs/SkillsReplace",
+              "tree": "#/$defs/SkillsTree",
+              "write": "#/$defs/SkillsWrite"
+            },
+            "propertyName": "action"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/SkillsReplace"
+            },
+            {
+              "$ref": "#/$defs/SkillsManifest"
+            },
+            {
+              "$ref": "#/$defs/SkillsTree"
+            },
+            {
+              "$ref": "#/$defs/SkillsRead"
+            },
+            {
+              "$ref": "#/$defs/SkillsWrite"
+            }
+          ],
+          "title": "Payload"
+        }
+      },
+      "required": [
+        "contract_version",
+        "operation_id",
+        "resource_id",
+        "task_id",
+        "payload_hash",
+        "kind",
+        "payload"
+      ],
+      "title": "SkillsCommand",
+      "type": "object"
+    },
+    "SkillsManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "manifest",
+          "title": "Action",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "SkillsManifest",
+      "type": "object"
+    },
+    "SkillsRead": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "read",
+          "title": "Action",
+          "type": "string"
+        },
+        "folder": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Folder",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "folder",
+        "path"
+      ],
+      "title": "SkillsRead",
+      "type": "object"
+    },
+    "SkillsReplace": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "replace",
+          "title": "Action",
+          "type": "string"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/File"
+          },
+          "title": "Files",
+          "type": "array"
+        },
+        "preserve": {
+          "default": false,
+          "title": "Preserve",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action",
+        "files"
+      ],
+      "title": "SkillsReplace",
+      "type": "object"
+    },
+    "SkillsTree": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "tree",
+          "title": "Action",
+          "type": "string"
+        },
+        "folder": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Folder",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "folder"
+      ],
+      "title": "SkillsTree",
+      "type": "object"
+    },
+    "SkillsWrite": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "write",
+          "title": "Action",
+          "type": "string"
+        },
+        "folder": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Folder",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "folder",
+        "path",
+        "content"
+      ],
+      "title": "SkillsWrite",
+      "type": "object"
+    },
+    "SnapshotBackupProvider": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "backup_provider",
+          "title": "Action",
+          "type": "string"
+        },
+        "checkpoint_root": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Checkpoint Root",
+          "type": "string"
+        },
+        "provider": {
+          "enum": [
+            "opencode",
+            "dsh"
+          ],
+          "title": "Provider",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "required": [
+        "action",
+        "checkpoint_root",
+        "provider"
+      ],
+      "title": "SnapshotBackupProvider",
+      "type": "object"
+    },
+    "SnapshotCleanup": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "cleanup",
+          "title": "Action",
+          "type": "string"
+        },
+        "checkpoint_root": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Checkpoint Root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "checkpoint_root"
+      ],
+      "title": "SnapshotCleanup",
+      "type": "object"
+    },
+    "SnapshotCleanupDsh": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "cleanup_dsh",
+          "title": "Action",
+          "type": "string"
+        },
+        "checkpoint_root": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Checkpoint Root",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "checkpoint_root",
+        "session_id"
+      ],
+      "title": "SnapshotCleanupDsh",
+      "type": "object"
+    },
+    "SnapshotCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "resource_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "task_id": {
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "payload_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "kind": {
+          "const": "snapshot",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "discriminator": {
+            "mapping": {
+              "backup_provider": "#/$defs/SnapshotBackupProvider",
+              "cleanup": "#/$defs/SnapshotCleanup",
+              "cleanup_dsh": "#/$defs/SnapshotCleanupDsh",
+              "create": "#/$defs/SnapshotCreate",
+              "exists": "#/$defs/SnapshotExists",
+              "fork_dsh": "#/$defs/SnapshotForkDsh",
+              "restore_provider": "#/$defs/SnapshotRestoreProvider",
+              "restore_provider_backup": "#/$defs/SnapshotRestoreProviderBackup",
+              "restore_worktree": "#/$defs/SnapshotRestoreWorktree"
+            },
+            "propertyName": "action"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/SnapshotCreate"
+            },
+            {
+              "$ref": "#/$defs/SnapshotExists"
+            },
+            {
+              "$ref": "#/$defs/SnapshotRestoreWorktree"
+            },
+            {
+              "$ref": "#/$defs/SnapshotBackupProvider"
+            },
+            {
+              "$ref": "#/$defs/SnapshotRestoreProvider"
+            },
+            {
+              "$ref": "#/$defs/SnapshotRestoreProviderBackup"
+            },
+            {
+              "$ref": "#/$defs/SnapshotForkDsh"
+            },
+            {
+              "$ref": "#/$defs/SnapshotCleanupDsh"
+            },
+            {
+              "$ref": "#/$defs/SnapshotCleanup"
+            }
+          ],
+          "title": "Payload"
+        }
+      },
+      "required": [
+        "contract_version",
+        "operation_id",
+        "resource_id",
+        "task_id",
+        "payload_hash",
+        "kind",
+        "payload"
+      ],
+      "title": "SnapshotCommand",
+      "type": "object"
+    },
+    "SnapshotCreate": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "create",
+          "title": "Action",
+          "type": "string"
+        },
+        "provider": {
+          "default": "opencode",
+          "enum": [
+            "opencode",
+            "dsh"
+          ],
+          "title": "Provider",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "initial_checkpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Initial Checkpoint"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "SnapshotCreate",
+      "type": "object"
+    },
+    "SnapshotExists": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "exists",
+          "title": "Action",
+          "type": "string"
+        },
+        "checkpoint_root": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Checkpoint Root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "checkpoint_root"
+      ],
+      "title": "SnapshotExists",
+      "type": "object"
+    },
+    "SnapshotForkDsh": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "fork_dsh",
+          "title": "Action",
+          "type": "string"
+        },
+        "checkpoint_root": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Checkpoint Root",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "checkpoint_root",
+        "session_id"
+      ],
+      "title": "SnapshotForkDsh",
+      "type": "object"
+    },
+    "SnapshotRestoreProvider": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "restore_provider",
+          "title": "Action",
+          "type": "string"
+        },
+        "checkpoint_root": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Checkpoint Root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "checkpoint_root"
+      ],
+      "title": "SnapshotRestoreProvider",
+      "type": "object"
+    },
+    "SnapshotRestoreProviderBackup": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "restore_provider_backup",
+          "title": "Action",
+          "type": "string"
+        },
+        "checkpoint_root": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Checkpoint Root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "checkpoint_root"
+      ],
+      "title": "SnapshotRestoreProviderBackup",
+      "type": "object"
+    },
+    "SnapshotRestoreWorktree": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "restore_worktree",
+          "title": "Action",
+          "type": "string"
+        },
+        "checkpoint_root": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Checkpoint Root",
+          "type": "string"
+        },
+        "backup_path": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Backup Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "checkpoint_root",
+        "backup_path"
+      ],
+      "title": "SnapshotRestoreWorktree",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "apply_patch": "#/$defs/ApplyPatchCommand",
+      "documents": "#/$defs/DocumentsCommand",
+      "generate_patch": "#/$defs/GeneratePatchCommand",
+      "initialize": "#/$defs/InitializeCommand",
+      "materialize": "#/$defs/MaterializeCommand",
+      "provider_fork": "#/$defs/ProviderForkCommand",
+      "provision": "#/$defs/ProvisionCommand",
+      "release": "#/$defs/ReleaseCommand",
+      "repository_details": "#/$defs/RepositoryDetailsCommand",
+      "skills": "#/$defs/SkillsCommand",
+      "snapshot": "#/$defs/SnapshotCommand"
+    },
+    "propertyName": "kind"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/InitializeCommand"
+    },
+    {
+      "$ref": "#/$defs/SkillsCommand"
+    },
+    {
+      "$ref": "#/$defs/DocumentsCommand"
+    },
+    {
+      "$ref": "#/$defs/SnapshotCommand"
+    },
+    {
+      "$ref": "#/$defs/ProvisionCommand"
+    },
+    {
+      "$ref": "#/$defs/MaterializeCommand"
+    },
+    {
+      "$ref": "#/$defs/ProviderForkCommand"
+    },
+    {
+      "$ref": "#/$defs/ReleaseCommand"
+    },
+    {
+      "$ref": "#/$defs/RepositoryDetailsCommand"
+    },
+    {
+      "$ref": "#/$defs/GeneratePatchCommand"
+    },
+    {
+      "$ref": "#/$defs/ApplyPatchCommand"
+    }
+  ]
+}

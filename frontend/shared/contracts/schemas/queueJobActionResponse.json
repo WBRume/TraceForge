@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "const": 2,
+      "title": "Contract Version",
+      "type": "integer"
+    },
+    "command_id": {
+      "title": "Command Id",
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "accepted",
+        "applied"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "ok": {
+      "default": true,
+      "title": "Ok",
+      "type": "boolean"
+    },
+    "action": {
+      "enum": [
+        "stop",
+        "retry"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "provision",
+        "api_mock",
+        "bootstrap",
+        "skill_analysis"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "job_id": {
+      "title": "Job Id",
+      "type": "string"
+    },
+    "message": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Message"
+    },
+    "new_job_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "New Job Id"
+    }
+  },
+  "required": [
+    "contract_version",
+    "command_id",
+    "outcome",
+    "action",
+    "source",
+    "job_id"
+  ],
+  "title": "QueueJobActionResponse",
+  "type": "object"
+}

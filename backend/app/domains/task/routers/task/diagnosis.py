@@ -302,4 +302,5 @@ def get_diagnosis_summary_status(
         "task_id": task_id,
         "status": str(payload.get("status") or ""),
         "message": payload.get("message"),
+        "completion": payload.get("completion"),
     }

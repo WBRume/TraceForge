@@ -17,12 +17,16 @@ import app.domains.task.models.test_result  # noqa: E402
 import app.domains.workflow.models.task_change  # noqa: E402
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401,E402
 from app.database import Base  # noqa: E402
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob  # noqa: E402
+from app.domains.ai.services.jobs.constants import queue_key_for_task_baseline  # noqa: E402
+from app.domains.asset.models.asset import SddAssetVersion  # noqa: E402
 from app.domains.auth.models.user import User, Workspace  # noqa: E402
 from app.domains.task.models.task import SddTask, TaskStatus  # noqa: E402
 from app.domains.task.models.task_cli_bootstrap import (  # noqa: E402
     SddTaskCliBootstrap,
     TaskCliBootstrapStatus,
 )
+from app.domains.task.services import task_cli_paths as cli_paths  # noqa: E402
 from app.domains.task.services import task_cli_state_service as service  # noqa: E402
 
 
@@ -58,6 +62,34 @@ def _seed_bootstrap(db, *, status=TaskCliBootstrapStatus.PENDING):
     return record
 
 
+def test_delta_uses_only_successful_baseline_for_parent_version():
+    with _build_session()() as db:
+        record = _seed_bootstrap(db)
+        for version_id, status, session_id in (
+            ("parent", AiJobStatus.SUCCESS, "previous-ready"),
+            ("parent", AiJobStatus.CANCELLED, "cancelled-session"),
+            ("unrelated", AiJobStatus.SUCCESS, "unrelated-ready"),
+        ):
+            db.add(
+                SddAiJob(
+                    task_id=record.task_id,
+                    workspace_id=record.workspace_id,
+                    creator_id="user-1",
+                    channel=AiJobChannel.TASK_CHAT,
+                    queue_key=queue_key_for_task_baseline(record.task_id),
+                    status=status,
+                    context_json={"input_revision": version_id},
+                    result_json={"baseline_session_id": session_id},
+                )
+            )
+        db.commit()
+
+        version = SddAssetVersion(base_version_id="parent")
+        assert service._delta_source_session(db, record.task_id, version) == "previous-ready"
+        version.base_version_id = "missing"
+        assert service._delta_source_session(db, record.task_id, version) == ""
+
+
 def test_session_context_uses_cli_project_store_snapshot(tmp_path, monkeypatch):
     claude_home = tmp_path / "claude-home"
     monkeypatch.setenv("CLAUDE_HOME", str(claude_home))
@@ -68,14 +100,14 @@ def test_session_context_uses_cli_project_store_snapshot(tmp_path, monkeypatch):
     local_claude.mkdir(parents=True)
 
     session_id = "23aa02a5-0499-480c-9083-55a4ba59277b"
-    project_store = Path(service._claude_project_store_dir(str(project_path)))
+    project_store = Path(cli_paths._claude_project_store_dir(str(project_path)))
     project_store.mkdir(parents=True)
     (project_store / f"{session_id}.jsonl").write_text(
         '{"type":"result","subtype":"success"}\n',
         encoding="utf-8",
     )
 
-    source_kind, source_dir = service._resolve_session_context_location(
+    source_kind, source_dir = cli_paths._resolve_session_context_location(
         str(project_path),
         session_id,
     )
@@ -102,15 +134,15 @@ def test_session_context_does_not_fallback_to_workspace_claude(
         encoding="utf-8",
     )
 
-    source_kind, source_dir = service._resolve_session_context_location(
+    source_kind, source_dir = cli_paths._resolve_session_context_location(
         str(project_path),
         session_id,
     )
 
     assert source_kind == "project_store"
-    assert Path(source_dir) == Path(service._claude_project_store_dir(str(project_path)))
+    assert Path(source_dir) == Path(cli_paths._claude_project_store_dir(str(project_path)))
     assert Path(source_dir) != local_claude
-    assert service._session_snapshot_exists(source_dir, session_id) is False
+    assert cli_paths._session_snapshot_exists(source_dir, session_id) is False
 
 
 def test_claude_project_store_uses_config_dir_override(tmp_path, monkeypatch):
@@ -120,7 +152,7 @@ def test_claude_project_store_uses_config_dir_override(tmp_path, monkeypatch):
 
     project_path = tmp_path / "workspace" / "base"
 
-    assert Path(service._claude_project_store_dir(str(project_path))).parent == (claude_config / "projects")
+    assert Path(cli_paths._claude_project_store_dir(str(project_path))).parent == (claude_config / "projects")
 
 
 def test_resolve_bootstrap_spec_path_returns_original_doc_without_staging(tmp_path):

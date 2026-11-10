@@ -9,6 +9,7 @@ import { readJson, writeJson } from './filesystem'
 import type { Config } from './runtime'
 import { ResourceScheduler } from './scheduler'
 import { guardClosedOutputPipes } from '../stdio'
+import { parseContract, validateResourceResult } from '../../shared/contracts/validate'
 
 export async function startLocalResourceService(config: Config, options: { http?: boolean; workerUrl?: URL; onCollaborationChanged?: (event: { task_id: string }) => void } = {}) {
   guardClosedOutputPipes()
@@ -18,7 +19,7 @@ export async function startLocalResourceService(config: Config, options: { http?
   }
   mkdirSync(config.state_root, { recursive: true })
   const identityFile = join(config.state_root, 'identity.json')
-  if (!existsSync(identityFile)) writeJson(identityFile, { host_id: randomUUID(), protocol_version: 1 })
+  if (!existsSync(identityFile)) writeJson(identityFile, { host_id: randomUUID() })
   const identity = JSON.parse(readFileSync(identityFile, 'utf8'))
   const workerFile = './localResourceWorker.js'
   const adjacentWorker = new URL(workerFile, import.meta.url)
@@ -75,11 +76,16 @@ export async function startLocalResourceService(config: Config, options: { http?
     try {
       const url = new URL(request.url || '/', 'http://localhost')
       if (request.method === 'GET' && url.pathname === '/v1/identity') {
-        send(200, { ...identity, platform: process.platform === 'win32' ? 'nt' : 'posix', implementation: 'typescript', capabilities: ['provision', 'checkpoint', 'materialize', 'generate_patch', 'apply_patch', 'restore', 'release', 'skills', 'documents', 'roots_grant', 'repository_details'] }); return
+        send(200, { ...identity, protocol_version: 2, platform: process.platform === 'win32' ? 'nt' : 'posix', implementation: 'typescript', capabilities: ['provision', 'checkpoint', 'materialize', 'generate_patch', 'apply_patch', 'restore', 'release', 'skills', 'documents', 'roots_grant', 'repository_details'] }); return
       }
       if (request.method === 'GET' && url.pathname.startsWith('/v1/operations/')) {
-        const row = db!.prepare('SELECT state,result FROM operations WHERE id=?').get(url.pathname.slice('/v1/operations/'.length))
-        send(row ? 200 : 404, row ? { state: row.state, result: row.result ? JSON.parse(String(row.result)) : null } : { detail: 'Operation not found' }); return
+        const row = db!.prepare('SELECT state,result,request FROM operations_v2 WHERE id=?').get(url.pathname.slice('/v1/operations/'.length))
+        const command = row ? JSON.parse(String(row.request)) : null
+        if (!command || command.task_id !== url.searchParams.get('task_id') || command.resource_id !== url.searchParams.get('resource_id')) { send(404, { detail: 'Operation not found' }); return }
+        const { action, ...identity } = command
+        const result = row!.result ? JSON.parse(String(row!.result)) : null
+        if (row!.state === 'SUCCEEDED') validateResourceResult(identity.kind, action, result)
+        send(200, parseContract('operationReceipt', { ...identity, state: row!.state, result })); return
       }
       if (request.method === 'POST' && ['/v1/roots/grant', '/v1/repositories/inspect', '/v1/operations'].includes(url.pathname)) {
         const chunks: Buffer[] = []; let size = 0
@@ -89,6 +95,7 @@ export async function startLocalResourceService(config: Config, options: { http?
           chunks.push(chunk)
         }
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        if (url.pathname === '/v1/operations') parseContract('resourceCommand', body)
         if (url.pathname === '/v1/roots/grant') {
           const result = await grantRoots(body)
           send(result.status, result.body); return

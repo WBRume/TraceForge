@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "const": 2,
+      "title": "Contract Version",
+      "type": "integer"
+    },
+    "type": {
+      "const": "event",
+      "title": "Type",
+      "type": "string"
+    },
+    "room": {
+      "minLength": 1,
+      "title": "Room",
+      "type": "string"
+    },
+    "epoch": {
+      "minLength": 1,
+      "title": "Epoch",
+      "type": "string"
+    },
+    "sequence": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "event_id": {
+      "minLength": 1,
+      "title": "Event Id",
+      "type": "string"
+    },
+    "event_type": {
+      "minLength": 1,
+      "title": "Event Type",
+      "type": "string"
+    },
+    "payload": {
+      "$ref": "#/$defs/JsonValue"
+    },
+    "aggregate_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Aggregate Id"
+    },
+    "aggregate_version": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Aggregate Version"
+    },
+    "created_at": {
+      "title": "Created At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "contract_version",
+    "type",
+    "room",
+    "epoch",
+    "sequence",
+    "event_id",
+    "event_type",
+    "payload",
+    "aggregate_id",
+    "aggregate_version",
+    "created_at"
+  ],
+  "title": "RoomEnvelope",
+  "type": "object"
+}

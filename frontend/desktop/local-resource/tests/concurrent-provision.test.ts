@@ -20,7 +20,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 const operation = (task_id: string, kind: string, payload: any, operation_id = `${kind}-${task_id}`) => {
-  const content = { resource_id: 'test', task_id, kind, payload, operation_id }
+  const content = { contract_version: 2, resource_id: 'test', task_id, kind, payload, operation_id }
   return { ...content, payload_hash: hash(canonical(content)) }
 }
 

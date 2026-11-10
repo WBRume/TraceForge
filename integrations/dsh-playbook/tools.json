@@ -3,6 +3,7 @@
     "name": "propose_hypotheses",
     "description": "提交二至三个可证伪假说与候选判别脚本。此工具不会标记验证通过。",
     "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -54,12 +55,156 @@
           }
         }
       }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "text"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "accepted"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "error",
+              "default": "error",
+              "title": "Kind",
+              "type": "string"
+            },
+            "code": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Code",
+              "type": "string"
+            },
+            "category": {
+              "enum": [
+                "input",
+                "condition",
+                "conflict",
+                "revoked",
+                "transient",
+                "uncertain",
+                "internal"
+              ],
+              "title": "Category",
+              "type": "string"
+            },
+            "message": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            },
+            "action": {
+              "enum": [
+                "correct_arguments",
+                "read_context",
+                "stop",
+                "query_receipt",
+                "execution_policy",
+                "report_defect"
+              ],
+              "title": "Action",
+              "type": "string"
+            },
+            "run_id": {
+              "title": "Run Id",
+              "type": "string"
+            },
+            "call_id": {
+              "title": "Call Id",
+              "type": "string"
+            },
+            "diagnostic_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Diagnostic Id"
+            },
+            "issues": {
+              "items": {
+                "$ref": "#/$defs/FieldIssue"
+              },
+              "maxItems": 100,
+              "title": "Issues",
+              "type": "array"
+            }
+          },
+          "required": [
+            "code",
+            "category",
+            "message",
+            "action",
+            "run_id",
+            "call_id"
+          ],
+          "title": "ToolFailure",
+          "type": "object"
+        }
+      ],
+      "$defs": {
+        "FieldIssue": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "title": "Path",
+              "type": "array"
+            },
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "code",
+            "message"
+          ],
+          "title": "FieldIssue",
+          "type": "object"
+        }
+      }
     }
   },
   {
     "name": "propose_experiment",
     "description": "提交候选实验文件；由平台校验、冻结并执行。",
     "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -72,6 +217,149 @@
           "additionalProperties": {
             "type": "string"
           }
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "text"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "accepted"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "error",
+              "default": "error",
+              "title": "Kind",
+              "type": "string"
+            },
+            "code": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Code",
+              "type": "string"
+            },
+            "category": {
+              "enum": [
+                "input",
+                "condition",
+                "conflict",
+                "revoked",
+                "transient",
+                "uncertain",
+                "internal"
+              ],
+              "title": "Category",
+              "type": "string"
+            },
+            "message": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            },
+            "action": {
+              "enum": [
+                "correct_arguments",
+                "read_context",
+                "stop",
+                "query_receipt",
+                "execution_policy",
+                "report_defect"
+              ],
+              "title": "Action",
+              "type": "string"
+            },
+            "run_id": {
+              "title": "Run Id",
+              "type": "string"
+            },
+            "call_id": {
+              "title": "Call Id",
+              "type": "string"
+            },
+            "diagnostic_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Diagnostic Id"
+            },
+            "issues": {
+              "items": {
+                "$ref": "#/$defs/FieldIssue"
+              },
+              "maxItems": 100,
+              "title": "Issues",
+              "type": "array"
+            }
+          },
+          "required": [
+            "code",
+            "category",
+            "message",
+            "action",
+            "run_id",
+            "call_id"
+          ],
+          "title": "ToolFailure",
+          "type": "object"
+        }
+      ],
+      "$defs": {
+        "FieldIssue": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "title": "Path",
+              "type": "array"
+            },
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "code",
+            "message"
+          ],
+          "title": "FieldIssue",
+          "type": "object"
         }
       }
     }
@@ -80,6 +368,7 @@
     "name": "propose_patch",
     "description": "提交补丁候选文件，平台在回合静止后物化到独立补丁快照。",
     "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -94,12 +383,156 @@
           }
         }
       }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "text"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "accepted"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "error",
+              "default": "error",
+              "title": "Kind",
+              "type": "string"
+            },
+            "code": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Code",
+              "type": "string"
+            },
+            "category": {
+              "enum": [
+                "input",
+                "condition",
+                "conflict",
+                "revoked",
+                "transient",
+                "uncertain",
+                "internal"
+              ],
+              "title": "Category",
+              "type": "string"
+            },
+            "message": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            },
+            "action": {
+              "enum": [
+                "correct_arguments",
+                "read_context",
+                "stop",
+                "query_receipt",
+                "execution_policy",
+                "report_defect"
+              ],
+              "title": "Action",
+              "type": "string"
+            },
+            "run_id": {
+              "title": "Run Id",
+              "type": "string"
+            },
+            "call_id": {
+              "title": "Call Id",
+              "type": "string"
+            },
+            "diagnostic_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Diagnostic Id"
+            },
+            "issues": {
+              "items": {
+                "$ref": "#/$defs/FieldIssue"
+              },
+              "maxItems": 100,
+              "title": "Issues",
+              "type": "array"
+            }
+          },
+          "required": [
+            "code",
+            "category",
+            "message",
+            "action",
+            "run_id",
+            "call_id"
+          ],
+          "title": "ToolFailure",
+          "type": "object"
+        }
+      ],
+      "$defs": {
+        "FieldIssue": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "title": "Path",
+              "type": "array"
+            },
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "code",
+            "message"
+          ],
+          "title": "FieldIssue",
+          "type": "object"
+        }
+      }
     }
   },
   {
     "name": "read_source",
     "description": "读取绑定源码快照内的文件或列出目录；不允许读取凭据和证据存储。",
     "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -108,6 +541,149 @@
       "properties": {
         "path": {
           "type": "string"
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "text"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "source"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "error",
+              "default": "error",
+              "title": "Kind",
+              "type": "string"
+            },
+            "code": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Code",
+              "type": "string"
+            },
+            "category": {
+              "enum": [
+                "input",
+                "condition",
+                "conflict",
+                "revoked",
+                "transient",
+                "uncertain",
+                "internal"
+              ],
+              "title": "Category",
+              "type": "string"
+            },
+            "message": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            },
+            "action": {
+              "enum": [
+                "correct_arguments",
+                "read_context",
+                "stop",
+                "query_receipt",
+                "execution_policy",
+                "report_defect"
+              ],
+              "title": "Action",
+              "type": "string"
+            },
+            "run_id": {
+              "title": "Run Id",
+              "type": "string"
+            },
+            "call_id": {
+              "title": "Call Id",
+              "type": "string"
+            },
+            "diagnostic_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Diagnostic Id"
+            },
+            "issues": {
+              "items": {
+                "$ref": "#/$defs/FieldIssue"
+              },
+              "maxItems": 100,
+              "title": "Issues",
+              "type": "array"
+            }
+          },
+          "required": [
+            "code",
+            "category",
+            "message",
+            "action",
+            "run_id",
+            "call_id"
+          ],
+          "title": "ToolFailure",
+          "type": "object"
+        }
+      ],
+      "$defs": {
+        "FieldIssue": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "title": "Path",
+              "type": "array"
+            },
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "code",
+            "message"
+          ],
+          "title": "FieldIssue",
+          "type": "object"
         }
       }
     }

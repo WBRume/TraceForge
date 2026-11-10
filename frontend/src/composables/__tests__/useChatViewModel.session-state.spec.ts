@@ -354,7 +354,7 @@ describe('useChatViewModel session state single flight', () => {
     const socket = await readySocket()
     const before = countCalls('/session-state')
 
-    socket.receive({ type: 'event', room: 'task:t1', epoch: 'e', sequence: 1, event_id: 'ev-1',
+    socket.receive({ type: 'event', contract_version: 2, aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', room: 'task:t1', epoch: 'e', sequence: 1, event_id: 'ev-1',
       event_type: 'chat_submission_update', payload: {
         task_id: 't1', session_generation: 1, session_revision: 1, event_id: 'ev-1',
         receipt: { id: 'r1', task_id: 't1', client_message_id: 'c1', content: 'hello', status: 'PREPARING', version: 1 },
@@ -363,7 +363,7 @@ describe('useChatViewModel session state single flight', () => {
     expect(vm.messages.value.some(item => String(item.client_message_id || '') === 'c1')).toBe(true)
     expect(vm.engineRunning.value).toBe(true)
 
-    socket.receive({ type: 'event', room: 'task:t1', epoch: 'e', sequence: 2, event_id: 'ev-2',
+    socket.receive({ type: 'event', contract_version: 2, aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', room: 'task:t1', epoch: 'e', sequence: 2, event_id: 'ev-2',
       event_type: 'chat_submission_update', payload: {
         task_id: 't1', session_generation: 1, session_revision: 1, event_id: 'ev-2',
         receipt: { id: 'r1', task_id: 't1', client_message_id: 'c1', status: 'EXECUTING', version: 2,
@@ -399,12 +399,12 @@ describe('useChatViewModel session state single flight', () => {
     const job = { id: 'new-job', task_id: 't1', status: 'RUNNING', status_seq: '1', progress: 55,
       session_generation: 2, message: 'AI is processing' }
     const event = (sequence: number, type: string, payload: any) => socket.receive({
-      type: 'event', room: 'task:t1', epoch: 'e', sequence,
+      type: 'event', contract_version: 2, aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', room: 'task:t1', epoch: 'e', sequence,
       event_id: `initialize-${sequence}`, event_type: type, payload,
     })
     // Execution is queued before /initialize responds, so these events can win the race.
-    event(1, 'status', { status: 'INIT', message: 'Agent session started', model: 'private/a' })
-    event(2, 'thinking', { sequence: 1, content: '正在分析项目需求' })
+    event(1, 'status', { task_id: 't1', status: 'INIT', message: 'Agent session started', model: 'private/a' })
+    event(2, 'thinking', { task_id: 't1', sequence: 1, content: '正在分析项目需求' })
     event(3, 'chat_job_update', { job })
     event(4, 'chat_message', reply)
     await flushPromises()

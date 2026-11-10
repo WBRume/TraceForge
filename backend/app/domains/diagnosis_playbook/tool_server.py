@@ -9,10 +9,22 @@ import hmac
 import time
 from copy import deepcopy
 
-from fastapi import APIRouter, Header, HTTPException, Response
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Header, HTTPException, Request
+from mcp.types import DiscoverResult, ListToolsResult
+from pydantic import TypeAdapter
 
+from app.agents.tool_transports.mcp import handle_request, tool_result
+from app.agents.tool_transports.protocol import (
+    MCP_VERSION,
+    CallParams,
+    ListParams,
+    ProtocolError,
+    RpcRequest,
+    logical_call_id,
+)
 from app.core.offload import run_db_txn
+from app.protocols.schema import checked_schema
+from app.protocols.tools import ToolFailure
 
 from . import service
 from .contracts import PlaybookError, digest
@@ -83,12 +95,41 @@ TOOLS.extend(
 )
 
 
-class RpcRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    jsonrpc: str = "2.0"
-    id: str | int | None = None
-    method: str = Field(max_length=100)
-    params: dict = Field(default_factory=dict)
+SERVER_META = {"io.modelcontextprotocol/serverInfo": {"name": "traceforge-playbook", "version": "2"}}
+
+
+def _output_schema(name):
+    kind = "source" if name == "read_source" else "accepted"
+    return checked_schema(
+        {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["kind", "text"],
+                    "additionalProperties": False,
+                    "properties": {"kind": {"const": kind}, "text": {"type": "string"}},
+                },
+                TypeAdapter(ToolFailure).json_schema(ref_template="#/$defs/{model}"),
+            ]
+        }
+    )
+
+
+for definition in TOOLS:
+    definition["inputSchema"] = checked_schema(definition["inputSchema"])
+    schema = _output_schema(definition["name"])
+    failure_schema = schema["oneOf"][1]
+    schema["$defs"] = failure_schema.pop("$defs", {})
+    definition["outputSchema"] = schema
+
+
+def available_tools(run, scope):
+    return [
+        tool
+        for tool in TOOLS
+        if (tool["name"] != "propose_hypotheses" or (run.phase == "HYPOTHESIZE" and not scope.get("hypothesis_id")))
+        and (tool["name"] != "propose_patch" or run.phase == "PATCH")
+    ]
 
 
 def authorize(db, run_id, authorization):
@@ -120,28 +161,27 @@ def authorize(db, run_id, authorization):
 
 def invoke(db, run_id, authorization, request):
     run, scope = authorize(db, run_id, authorization)
-    if request.method == "initialize":
-        return {
-            "protocolVersion": "2025-03-26",
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "traceforge-playbook", "version": "1"},
-        }
+    if request.method in {"server/discover", "tools/list", "ping"}:
+        ListParams.model_validate(request.params)
+    if request.method == "server/discover":
+        return DiscoverResult(supportedVersions=[MCP_VERSION], capabilities={"tools": {}}, _meta=SERVER_META)
     if request.method == "ping":
-        return {}
+        return None
+    tools = available_tools(run, scope)
     if request.method == "tools/list":
-        return {
-            "tools": [
-                t
-                for t in TOOLS
-                if (
-                    t["name"] != "propose_hypotheses" or (run.phase == "HYPOTHESIZE" and not scope.get("hypothesis_id"))
-                )
-                and (t["name"] != "propose_patch" or run.phase == "PATCH")
-            ]
-        }
+        return ListToolsResult(tools=tools, cacheScope="private", ttlMs=0, _meta=SERVER_META)
     if request.method != "tools/call":
-        raise PlaybookError("MCP_METHOD_UNSUPPORTED")
-    name, arguments = request.params.get("name"), request.params.get("arguments", {})
+        raise ProtocolError(-32601, "Method not supported")
+    params = CallParams.model_validate(request.params)
+    definition = next((tool for tool in tools if tool["name"] == params.name), None)
+    if definition is None:
+        raise ProtocolError(-32602, "Unknown or unavailable tool")
+    call_id = logical_call_id(params.meta)
+    result = invoke_tool(db, run, scope, params.name, params.arguments, call_id)
+    return tool_result(definition["outputSchema"], result, False)
+
+
+def invoke_tool(db, run, scope, name, arguments, call_id):
     if name == "read_source":
         from pathlib import Path
 
@@ -172,8 +212,8 @@ def invoke(db, run_id, authorization, request):
         else:
             require(path.stat().st_size <= 128_000, "SOURCE_FILE_TOO_LARGE")
             text = path.read_text(encoding="utf-8", errors="replace")
-        return {"content": [{"type": "text", "text": text}], "isError": False}
-    return submit_proposal(db, run, scope, name, arguments, str(request.id))
+        return {"kind": "source", "text": text}
+    return submit_proposal(db, run, scope, name, arguments, call_id)
 
 
 def submit_proposal(db, run, scope, name, arguments, call_key):
@@ -183,7 +223,7 @@ def submit_proposal(db, run, scope, name, arguments, call_key):
     if call_key in calls:
         if calls[call_key] != fingerprint:
             raise PlaybookError("TOOL_CALL_ID_CONFLICT", status=409)
-        return {"content": [{"type": "text", "text": "Proposal already recorded"}], "isError": False}
+        return {"kind": "accepted", "text": "Proposal recorded; physical verification is still required"}
     if name == "propose_hypotheses":
         if scope.get("hypothesis_id"):
             raise PlaybookError("BRANCH_CANNOT_REPLACE_HYPOTHESES")
@@ -220,25 +260,27 @@ def submit_proposal(db, run, scope, name, arguments, call_key):
     data = deepcopy(run.data_json)
     data["active_scope"]["tool_calls"] = {**calls, call_key: fingerprint}
     service.transition(db, run, data)
-    return {
-        "content": [{"type": "text", "text": "Proposal recorded; physical verification is still required"}],
-        "isError": False,
-    }
+    return {"kind": "accepted", "text": "Proposal recorded; physical verification is still required"}
 
 
 @router.post("/{run_id}")
-async def mcp(run_id: str, body: RpcRequest, authorization: str | None = Header(default=None)):
-    if body.jsonrpc != "2.0":
-        raise HTTPException(400, "JSON-RPC 2.0 required")
-    if body.id is None:
-        await run_db_txn(lambda db: authorize(db, run_id, authorization))
-        return Response(status_code=202)
-    try:
-        result = await run_db_txn(lambda db: invoke(db, run_id, authorization, body))
-        return {"jsonrpc": "2.0", "id": body.id, "result": result}
-    except PlaybookError as exc:
-        return {
-            "jsonrpc": "2.0",
-            "id": body.id,
-            "result": {"isError": True, "content": [{"type": "text", "text": str(exc)}]},
-        }
+async def mcp(run_id: str, request: Request, authorization: str | None = Header(default=None)):
+    async def dispatch(message: RpcRequest):
+        try:
+            return await run_db_txn(lambda db: invoke(db, run_id, authorization, message))
+        except PlaybookError as exc:
+            if message.method != "tools/call":
+                raise
+            name = message.params["name"]
+            failure = ToolFailure(
+                code=str(exc),
+                category="conflict" if exc.status == 409 else "condition",
+                action="read_context",
+                message=str(exc),
+                run_id=run_id,
+                call_id=logical_call_id(message.params["_meta"]),
+            )
+            definition = next(tool for tool in TOOLS if tool["name"] == name)
+            return tool_result(definition["outputSchema"], failure.model_dump(mode="json"), True)
+
+    return await handle_request(request, dispatch)

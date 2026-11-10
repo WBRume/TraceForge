@@ -233,14 +233,19 @@ class FrontendFeed:
             ).model_dump(),
         )
 
-    async def push_tool_result(self, tool_use_id: str, output: str) -> None:
+    async def push_tool_result(
+        self, tool_use_id: str, output: str, *, is_error: bool = False, structured_content=None, content=None
+    ) -> None:
         """推送工具执行结果到前端"""
         await self.push(
             "tool_result",
             WSToolResultPayload(
                 task_id=self._owner.task_id,
                 tool_use_id=tool_use_id,
-                output=output[:2000],
+                output=output,
+                is_error=is_error,
+                structured_content=structured_content,
+                content=content or [],
             ).model_dump(),
         )
 

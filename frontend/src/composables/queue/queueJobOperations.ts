@@ -1,3 +1,4 @@
+import { parseContract } from '../../../shared/contracts/validate'
 import type { Router } from 'vue-router'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
@@ -46,10 +47,17 @@ export const runQueueJobAction = async (
   source: QueueSource,
   jobId: string,
   action: 'stop' | 'retry',
+  version: number,
 ): Promise<QueueJobActionResponse> => {
   const normalizedJobId = String(jobId || '').trim()
-  const res = await api.post<QueueJobActionResponse>(`/queue/jobs/${source}/${normalizedJobId}/${action}`)
-  return res.data
+  const command = { contract_version: 2, command_id: crypto.randomUUID(), expected_version: version }
+  parseContract('queueJobCommand', command)
+  const res = await api.post<unknown>(`/queue/jobs/${source}/${normalizedJobId}/${action}`, command)
+  const receipt = parseContract<QueueJobActionResponse>('queueJobActionResponse', res.data)
+  if (receipt.command_id !== command.command_id || receipt.job_id !== normalizedJobId || receipt.action !== action || receipt.source !== source) {
+    throw new Error('QUEUE_COMMAND_RECEIPT_MISMATCH')
+  }
+  return receipt
 }
 
 export const openQueueJobTarget = async (

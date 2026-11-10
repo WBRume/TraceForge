@@ -15,6 +15,7 @@ from typing import Generic, Literal, TypeVar
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.agents.tools import AgentToolDefinition, AgentToolResult
+from app.protocols.tools import SUBMISSION_REPLY, WORKSPACE_REPLY, FieldIssue, SubmissionAccepted, ToolFailure
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -51,11 +52,12 @@ class DomainTool(Generic[T]):
             self.name,
             self.description + " 成功后本次提交结束；校验失败时依据工具错误修正并再次调用。",
             self.input_model.model_json_schema(),
+            SUBMISSION_REPLY.json_schema(),
         )
 
 
-def tool_reply(*, error: bool = False, **payload) -> AgentToolResult:
-    return AgentToolResult(data=payload, is_error=error)
+def tool_reply(value: BaseModel) -> AgentToolResult:
+    return AgentToolResult(data=value.model_dump(mode="json"), is_error=isinstance(value, ToolFailure))
 
 
 class DomainToolRun(Generic[T]):
@@ -79,6 +81,21 @@ class DomainToolRun(Generic[T]):
         self._lock = asyncio.Lock()
         self._closed = False
         self.project_path: str = ""
+        self._calls: dict[str, tuple[str, AgentToolResult]] = {}
+
+    def failure_reply(self, code, category, action, call_id, *, issues=None, message=None):
+        return tool_reply(
+            ToolFailure(
+                code=code,
+                category=category,
+                action=action,
+                message=(message or code)[:2000],
+                run_id=self.run_id,
+                call_id=call_id,
+                issues=issues or [],
+                diagnostic_id=uuid.uuid4().hex if category == "internal" else None,
+            )
+        )
 
     @property
     def definitions(self) -> tuple[AgentToolDefinition, ...]:
@@ -113,20 +130,30 @@ class DomainToolRun(Generic[T]):
         async with self._lock:
             try:
                 self.ensure_active()
+                digest = self.call_digest(name, arguments)
+                prior = self._calls.get(call_id)
+                if prior:
+                    if prior[0] != digest:
+                        return self.failure_reply("CALL_ID_CONFLICT", "conflict", "stop", call_id)
+                    return prior[1]
+                if len(self._calls) >= 100:
+                    self.failure = DomainRunUnavailable("DOMAIN_TOOL_CALL_LIMIT")
+                    raise self.failure
                 if name == "read_workspace":
                     from .workspace import read_workspace
 
-                    return tool_reply(**await asyncio.to_thread(read_workspace, self.project_path, arguments))
+                    output = await asyncio.to_thread(read_workspace, self.project_path, arguments)
+                    self.ensure_active()
+                    reply = self.workspace_reply(output)
+                    self._calls[call_id] = digest, reply
+                    return reply
                 if name != self.tool.name:
                     raise DomainToolError("UNKNOWN_DOMAIN_TOOL")
-                digest = hashlib.sha256(json.dumps(arguments, sort_keys=True).encode()).hexdigest()
                 if self._receipt:
                     if digest == self._digest:
+                        self._calls[call_id] = digest, self._receipt
                         return self._receipt
-                    raise DomainToolError("DOMAIN_RESULT_ALREADY_ACCEPTED")
-                if len(self.events) >= 100:
-                    self.failure = DomainRunUnavailable("DOMAIN_TOOL_CALL_LIMIT")
-                    raise self.failure
+                    return self.failure_reply("DOMAIN_RESULT_ALREADY_ACCEPTED", "conflict", "stop", call_id)
                 await self.emit("validating", "正在校验业务产物", call_id=call_id)
                 value = self.tool.input_model.model_validate(arguments, strict=True)
                 if self.tool.validate:
@@ -136,25 +163,55 @@ class DomainToolRun(Generic[T]):
                 self.ensure_active()
                 self.value = value
                 self._digest = digest
-                self._receipt = tool_reply(accepted=True, run_id=self.run_id, call_id=call_id)
+                self._receipt = tool_reply(
+                    SubmissionAccepted(run_id=self.run_id, call_id=call_id, receipt_id=uuid.uuid4().hex)
+                )
+                self._calls[call_id] = digest, self._receipt
                 await self.emit("accepted", "业务产物已通过校验，等待保存", call_id=call_id)
                 return self._receipt
             except DomainRunUnavailable as exc:
-                return tool_reply(error=True, code=str(exc), retryable=False)
+                return self.failure_reply(str(exc), "revoked", "stop", call_id)
             except (ValidationError, DomainToolError) as exc:
-                issues = (
-                    [f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors(include_input=False)]
-                    if isinstance(exc, ValidationError)
-                    else [str(exc)]
-                )
-                await self.emit("repairing", "产物校验未通过，正在修正", call_id=call_id, issues=issues)
-                return tool_reply(error=True, code="VALIDATION_FAILED", issues=issues)
+                reply = await self.rejection(name, exc, call_id)
+                self._calls[call_id] = digest, reply
+                return reply
             except Exception as exc:
                 # Operational/programming failures must fail the turn, never be
                 # downgraded to a valid artifact or an endless model repair loop.
                 self.failure = exc
                 await self.emit("failed", "业务工具执行失败", call_id=call_id)
-                return tool_reply(error=True, code="DOMAIN_EXECUTION_FAILED", retryable=False)
+                return self.failure_reply("DOMAIN_EXECUTION_FAILED", "internal", "report_defect", call_id)
+
+    @staticmethod
+    def call_digest(name, arguments):
+        return hashlib.sha256(json.dumps([name, arguments], sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+    @staticmethod
+    def workspace_reply(output):
+        try:
+            return tool_reply(WORKSPACE_REPLY.validate_python(output))
+        except ValidationError as exc:
+            raise RuntimeError("Invalid workspace tool output") from exc
+
+    async def rejection(self, name, exc, call_id):
+        if isinstance(exc, ValidationError):
+            fields = [
+                FieldIssue(path=list(error["loc"]), code=error["type"], message=error["msg"])
+                for error in exc.errors(include_input=False)[:100]
+            ]
+            issues = [f"{'.'.join(map(str, issue.path))}: {issue.message}" for issue in fields]
+            code, category, action = "VALIDATION_FAILED", "input", "correct_arguments"
+        else:
+            fields = []
+            issues = [str(exc)[:2000]]
+            code, category, action = "BUSINESS_CONDITION", "condition", "read_context"
+            if name == "read_workspace":
+                code = str(exc)
+            else:
+                code, action = "ARTIFACT_REJECTED", "correct_arguments"
+        if name != "read_workspace":
+            await self.emit("repairing", "产物校验未通过，正在修正", call_id=call_id, issues=issues)
+        return self.failure_reply(code, category, action, call_id, issues=fields, message="; ".join(issues))
 
     def require_result(self) -> T:
         if self.failure:

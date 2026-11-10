@@ -543,8 +543,16 @@ def _start_api_mock_job(**kwargs) -> None:
     domain_jobs.schedule_by_id(kwargs["job_id"])
 
 
-def stop_queue_job(db: Session, *, source: str, job_id: str, user_id: str) -> dict[str, Any]:
+def stop_queue_job(
+    db: Session, *, source: str, job_id: str, user_id: str, expected_version: int | None = None
+) -> dict[str, Any]:
     item = get_queue_job(db, source=source, job_id=job_id, user_id=user_id)
+    execution = db.query(SddAiJob).filter_by(id=job_id).populate_existing().with_for_update().one()
+    if execution.cancel_requested_at:
+        outcome = "applied" if execution.status == AiJobStatus.CANCELLED else "accepted"
+        return {"source": source, "job_id": job_id, "message": "Job stop already requested", "outcome": outcome}
+    if expected_version is not None and execution.version != expected_version:
+        raise ValueError("Job version changed. Refresh the job before stopping it")
     if not item.actions.can_stop:
         raise ValueError("Stopping this job is not available")
     if source == QUEUE_SOURCE_PROVISION:
@@ -558,7 +566,9 @@ def stop_queue_job(db: Session, *, source: str, job_id: str, user_id: str) -> di
     return {"source": source, "job_id": job_id, "message": "Job stop requested"}
 
 
-def retry_queue_job(db: Session, *, source: str, job_id: str, user_id: str) -> dict[str, Any]:
+def retry_queue_job(
+    db: Session, *, source: str, job_id: str, user_id: str, expected_version: int | None = None
+) -> dict[str, Any]:
     item = get_queue_job(db, source=source, job_id=job_id, user_id=user_id)
     if not item.actions.can_retry:
         raise ValueError("Retrying this job is not available")
@@ -567,6 +577,8 @@ def retry_queue_job(db: Session, *, source: str, job_id: str, user_id: str) -> d
         raise ValueError("Job is no longer retryable")
     successor = db.query(SddAiJob).filter_by(command_key=f"rerun:{job_id}").with_for_update().first()
     if successor is None:
+        if expected_version is not None and original.version != expected_version:
+            raise ValueError("Job version changed. Refresh the job before retrying it")
         if source == QUEUE_SOURCE_PROVISION:
             row = provision_job_service.retry_job(db, source_job=db.get(SddProvisionJob, job_id), creator_id=user_id)
             successor = row.execution

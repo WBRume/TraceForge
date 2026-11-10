@@ -179,14 +179,31 @@ def _map_text_event(event: dict[str, Any], data: dict[str, Any], event_type: str
 
 
 def _map_tool_event(event: dict[str, Any], data: dict[str, Any], event_type: str) -> list[AgentEvent]:
+    tool_id = _text(data.get("callID") or data.get("toolCallID") or data.get("partID"))
+    tool_name = _text(data.get("tool") or data.get("name"))
+    if not tool_id or (event_type == "session.tool.called" and not tool_name):
+        # The provider may emit transport notifications without an attributable
+        # tool part. Keep diagnostics and let message reconciliation supply the
+        # actual invocation and result.
+        return [
+            AgentEvent(
+                type="log",
+                payload={
+                    "level": "warning",
+                    "message": f"Uncorrelated OpenCode tool event {event_type}: {sorted(data)}",
+                },
+                provider=PROVIDER,
+                raw=event,
+            )
+        ]
     events: list[AgentEvent] = []
     if event_type == "session.tool.called":
         events.append(
             AgentEvent(
                 type="tool_use",
                 payload={
-                    "tool_use_id": _text(data.get("callID")),
-                    "tool_name": _text(data.get("tool")),
+                    "tool_use_id": tool_id,
+                    "tool_name": tool_name,
                     "tool_input": data.get("input", {}),
                 },
                 provider=PROVIDER,
@@ -195,15 +212,27 @@ def _map_tool_event(event: dict[str, Any], data: dict[str, Any], event_type: str
             )
         )
     elif event_type == "session.tool.progress":
-        events.append(AgentEvent(type="tool_progress", payload=data, provider=PROVIDER, raw=event))
+        events.append(
+            AgentEvent(
+                type="tool_progress",
+                payload={
+                    "tool_use_id": tool_id,
+                    "message": _json_text(data.get("content") or data.get("message") or ""),
+                },
+                provider=PROVIDER,
+                raw=event,
+            )
+        )
     elif event_type == "session.tool.success":
         events.append(
             AgentEvent(
                 type="tool_result",
                 payload={
-                    "tool_use_id": _text(data.get("callID")),
+                    "tool_use_id": tool_id,
                     "output": _tool_output_text(data),
                     "is_error": False,
+                    "structured_content": data.get("structured"),
+                    "content": data.get("content") or [],
                 },
                 provider=PROVIDER,
                 raw=event,
@@ -220,7 +249,7 @@ def _map_tool_event(event: dict[str, Any], data: dict[str, Any], event_type: str
             AgentEvent(
                 type="tool_result",
                 payload={
-                    "tool_use_id": _text(data.get("callID")),
+                    "tool_use_id": tool_id,
                     "output": error_message or _json_text(error or {}, 4000),
                     "is_error": True,
                 },

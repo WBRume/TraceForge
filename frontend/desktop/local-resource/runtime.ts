@@ -10,9 +10,12 @@ import { cleanupSession, forkSession, sessionRoot } from './provider'
 import { CollaborationRuntime } from './collaboration'
 import { rejectManagedWrite } from './collaboration-guard'
 import { initialize } from './initialize'
+import { parseContract, validateResourceResult } from '../../shared/contracts/validate'
+import type { ResourceCommand } from '../../shared/contracts/generated/resourceCommand'
+import type { OperationReceipt } from '../../shared/contracts/generated/operationReceipt'
 
 export interface Config { roots_config_path?: string; state_root: string; allowed_roots: string[]; token: string; listen_host?: string; port?: number; dsh_session_root?: string; collaboration_registry_path?: string }
-export interface Operation { operation_id: string; resource_id: string; task_id: string; kind: string; payload_hash: string; payload: any }
+export type Operation = ResourceCommand
 // Compatible with Python json.dumps(sort_keys=True, ensure_ascii=False).
 export function canonical(value: any): string {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(', ') + ']'
@@ -35,35 +38,55 @@ export class Runtime {
     this.collaboration = new CollaborationRuntime(path.join(this.state, 'collaboration'), () => this.roots)
     fs.mkdirSync(this.state, { recursive: true })
     this.db = platform().database(path.join(this.state, 'journal.sqlite3'))
-    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, hash TEXT NOT NULL, state TEXT NOT NULL, result TEXT); CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, resource TEXT NOT NULL, root TEXT NOT NULL)')
+    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS operations_v2 (id TEXT PRIMARY KEY, hash TEXT NOT NULL, state TEXT NOT NULL, result TEXT, request TEXT NOT NULL); CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, resource TEXT NOT NULL, root TEXT NOT NULL)')
   }
   inspect(payload: any) {
     inside(payload.workspace_root, this.roots)
     return { repositories: (payload.repositories || []).map((repo: any) => ({ ...repo, ...inspectRepo(repo.local_path, repo.configured_git_url, this.roots) })) }
   }
   operation(command: Operation, phase: 'all' | 'register' | 'checkout' = 'all') {
+    parseContract('resourceCommand', command)
     for (const value of [command.operation_id, command.task_id, command.resource_id]) if (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(value)) fail('INVALID_OPERATION_ID')
     const { payload_hash, ...content } = command
     const digest = hash(canonical(content))
     if (payload_hash !== digest) fail('OPERATION_HASH_MISMATCH')
-    const prior = this.db.query('SELECT hash,state,result FROM operations WHERE id=?').get(command.operation_id) as { hash: string; state: string; result: string } | null
+    const { contract_version, operation_id, resource_id, task_id, kind, payload } = command
+    const identity = { contract_version, operation_id, resource_id, task_id, kind }
+    const action = 'action' in payload ? payload.action : undefined
+    const receipt = (state: OperationReceipt['state'], result: unknown) =>
+      parseContract<OperationReceipt>('operationReceipt', { ...identity, state, result })
+    const prior = this.db.query('SELECT hash,state,result FROM operations_v2 WHERE id=?').get(command.operation_id) as { hash: string; state: string; result: string } | null
     if (prior) {
       if (prior.hash !== digest) fail('OPERATION_ID_CONFLICT')
-      if (prior.state === 'SUCCEEDED') return { state: 'SUCCEEDED', result: JSON.parse(prior.result) }
-      if (!['provision', 'release', 'initialize'].includes(command.kind)) fail('EXECUTION_UNKNOWN: 操作结果未知，请对账后重试')
-    } else this.db.query('INSERT INTO operations VALUES (?,?,?,NULL)').run(command.operation_id, digest, 'RUNNING')
+      if (prior.state === 'SUCCEEDED') {
+        const result = JSON.parse(prior.result)
+        validateResourceResult(kind, action, result)
+        return receipt('SUCCEEDED', result)
+      }
+      if (phase === 'register' && prior.state === 'FAILED') {
+        // Registration has a pinned ownership manifest and can resume a known failure.
+        this.db.query("UPDATE operations_v2 SET state='RUNNING' WHERE id=?").run(operation_id)
+      } else if (phase !== 'checkout' || prior.state !== 'RUNNING') {
+        fail('EXECUTION_UNKNOWN: 操作结果未知，请按原操作标识查询')
+      }
+    } else {
+      this.db.query('INSERT INTO operations_v2 VALUES (?,?,?,NULL,?)')
+        .run(operation_id, digest, 'RUNNING', JSON.stringify({ ...identity, action }))
+    }
     try {
       const result = this.execute(command, phase)
-      if (phase === 'register') return { state: 'RUNNING', result }
-      this.db.query("UPDATE operations SET state='SUCCEEDED',result=? WHERE id=?").run(JSON.stringify(result), command.operation_id)
-      return { state: 'SUCCEEDED', result }
+      if (phase === 'register') return receipt('RUNNING', null)
+      validateResourceResult(kind, action, result)
+      this.db.query("UPDATE operations_v2 SET state='SUCCEEDED',result=? WHERE id=?").run(JSON.stringify(result), command.operation_id)
+      return receipt('SUCCEEDED', result)
     } catch (error) {
-      this.db.query("UPDATE operations SET state='FAILED',result=? WHERE id=?").run(JSON.stringify({ error: String(error) }), command.operation_id)
+      this.db.query('UPDATE operations_v2 SET state=?,result=NULL WHERE id=?')
+        .run(phase === 'register' ? 'FAILED' : 'UNKNOWN', operation_id)
       throw error
     }
   }
   private execute(command: Operation, phase: 'all' | 'register' | 'checkout'): any {
-    const payload = command.payload
+    const payload: any = command.payload
     const task = this.db.query('SELECT resource,root FROM tasks WHERE id=?').get(command.task_id) as { resource: string; root: string } | null
     if (task && !['repository_details', 'generate_patch'].includes(command.kind)) rejectManagedWrite(this.config.collaboration_registry_path, task.root)
     if (command.kind === 'apply_patch' || command.kind === 'provision') {

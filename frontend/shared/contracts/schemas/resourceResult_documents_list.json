@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "root_relative_path": {
+      "title": "Root Relative Path",
+      "type": "string"
+    },
+    "configured": {
+      "title": "Configured",
+      "type": "boolean"
+    },
+    "baseline_available": {
+      "title": "Baseline Available",
+      "type": "boolean"
+    },
+    "plans": {
+      "items": {
+        "additionalProperties": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "type": "object"
+      },
+      "title": "Plans",
+      "type": "array"
+    },
+    "specs": {
+      "items": {
+        "additionalProperties": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "type": "object"
+      },
+      "title": "Specs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "task_id",
+    "root_relative_path",
+    "configured",
+    "baseline_available",
+    "plans",
+    "specs"
+  ],
+  "title": "DocumentList",
+  "type": "object"
+}

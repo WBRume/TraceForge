@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "const": 2,
+      "title": "Contract Version",
+      "type": "integer"
+    },
+    "operation_id": {
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "resource_id": {
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+      "title": "Resource Id",
+      "type": "string"
+    },
+    "task_id": {
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "initialize",
+        "skills",
+        "documents",
+        "snapshot",
+        "provision",
+        "materialize",
+        "provider_fork",
+        "release",
+        "repository_details",
+        "generate_patch",
+        "apply_patch"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "RUNNING",
+        "SUCCEEDED",
+        "FAILED",
+        "UNKNOWN"
+      ],
+      "title": "State",
+      "type": "string"
+    },
+    "result": {
+      "$ref": "#/$defs/JsonValue"
+    }
+  },
+  "required": [
+    "contract_version",
+    "operation_id",
+    "resource_id",
+    "task_id",
+    "kind",
+    "state",
+    "result"
+  ],
+  "title": "OperationReceipt",
+  "type": "object"
+}

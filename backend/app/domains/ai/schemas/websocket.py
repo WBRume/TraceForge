@@ -5,7 +5,7 @@ WebSocket 消息 Pydantic Schemas
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class WSMessage(BaseModel):
@@ -95,15 +95,17 @@ class WSToolUsePayload(BaseModel):
     task_id: str
     tool_name: str
     tool_input: Any = None
-    tool_use_id: str | None = None
+    tool_use_id: str = Field(min_length=1)
 
 
 # ── 工具结果 ──
 class WSToolResultPayload(BaseModel):
     task_id: str
-    tool_use_id: str
+    tool_use_id: str = Field(min_length=1)
     output: str = ""
     is_error: bool = False
+    structured_content: Any = None
+    content: list[dict] = Field(default_factory=list)
 
 
 # ── 执行结果 ──

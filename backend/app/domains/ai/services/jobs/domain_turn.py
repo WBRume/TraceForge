@@ -4,14 +4,20 @@ import asyncio
 import inspect
 import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Any, Generic, NotRequired, TypedDict, TypeVar
 
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from app.agents import current_agent_attempt
 from app.agents.domain_tools import DomainTool, DomainToolRun
 from app.agents.domain_tools.invocation import invoke_domain
 from app.agents.domain_tools.runtime import Milestone
+from app.domains.ai.models.ai_job import SddAiJob
+from app.domains.ai.schemas.job_result import JobArtifact, JobCompletion
+from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError, attempt_is_current_sync
+from app.domains.ai.services.jobs.store import job_kind_of, merge_json
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -88,11 +94,39 @@ def persisted_milestones(events: list[dict[str, Any]] | None) -> list[dict[str, 
     return events
 
 
-async def mark_domain_persisted(job_id: str, result: DomainTurnResult) -> None:
-    """Call only after the business transaction has committed."""
-    from . import state
+def lock_domain_attempt(db: Session, job_id: str, run_token: str | None) -> SddAiJob:
+    """Serialize artifact commits with cancellation and competing attempts."""
+    job = db.query(SddAiJob).filter_by(id=job_id).with_for_update().first()
+    if not job or job.completion_json or not attempt_is_current_sync(db, job_id=job_id, run_token=run_token):
+        raise AgentAttemptFencedError(f"Domain attempt is no longer current: {job_id}")
+    return job
 
-    events = persisted_milestones(result.get("domain_milestones"))
-    if not events:
-        return
-    await state.update_job_state(job_id, context_patch={"domain_milestones": events})
+
+def stage_domain_success(
+    job: SddAiJob,
+    *,
+    message: str,
+    result: dict[str, Any],
+    artifact: JobArtifact,
+    context_patch: dict[str, Any],
+    session_id: str | None = None,
+    agent_backend: str | None = None,
+) -> None:
+    """Write the receipt under the same lock and transaction as the artifact."""
+    job.result_json = merge_json(job.result_json, result)
+    job.context_json = merge_json(job.context_json, context_patch)
+    job.message = message
+    job.stage = "RESULT_COMMITTED"
+    if session_id:
+        job.session_id = session_id
+    if agent_backend:
+        job.agent_backend = agent_backend
+    job.completion_json = JobCompletion(
+        schema_version=2,
+        kind=job_kind_of(job),
+        outcome="SUCCESS",
+        summary=message,
+        artifacts=[artifact],
+        attempt=int(job.attempt_count or 0),
+        committed_at=datetime.utcnow(),
+    ).model_dump(mode="json")

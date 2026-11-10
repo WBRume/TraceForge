@@ -24,6 +24,7 @@ from app.agents.selection import resolve_workspace_backend
 from app.core.logging import get_logger
 from app.core.offload import run_db_txn
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+from app.domains.ai.schemas.job_result import JobArtifact
 from app.domains.ai.services.ai_job_convergence_service import (
     AttemptConvergenceRequest,
     AttemptFencedError,
@@ -31,7 +32,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
     converge_job_attempt_in_txn,
     resolve_attempt_evidence,
 )
-from app.domains.ai.services.jobs.domain_turn import persisted_milestones, run_domain_turn
+from app.domains.ai.services.jobs.domain_turn import persisted_milestones, run_domain_turn, stage_domain_success
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID
 from app.domains.ai.services.jobs.registry import runtime as ai_job_runtime
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
@@ -98,6 +99,7 @@ def update_preview_job_state(
     run_token: str | None = None,
     worker_boot_id: str | None = None,
     evidence: Any | None = None,
+    artifact: JobArtifact | None = None,
 ) -> None:
     """preview job 状态写入。
 
@@ -118,6 +120,14 @@ def update_preview_job_state(
         raise AttemptFencedError(f"Requirement preview attempt is fenced: job_id={job.id}")
     finalizing = status in {AiJobStatus.SUCCESS, AiJobStatus.FAILED, AiJobStatus.CANCELLED}
     if finalizing:
+        if status == AiJobStatus.SUCCESS and artifact is not None:
+            stage_domain_success(
+                job,
+                message=message or "Result committed",
+                result=result or {},
+                artifact=artifact,
+                context_patch=context_patch or {},
+            )
         # 统一 ownership 收敛：事务内核心，
         # 提交所有权归最外层 run_db_txn；fence 时抛出 AttemptFencedError
         # 让外层整体 rollback batch/items/audit。
@@ -340,6 +350,7 @@ def finalize_requirement_import_sync(
             "domain_milestones": persisted_milestones((job.context_json or {}).get("domain_milestones")),
         },
         result={"item_count": len(items), "batch_id": batch.id},
+        artifact=JobArtifact(kind="requirement_preview_batch", id=str(batch.id)),
         run_token=run_token,
         worker_boot_id=worker_boot_id,
         evidence=evidence,
@@ -470,6 +481,7 @@ def finalize_requirement_split_sync(
             "domain_milestones": persisted_milestones((job.context_json or {}).get("domain_milestones")),
         },
         result={"item_count": len(items), "batch_id": batch.id},
+        artifact=JobArtifact(kind="requirement_preview_batch", id=str(batch.id)),
         run_token=run_token,
         worker_boot_id=worker_boot_id,
         evidence=evidence,

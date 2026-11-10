@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "root": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Root",
+      "type": "string"
+    },
+    "worktree": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Worktree",
+      "type": "object"
+    },
+    "provider": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Provider",
+      "type": "object"
+    }
+  },
+  "required": [
+    "root",
+    "worktree",
+    "provider"
+  ],
+  "title": "CheckpointCreated",
+  "type": "object"
+}

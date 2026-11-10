@@ -1,6 +1,27 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
 export const toolNames = ['propose_hypotheses', 'propose_experiment', 'propose_patch', 'read_source']
+const version = '2026-07-28'
+
+async function readResult(response, requestId) {
+  const mime = (response.headers.get('content-type') || '').split(';')[0].trim()
+  if (mime === 'application/json') return response.json()
+  if (mime !== 'text/event-stream' || !response.body) throw new Error('PLAYBOOK_TOOL_INVALID_TRANSPORT')
+  let buffered = ''
+  for await (const chunk of response.body.pipeThrough(new TextDecoderStream())) {
+    buffered += chunk
+    if (buffered.length > 2_000_000) throw new Error('PLAYBOOK_TOOL_RESPONSE_TOO_LARGE')
+    const records = buffered.split(/\r?\n\r?\n/)
+    buffered = records.pop()
+    for (const record of records) {
+      const data = record.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n')
+      if (!data) continue
+      const message = JSON.parse(data)
+      if (message.id === requestId) return message
+    }
+  }
+  throw new Error('PLAYBOOK_TOOL_RESPONSE_UNCONFIRMED')
+}
 
 // This plugin belongs on a dedicated host. Every unbound session is denied,
 // including delegated agents and PTC; an event observer is never an authority.
@@ -60,15 +81,31 @@ export class PlaybookGuard {
     active.add(controller)
     this.#active.set(sessionId, active)
     try {
+      const id = randomUUID()
       const response = await this.fetcher(policy.mcp_config.url, {
         method: 'POST', redirect: 'error',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...policy.mcp_config.headers },
-        body: JSON.stringify({ jsonrpc: '2.0', id: String(callId), method: 'tools/call', params: { name: tool, arguments: args } }),
+        headers: {
+          ...policy.mcp_config.headers, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream',
+          'MCP-Protocol-Version': version, 'Mcp-Method': 'tools/call', 'Mcp-Name': tool,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: {
+          name: tool, arguments: args, _meta: {
+            'io.modelcontextprotocol/protocolVersion': version,
+            'io.modelcontextprotocol/clientCapabilities': {},
+            'io.traceforge/callId': String(callId),
+          },
+        } }),
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30_000), ...(signal ? [signal] : [])]),
       })
       if (!response.ok) throw new Error(`PLAYBOOK_TOOL_HTTP_${response.status}`)
-      const result = (await response.json()).result
-      if (!result || !Array.isArray(result.content)) throw new Error('PLAYBOOK_TOOL_INVALID_RESULT')
+      const message = await readResult(response, id)
+      if (message.jsonrpc !== '2.0' || message.id !== id) throw new Error('PLAYBOOK_TOOL_RESULT_UNCORRELATED')
+      const result = message.result
+      if (result?.resultType === 'input_required') throw new Error('PLAYBOOK_TOOL_INPUT_CAPABILITY_UNSUPPORTED')
+      if (result?.resultType !== 'complete' || !Array.isArray(result.content) || typeof result.isError !== 'boolean'
+          || !result.structuredContent || result.isError !== (result.structuredContent.kind === 'error')) {
+        throw new Error('PLAYBOOK_TOOL_INVALID_RESULT')
+      }
       if (this.reason(sessionId, tool)) throw new Error('PLAYBOOK_TICKET_REVOKED')
       return result
     } finally {

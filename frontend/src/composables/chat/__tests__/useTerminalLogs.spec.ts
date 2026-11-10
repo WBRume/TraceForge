@@ -5,8 +5,8 @@ describe('useTerminalLogs', () => {
   it('restores history log rows into typed tool events and plain logs', () => {
     const store = useTerminalLogs()
     store.restoreFromHistory([
-      { id: 'l1', content: JSON.stringify({ tool_name: 'bash', tool_input: { cmd: 'ls' }, tool_use_id: 'tu1' }), created_at: '2026-01-01T00:00:00Z' },
-      { id: 'l2', content: JSON.stringify({ tool_use_id: 'tu1', output: 'ok', is_error: 0 }), created_at: '2026-01-01T00:00:01Z' },
+      { id: 'l1', content: JSON.stringify({ contract_version: 2, event_type: 'tool_use', event_id: 'e1', payload: { task_id: 'task', tool_name: 'bash', tool_input: { cmd: 'ls' }, tool_use_id: 'tu1' } }), created_at: '2026-01-01T00:00:00Z' },
+      { id: 'l2', content: JSON.stringify({ contract_version: 2, event_type: 'tool_result', event_id: 'e2', payload: { task_id: 'task', tool_use_id: 'tu1', output: 'ok', is_error: false } }), created_at: '2026-01-01T00:00:01Z' },
       { id: 'l3', content: 'plain runtime line', created_at: '2026-01-01T00:00:02Z' },
     ])
 

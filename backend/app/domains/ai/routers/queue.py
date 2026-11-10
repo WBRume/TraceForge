@@ -23,6 +23,7 @@ from app.domains.ai.schemas.queue import (
     OrphanedJobRetryTerminationRequest,
     QueueActionValue,
     QueueJobActionResponse,
+    QueueJobCommand,
     QueueJobItem,
     QueueJobListResponse,
     QueueSourceValue,
@@ -339,6 +340,7 @@ async def act_queue_job(
     source: QueueSourceValue,
     job_id: str,
     action: QueueActionValue,
+    command: QueueJobCommand,
     current_user: User = Depends(get_current_user),
 ):
     try:
@@ -349,6 +351,7 @@ async def act_queue_job(
                     source=source,
                     job_id=job_id,
                     user_id=current_user.id,
+                    expected_version=command.expected_version,
                 )
             )
         else:
@@ -358,6 +361,7 @@ async def act_queue_job(
                     source=source,
                     job_id=job_id,
                     user_id=current_user.id,
+                    expected_version=command.expected_version,
                 )
             )
     except PermissionError as exc:
@@ -374,6 +378,9 @@ async def act_queue_job(
 
         ai_job_runtime.schedule_queue(str(payload["queue_key"]))
     return QueueJobActionResponse(
+        contract_version=2,
+        command_id=command.command_id,
+        outcome=payload.get("outcome", "accepted"),
         ok=True,
         action=action,
         source=source,

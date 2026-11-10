@@ -1,0 +1,1288 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "AskUserEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "ask_user",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/QuestionPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "AskUserEvent",
+      "type": "object"
+    },
+    "AskUserResolvedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "ask_user_resolved",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ResolutionPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "AskUserResolvedEvent",
+      "type": "object"
+    },
+    "CompactionPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        },
+        "subtype": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subtype"
+        },
+        "event_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Event Type"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "token_before": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Before"
+        },
+        "token_after": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token After"
+        }
+      },
+      "title": "CompactionPayload",
+      "type": "object"
+    },
+    "ContextCompactedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "context_compacted",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/CompactionPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "ContextCompactedEvent",
+      "type": "object"
+    },
+    "DeltaPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "delta": {
+          "title": "Delta",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        }
+      },
+      "required": [
+        "delta"
+      ],
+      "title": "DeltaPayload",
+      "type": "object"
+    },
+    "ErrorEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "error",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ResultPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "ErrorEvent",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "LogEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "log",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/LogPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "LogEvent",
+      "type": "object"
+    },
+    "LogPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "enum": [
+            "trace",
+            "debug",
+            "info",
+            "warning",
+            "warn",
+            "error",
+            "critical"
+          ],
+          "title": "Level",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "message"
+      ],
+      "title": "LogPayload",
+      "type": "object"
+    },
+    "ModelEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "model",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ModelPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "ModelEvent",
+      "type": "object"
+    },
+    "ModelPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "ModelPayload",
+      "type": "object"
+    },
+    "QuestionPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "ask_user_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Ask User Id",
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kind"
+        },
+        "question": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Question"
+        },
+        "prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt"
+        },
+        "fields": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        },
+        "options": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        },
+        "resource": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        },
+        "resources": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        },
+        "permission_request": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        }
+      },
+      "required": [
+        "ask_user_id"
+      ],
+      "title": "QuestionPayload",
+      "type": "object"
+    },
+    "ResolutionPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "ask_user_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Ask User Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "answered",
+            "cancelled",
+            "approved",
+            "rejected",
+            "closed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "answer": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        }
+      },
+      "required": [
+        "ask_user_id",
+        "status"
+      ],
+      "title": "ResolutionPayload",
+      "type": "object"
+    },
+    "ResultEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "result",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ResultPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "ResultEvent",
+      "type": "object"
+    },
+    "ResultPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "success": {
+          "title": "Success",
+          "type": "boolean"
+        },
+        "result": {
+          "title": "Result",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Usd"
+        },
+        "finish_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finish Reason"
+        },
+        "usage": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        }
+      },
+      "required": [
+        "success",
+        "result"
+      ],
+      "title": "ResultPayload",
+      "type": "object"
+    },
+    "SessionPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "provider_session_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider Session Id",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "directory": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Directory"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        }
+      },
+      "required": [
+        "provider_session_id"
+      ],
+      "title": "SessionPayload",
+      "type": "object"
+    },
+    "SessionStartedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "session_started",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/SessionPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "SessionStartedEvent",
+      "type": "object"
+    },
+    "TextDeltaEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "text_delta",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/DeltaPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "TextDeltaEvent",
+      "type": "object"
+    },
+    "TextEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "text",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/TextPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "TextEvent",
+      "type": "object"
+    },
+    "TextPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "delta": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delta"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usage"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "TextPayload",
+      "type": "object"
+    },
+    "ThinkingEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "thinking",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/TextPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "ThinkingEvent",
+      "type": "object"
+    },
+    "ToolProgressEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "tool_progress",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ToolProgressPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "ToolProgressEvent",
+      "type": "object"
+    },
+    "ToolProgressPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "tool_use_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_use_id",
+        "message"
+      ],
+      "title": "ToolProgressPayload",
+      "type": "object"
+    },
+    "ToolResultEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "tool_result",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ToolResultPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "ToolResultEvent",
+      "type": "object"
+    },
+    "ToolResultPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "tool_use_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "output": {
+          "title": "Output",
+          "type": "string"
+        },
+        "is_error": {
+          "title": "Is Error",
+          "type": "boolean"
+        },
+        "content": {
+          "items": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          },
+          "title": "Content",
+          "type": "array"
+        },
+        "structured_content": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        },
+        "provider_replay": {
+          "default": false,
+          "title": "Provider Replay",
+          "type": "boolean"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        }
+      },
+      "required": [
+        "tool_use_id",
+        "output",
+        "is_error"
+      ],
+      "title": "ToolResultPayload",
+      "type": "object"
+    },
+    "ToolUseEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "tool_use",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ToolUsePayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "ToolUseEvent",
+      "type": "object"
+    },
+    "ToolUsePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "tool_use_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "tool_input": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        }
+      },
+      "required": [
+        "tool_use_id",
+        "tool_name",
+        "tool_input"
+      ],
+      "title": "ToolUsePayload",
+      "type": "object"
+    },
+    "UsageEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "usage",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/UsagePayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "UsageEvent",
+      "type": "object"
+    },
+    "UsagePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "cache_read_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Read Tokens"
+        },
+        "cache_creation_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Creation Tokens"
+        },
+        "thinking_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Tokens"
+        },
+        "total_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Tokens"
+        },
+        "tool_io_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Io Tokens"
+        },
+        "tool_output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Output Tokens"
+        },
+        "raw_usage": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        }
+      },
+      "title": "UsagePayload",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "ask_user": "#/$defs/AskUserEvent",
+      "ask_user_resolved": "#/$defs/AskUserResolvedEvent",
+      "context_compacted": "#/$defs/ContextCompactedEvent",
+      "error": "#/$defs/ErrorEvent",
+      "log": "#/$defs/LogEvent",
+      "model": "#/$defs/ModelEvent",
+      "result": "#/$defs/ResultEvent",
+      "session_started": "#/$defs/SessionStartedEvent",
+      "text": "#/$defs/TextEvent",
+      "text_delta": "#/$defs/TextDeltaEvent",
+      "thinking": "#/$defs/ThinkingEvent",
+      "tool_progress": "#/$defs/ToolProgressEvent",
+      "tool_result": "#/$defs/ToolResultEvent",
+      "tool_use": "#/$defs/ToolUseEvent",
+      "usage": "#/$defs/UsageEvent"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/SessionStartedEvent"
+    },
+    {
+      "$ref": "#/$defs/ModelEvent"
+    },
+    {
+      "$ref": "#/$defs/TextEvent"
+    },
+    {
+      "$ref": "#/$defs/TextDeltaEvent"
+    },
+    {
+      "$ref": "#/$defs/ThinkingEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolUseEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolResultEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolProgressEvent"
+    },
+    {
+      "$ref": "#/$defs/ResultEvent"
+    },
+    {
+      "$ref": "#/$defs/ErrorEvent"
+    },
+    {
+      "$ref": "#/$defs/UsageEvent"
+    },
+    {
+      "$ref": "#/$defs/LogEvent"
+    },
+    {
+      "$ref": "#/$defs/AskUserEvent"
+    },
+    {
+      "$ref": "#/$defs/AskUserResolvedEvent"
+    },
+    {
+      "$ref": "#/$defs/ContextCompactedEvent"
+    }
+  ]
+}

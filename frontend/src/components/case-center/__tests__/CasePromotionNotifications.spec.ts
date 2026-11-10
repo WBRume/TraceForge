@@ -28,7 +28,7 @@ class Socket {
   send = vi.fn()
   constructor() { Socket.connections.push(this) }
   update(sequence: number, reviewState?: string) {
-    this.onmessage?.({ data: JSON.stringify({ type: 'event', epoch: 'epoch', sequence,
+    this.onmessage?.({ data: JSON.stringify({ type: 'event', contract_version: 2, aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', room: 'notification:user', epoch: 'epoch', sequence,
       event_id: `event-${sequence}`, event_type: 'notification',
       payload: { type: 'playbook_promotion_updated', workspace_id: 'ws', job_id: 'job', review_state: reviewState } }) })
   }

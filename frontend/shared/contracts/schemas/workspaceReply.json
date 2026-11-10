@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "FieldIssue": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "title": "Path",
+          "type": "array"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "code",
+        "message"
+      ],
+      "title": "FieldIssue",
+      "type": "object"
+    },
+    "ToolFailure": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "error",
+          "default": "error",
+          "title": "Kind",
+          "type": "string"
+        },
+        "code": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "input",
+            "condition",
+            "conflict",
+            "revoked",
+            "transient",
+            "uncertain",
+            "internal"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "action": {
+          "enum": [
+            "correct_arguments",
+            "read_context",
+            "stop",
+            "query_receipt",
+            "execution_policy",
+            "report_defect"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "diagnostic_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diagnostic Id"
+        },
+        "issues": {
+          "items": {
+            "$ref": "#/$defs/FieldIssue"
+          },
+          "maxItems": 100,
+          "title": "Issues",
+          "type": "array"
+        }
+      },
+      "required": [
+        "code",
+        "category",
+        "message",
+        "action",
+        "run_id",
+        "call_id"
+      ],
+      "title": "ToolFailure",
+      "type": "object"
+    },
+    "WorkspaceDirectory": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "directory",
+          "default": "directory",
+          "title": "Kind",
+          "type": "string"
+        },
+        "entries": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "title": "Entries",
+          "type": "array"
+        },
+        "truncated": {
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "entries",
+        "truncated"
+      ],
+      "title": "WorkspaceDirectory",
+      "type": "object"
+    },
+    "WorkspaceFile": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "file",
+          "default": "file",
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "start_line": {
+          "minimum": 1,
+          "title": "Start Line",
+          "type": "integer"
+        },
+        "total_lines": {
+          "minimum": 0,
+          "title": "Total Lines",
+          "type": "integer"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "start_line",
+        "total_lines",
+        "text"
+      ],
+      "title": "WorkspaceFile",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "directory": "#/$defs/WorkspaceDirectory",
+      "error": "#/$defs/ToolFailure",
+      "file": "#/$defs/WorkspaceFile"
+    },
+    "propertyName": "kind"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/WorkspaceDirectory"
+    },
+    {
+      "$ref": "#/$defs/WorkspaceFile"
+    },
+    {
+      "$ref": "#/$defs/ToolFailure"
+    }
+  ]
+}

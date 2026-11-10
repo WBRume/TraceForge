@@ -67,7 +67,7 @@ def test_job_snapshots_only_expose_business_results():
     )
     expected = {"target_endpoint_id": "endpoint", "created_count": 3}
     assert job_service._serialize_job(job)["result_json"] == expected
-    assert ApiMockJobResponse.model_validate(job).result_json == expected
+    assert ApiMockJobResponse.model_validate(job).result_json.model_dump(exclude_unset=True) == expected
     assert "live_logs" in job.result_json
 
 

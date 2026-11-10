@@ -3,9 +3,9 @@ API MOCK schemas.
 """
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, WithJsonSchema
 
 from app.domains.ai.schemas.job_result import JobSnapshotFields
 from app.domains.ai.schemas.queue import QueueStatusValue
@@ -13,6 +13,7 @@ from app.domains.ai.schemas.queue import QueueStatusValue
 ApiMockSourceTypeValue = Literal["CODE_ANALYSIS", "SWAGGER_IMPORT", "CLAUDE_SYNC"]
 ApiMockRuleModeValue = Literal["STATIC", "MOCKJS", "PROXY"]
 ApiMockJobStatusValue = QueueStatusValue
+ApiMockTimestamp = Annotated[datetime, WithJsonSchema({"type": "string", "format": "iso-date-time"})]
 
 
 class ApiMockProjectResponse(BaseModel):
@@ -238,21 +239,14 @@ class ApiMockJobResponse(JobSnapshotFields):
     creator_id: str
     job_type: str
     status: ApiMockJobStatusValue
-    progress: int
+    progress: int = Field(ge=0, le=100, strict=True)
     cancel_requested: bool = False
     message: str | None = None
-    result_json: dict[str, Any] | None = None
-    created_at: datetime
-    updated_at: datetime | None = None
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-
-    @field_validator("result_json")
-    @classmethod
-    def business_result(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
-        if value is None:
-            return None
-        return ApiMockJobResult.model_validate(value).model_dump(exclude_unset=True)
+    result_json: ApiMockJobResult | None = None
+    created_at: ApiMockTimestamp
+    updated_at: ApiMockTimestamp | None = None
+    started_at: ApiMockTimestamp | None = None
+    finished_at: ApiMockTimestamp | None = None
 
     model_config = {"from_attributes": True}
 

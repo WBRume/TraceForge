@@ -12,6 +12,7 @@ const item: QueueJobItem = {
   job_type: 'CREATE_TASK',
   status: 'SUCCESS',
   progress: 100,
+  version: 1,
   creator_id: 'user-1',
   created_at: '2026-11-10T00:00:00Z',
   target_path: '/workspaces/workspace-1/chat/task-1',

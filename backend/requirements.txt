@@ -1,6 +1,6 @@
 # FastAPI Core
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
+fastapi==0.162.2
+uvicorn[standard]==0.54.0
 watchfiles==1.1.1
 python-multipart==0.0.20
 
@@ -17,7 +17,10 @@ bcrypt==5.0.0
 email-validator==2.3.0
 
 # Configuration
-pydantic-settings==2.7.1
+pydantic==2.14.3
+pydantic-settings==2.16.2
+mcp==2.3.0
+jsonschema==4.26.0
 
 # Logging
 loguru==0.7.3

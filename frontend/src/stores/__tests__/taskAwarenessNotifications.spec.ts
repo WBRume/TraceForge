@@ -29,7 +29,7 @@ class Socket {
   close = vi.fn(); send = vi.fn()
   constructor() { Socket.connections.push(this) }
   update(payload: any, durable = true) {
-    this.onmessage?.({ data: JSON.stringify(durable ? { type: 'event', epoch: 'awareness', sequence: ++this.sequence,
+    this.onmessage?.({ data: JSON.stringify(durable ? { type: 'event', contract_version: 2, aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', room: 'notification:u1', epoch: 'awareness', sequence: ++this.sequence,
       event_id: `frame-${this.sequence}`, event_type: 'notification', payload } : { type: 'notification', payload }) })
   }
 }

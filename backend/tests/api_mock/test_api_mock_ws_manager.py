@@ -39,7 +39,22 @@ class ApiMockWsManagerTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         with patch("app.domains.api_mock.ws.api_mock_manager._authorized_job_recipients", return_value={"user-1"}):
-            await manager.broadcast_job_state("project-1", {"type": "job_update"})
+            await manager.broadcast_job_state(
+                "project-1",
+                {
+                    "type": "job_update",
+                    "project_id": "project-1",
+                    "job": {
+                        "id": "job-1",
+                        "project_id": "project-1",
+                        "creator_id": "user-1",
+                        "job_type": "SYNC_TASK_SOURCE",
+                        "status": "RUNNING",
+                        "progress": 30,
+                        "created_at": "2026-11-10T09:00:00Z",
+                    },
+                },
+            )
         await connection.wait_flushed()
 
         self.assertTrue(socket.accepted)

@@ -135,6 +135,9 @@ def preview_job_response(db: Session, job: SddAiJob) -> RequirementPreviewJobRes
         str(context.get("requirement_title") or "").strip() or str(context.get("source_filename") or "").strip() or None
     )
     return RequirementPreviewJobResponse(
+        version=int(job.version or 1),
+        attempt_count=int(job.attempt_count or 0),
+        completion=job.completion_json,
         domain_milestones=context.get("domain_milestones", []),
         job_id=job.id,
         workspace_id=job.workspace_id,

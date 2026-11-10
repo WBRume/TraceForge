@@ -1146,8 +1146,8 @@ def request_attempt_termination_in_txn(
         AiJobStatus.FAILED,
         AiJobStatus.CANCELLED,
         AiJobStatus.REVERTED,
-    }:
-        # 幂等：终态永不回退。
+    } or (request.mode == "CANCEL" and job.completion_json and not job.cancel_requested_at):
+        # A committed result cannot be cancelled during provider cleanup.
         return _result(False)
 
     resolved_session_id = str(request.interrupt_session_id or (job.session_id or "")).strip() or None

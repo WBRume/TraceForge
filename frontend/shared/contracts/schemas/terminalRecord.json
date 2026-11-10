@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "const": 2,
+      "title": "Contract Version",
+      "type": "integer"
+    },
+    "event_type": {
+      "enum": [
+        "tool_use",
+        "tool_result"
+      ],
+      "title": "Event Type",
+      "type": "string"
+    },
+    "event_id": {
+      "title": "Event Id",
+      "type": "string"
+    },
+    "payload": {
+      "$ref": "#/$defs/JsonValue"
+    }
+  },
+  "required": [
+    "contract_version",
+    "event_type",
+    "event_id",
+    "payload"
+  ],
+  "title": "TerminalRecord",
+  "type": "object"
+}

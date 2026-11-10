@@ -181,7 +181,7 @@ export const useNotificationStore = defineStore('appNotification', () => {
         }
       },
       onResync: async (frame, reason, context, signal) => {
-        if (reason === 'gap') {
+        if (reason === 'gap' || reason === 'contract_invalid') {
           context.socket.close(4000, 'sequence_gap')
           return
         }

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "section": {
+      "enum": [
+        "plans",
+        "specs"
+      ],
+      "title": "Section",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "section_path": {
+      "title": "Section Path",
+      "type": "string"
+    },
+    "relative_path": {
+      "title": "Relative Path",
+      "type": "string"
+    },
+    "size": {
+      "title": "Size",
+      "type": "integer"
+    },
+    "updated_at": {
+      "title": "Updated At",
+      "type": "string"
+    },
+    "content": {
+      "title": "Content",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "section",
+    "name",
+    "section_path",
+    "relative_path",
+    "size",
+    "updated_at",
+    "content"
+  ],
+  "title": "DocumentContent",
+  "type": "object"
+}

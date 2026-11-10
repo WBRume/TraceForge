@@ -1,13 +1,18 @@
 import { ref } from 'vue'
+import { parseContract } from '../../../../shared/contracts/validate'
+import type { TerminalRecord } from '../../../../shared/contracts/generated/terminalRecord'
+import type { ApplicationMessage } from '../../../../shared/contracts/generated/applicationMessage'
 
 export type TerminalLogEntry = {
   id: string | null
   type: 'tool_use' | 'tool_result' | 'log'
   tool_name?: string
-  tool_input?: any
+  tool_input?: unknown
   tool_use_id?: string
-  output?: any
+  output?: string
   is_error?: boolean
+  structured_content?: unknown
+  content_blocks?: unknown[]
   content?: string
   created_at: string
   timestamp: string
@@ -43,6 +48,8 @@ export function useTerminalLogs() {
       tool_use_id: payload.tool_use_id,
       output: payload.output,
       is_error: payload.is_error,
+      structured_content: payload.structured_content,
+      content_blocks: payload.content,
       created_at: createdAt,
       timestamp: toTimestamp(createdAt),
     })
@@ -68,8 +75,12 @@ export function useTerminalLogs() {
     logs.value = hLogs.map((l: any) => {
       const createdAt = l.created_at || new Date().toISOString()
       try {
-        const parsed = JSON.parse(l.content)
-        if (parsed.tool_name) {
+        const record = parseContract<TerminalRecord>('terminalRecord', JSON.parse(l.content))
+        const event = parseContract<ApplicationMessage>('applicationMessage', {
+          contract_version: record.contract_version, event_type: record.event_type, payload: record.payload,
+        })
+        if (event.event_type === 'tool_use') {
+          const parsed = event.payload
           return {
             id: l.id,
             type: 'tool_use',
@@ -80,13 +91,16 @@ export function useTerminalLogs() {
             timestamp: toTimestamp(createdAt),
           } as TerminalLogEntry
         }
-        if (parsed.tool_use_id) {
+        if (event.event_type === 'tool_result') {
+          const parsed = event.payload
           return {
             id: l.id,
             type: 'tool_result',
             tool_use_id: parsed.tool_use_id,
             output: parsed.output,
-            is_error: Boolean(parsed.is_error),
+            is_error: parsed.is_error,
+            structured_content: parsed.structured_content,
+            content_blocks: parsed.content,
             created_at: createdAt,
             timestamp: toTimestamp(createdAt),
           } as TerminalLogEntry

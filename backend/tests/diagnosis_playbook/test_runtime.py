@@ -132,12 +132,19 @@ async def test_profile_cannot_settle_without_process_death(db, spec, tmp_path, m
 def test_mcp_ticket_payload_retry_revocation_and_task_fence(db, spec):
     user, task, _, run = setup_run(db, spec)
     activate(db, run)
+    from app.agents.tool_transports.protocol import CALL_KEY, CAPABILITIES_KEY, MCP_VERSION, VERSION_KEY
+
     request = tool_server.RpcRequest(
+        jsonrpc="2.0",
         id=1,
         method="tools/call",
-        params={"name": "propose_experiment", "arguments": {"files": {"experiment.py": "print('candidate')"}}},
+        params={
+            "_meta": {VERSION_KEY: MCP_VERSION, CAPABILITIES_KEY: {}, CALL_KEY: "proposal-1"},
+            "name": "propose_experiment",
+            "arguments": {"files": {"experiment.py": "print('candidate')"}},
+        },
     )
-    assert not tool_server.invoke(db, run.id, "Bearer ticket", request)["isError"]
+    assert not tool_server.invoke(db, run.id, "Bearer ticket", request).is_error
     version = run.state_version
     tool_server.invoke(db, run.id, "Bearer ticket", request)
     assert run.state_version == version

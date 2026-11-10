@@ -47,6 +47,7 @@ def report_initialization(db, task, operation):
     job.manual_intervention_required = bool(operation.get("error"))
     if operation["state"] == "COMPLETED":
         job.completion_json = JobCompletion(
+            schema_version=2,
             kind="TASK_INITIALIZATION",
             outcome="SUCCESS",
             summary="Task initialization completed",

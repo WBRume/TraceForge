@@ -111,8 +111,8 @@ export function useProjectCollaboration(context: ProjectContext, notifications: 
       room,
       onEvent: (event) => applyCollabMessage(event.payload || {}),
       onResync: async (frame, reason, context, signal) => {
-        if (reason === 'gap') {
-          context.socket.close(4000, 'sequence_gap')
+        if (reason === 'gap' || reason === 'contract_invalid') {
+          context.socket.close(4000, reason)
           return
         }
         await refresh()

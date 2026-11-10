@@ -34,8 +34,14 @@ class EventEnvelope:
     aggregate_version: int | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
+    def __post_init__(self) -> None:
+        from app.protocols.messages import validate_message
+
+        validate_message(self.event_type, self.payload)
+
     def to_dict(self) -> dict[str, Any]:
         return {
+            "contract_version": 2,
             "type": "event",
             "room": self.room,
             "epoch": self.epoch,

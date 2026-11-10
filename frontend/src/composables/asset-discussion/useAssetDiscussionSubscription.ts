@@ -143,7 +143,7 @@ export function useAssetDiscussionSubscription(
       onResync: async (frame, reason, _context, signal) => {
         const owner = eventOwner(signal)
         if (!owner.isCurrent()) return
-        if (reason === 'gap') {
+        if (reason === 'gap' || reason === 'contract_invalid') {
           connection.close(4000, 'sequence_gap')
           return
         }

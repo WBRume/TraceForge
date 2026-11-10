@@ -25,6 +25,7 @@ from app.agents.domain_tools.contracts import DocumentRewrite, ReviewProposal
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
 from app.core.offload import run_db_txn
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.schemas.job_result import JobArtifact
 from app.domains.ai.services.jobs import provider_turn, state
 from app.domains.ai.services.jobs.constants import (
     JOB_KIND_RESOLUTION_PROPOSAL,
@@ -32,7 +33,12 @@ from app.domains.ai.services.jobs.constants import (
     JOB_KIND_THREAD_AI_REPLY,
     as_status,
 )
-from app.domains.ai.services.jobs.domain_turn import mark_domain_persisted, run_domain_turn
+from app.domains.ai.services.jobs.domain_turn import (
+    lock_domain_attempt,
+    persisted_milestones,
+    run_domain_turn,
+    stage_domain_success,
+)
 from app.domains.ai.services.jobs.executors.asset_prompts import (
     extract_block_text,
     normalize_relocated_anchor,
@@ -594,8 +600,9 @@ async def _execute_proposal_turn(job_id, base, run_state, run_token):
     if not proposal_text:
         raise ValueError("Resolution proposal text is empty")
 
-    persisted = await run_db_txn(
-        lambda db: _persist_asset_proposal_sync(
+    def persist(db: Session) -> dict[str, Any]:
+        job = lock_domain_attempt(db, job_id, run_token)
+        saved = _persist_asset_proposal_sync(
             db,
             base=run_state,
             proposal_text=proposal_text,
@@ -604,8 +611,18 @@ async def _execute_proposal_turn(job_id, base, run_state, run_token):
             provider_session_id=final_session_id,
             run_token=run_token,
         )
-    )
-    await mark_domain_persisted(job_id, result)
+        stage_domain_success(
+            job,
+            message="Resolution proposal generated",
+            result={"proposal_id": saved["proposal_id"], "proposal_excerpt": proposal_text[:1200]},
+            artifact=JobArtifact(kind="resolution_proposal", id=saved["proposal_id"]),
+            context_patch={"domain_milestones": persisted_milestones(result["domain_milestones"])},
+            session_id=final_session_id,
+            agent_backend=thread_backend,
+        )
+        return saved
+
+    persisted = await run_db_txn(persist)
     await asset_discussion_ws_manager.broadcast(
         base["asset_id"],
         {
@@ -619,13 +636,6 @@ async def _execute_proposal_turn(job_id, base, run_state, run_token):
         job_id,
         status=AiJobStatus.SUCCESS,
         progress=100,
-        message="Resolution proposal generated",
-        result_patch={
-            "proposal_id": persisted["proposal_id"],
-            "proposal_excerpt": proposal_text[:1200],
-        },
-        session_id=final_session_id or None,
-        agent_backend=thread_backend,
         finalize=True,
         process_started=result.get("process_started"),
         termination_confirmed_dead=result.get("termination_confirmed_dead"),
@@ -699,8 +709,9 @@ async def _execute_rewrite_turn(job_id, base, run_state, run_token):
     if rewrite_scope != "document" and not rewritten_text:
         raise ValueError("Rewritten block text is empty")
 
-    persisted = await run_db_txn(
-        lambda db: _persist_asset_rewrite_sync(
+    def persist(db: Session) -> dict[str, Any]:
+        job = lock_domain_attempt(db, job_id, run_token)
+        saved = _persist_asset_rewrite_sync(
             db,
             base=run_state,
             proposal_text=run_state["proposal_text"],
@@ -712,8 +723,21 @@ async def _execute_rewrite_turn(job_id, base, run_state, run_token):
             provider_session_id=final_session_id,
             run_token=run_token,
         )
-    )
-    await mark_domain_persisted(job_id, result)
+        stage_domain_success(
+            job,
+            message="Resolution proposal rewrite completed",
+            result={
+                "proposal_id": saved["proposal_id"],
+                "rewrite_excerpt": (rewritten_text or rewritten_markdown)[:1200],
+            },
+            artifact=JobArtifact(kind="resolution_proposal", id=saved["proposal_id"]),
+            context_patch={"domain_milestones": persisted_milestones(result["domain_milestones"])},
+            session_id=final_session_id,
+            agent_backend=thread_backend,
+        )
+        return saved
+
+    persisted = await run_db_txn(persist)
     await asset_discussion_ws_manager.broadcast(
         base["asset_id"],
         {
@@ -727,13 +751,6 @@ async def _execute_rewrite_turn(job_id, base, run_state, run_token):
         job_id,
         status=AiJobStatus.SUCCESS,
         progress=100,
-        message="Resolution proposal rewrite completed",
-        result_patch={
-            "proposal_id": persisted["proposal_id"],
-            "rewrite_excerpt": (rewritten_text or rewritten_markdown)[:1200],
-        },
-        session_id=final_session_id or None,
-        agent_backend=thread_backend,
         finalize=True,
         process_started=result.get("process_started"),
         termination_confirmed_dead=result.get("termination_confirmed_dead"),

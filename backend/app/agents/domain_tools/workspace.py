@@ -5,6 +5,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agents.tools import AgentToolDefinition
+from app.protocols.tools import WORKSPACE_REPLY
 
 from .runtime import DomainToolError
 
@@ -20,6 +21,7 @@ READ_TOOL = AgentToolDefinition(
     "read_workspace",
     "只读查看挂载工作区内的目录或文件。目录返回直接子项；文件按行分页，禁止读取工作区外路径。",
     ReadWorkspace.model_json_schema(),
+    WORKSPACE_REPLY.json_schema(),
 )
 
 
@@ -37,7 +39,7 @@ def read_workspace(root: str, arguments: dict) -> dict:
         raise DomainToolError("WORKSPACE_PATH_RESTRICTED")
     if target.is_dir():
         entries = sorted(p.name + ("/" if p.is_dir() else "") for p in target.iterdir())
-        return {"entries": entries[:1000], "truncated": len(entries) > 1000}
+        return {"kind": "directory", "entries": entries[:1000], "truncated": len(entries) > 1000}
     if not target.is_file():
         raise DomainToolError("WORKSPACE_FILE_NOT_FOUND")
     if target.stat().st_size > 2_000_000:
@@ -48,6 +50,7 @@ def read_workspace(root: str, arguments: dict) -> dict:
         raise DomainToolError("WORKSPACE_FILE_NOT_UTF8") from exc
     start = request.start_line - 1
     return {
+        "kind": "file",
         "path": request.path,
         "start_line": request.start_line,
         "total_lines": len(lines),

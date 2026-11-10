@@ -10,9 +10,11 @@ from urllib.parse import urlsplit
 
 import httpx
 from cryptography.fernet import Fernet
+from pydantic import ValidationError
 
 from app.agents.http_transport import agent_ssl_context
 from app.config import settings
+from app.protocols.resources import RESOURCE_COMMAND, OperationReceipt, validate_resource_result
 
 
 class ResourceError(ValueError):
@@ -111,7 +113,7 @@ class ResourceClient:
 
     def identity(self):
         identity = self.request("GET", "/v1/identity")
-        if identity.get("protocol_version") != 1:
+        if identity.get("protocol_version") != 2:
             raise ResourceError("资源服务协议不兼容", "RESOURCE_PROTOCOL_MISMATCH")
         expected = self.profile.get("host_id")
         if expected and identity.get("host_id") != expected:
@@ -122,6 +124,7 @@ class ResourceClient:
         import uuid
 
         body = {
+            "contract_version": 2,
             "task_id": task_id,
             "resource_id": self.profile["id"],
             "kind": kind,
@@ -129,5 +132,30 @@ class ResourceClient:
             "operation_id": operation_id or str(uuid.uuid4()),
         }
         body["payload_hash"] = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        command = RESOURCE_COMMAND.validate_python(body)
         self.identity()
-        return self.request("POST", "/v1/operations", body)["result"]
+        try:
+            response = self.request("POST", "/v1/operations", body)
+        except ResourceError as exc:
+            if exc.code not in {"RESOURCE_HOST_UNAVAILABLE", "EXECUTION_UNKNOWN"}:
+                raise
+            # A lost response is never permission to repeat a filesystem effect.
+            try:
+                response = self.request(
+                    "GET", f"/v1/operations/{body['operation_id']}?task_id={task_id}&resource_id={self.profile['id']}"
+                )
+            except ResourceError as query_error:
+                raise ResourceError(
+                    f"资源操作 {body['operation_id']} 的结果尚未确认", "EXECUTION_UNKNOWN"
+                ) from query_error
+        try:
+            receipt = OperationReceipt.model_validate(response)
+            if receipt.state == "SUCCEEDED":
+                validate_resource_result(command, receipt.result)
+        except ValidationError as exc:
+            raise ResourceError("资源操作回执不符合契约", "RESOURCE_RECEIPT_INVALID") from exc
+        if any(getattr(receipt, key) != body[key] for key in ("operation_id", "task_id", "resource_id", "kind")):
+            raise ResourceError("资源操作回执归属不匹配", "RESOURCE_RECEIPT_MISMATCH")
+        if receipt.state != "SUCCEEDED":
+            raise ResourceError("资源操作结果尚未确认，请按原操作标识查询", "EXECUTION_UNKNOWN")
+        return receipt.result

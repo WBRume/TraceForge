@@ -168,8 +168,9 @@ class ExecutionMonitor:
                     )
                 elif kind == "tool":
                     tid = str(part.get("id") or "")
+                    name = part.get("name")
                     state = part.get("state") or {}
-                    if state.get("status") == "streaming":
+                    if not tid or not isinstance(name, str) or not name or state.get("status") == "streaming":
                         continue
                     await self.emit(
                         AgentEvent(
@@ -177,7 +178,7 @@ class ExecutionMonitor:
                             provider="opencode",
                             payload={
                                 "tool_use_id": tid,
-                                "tool_name": part.get("name", "unknown"),
+                                "tool_name": name,
                                 "tool_input": state.get("input", {}),
                             },
                         ),
@@ -192,6 +193,8 @@ class ExecutionMonitor:
                                     "tool_use_id": tid,
                                     "output": self.adapter._tool_state_output_text(state),
                                     "is_error": state.get("status") == "error",
+                                    "structured_content": state.get("structured"),
+                                    "content": state.get("content") or [],
                                     "provider_replay": True,
                                 },
                             ),

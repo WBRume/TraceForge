@@ -204,7 +204,7 @@ const runQueueAction = async (item: QueueJobItem, action: 'stop' | 'retry') => {
   const actionKey = `${item.source}:${item.job_id}:${action}`
   queueActioningKey.value = actionKey
   try {
-    const res = await runQueueJobAction(item.source, item.job_id, action)
+    const res = await runQueueJobAction(item.source, item.job_id, action, item.version)
     if (disposed || workspace !== queueWorkspaceId.value) return
     const message = String(res?.message || '').trim()
     if (message) {

@@ -34,7 +34,8 @@ async def test_invalid_then_valid_submission_repairs_in_the_same_run():
     invalid["items"][0]["priority"] = "urgent"
     rejected = await run.invoke(run.tool.name, invalid, "bad")
     assert rejected.is_error is True
-    assert "items.0.priority" in str(rejected.data["issues"])
+    assert rejected.data["issues"][0]["path"] == ["items", 0, "priority"]
+    assert rejected.data["action"] == "correct_arguments"
     assert run.value is None
     accepted = await run.invoke(run.tool.name, requirement(), "good")
     assert not accepted.is_error
@@ -81,7 +82,8 @@ async def test_operational_failure_is_not_a_correctable_or_successful_result():
 
     run = DomainToolRun(DomainTool("submit", "Submit", RequirementSubmission, validate))
     result = await run.invoke("submit", requirement(), "one")
-    assert result.data["retryable"] is False
+    assert result.data["action"] == "report_defect"
+    assert result.data["diagnostic_id"]
     with pytest.raises(OSError, match="database unavailable"):
         run.require_result()
 
@@ -98,19 +100,48 @@ async def test_mcp_authorization_scope_and_real_socket_lifecycle(tmp_path):
     run.project_path = str(tmp_path)
     async with serve_tools(run) as binding:
         async with httpx.AsyncClient(trust_env=False) as client:
-            rpc = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+            from app.agents.tool_transports.protocol import CAPABILITIES_KEY, MCP_VERSION, VERSION_KEY
+
+            headers = {
+                **binding["headers"],
+                "accept": "application/json, text/event-stream",
+                "mcp-protocol-version": MCP_VERSION,
+                "mcp-method": "server/discover",
+            }
+            meta = {VERSION_KEY: MCP_VERSION, CAPABILITIES_KEY: {}}
+            rpc = {"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": meta}}
             assert (await client.post(binding["url"], json=rpc)).status_code == 401
-            response = await client.post(binding["url"], headers=binding["headers"], json=rpc)
-            assert {t["name"] for t in response.json()["result"]["tools"]} == {"submit_requirements", "read_workspace"}
+            old = {"jsonrpc": "2.0", "id": "old", "method": "initialize", "params": {}}
+            rejection = await client.post(binding["url"], headers=binding["headers"], json=old)
+            assert rejection.status_code == 400 and rejection.json()["error"]["code"] == -32602
+            wrong_version = {**rpc, "params": {"_meta": {**meta, VERSION_KEY: "2025-11-25"}}}
+            rejection = await client.post(binding["url"], headers=headers, json=wrong_version)
+            assert rejection.json()["error"]["code"] == -32022
             assert (
-                await client.post(
-                    binding["url"], headers={**binding["headers"], "Origin": "https://hostile.invalid"}, json=rpc
-                )
+                await client.post(binding["url"], headers={**headers, "Origin": "https://hostile.invalid"}, json=rpc)
             ).status_code == 403
-            rpc.update(method="tools/call", params={"name": "submit_requirements", "arguments": requirement()})
-            assert not (await client.post(binding["url"], headers=binding["headers"], json=rpc)).json()["result"][
-                "isError"
-            ]
+            assert (await client.post(binding["url"], headers=headers, json=rpc)).json()["result"][
+                "supportedVersions"
+            ] == [MCP_VERSION]
+            rpc.update(id=2, method="tools/list")
+            headers["mcp-method"] = "tools/list"
+            response = await client.post(binding["url"], headers=headers, json=rpc)
+            tools = response.json()["result"]["tools"]
+            assert {t["name"] for t in tools} == {"submit_requirements", "read_workspace"}
+            assert all(t["outputSchema"] for t in tools)
+            rpc.update(
+                id=3,
+                method="tools/call",
+                params={"_meta": meta, "name": "submit_requirements", "arguments": requirement()},
+            )
+            headers.update({"mcp-method": "tools/call", "mcp-name": "submit_requirements"})
+            mismatched = await client.post(binding["url"], headers={**headers, "mcp-name": "read_workspace"}, json=rpc)
+            assert mismatched.json()["error"]["code"] == -32020
+            assert run.value is None
+            result = (await client.post(binding["url"], headers=headers, json=rpc)).json()["result"]
+            assert result["isError"] is False
+            assert result["resultType"] == "complete"
+            assert result["structuredContent"]["stage"] == "accepted"
             assert run.require_result().items
     async with httpx.AsyncClient(trust_env=False) as client:
         with pytest.raises(httpx.ConnectError):
@@ -135,7 +166,7 @@ async def test_http_rejects_malformed_and_oversized_input():
     ) as client:
         headers = {"Authorization": "Bearer token"}
         assert (await client.post("/mcp", headers=headers, content=b"x" * 2_000_001)).status_code == 413
-        assert (await client.post("/mcp", headers=headers, content=b"bad json")).json()["error"]["code"] == -32600
+        assert (await client.post("/mcp", headers=headers, content=b"bad json")).json()["error"]["code"] == -32700
 
 
 def test_document_scope_and_skill_evidence_are_validated(tmp_path):

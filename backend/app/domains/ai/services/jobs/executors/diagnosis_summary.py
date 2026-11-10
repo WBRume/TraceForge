@@ -19,10 +19,16 @@ from app.agents.selection import backend_supports_fork, fork_session_for_backend
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
 from app.core.offload import run_db_txn
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+from app.domains.ai.schemas.job_result import JobArtifact
 from app.domains.ai.services.jobs import attempts as attempt_ops
 from app.domains.ai.services.jobs import state
 from app.domains.ai.services.jobs.constants import JOB_KIND_DIAGNOSIS_SUMMARY
-from app.domains.ai.services.jobs.domain_turn import mark_domain_persisted, run_domain_turn
+from app.domains.ai.services.jobs.domain_turn import (
+    lock_domain_attempt,
+    persisted_milestones,
+    run_domain_turn,
+    stage_domain_success,
+)
 from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError, attempt_is_current_sync
 from app.domains.ai.services.jobs.registry import runtime
 from app.domains.task.models.task import SddTask
@@ -180,16 +186,29 @@ async def execute_diagnosis_summary_job(job_id: str) -> bool | None:
         payload = result["artifact"]
 
         def _persist_diagnosis_result_sync(db: Session) -> dict[str, Any]:
-            if not attempt_is_current_sync(db, job_id=job_id, run_token=run_token):
-                raise AgentAttemptFencedError(f"Diagnosis summary attempt is no longer current: {job_id}")
+            job = lock_domain_attempt(db, job_id, run_token)
             latest_task = db.query(SddTask).filter(SddTask.id == task_id).first()
             if not latest_task:
                 raise ValueError("Task disappeared during diagnosis summary")
-            result_record = diagnosis_result_service.upsert_diagnosis_result_from_ai(
+            result_record = diagnosis_result_service.write_diagnosis_result(
                 db,
                 task=latest_task,
                 payload=payload,
                 actor_user_id=creator_id,
+            )
+            if result_record is None:
+                raise ValueError("Diagnosis result is no longer writable")
+            stage_domain_success(
+                job,
+                message="定位结果已生成",
+                result={
+                    "summary_excerpt": str(payload.summary or payload.root_cause)[:1200],
+                    "summary_source": "diagnosis_summary",
+                },
+                artifact=JobArtifact(kind="diagnosis_result", id=str(result_record.id)),
+                context_patch={"domain_milestones": persisted_milestones(result["domain_milestones"])},
+                session_id=result.get("session_id"),
+                agent_backend=task_backend,
             )
             return {
                 "task_id": str(latest_task.id),
@@ -197,7 +216,6 @@ async def execute_diagnosis_summary_job(job_id: str) -> bool | None:
             }
 
         summary_state = await run_db_txn(_persist_diagnosis_result_sync)
-        await mark_domain_persisted(job_id, result)
         if summary_state["source_chat_message_id"]:
             await diagnosis_result_service.publish_diagnosis_result_message(
                 task_id=summary_state["task_id"],
@@ -208,13 +226,6 @@ async def execute_diagnosis_summary_job(job_id: str) -> bool | None:
             job_id,
             status=AiJobStatus.SUCCESS,
             progress=100,
-            message="定位结果已生成",
-            result_patch={
-                "summary_excerpt": str(payload.summary or payload.root_cause)[:1200],
-                "summary_source": "diagnosis_summary",
-            },
-            session_id=str(result.get("session_id") or "") or None,
-            agent_backend=task_backend,
             finalize=True,
             process_started=result.get("process_started"),
             termination_confirmed_dead=result.get("termination_confirmed_dead"),

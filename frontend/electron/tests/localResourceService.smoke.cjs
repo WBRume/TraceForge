@@ -37,13 +37,13 @@ app.whenReady().then(async () => {
     assert.equal((await fetch(url + '/v1/identity')).status, 401)
     const headers = { Authorization: `Bearer ${token}`, 'content-type': 'application/json' }
     const identity = await (await fetch(url + '/v1/identity', { headers })).json()
-    assert.equal(identity.protocol_version, 1)
+    assert.equal(identity.protocol_version, 2)
     assert.ok(identity.capabilities.includes('roots_grant'))
     assert.ok(identity.capabilities.includes('repository_details'))
     assert.ok(!identity.capabilities.includes('collaboration'))
     assert.equal((await fetch(url + '/v1/collaboration', { method: 'POST', headers,
       body: JSON.stringify({ kind: 'capture', payload: { task_id: 'task', operation_id: 'unused-http' } }) })).status, 404)
-    const command = { operation_id: 'smoke', resource_id: 'resource', task_id: 'task', kind: 'provision', payload: { workspace_root: root, repositories: [] } }
+    const command = { contract_version: 2, operation_id: 'smoke', resource_id: 'resource', task_id: 'task', kind: 'provision', payload: { workspace_root: root, repositories: [] } }
     const canonical = value => Array.isArray(value) ? '[' + value.map(canonical).join(', ') + ']'
       : value && typeof value === 'object' ? '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ': ' + canonical(value[key])).join(', ') + '}' : JSON.stringify(value)
     const payload_hash = createHash('sha256').update(canonical(command)).digest('hex')

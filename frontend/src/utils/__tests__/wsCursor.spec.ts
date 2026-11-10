@@ -20,12 +20,12 @@ describe('ws cursor protocol', () => {
     expect(query.epoch).toBeUndefined()
 
     const prepared = prepareWsFrame('task:one', {
-      type: 'event',
+      type: 'event', contract_version: 2, room: 'task:one', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z',
       epoch: 'epoch-1',
       sequence: 4,
       event_id: 'event-4',
       event_type: 'status',
-      payload: { step: 4 },
+      payload: { task_id: 'one', status: 'RUNNING', message: 'running' },
     })
     expect(prepared.kind).toBe('event')
     expect(getWsCursor('task:one')).toBeNull()
@@ -38,18 +38,18 @@ describe('ws cursor protocol', () => {
 
   it('ignores duplicate ids and detects a sequence gap', () => {
     const first = prepareWsFrame('task:one', {
-      type: 'event', epoch: 'epoch-1', sequence: 1, event_id: 'event-1',
-      event_type: 'status', payload: {},
+      type: 'event', contract_version: 2, room: 'task:one', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'epoch-1', sequence: 1, event_id: 'event-1',
+      event_type: 'status', payload: { task_id: 'one', status: 'RUNNING', message: 'running' },
     })
     if (first.kind === 'event') first.commit()
 
     expect(prepareWsFrame('task:one', {
-      type: 'event', epoch: 'epoch-1', sequence: 1, event_id: 'event-1',
-      event_type: 'status', payload: {},
+      type: 'event', contract_version: 2, room: 'task:one', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'epoch-1', sequence: 1, event_id: 'event-1',
+      event_type: 'status', payload: { task_id: 'one', status: 'RUNNING', message: 'running' },
     }).kind).toBe('ignore')
     expect(prepareWsFrame('task:one', {
-      type: 'event', epoch: 'epoch-1', sequence: 3, event_id: 'event-3',
-      event_type: 'status', payload: {},
+      type: 'event', contract_version: 2, room: 'task:one', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'epoch-1', sequence: 3, event_id: 'event-3',
+      event_type: 'status', payload: { task_id: 'one', status: 'RUNNING', message: 'running' },
     })).toMatchObject({ kind: 'resync', reason: 'gap' })
   })
 
@@ -75,7 +75,7 @@ describe('ws cursor protocol', () => {
 
   it('uses the staged cursor before the stored cursor for the same epoch', () => {
     const stored = prepareWsFrame('task:one', {
-      type: 'event', epoch: 'epoch-3', sequence: 10, event_id: 'event-10',
+      type: 'event', contract_version: 2, room: 'task:one', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'epoch-3', sequence: 10, event_id: 'event-10', event_type: 'test', payload: {},
     })
     if (stored.kind === 'event') stored.commit()
 
@@ -86,7 +86,7 @@ describe('ws cursor protocol', () => {
     }, 'task:one')
 
     const deferred = prepareWsFrame('task:one', {
-      type: 'event', epoch: 'epoch-3', sequence: 101, event_id: 'event-101',
+      type: 'event', contract_version: 2, room: 'task:one', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'epoch-3', sequence: 101, event_id: 'event-101', event_type: 'test', payload: {},
     })
     expect(deferred.kind).toBe('event')
     if (deferred.kind === 'event') deferred.commit()
@@ -110,7 +110,7 @@ describe('ws cursor protocol', () => {
 
   it('does not let a late commit move the cursor backwards after resync', () => {
     const oldEvent = prepareWsFrame('task:one', {
-      type: 'event', epoch: 'epoch-5', sequence: 11, event_id: 'event-11',
+      type: 'event', contract_version: 2, room: 'task:one', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'epoch-5', sequence: 11, event_id: 'event-11', event_type: 'test', payload: {},
     })
     sendResyncComplete({ send: () => undefined } as unknown as WebSocket, {
       type: 'resync_required', epoch: 'epoch-5', barrier_sequence: 100,
@@ -125,11 +125,11 @@ describe('ws cursor protocol', () => {
 
   it('replaces an ahead cursor only after a confirmed snapshot and rejects pre-resync completions', () => {
     const stored = prepareWsFrame('task:one', {
-      type: 'event', epoch: 'same-server', sequence: 500, event_id: 'old-500',
+      type: 'event', contract_version: 2, room: 'task:one', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'same-server', sequence: 500, event_id: 'old-500', event_type: 'test', payload: {},
     })
     if (stored.kind === 'event') stored.commit()
     const stale = prepareWsFrame('task:one', {
-      type: 'event', epoch: 'same-server', sequence: 501, event_id: 'old-501',
+      type: 'event', contract_version: 2, room: 'task:one', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'same-server', sequence: 501, event_id: 'old-501', event_type: 'test', payload: {},
     })
     sendResyncComplete({ send: () => undefined } as unknown as WebSocket, {
       type: 'resync_required', epoch: 'same-server', reason: 'cursor_ahead', barrier_sequence: 80,
@@ -140,7 +140,7 @@ describe('ws cursor protocol', () => {
     expect(getWsCursor('task:one')).toMatchObject({ lastAppliedSequence: 80, recentEventIds: [] })
     expect(buildWsCursorQuery('task:one').last_sequence).toBe('80')
     const reply = prepareWsFrame('task:one', {
-      type: 'event', epoch: 'same-server', sequence: 81, event_id: 'reply', event_type: 'chat_message',
+      type: 'event', contract_version: 2, room: 'task:one', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'same-server', sequence: 81, event_id: 'reply', event_type: 'chat_message', payload: { task_id: 'one', role: 'assistant', content: 'reply' },
     })
     expect(reply.kind).toBe('event')
     if (reply.kind === 'event') reply.commit()
@@ -149,7 +149,7 @@ describe('ws cursor protocol', () => {
 
   it('does not let a pre-resync callback advance a replacement journal after confirmation', () => {
     const stale = prepareWsFrame('task:one', {
-      type: 'event', epoch: 'same-server', sequence: 501, event_id: 'stale',
+      type: 'event', contract_version: 2, room: 'task:one', aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', epoch: 'same-server', sequence: 501, event_id: 'stale', event_type: 'test', payload: {},
     })
     sendResyncComplete({ send: () => undefined } as unknown as WebSocket, {
       type: 'resync_required', epoch: 'same-server', barrier_sequence: 80,

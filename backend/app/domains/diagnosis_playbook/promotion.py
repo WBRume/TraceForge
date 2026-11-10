@@ -7,6 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.schemas.job_result import JobArtifact, current_completion
 from app.domains.ai.services.jobs.domain_turn import persisted_milestones
 from app.domains.case_center.models.case import SddCase
 
@@ -37,6 +38,9 @@ def view(job):
         "job_id": job.id,
         "workspace_id": job.workspace_id,
         "status": job.status.value,
+        "version": int(job.version or 1),
+        "attempt_count": int(job.attempt_count or 0),
+        "completion": current_completion(job.completion_json),
         "progress": job.progress,
         "message": job.message,
         "error": job.error_message,
@@ -200,6 +204,7 @@ def finalize(db, job_id, result, token, boot, evidence):
     if job.context_json.get("merge_all") and len(result.playbooks) != 1:
         raise PlaybookError("PROMOTION_MERGE_REQUIRED")
     draft = result.model_dump()
+    draft_revision = digest(draft)
     update_preview_job_state(
         db,
         job,
@@ -207,7 +212,8 @@ def finalize(db, job_id, result, token, boot, evidence):
         progress=100,
         message="规程草案已生成，待人工确认",
         context_patch={"domain_milestones": persisted_milestones((job.context_json or {}).get("domain_milestones"))},
-        result={"review_state": "PENDING", "draft": draft, "draft_revision": digest(draft)},
+        result={"review_state": "PENDING", "draft": draft, "draft_revision": draft_revision},
+        artifact=JobArtifact(kind="playbook_promotion_draft", id=job_id, version=draft_revision),
         run_token=token,
         worker_boot_id=boot,
         evidence=evidence,

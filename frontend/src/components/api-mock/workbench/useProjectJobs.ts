@@ -3,6 +3,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 import type { ApiMockJob } from '@/types/apiMock'
+import { parseContract } from '../../../../shared/contracts/validate'
 import type { ActiveJobState, ApiMockJobListResponse } from './types'
 import type { ProjectContext } from './useProjectContext'
 import type { WorkbenchNotifications } from './notifications'
@@ -43,35 +44,11 @@ export function useProjectJobs(context: ProjectContext, notifications: Workbench
 
   const isProjectSwaggerMutationLocked = computed(() => isAutoMockRunning.value)
 
-  const normalizeJobStatus = (value: unknown): ActiveJobState['status'] => {
-    const status = String(value || '').toUpperCase()
-    if (['PENDING', 'RUNNING', 'WAITING_HITL', 'INTERRUPTED', 'TERMINATING', 'ORPHANED', 'SUCCESS', 'FAILED', 'CANCELLED', 'REVERTED'].includes(status)) {
-      return status as ActiveJobState['status']
-    }
-    return 'ORPHANED'
-  }
-
-  const sanitizeJobResultJson = (value: unknown): Record<string, unknown> | null => {
-    if (!value || typeof value !== 'object') return null
-    return { ...(value as Record<string, unknown>) }
-  }
-
   const toActiveJobState = (value: unknown): ActiveJobState | null => {
-    if (!value || typeof value !== 'object') return null
-    const job = value as Record<string, unknown>
-    const id = String(job.id || '').trim()
-    const jobType = String(job.job_type || '').trim()
-    if (!id || !jobType) return null
-    return {
-      id,
-      version: typeof job.version === 'number' ? job.version : undefined,
-      cancel_requested: job.cancel_requested === true,
-      attempt_count: typeof job.attempt_count === 'number' ? job.attempt_count : undefined,
-      job_type: jobType,
-      status: normalizeJobStatus(job.status),
-      progress: Number(job.progress || 0),
-      message: typeof job.message === 'string' ? job.message : null,
-      result_json: sanitizeJobResultJson(job.result_json),
+    try {
+      return parseContract<ApiMockJob>('apiMockJob', value)
+    } catch {
+      return null
     }
   }
 
@@ -223,7 +200,7 @@ export function useProjectJobs(context: ProjectContext, notifications: Workbench
       observedJobs.value = {}; activeJob.value = null; activeAutoMockJob.value = null; handledAutoMockDoneJobIds.clear()
     }, { flush: 'sync' })
 
-  return { AUTO_MOCK_JOB_TYPE, activeJob, activeAutoMockJob, observedJobs, isAutoMockRunning, autoMockTargetEndpointId, isCurrentEndpointAutoMockLocked, isProjectSwaggerMutationLocked, normalizeJobStatus, sanitizeJobResultJson, toActiveJobState, mergeIncomingJobState, mergeIncomingAutoMockJobState, acceptJobState, handleAutoMockJobCompletion, loadActiveJobs, fetchJobSnapshot, waitForJobDone }
+  return { AUTO_MOCK_JOB_TYPE, activeJob, activeAutoMockJob, observedJobs, isAutoMockRunning, autoMockTargetEndpointId, isCurrentEndpointAutoMockLocked, isProjectSwaggerMutationLocked, toActiveJobState, mergeIncomingJobState, mergeIncomingAutoMockJobState, acceptJobState, handleAutoMockJobCompletion, loadActiveJobs, fetchJobSnapshot, waitForJobDone }
 }
 
 export type ProjectJobs = ReturnType<typeof useProjectJobs>

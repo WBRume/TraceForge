@@ -1,3 +1,7 @@
+import type { JobCompletion } from '../../shared/contracts/generated/jobCompletion'
+import type { QueueJobActionResponse } from '../../shared/contracts/generated/queueJobActionResponse'
+export type { QueueJobActionResponse }
+
 export type QueueSource = 'provision' | 'api_mock' | 'bootstrap' | 'skill_analysis'
 export type QueueStatus = 'PENDING' | 'RUNNING' | 'WAITING_HITL' | 'INTERRUPTED' | 'TERMINATING' | 'ORPHANED' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'REVERTED'
 export type QueueView = 'mine' | 'workspace_all'
@@ -25,11 +29,11 @@ export type QueueJobItem = {
   target_path?: string | null
   case_id?: string | null
   doc_key?: string | null
-  version?: number | null
+  version: number
   attempt_count?: number
   cancel_requested?: boolean
   result_available?: boolean
-  completion?: { outcome: string; summary: string; artifacts: { kind: string; id: string; version?: string | null }[] } | null
+  completion?: JobCompletion | null
   retry_of_job_id?: string | null
   retry_count?: number | null
   actions: QueueJobActions
@@ -40,13 +44,4 @@ export type QueueJobListResponse = {
   total: number
   page: number
   page_size: number
-}
-
-export type QueueJobActionResponse = {
-  ok: boolean
-  action: 'stop' | 'retry'
-  source: QueueSource
-  job_id: string
-  message?: string
-  new_job_id?: string | null
 }

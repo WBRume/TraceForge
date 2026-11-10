@@ -68,12 +68,12 @@ class RoomJournalReplayTest(IsolatedAsyncioTestCase):
         first = _Socket()
         connection = await self.registry.connect("task:test", first, client_id="tab-1")
         await _complete_initial_sync(self.registry, "task:test", first, connection)
-        self.registry.broadcast_text("task:test", json.dumps({"type": "status", "payload": {"step": 1}}))
+        self.registry.broadcast_text("task:test", json.dumps({"type": "test_event", "payload": {"step": 1}}))
         await connection.wait_flushed()
         first_frame = next(json.loads(frame) for frame in first.sent_texts if json.loads(frame).get("type") == "event")
 
         self.registry.disconnect("task:test", first)
-        self.registry.broadcast_text("task:test", json.dumps({"type": "status", "payload": {"step": 2}}))
+        self.registry.broadcast_text("task:test", json.dumps({"type": "test_event", "payload": {"step": 2}}))
 
         second = _Socket()
         replayed = await self.registry.connect(
@@ -96,11 +96,11 @@ class RoomJournalReplayTest(IsolatedAsyncioTestCase):
         first = _Socket()
         connection = await self.registry.connect("task:handoff", first, client_id="tab-1")
         await _complete_initial_sync(self.registry, "task:handoff", first, connection)
-        self.registry.broadcast_text("task:handoff", json.dumps({"type": "status", "payload": {"step": 1}}))
+        self.registry.broadcast_text("task:handoff", json.dumps({"type": "test_event", "payload": {"step": 1}}))
         await connection.wait_flushed()
         first_frame = next(json.loads(frame) for frame in first.sent_texts if json.loads(frame).get("type") == "event")
         self.registry.disconnect("task:handoff", first)
-        self.registry.broadcast_text("task:handoff", json.dumps({"type": "status", "payload": {"step": 2}}))
+        self.registry.broadcast_text("task:handoff", json.dumps({"type": "test_event", "payload": {"step": 2}}))
 
         gate = asyncio.Event()
         original_wait = OutboundConnection.wait_for_low_water
@@ -118,7 +118,7 @@ class RoomJournalReplayTest(IsolatedAsyncioTestCase):
                 epoch=first_frame["epoch"],
                 last_sequence=first_frame["sequence"],
             )
-            self.registry.broadcast_text("task:handoff", json.dumps({"type": "status", "payload": {"step": 3}}))
+            self.registry.broadcast_text("task:handoff", json.dumps({"type": "test_event", "payload": {"step": 3}}))
             gate.set()
             await asyncio.wait_for(replayed.replay_task, timeout=2)
         await replayed.wait_flushed()
@@ -136,8 +136,8 @@ class RoomJournalReplayTest(IsolatedAsyncioTestCase):
             socket = _Socket()
             connection = await self.registry.connect("task:expired", socket, client_id="tab-1")
             await _complete_initial_sync(self.registry, "task:expired", socket, connection)
-            self.registry.broadcast_text("task:expired", json.dumps({"type": "status", "payload": {"step": 1}}))
-            self.registry.broadcast_text("task:expired", json.dumps({"type": "status", "payload": {"step": 2}}))
+            self.registry.broadcast_text("task:expired", json.dumps({"type": "test_event", "payload": {"step": 1}}))
+            self.registry.broadcast_text("task:expired", json.dumps({"type": "test_event", "payload": {"step": 2}}))
             await connection.wait_flushed()
             first_frame = next(
                 json.loads(frame) for frame in socket.sent_texts if json.loads(frame).get("type") == "event"

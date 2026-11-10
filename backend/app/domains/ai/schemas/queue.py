@@ -5,9 +5,13 @@ Unified queue schemas for background jobs.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+
+from app.protocols.base import Contract
+
+from .job_result import JobCompletion, current_completion
 
 QueueSourceValue = Literal["provision", "api_mock", "bootstrap", "skill_analysis"]
 QueueStatusValue = Literal[
@@ -52,11 +56,13 @@ class QueueJobItem(BaseModel):
     version: int = 1
     attempt_count: int = 0
     retry_of_job_id: str | None = None
-    completion: dict[str, Any] | None = None
+    completion: JobCompletion | None = None
     cancel_requested: bool = False
     result_available: bool = False
     retry_count: int | None = None
     actions: QueueJobActions
+
+    _current_completion = field_validator("completion", mode="before")(current_completion)
 
 
 class QueueJobListResponse(BaseModel):
@@ -66,7 +72,16 @@ class QueueJobListResponse(BaseModel):
     page_size: int
 
 
-class QueueJobActionResponse(BaseModel):
+class QueueJobCommand(Contract):
+    contract_version: Literal[2]
+    command_id: str = Field(min_length=1, max_length=100)
+    expected_version: int = Field(ge=1, le=9007199254740991)
+
+
+class QueueJobActionResponse(Contract):
+    contract_version: Literal[2]
+    command_id: str
+    outcome: Literal["accepted", "applied"]
     ok: bool = True
     action: QueueActionValue
     source: QueueSourceValue

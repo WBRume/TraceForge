@@ -40,3 +40,16 @@ class AgentEvent:
     raw: dict[str, Any] | None = None
     seq: int | None = None
     time: str | None = None
+    contract_version: Literal[2] = 2
+
+    def __post_init__(self):
+        from app.protocols.agent_events import AGENT_EVENT
+
+        AGENT_EVENT.validate_python(
+            {
+                "type": self.type,
+                "payload": self.payload,
+                "provider": self.provider,
+                "contract_version": self.contract_version,
+            }
+        )

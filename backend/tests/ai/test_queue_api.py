@@ -104,7 +104,10 @@ def test_retry_queue_job_returns_new_job_id(monkeypatch):
     )
 
     client = TestClient(app)
-    resp = client.post("/api/queue/jobs/provision/job-1/retry")
+    resp = client.post(
+        "/api/queue/jobs/provision/job-1/retry",
+        json={"contract_version": 2, "command_id": "retry-command", "expected_version": 1},
+    )
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["ok"] is True
@@ -182,6 +185,9 @@ def test_stop_queue_job_unsupported_returns_409(monkeypatch):
     )
 
     client = TestClient(app)
-    resp = client.post("/api/queue/jobs/provision/job-1/stop")
+    resp = client.post(
+        "/api/queue/jobs/provision/job-1/stop",
+        json={"contract_version": 2, "command_id": "stop-command", "expected_version": 1},
+    )
     assert resp.status_code == 409
     assert "Stop is not supported" in resp.json().get("detail", "")

@@ -34,7 +34,7 @@ test.each([false, true])('grants roots to every Node worker and rejects volume r
   if (persisted) expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).allowed_roots).toContain(fs.realpathSync(workspace))
 })
 const body = (kind: string, payload: any, operation_id: string, task_id = 'task') => {
-  const content = { task_id, resource_id: 'resource', kind, payload, operation_id }
+  const content = { contract_version: 2, task_id, resource_id: 'resource', kind, payload, operation_id }
   return { ...content, payload_hash: hash(canonical(content)) }
 }
 async function post(kind: string, payload: any, key: string, task = 'task') {
@@ -95,6 +95,12 @@ describe('embedded collaboration, HTTP protocol and ownership', () => {
     expect((await post('materialize', { files: [] }, 'unbound')).status).toBe(409)
     const receipt = await ok('provision', payload, 'provision')
     expect(await ok('provision', payload, 'provision')).toEqual(receipt)
+    const resultUrl = new URL('/v1/operations/provision?task_id=task&resource_id=resource', host.server!.url)
+    expect(await (await fetch(resultUrl, { headers })).json()).toMatchObject({
+      contract_version: 2, operation_id: 'provision', kind: 'provision', state: 'SUCCEEDED', result: receipt,
+    })
+    resultUrl.searchParams.set('task_id', 'unrelated')
+    expect((await fetch(resultUrl, { headers })).status).toBe(404)
     expect((await post('provision', { ...payload, repositories: ['different'] }, 'provision')).status).toBe(409)
     for (const relative of ['../escape', '.git/config', 'x/../../escape']) {
       expect((await post('materialize', { files: [{ path: relative, content: 'eA==', sha256: hash('x') }] }, 'file-' + hash(relative))).status).toBe(409)
@@ -146,7 +152,7 @@ test('binary patches use a temporary index and apply to a separate worktree', as
   expect(hash(patch.patch_text)).toBe(patch.sha256)
   expect(patch.files.some((file: any) => file.is_binary)).toBe(true)
   expect(hash(fs.readFileSync(index))).toBe(before)
-  const applied = await ok('apply_patch', { workspace_root: workspace, repositories: [{ ...repo, repo_slug: 'repo', base_branch: 'main', base_commit_sha: patch.base_commit_sha, patch: Buffer.from(patch.patch_text).toString('base64'), sha256: patch.sha256 }] }, 'apply', 'apply-task')
+  const applied = await ok('apply_patch', { workspace_root: workspace, repositories: [{ repository_id: repo.repository_id, local_path: repo.local_path, configured_git_url: repo.configured_git_url, repo_slug: 'repo', base_branch: 'main', base_commit_sha: patch.base_commit_sha, patch: Buffer.from(patch.patch_text).toString('base64'), sha256: patch.sha256 }] }, 'apply', 'apply-task')
   expect(applied.status).toBe('applied')
   expect(fs.readFileSync(path.join(applied.repositories[0].path, 'blob.bin'))).toEqual(Buffer.from([0, 1, 2, 255]))
   expect(fs.readFileSync(path.join(source, 'code.txt'), 'utf8')).toBe('base\n')

@@ -763,13 +763,15 @@ class TaskAgentEngine:
         tool_name = str(payload.get("tool_name") or "unknown")
         tool_input = payload.get("tool_input", {})
         tool_id = str(payload.get("tool_use_id") or "")
+        from app.protocols.messages import terminal_record
+
         self.logs.queue(
             json.dumps(
-                {
-                    "tool_name": tool_name,
-                    "tool_input": tool_input,
-                    "tool_use_id": tool_id,
-                },
+                terminal_record(
+                    "tool_use",
+                    {"task_id": self.task_id, "tool_name": tool_name, "tool_input": tool_input, "tool_use_id": tool_id},
+                    uuid.uuid4().hex,
+                ),
                 ensure_ascii=False,
             ),
             LogType.STDOUT,
@@ -808,9 +810,22 @@ class TaskAgentEngine:
         tool_use_id = str(payload.get("tool_use_id") or "")
         output = str(payload.get("output") or "")
         is_error = bool(payload.get("is_error"))
+        from app.protocols.messages import terminal_record
+
         self.logs.queue(
             json.dumps(
-                {"tool_use_id": tool_use_id, "output": output[:2000], "is_error": is_error},
+                terminal_record(
+                    "tool_result",
+                    {
+                        "task_id": self.task_id,
+                        "tool_use_id": tool_use_id,
+                        "output": output,
+                        "is_error": is_error,
+                        "structured_content": payload.get("structured_content"),
+                        "content": payload.get("content", []),
+                    },
+                    uuid.uuid4().hex,
+                ),
                 ensure_ascii=False,
             ),
             LogType.STDOUT,
@@ -826,7 +841,13 @@ class TaskAgentEngine:
             is_error=is_error,
             dedupe=bool(payload.get("provider_replay")),
         )
-        await self.frontend.push_tool_result(tool_use_id, output)
+        await self.frontend.push_tool_result(
+            tool_use_id,
+            output,
+            is_error=is_error,
+            structured_content=payload.get("structured_content"),
+            content=payload.get("content", []),
+        )
         skill_runtime_trace_service.enqueue_tool_result_trace(
             workspace_id=self.ws_id,
             task_id=self.task_id,

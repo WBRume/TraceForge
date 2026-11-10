@@ -175,11 +175,11 @@ def map_dsh_event(raw_event: dict[str, Any]) -> AgentEvent | None:
         tool_name = str(data.get("name") or data.get("tool") or "")
         tool_input = data.get("arguments") or data.get("input") or {}
         tool_use_id = str(data.get("callId") or data.get("id") or "")
+        if not tool_use_id or not tool_name:
+            return None
         return AgentEvent(
             type="tool_use",
             payload={
-                "tool": tool_name,
-                "input": tool_input,
                 "tool_name": tool_name,
                 "tool_input": tool_input,
                 "tool_use_id": tool_use_id,
@@ -189,16 +189,16 @@ def map_dsh_event(raw_event: dict[str, Any]) -> AgentEvent | None:
             raw=raw_event,
         )
     if etype == "tool/result":
-        tool_name = str(data.get("name") or data.get("tool") or "")
         tool_use_id = str(data.get("callId") or data.get("toolUseId") or data.get("id") or "")
+        if not tool_use_id:
+            return None
         output = data.get("result") or data.get("output") or data.get("content") or ""
         return AgentEvent(
             type="tool_result",
             payload={
-                "tool": tool_name,
-                "tool_name": tool_name,
                 "tool_use_id": tool_use_id,
-                "output": output,
+                "output": output if isinstance(output, str) else json.dumps(output, ensure_ascii=False),
+                "structured_content": data.get("structuredContent"),
                 "is_error": bool(data.get("isError") or data.get("is_error")),
                 "provider": "dsh",
             },

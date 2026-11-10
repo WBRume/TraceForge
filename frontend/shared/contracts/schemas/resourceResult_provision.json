@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "task_root": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Task Root",
+      "type": "string"
+    },
+    "repositories_input": {
+      "items": {
+        "additionalProperties": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "type": "object"
+      },
+      "title": "Repositories Input",
+      "type": "array"
+    },
+    "repositories": {
+      "items": {
+        "additionalProperties": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "type": "object"
+      },
+      "title": "Repositories",
+      "type": "array"
+    }
+  },
+  "required": [
+    "task_id",
+    "task_root",
+    "repositories_input",
+    "repositories"
+  ],
+  "title": "Provisioned",
+  "type": "object"
+}

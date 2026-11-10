@@ -5,11 +5,7 @@ Task-level Claude CLI bootstrap and thread workspace fork service.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
-import re
-import shutil
-import time
 from functools import partial
 from typing import Any
 
@@ -38,6 +34,7 @@ from app.core.offload import run_db, run_file_job
 from app.database import SessionLocal
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.schemas.websocket import WSMessage
+from app.domains.ai.services.jobs.constants import queue_key_for_task_baseline
 from app.domains.asset.models.asset import SddAssetThread, SddAssetVersion
 from app.domains.skill.services.runtime import materialization as skill_runtime_materialization
 from app.domains.task.models.task import SddTask
@@ -56,6 +53,13 @@ from app.domains.task.services.bootstrap_state import (
 )
 from app.domains.task.services.bootstrap_state import (
     serialize_bootstrap as _serialize_bootstrap,
+)
+from app.domains.task.services.task_cli_paths import (
+    _baseline_dir_for,
+    _resolve_session_context_location,
+    _safe_rmtree,
+    _session_snapshot_exists,
+    _task_state_root,
 )
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 from app.domains.websocket.ws.manager import manager as task_ws_manager
@@ -98,124 +102,12 @@ def _status_text(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
 
-def _short_hash(value: str, length: int = 12) -> str:
-    source = (value or "").encode("utf-8", errors="ignore")
-    return hashlib.sha1(source).hexdigest()[:length]
-
-
-def _cli_state_root() -> str:
-    root = os.path.abspath(settings.CLI_STATE_ROOT or "./cli_state")
-    os.makedirs(root, exist_ok=True)
-    return root
-
-
-def _task_state_root(workspace_id: str, task_id: str) -> str:
-    return os.path.join(
-        _cli_state_root(),
-        f"w_{_short_hash(workspace_id)}",
-        f"t_{_short_hash(task_id)}",
-    )
-
-
-def _baseline_dir_for(workspace_id: str, task_id: str) -> str:
-    return os.path.join(_task_state_root(workspace_id, task_id), "base")
-
-
-def _assert_path_under_cli_root(path: str) -> None:
-    target = os.path.abspath(path)
-    root = _cli_state_root()
-    try:
-        common = os.path.commonpath([target, root])
-    except ValueError as exc:
-        raise RuntimeError(f"Invalid cleanup path: {target}") from exc
-    if common != root:
-        raise RuntimeError(f"Refusing to touch path outside CLI state root: {target}")
-
-
-def _safe_rmtree(path: str) -> None:
-    if not path or not os.path.exists(path):
-        return
-    _assert_path_under_cli_root(path)
-
-    retries = max(1, int(settings.CLI_CLEANUP_RETRY_COUNT or 1))
-    interval_sec = max(0.05, int(settings.CLI_CLEANUP_RETRY_INTERVAL_MS or 200) / 1000.0)
-    last_error: Exception | None = None
-
-    for index in range(retries):
-        try:
-            shutil.rmtree(path, ignore_errors=False)
-            return
-        except PermissionError as exc:
-            last_error = exc
-            sleep_for = interval_sec * (index + 1)
-            logger.warning(
-                "rmtree locked path retry {}/{}: {}",
-                index + 1,
-                retries,
-                path,
-            )
-            time.sleep(sleep_for)
-        except FileNotFoundError:
-            return
-        except Exception as exc:
-            last_error = exc
-            time.sleep(interval_sec * (index + 1))
-
-    if last_error:
-        raise last_error
-
-
 def _refresh_task_skill_context(task_id: str) -> None:
     db = SessionLocal()
     try:
         skill_runtime_materialization.materialize_task_skills(db, task_id)
     finally:
         db.close()
-
-
-def _claude_home_root() -> str:
-    override = (
-        str(os.environ.get("CLAUDE_HOME") or "").strip() or str(os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
-    )
-    if override:
-        return os.path.abspath(override)
-    return os.path.join(os.path.expanduser("~"), ".claude")
-
-
-def _claude_projects_root() -> str:
-    return os.path.join(_claude_home_root(), "projects")
-
-
-def _claude_project_store_dir(project_path: str) -> str:
-    project_abs = os.path.abspath(project_path or "")
-    project_key = re.sub(r"[^A-Za-z0-9]", "-", project_abs)
-    return os.path.join(_claude_projects_root(), project_key)
-
-
-def _resolve_claude_context_location(project_path: str) -> tuple[str | None, str | None]:
-    project = str(project_path or "").strip()
-    if not project:
-        return (None, None)
-    # CLI runtime memory is owned by Claude Code under its config/project store.
-    # The workspace .claude directory is only for project-local inputs such as skills.
-    return ("project_store", _claude_project_store_dir(project))
-
-
-def _session_snapshot_exists(context_dir: str, session_id: str) -> bool:
-    sid = str(session_id or "").strip()
-    if not sid or not context_dir or not os.path.isdir(context_dir):
-        return False
-    direct = os.path.join(context_dir, f"{sid}.jsonl")
-    if os.path.isfile(direct):
-        return True
-    return any(f"{sid}.jsonl" in files for root, _, files in os.walk(context_dir))
-
-
-def _resolve_session_context_location(
-    project_path: str,
-    session_id: str,
-) -> tuple[str | None, str | None]:
-    return _resolve_claude_context_location(project_path)
 
 
 async def _broadcast_bootstrap(payload: dict[str, Any]) -> None:
@@ -434,12 +326,11 @@ def _build_bootstrap_prompt(
         detail_lines = [
             "你正在执行需求文档基座记忆增量刷新任务（DELTA）。",
             "要求:",
-            "1) 在已有记忆基础上仅吸收本次变更，不要重读无关内容。",
-            "2) 仅用于更新规范记忆，不执行任何代码修改。",
+            "1) 上文已包含上一版规范。保留未变更内容，只把指定块更新为变更后片段。",
+            "2) 本消息已包含更新所需信息。不要调用工具、读取文件或查找其他会话。",
             "3) 完成后输出一行 `BASELINE_READY`，再输出不超过120字的更新摘要。",
             "4) 禁止提出反问。",
             "",
-            f"当前文档绝对路径: {document_abs_path}",
             f"变更范围: {changed_scope}",
         ]
         if block_id:
@@ -447,9 +338,9 @@ def _build_bootstrap_prompt(
         if selected_text:
             detail_lines.append(f"锚点文本: {selected_text}")
         if old_text:
-            detail_lines.append(f"变更前片段: {old_text[:1200]}")
+            detail_lines.append(f"变更前片段: {old_text[:2400]}")
         if new_text:
-            detail_lines.append(f"变更后片段: {new_text[:1200]}")
+            detail_lines.append(f"变更后片段: {new_text[:2400]}")
         return "\n".join(detail_lines)
 
     return (
@@ -498,6 +389,23 @@ def _get_thread_workspace_lock(thread_id: str) -> asyncio.Lock:
     return lock
 
 
+def _delta_source_session(db: Session, task_id: str, version: SddAssetVersion | None) -> str:
+    """Use the successful baseline for the exact parent revision of this delta."""
+    if version is None or not version.base_version_id:
+        return ""
+    result = (
+        db.query(SddAiJob.result_json)
+        .filter(
+            SddAiJob.queue_key == queue_key_for_task_baseline(task_id),
+            SddAiJob.status == AiJobStatus.SUCCESS,
+            SddAiJob.context_json["input_revision"].as_string() == version.base_version_id,
+        )
+        .order_by(SddAiJob.finished_at.desc(), SddAiJob.id.desc())
+        .first()
+    )
+    return str((result[0] or {}).get("baseline_session_id") or "").strip() if result else ""
+
+
 def _load_bootstrap_run_context_sync(task_id: str) -> dict[str, Any] | None:
     db = SessionLocal()
     try:
@@ -513,14 +421,15 @@ def _load_bootstrap_run_context_sync(task_id: str) -> dict[str, Any] | None:
         agent_backend = normalize_backend_name(record.agent_backend) or resolve_workspace_backend(
             db, record.workspace_id
         )
+        refresh_mode = str(record.refresh_mode or "FULL").strip().upper()
         return {
             "execution_location": getattr(task, "execution_location", "SERVER"),
             "task_spec_doc_path": str(task.spec_doc_path or "").strip(),
             "version_original_path": str((version.original_path if version else "") or "").strip(),
             "baseline_dir": record.baseline_dir or _baseline_dir_for(record.workspace_id, record.task_id),
-            "refresh_mode": str(record.refresh_mode or "FULL").strip().upper() or "FULL",
+            "refresh_mode": refresh_mode,
             "refresh_context": record.refresh_context_json if isinstance(record.refresh_context_json, dict) else {},
-            "baseline_session_id": str(record.baseline_session_id or "").strip(),
+            "baseline_session_id": _delta_source_session(db, task_id, version) if refresh_mode == "DELTA" else "",
             "spec_version_id": str(record.spec_version_id or "missing"),
             "agent_backend": agent_backend,
             "workspace_id": str(record.workspace_id or ""),
@@ -597,16 +506,30 @@ def _bootstrap_event_handler(task_id, expected_input_revision, provider_events=N
                             message="CLI is digesting specification context",
                         )
                         break
-        elif event_type == "system" and str(event.get("subtype") or "") == "init":
-            sid = str(event.get("session_id") or "").strip()
-            if sid:
-                await _update_bootstrap_state(
-                    task_id,
-                    expected_input_revision=expected_input_revision,
-                    baseline_session_id=sid,
-                )
 
     return on_event
+
+
+async def _fork_delta_source(
+    task_id: str, agent_backend: str, baseline_dir: str, session_id: str, *, local_snapshot: bool
+) -> str | None:
+    if not session_id or not backend_supports_fork(agent_backend):
+        return None
+    if local_snapshot:
+        source_kind, source_dir = _resolve_session_context_location(baseline_dir, session_id)
+        if source_kind and source_dir and await run_file_job(_session_snapshot_exists, source_dir, session_id):
+            # The local bridge creates the child when it resumes the snapshot.
+            return session_id
+        return None
+    try:
+        return await fork_session_for_backend(
+            agent_backend, session_id, source_dir=baseline_dir, target_dir=baseline_dir, task_id=task_id
+        )
+    except SessionForkError as exc:
+        logger.warning(
+            "Baseline delta source unavailable for task {}; rebuilding current specification: {}", task_id, exc
+        )
+        return None
 
 
 async def _verify_baseline_snapshot(baseline_dir, final_session_id):
@@ -725,7 +648,7 @@ async def _finalize_bootstrap_attempt(
 
 
 async def _prepare_bootstrap_spec(
-    task_id, expected_input_revision, baseline_dir, refresh_mode, context, task_spec_doc_path, version_original_path
+    task_id, expected_input_revision, baseline_dir, context, task_spec_doc_path, version_original_path
 ):
     await run_db(_refresh_task_skill_context, task_id)
     await _update_bootstrap_state(
@@ -737,7 +660,7 @@ async def _prepare_bootstrap_spec(
         baseline_dir=baseline_dir,
         error_message=None,
     )
-    spec_path = (
+    return (
         task_spec_doc_path
         if context.get("execution_location") == "LOCAL"
         else await run_file_job(
@@ -746,19 +669,6 @@ async def _prepare_bootstrap_spec(
             version_original_path=version_original_path,
         )
     )
-
-    await _update_bootstrap_state(
-        task_id,
-        expected_input_revision=expected_input_revision,
-        status=TaskCliBootstrapStatus.RUNNING,
-        progress=40,
-        message=(
-            "Refreshing baseline context with incremental update"
-            if refresh_mode == "DELTA"
-            else "Reading specification with CLI baseline session"
-        ),
-    )
-    return spec_path
 
 
 def _validate_bootstrap_termination(bridge) -> bool | None:
@@ -889,26 +799,36 @@ async def _run_bootstrap(
                                 task_id,
                                 expected_input_revision,
                                 baseline_dir,
-                                refresh_mode,
                                 context,
                                 task_spec_doc_path,
                                 version_original_path,
                             )
-
-                            bridge = create_legacy_bridge(agent_backend, task_id=task_id)
-                            resume_session_id: str | None = None
-                            if session_snapshot_backend and refresh_mode == "DELTA" and baseline_session_id:
-                                source_kind, source_dir = _resolve_session_context_location(
+                            resume_session_id = (
+                                await _fork_delta_source(
+                                    task_id,
+                                    agent_backend,
                                     baseline_dir,
                                     baseline_session_id,
+                                    local_snapshot=session_snapshot_backend,
                                 )
-                                if (
-                                    source_kind
-                                    and source_dir
-                                    and _session_snapshot_exists(source_dir, baseline_session_id)
-                                ):
-                                    resume_session_id = baseline_session_id
+                                if refresh_mode == "DELTA"
+                                else None
+                            )
+                            refresh_mode = "DELTA" if resume_session_id else "FULL"
+                            await _update_bootstrap_state(
+                                task_id,
+                                expected_input_revision=expected_input_revision,
+                                status=TaskCliBootstrapStatus.RUNNING,
+                                progress=40,
+                                refresh_mode=refresh_mode,
+                                message=(
+                                    "Refreshing baseline context with incremental update"
+                                    if refresh_mode == "DELTA"
+                                    else "Reading specification with CLI baseline session"
+                                ),
+                            )
 
+                            bridge = create_legacy_bridge(agent_backend, task_id=task_id)
                             provider_events = await _create_bootstrap_provider_events(agent_backend)
                             on_event = _bootstrap_event_handler(task_id, expected_input_revision, provider_events)
 
@@ -923,6 +843,7 @@ async def _run_bootstrap(
                                 else os.path.abspath(baseline_dir),
                                 event_callback=on_event,
                                 session_id=resume_session_id,
+                                fork_session=bool(session_snapshot_backend and resume_session_id),
                                 env_overrides=env_overrides,
                                 on_process_started=on_process_started,
                             )

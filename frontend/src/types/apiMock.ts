@@ -90,23 +90,7 @@ export type ApiMockDocument = {
   created_at: string
 }
 
-export type ApiMockJob = {
-  id: string
-  project_id: string
-  creator_id: string
-  job_type: string
-  status: import('@/types/queue').QueueStatus
-  version?: number
-  attempt_count?: number
-  cancel_requested?: boolean
-  progress: number
-  message: string | null
-  result_json: Record<string, unknown> | null
-  created_at: string
-  updated_at: string | null
-  started_at: string | null
-  finished_at: string | null
-}
+export type { ApiMockJobResponse as ApiMockJob } from '../../shared/contracts/generated/apiMockJob'
 
 export type ApiMockPreviewResponse = {
   mode: 'STATIC' | 'MOCKJS' | 'PROXY'
