@@ -757,8 +757,10 @@ const handleThreadCloseHintAction = async (
 
 const changeVersion = async (versionId: string) => {
   selectedVersionId.value = versionId;
-  await discussion.loadDocument(versionId);
+  const document = await discussion.loadDocument(versionId);
+  if (!document || selectedVersionId.value !== versionId) return;
   await discussion.loadThreads(versionId);
+  if (selectedVersionId.value !== versionId) return;
   selectedThreadId.value = "";
   pendingRelocation.value = null;
   if (proposalDraftModalVisible.value) {
