@@ -79,7 +79,7 @@ export async function startLocalResourceService(config: Config, options: { http?
         send(200, { ...identity, protocol_version: 2, platform: process.platform === 'win32' ? 'nt' : 'posix', implementation: 'typescript', capabilities: ['provision', 'checkpoint', 'materialize', 'generate_patch', 'apply_patch', 'restore', 'release', 'skills', 'documents', 'roots_grant', 'repository_details'] }); return
       }
       if (request.method === 'GET' && url.pathname.startsWith('/v1/operations/')) {
-        const row = db!.prepare('SELECT state,result,request FROM operations_v2 WHERE id=?').get(url.pathname.slice('/v1/operations/'.length))
+        const row = db!.prepare('SELECT state,result,request FROM operations WHERE id=?').get(url.pathname.slice('/v1/operations/'.length))
         const command = row ? JSON.parse(String(row.request)) : null
         if (!command || command.task_id !== url.searchParams.get('task_id') || command.resource_id !== url.searchParams.get('resource_id')) { send(404, { detail: 'Operation not found' }); return }
         const { action, ...identity } = command

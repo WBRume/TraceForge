@@ -220,11 +220,12 @@ class ApiMockContextResponse(BaseModel):
 class ApiMockJobResult(BaseModel):
     """Business result and cancellation metadata, shared by HTTP and WebSocket."""
 
+    model_config = {"extra": "forbid"}
+
     job_kind: str | None = None
     target_endpoint_id: str | None = None
     source_url: str | None = None
     endpoints_imported: int | None = None
-    cases_created: int | None = None
     created_count: int | None = None
     updated_count: int | None = None
     cancel_requested: bool | None = None

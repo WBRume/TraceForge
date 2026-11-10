@@ -70,51 +70,44 @@ export function useTerminalLogs() {
     logs.value = []
   }
 
-  /** 历史快照恢复：log 行的 content 是 JSON 序列化的 tool_use / tool_result / 原始日志。 */
-  const restoreFromHistory = (hLogs: any[]) => {
-    logs.value = hLogs.map((l: any) => {
-      const createdAt = l.created_at || new Date().toISOString()
+  const restoreFromHistory = (hLogs: { id: string; type: string; content: string; created_at: string }[]) => {
+    logs.value = hLogs.flatMap<TerminalLogEntry>((row) => {
+      const base = { id: row.id, created_at: row.created_at, timestamp: toTimestamp(row.created_at) }
+      if (['STDERR', 'STATUS', 'HITL_REQUEST', 'HITL_RESPONSE', 'AGENT_STATE'].includes(row.type)) {
+        return [{ ...base, type: 'log', content: row.content }]
+      }
+      if (row.type !== 'STDOUT') return []
       try {
-        const record = parseContract<TerminalRecord>('terminalRecord', JSON.parse(l.content))
+        const record = parseContract<TerminalRecord>('terminalRecord', JSON.parse(row.content))
         const event = parseContract<ApplicationMessage>('applicationMessage', {
           contract_version: record.contract_version, event_type: record.event_type, payload: record.payload,
         })
         if (event.event_type === 'tool_use') {
           const parsed = event.payload
-          return {
-            id: l.id,
+          return [{
+            ...base,
             type: 'tool_use',
             tool_name: parsed.tool_name,
             tool_input: parsed.tool_input,
             tool_use_id: parsed.tool_use_id,
-            created_at: createdAt,
-            timestamp: toTimestamp(createdAt),
-          } as TerminalLogEntry
+          }]
         }
         if (event.event_type === 'tool_result') {
           const parsed = event.payload
-          return {
-            id: l.id,
+          return [{
+            ...base,
             type: 'tool_result',
             tool_use_id: parsed.tool_use_id,
             output: parsed.output,
             is_error: parsed.is_error,
             structured_content: parsed.structured_content,
             content_blocks: parsed.content,
-            created_at: createdAt,
-            timestamp: toTimestamp(createdAt),
-          } as TerminalLogEntry
+          }]
         }
       } catch {
-        // Non-JSON log entries fall through
+        return []
       }
-      return {
-        id: l.id,
-        type: 'log',
-        content: l.content,
-        created_at: createdAt,
-        timestamp: toTimestamp(createdAt),
-      } as TerminalLogEntry
+      return []
     })
   }
 

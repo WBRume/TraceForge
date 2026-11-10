@@ -13,6 +13,47 @@ if BACKEND_ROOT not in sys.path:
 
 
 class SkillMaterializationAtomicReplaceTest(unittest.TestCase):
+    def test_install_retries_windows_sharing_conflict(self):
+        replace = os.replace
+        error = PermissionError("directory is temporarily locked")
+        error.winerror = 5
+        with tempfile.TemporaryDirectory() as tmpdir:
+            live_dir = os.path.join(tmpdir, "skills")
+            with (
+                mock.patch.object(os, "replace", side_effect=[error, mock.DEFAULT], wraps=replace) as rename,
+                mock.patch.object(skill_runtime_materialization.time, "sleep") as sleep,
+            ):
+                skill_runtime_materialization._replace_skills_atomically([], live_dir)
+            self.assertEqual(rename.call_count, 2)
+            sleep.assert_called_once_with(0.05)
+            self.assertEqual(os.listdir(tmpdir), ["skills"])
+
+    def test_exhausted_windows_retries_restore_original_directory(self):
+        replace = os.replace
+        error = PermissionError("staged directory is locked")
+        error.winerror = 5
+        with tempfile.TemporaryDirectory() as tmpdir:
+            live_dir = os.path.join(tmpdir, "skills")
+            os.mkdir(live_dir)
+            marker = os.path.join(live_dir, "keep.txt")
+            with open(marker, "w", encoding="utf-8") as file:
+                file.write("old")
+
+            def deny_staged_rename(source, target):
+                if ".__tmp__." in source:
+                    raise error
+                replace(source, target)
+
+            with (
+                mock.patch.object(os, "replace", side_effect=deny_staged_rename),
+                mock.patch.object(skill_runtime_materialization.time, "sleep") as sleep,
+                self.assertRaises(PermissionError),
+            ):
+                skill_runtime_materialization._replace_skills_atomically([], live_dir)
+            self.assertEqual(sleep.call_count, 5)
+            self.assertEqual(os.listdir(tmpdir), ["skills"])
+            self.assertTrue(os.path.isfile(marker))
+
     def test_replace_skills_atomically_preserves_live_dir_on_copy_failure(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             live_dir = os.path.join(tmpdir, ".claude", "skills")

@@ -139,7 +139,7 @@ def auto_generate_mock_cases_for_endpoint(
             db,
             project.id,
             job,
-            {"cases_created": created_count, "created_count": created_count, "updated_count": 0},
+            {"created_count": created_count, "updated_count": 0},
             f"Successfully created {created_count} mock cases",
             artifacts=artifacts,
         )

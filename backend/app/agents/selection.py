@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -437,30 +438,17 @@ async def probe_session_fork(
             with tempfile.TemporaryDirectory(prefix="tf-fork-drill-") as drill_dir:
                 await fork_session_for_backend(name, session_id, source_dir=source_dir, target_dir=drill_dir)
                 drill_store = _claude_project_store_dir(drill_dir)
-                import shutil
-
                 shutil.rmtree(drill_store, ignore_errors=True)
             return True
         if name == "opencode":
-            drill_dir = os.path.abspath(os.path.join(source_dir, ".fork-drill"))
-            new_id = await fork_session_for_backend(
-                name,
-                session_id,
-                source_dir=source_dir,
-                target_dir=drill_dir,
-            )
-            from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
-
             bridge = create_legacy_bridge(name)
-            adapter = bridge.backend if isinstance(bridge, LegacyBridgeShim) else None
-            if isinstance(adapter, OpenCodeAdapter):
-                deleted = await adapter.delete_session(new_id)
-                if not deleted:
-                    logger.warning(
-                        "opencode fork drill left orphan session {} (delete API unavailable)",
-                        new_id,
-                    )
-            shutil.rmtree(drill_dir, ignore_errors=True)
+            try:
+                # Review threads fork in the task directory.
+                new_id = await bridge.fork_session(session_id, source_dir=source_dir, target_dir=source_dir)
+                if not await bridge.backend.delete_session(new_id):
+                    raise SessionForkError("OpenCode fork probe cleanup failed")
+            finally:
+                await bridge.close()
             return True
         if name == "dsh":
             from app.agents.adapters.dsh import session_files

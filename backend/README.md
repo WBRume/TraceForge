@@ -155,6 +155,15 @@ python -m pytest tests
 
 串行执行及统计慢用例使用 `python -m pytest tests -n 0 --durations=25`。并行调度只用于提高吞吐，不能作为单用例优化或串行耗时对照的依据。
 
+### 生成跨端协议
+
+安装后端依赖和前端 npm 依赖后，改动 Python 协议模型或 DSH 诊断工具定义时，从仓库根目录运行以下命令。Python 脚本导出 Web 和桌面运行时共用的 JSON Schema，并生成 DSH 工具清单。Node 脚本再从 JSON Schema 生成 TypeScript 类型和校验器使用的 Schema 索引。提交时一并更新生成文件。
+
+```powershell
+python backend/scripts/export_protocols.py
+node frontend/scripts/generate-contracts.mjs
+```
+
 ### 代码规范
 
 统一配置为 [`ruff.toml`](ruff.toml)，Ruff 版本由 [`requirements-dev.txt`](requirements-dev.txt) 固定；升级时同步调整 `required-version`。目标 Python 3.10，120 列、4 空格缩进、双引号。仓库根目录运行 `python -m ruff check backend` 也会读取同一配置。

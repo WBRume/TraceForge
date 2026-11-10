@@ -175,6 +175,7 @@
       "type": "object"
     },
     "ApiMockJobResult": {
+      "additionalProperties": false,
       "description": "Business result and cancellation metadata, shared by HTTP and WebSocket.",
       "properties": {
         "job_kind": {
@@ -224,18 +225,6 @@
           ],
           "default": null,
           "title": "Endpoints Imported"
-        },
-        "cases_created": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Cases Created"
         },
         "created_count": {
           "anyOf": [

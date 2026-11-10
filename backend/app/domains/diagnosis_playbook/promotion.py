@@ -7,7 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
-from app.domains.ai.schemas.job_result import JobArtifact, current_completion
+from app.domains.ai.schemas.job_result import JobArtifact, JobCompletion
 from app.domains.ai.services.jobs.domain_turn import persisted_milestones
 from app.domains.case_center.models.case import SddCase
 
@@ -34,13 +34,14 @@ class PromotionResult(BaseModel):
 
 
 def view(job):
+    completion = JobCompletion.model_validate(job.completion_json) if job.completion_json is not None else None
     return {
         "job_id": job.id,
         "workspace_id": job.workspace_id,
         "status": job.status.value,
         "version": int(job.version or 1),
         "attempt_count": int(job.attempt_count or 0),
-        "completion": current_completion(job.completion_json),
+        "completion": completion.model_dump(mode="json") if completion else None,
         "progress": job.progress,
         "message": job.message,
         "error": job.error_message,

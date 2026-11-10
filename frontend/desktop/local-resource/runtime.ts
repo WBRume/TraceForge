@@ -16,6 +16,32 @@ import type { OperationReceipt } from '../../shared/contracts/generated/operatio
 
 export interface Config { roots_config_path?: string; state_root: string; allowed_roots: string[]; token: string; listen_host?: string; port?: number; dsh_session_root?: string; collaboration_registry_path?: string }
 export type Operation = ResourceCommand
+const JOURNAL_SCHEMA_VERSION = 2
+
+function initializeJournal(db: JournalDatabase) {
+  db.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL')
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const { user_version: version } = db.query('PRAGMA user_version').get() as { user_version: number }
+    if (version === 0) {
+      // Replace both unversioned receipt layouts. Task bindings are independent of receipts.
+      db.exec(`
+        DROP TABLE IF EXISTS operations;
+        DROP TABLE IF EXISTS operations_v2;
+        CREATE TABLE operations (id TEXT PRIMARY KEY, hash TEXT NOT NULL, state TEXT NOT NULL, result TEXT, request TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, resource TEXT NOT NULL, root TEXT NOT NULL);
+        PRAGMA user_version=${JOURNAL_SCHEMA_VERSION};
+      `)
+    } else if (version !== JOURNAL_SCHEMA_VERSION) {
+      throw new Error(`Unsupported local resource journal schema: ${version}`)
+    }
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
 // Compatible with Python json.dumps(sort_keys=True, ensure_ascii=False).
 export function canonical(value: any): string {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(', ') + ']'
@@ -38,7 +64,12 @@ export class Runtime {
     this.collaboration = new CollaborationRuntime(path.join(this.state, 'collaboration'), () => this.roots)
     fs.mkdirSync(this.state, { recursive: true })
     this.db = platform().database(path.join(this.state, 'journal.sqlite3'))
-    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS operations_v2 (id TEXT PRIMARY KEY, hash TEXT NOT NULL, state TEXT NOT NULL, result TEXT, request TEXT NOT NULL); CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, resource TEXT NOT NULL, root TEXT NOT NULL)')
+    try {
+      initializeJournal(this.db)
+    } catch (error) {
+      this.db.close()
+      throw error
+    }
   }
   inspect(payload: any) {
     inside(payload.workspace_root, this.roots)
@@ -55,7 +86,7 @@ export class Runtime {
     const action = 'action' in payload ? payload.action : undefined
     const receipt = (state: OperationReceipt['state'], result: unknown) =>
       parseContract<OperationReceipt>('operationReceipt', { ...identity, state, result })
-    const prior = this.db.query('SELECT hash,state,result FROM operations_v2 WHERE id=?').get(command.operation_id) as { hash: string; state: string; result: string } | null
+    const prior = this.db.query('SELECT hash,state,result FROM operations WHERE id=?').get(command.operation_id) as { hash: string; state: string; result: string } | null
     if (prior) {
       if (prior.hash !== digest) fail('OPERATION_ID_CONFLICT')
       if (prior.state === 'SUCCEEDED') {
@@ -65,22 +96,22 @@ export class Runtime {
       }
       if (phase === 'register' && prior.state === 'FAILED') {
         // Registration has a pinned ownership manifest and can resume a known failure.
-        this.db.query("UPDATE operations_v2 SET state='RUNNING' WHERE id=?").run(operation_id)
+        this.db.query("UPDATE operations SET state='RUNNING' WHERE id=?").run(operation_id)
       } else if (phase !== 'checkout' || prior.state !== 'RUNNING') {
         fail('EXECUTION_UNKNOWN: 操作结果未知，请按原操作标识查询')
       }
     } else {
-      this.db.query('INSERT INTO operations_v2 VALUES (?,?,?,NULL,?)')
+      this.db.query('INSERT INTO operations VALUES (?,?,?,NULL,?)')
         .run(operation_id, digest, 'RUNNING', JSON.stringify({ ...identity, action }))
     }
     try {
       const result = this.execute(command, phase)
       if (phase === 'register') return receipt('RUNNING', null)
       validateResourceResult(kind, action, result)
-      this.db.query("UPDATE operations_v2 SET state='SUCCEEDED',result=? WHERE id=?").run(JSON.stringify(result), command.operation_id)
+      this.db.query("UPDATE operations SET state='SUCCEEDED',result=? WHERE id=?").run(JSON.stringify(result), command.operation_id)
       return receipt('SUCCEEDED', result)
     } catch (error) {
-      this.db.query('UPDATE operations_v2 SET state=?,result=NULL WHERE id=?')
+      this.db.query('UPDATE operations SET state=?,result=NULL WHERE id=?')
         .run(phase === 'register' ? 'FAILED' : 'UNKNOWN', operation_id)
       throw error
     }

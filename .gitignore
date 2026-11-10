@@ -20,7 +20,8 @@
 /tmp
 backend/scratch/
 /.atomcode
-/backend/scripts/
+/backend/scripts/*
+!/backend/scripts/export_protocols.py
 /.claude/
 /backend/app/uploads/
 /backend/uploads/

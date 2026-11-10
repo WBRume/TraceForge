@@ -101,7 +101,7 @@ def test_auto_generate_mock_cases_persists_request_matchers_and_prompt_fields(mo
     assert created["request_body_json"] == {"name": "Alice", "role": "admin"}
     assert created["request_path_params_json"] is None
 
-    assert captured["success_result"]["cases_created"] == 2
+    assert captured["success_result"]["created_count"] == 2
     assert captured["success_result"]["created_count"] == 2
     assert captured["success_result"]["updated_count"] == 0
     assert "request_body" in str(captured["prompt"])

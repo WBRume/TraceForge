@@ -24,7 +24,6 @@ export type JobKind = (string | null)
 export type TargetEndpointId = (string | null)
 export type SourceUrl = (string | null)
 export type EndpointsImported = (number | null)
-export type CasesCreated = (number | null)
 export type CreatedCount = (number | null)
 export type UpdatedCount = (number | null)
 export type CancelRequested1 = (boolean | null)
@@ -76,7 +75,6 @@ job_kind?: JobKind
 target_endpoint_id?: TargetEndpointId
 source_url?: SourceUrl
 endpoints_imported?: EndpointsImported
-cases_created?: CasesCreated
 created_count?: CreatedCount
 updated_count?: UpdatedCount
 cancel_requested?: CancelRequested1

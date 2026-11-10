@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 import uuid
 from datetime import datetime
 
@@ -229,6 +230,19 @@ def _copy_skills_to_target(
     _write_runtime_manifest(target_dir, manifest_items)
 
 
+def _rename_skill_directory(source: str, target: str) -> None:
+    # On Windows a reader without FILE_SHARE_DELETE can briefly lock the tree.
+    for delay in (0.05, 0.1, 0.2, 0.4, 0.8):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) not in {5, 32, 33}:
+                raise
+            time.sleep(delay)
+    os.replace(source, target)
+
+
 def _replace_skills_atomically(
     skills: list[SddSkill],
     target_dir: str,
@@ -251,16 +265,16 @@ def _replace_skills_atomically(
             preserve_deleted_runtime_skills=preserve_deleted_runtime_skills,
         )
         if os.path.exists(target_dir):
-            os.replace(target_dir, old_dir)
+            _rename_skill_directory(target_dir, old_dir)
             moved_old = True
-        os.replace(tmp_dir, target_dir)
+        _rename_skill_directory(tmp_dir, target_dir)
         if moved_old and os.path.exists(old_dir):
             shutil.rmtree(old_dir, ignore_errors=True)
     except Exception:
         if os.path.exists(tmp_dir):
             shutil.rmtree(tmp_dir, ignore_errors=True)
         if moved_old and os.path.exists(old_dir) and not os.path.exists(target_dir):
-            os.replace(old_dir, target_dir)
+            _rename_skill_directory(old_dir, target_dir)
         raise
 
 

@@ -1,6 +1,9 @@
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
+from pydantic import ValidationError
+
 from app.domains.ai.models.ai_job import AiJobStatus
 from app.domains.api_mock.models.api_mock import SddApiMockJob
 from app.domains.api_mock.schemas.api_mock import ApiMockJobResponse
@@ -63,12 +66,14 @@ def test_job_snapshots_only_expose_business_results():
         started_at=None,
         finished_at=None,
         execution=SimpleNamespace(version=4, attempt_count=1, completion_json=None),
-        result_json={"target_endpoint_id": "endpoint", "created_count": 3, "live_logs": ["old log"]},
+        result_json={"target_endpoint_id": "endpoint", "created_count": 3},
     )
     expected = {"target_endpoint_id": "endpoint", "created_count": 3}
     assert job_service._serialize_job(job)["result_json"] == expected
     assert ApiMockJobResponse.model_validate(job).result_json.model_dump(exclude_unset=True) == expected
-    assert "live_logs" in job.result_json
+    job.result_json["live_logs"] = ["old log"]
+    with pytest.raises(ValidationError, match="live_logs"):
+        job_service._serialize_job(job)
 
 
 def test_current_phase_replaces_status_without_appending_execution_content(execution_db):

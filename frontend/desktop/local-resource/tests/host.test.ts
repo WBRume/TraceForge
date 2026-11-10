@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { tmpdir } from 'node:os'
 import { startServer, serve } from './helpers'
 import { canonical } from '../runtime'
+import { DatabaseSync } from './sqlite'
 import { git, hash, inside, remoteKey } from '../filesystem'
 import { encodeSegment, forkSession, locateSession, projectKey } from '../provider'
 
@@ -73,6 +74,43 @@ async function repository() {
 }
 
 describe('embedded collaboration, HTTP protocol and ownership', () => {
+  test('rebuilds unversioned operation tables once and keeps task bindings and new receipts', async () => {
+    await host.close()
+    const state_root = path.join(root, 'legacy-state')
+    fs.mkdirSync(state_root)
+    const file = path.join(state_root, 'journal.sqlite3')
+    const old = new DatabaseSync(file)
+    try {
+      old.exec(`
+        CREATE TABLE operations (id TEXT PRIMARY KEY, result TEXT);
+        CREATE TABLE operations_v2 (id TEXT PRIMARY KEY, result TEXT);
+        CREATE TABLE tasks (id TEXT PRIMARY KEY, resource TEXT NOT NULL, root TEXT NOT NULL);
+        INSERT INTO operations VALUES ('old-operation', '{}');
+        INSERT INTO operations_v2 VALUES ('old-v2-operation', '{}');
+        INSERT INTO tasks VALUES ('existing-task', 'resource', 'existing-root');
+      `)
+    } finally {
+      old.close()
+    }
+    const config = { state_root, allowed_roots: [workspace], token: 'x'.repeat(32), port: 0 }
+    host = await startServer(config)
+    const lookup = (id: string) => fetch(new URL(`/v1/operations/${id}?task_id=task&resource_id=resource`, host.server!.url), { headers })
+    expect((await lookup('old-operation')).status).toBe(404)
+    expect((await lookup('old-v2-operation')).status).toBe(404)
+    const result = await ok('provision', { workspace_root: workspace, repositories: [] }, 'new-operation')
+    await host.close()
+    host = await startServer(config)
+    expect(await (await lookup('new-operation')).json()).toMatchObject({ state: 'SUCCEEDED', result })
+    const current = new DatabaseSync(file, { readOnly: true })
+    try {
+      expect(current.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'operations%'").all().map(row => row.name)).toEqual(['operations'])
+      expect(current.prepare("SELECT root FROM tasks WHERE id='existing-task'").get()?.root).toBe('existing-root')
+      expect(current.prepare('PRAGMA user_version').get()?.user_version).toBe(2)
+    } finally {
+      current.close()
+    }
+  })
+
   test('collaboration dispatch prepares and captures through the embedded worker', async () => {
     const { source, repo } = await repository()
     const prepared = await host.dispatch('collaboration', { kind: 'prepare', payload: {

@@ -7,11 +7,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from app.protocols.base import Contract
 
-from .job_result import JobCompletion, current_completion
+from .job_result import JobCompletion
 
 QueueSourceValue = Literal["provision", "api_mock", "bootstrap", "skill_analysis"]
 QueueStatusValue = Literal[
@@ -61,8 +61,6 @@ class QueueJobItem(BaseModel):
     result_available: bool = False
     retry_count: int | None = None
     actions: QueueJobActions
-
-    _current_completion = field_validator("completion", mode="before")(current_completion)
 
 
 class QueueJobListResponse(BaseModel):

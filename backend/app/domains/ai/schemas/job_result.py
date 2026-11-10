@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class JobArtifact(BaseModel):
@@ -24,19 +24,10 @@ class JobCompletion(BaseModel):
     committed_at: datetime = Field(json_schema_extra={"format": "iso-date-time"})
 
 
-def current_completion(value):
-    """Archived receipts from another contract version have no v2 result."""
-    if isinstance(value, dict) and value.get("schema_version") != 2:
-        return None
-    return value
-
-
 class JobSnapshotFields(BaseModel):
     version: int = 1
     attempt_count: int = 0
     completion: JobCompletion | None = None
-
-    _current_completion = field_validator("completion", mode="before")(current_completion)
 
 
 class WorkspacePreparationResult(BaseModel):

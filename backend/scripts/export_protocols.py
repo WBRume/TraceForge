@@ -1,10 +1,10 @@
-"""Export canonical schemas consumed by browser and desktop validators."""
+"""Generate shared JSON Schema and the DSH tool manifest from Python contracts."""
 
 import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pydantic import TypeAdapter
 
@@ -42,12 +42,13 @@ def schemas():
 
 
 if __name__ == "__main__":
-    destination = Path(__file__).resolve().parents[1] / "frontend/shared/contracts/schemas"
+    root = Path(__file__).resolve().parents[2]
+    destination = root / "frontend/shared/contracts/schemas"
     destination.mkdir(parents=True, exist_ok=True)
     for name, schema in schemas().items():
         (destination / (name + ".json")).write_text(
             json.dumps(schema, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
 
-    dsh_tools = destination.parents[3] / "integrations/dsh-playbook/tools.json"
+    dsh_tools = root / "integrations/dsh-playbook/tools.json"
     dsh_tools.write_text(json.dumps(TOOLS, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
