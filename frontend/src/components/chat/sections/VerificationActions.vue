@@ -77,7 +77,8 @@ const canShowStatusSummary = computed(() => (
   justify-content: space-between;
   gap: 12px;
   padding: 8px 24px;
-  background-color: #F8FAFC;
+  /* 保留原底色，仅做轻微透明；不使用毛玻璃模糊 */
+  background-color: rgba(248, 250, 252, 0.9);
   border-top: 1px solid #F1F5F9;
   min-height: 44px;
   box-sizing: border-box;

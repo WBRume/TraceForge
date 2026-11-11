@@ -16,6 +16,7 @@ const chatMessageBubbleSource = source('../../components/chat/ChatMessageBubble.
 const chatMessageContentSource = source('../../components/chat/ChatMessageContent.vue')
 const diagnosisResultCardSource = source('../../components/chat/DiagnosisResultCard.vue')
 const chatExecutionInputSource = source('../../components/chat/ChatExecutionInput.vue')
+const verificationActionsSource = source('../../components/chat/sections/VerificationActions.vue')
 const chatViewSource = source('../ChatView.vue')
 const chatStartActionsSource = source('../../composables/chat/actions/useTaskStartActions.ts')
 const startTaskModalSource = source('../../components/chat/sections/StartTaskModal.vue')
@@ -115,6 +116,20 @@ describe('ChatView diagnosis summary layout containment', () => {
     expect(declarations(chatViewSource, '.chat-main')).toContain('--chat-overlay-inset: var(--chat-header-height)')
     expect(sessionHeaderSource).toContain('ResizeObserver')
     expect(sessionHeaderSource).toContain("setProperty('--chat-header-height'")
+  })
+
+  it('keeps the verification action bar slightly transparent with its original background', () => {
+    const actionsRule = declarations(verificationActionsSource, '.verification-actions')
+    expect(actionsRule).toContain('background-color: rgba(248, 250, 252, 0.9)')
+    expect(actionsRule).toContain('border-top: 1px solid #F1F5F9')
+    expect(actionsRule).not.toContain('backdrop-filter')
+
+    const stackRule = declarations(chatViewSource, '.chat-history-stack')
+    expect(stackRule).toContain('display: grid')
+    expect(stackRule).toContain('--chat-actions-inset: 44px')
+    expect(chatViewSource).toContain('.chat-history-stack :deep(.verification-actions)')
+    expect(chatViewSource).toContain('align-self: end')
+    expect(declarations(chatViewSource, '.chat-history-stack :deep(.chat-history)')).toContain('padding-bottom')
   })
 
   it('routes undo through the shared confirmation modal before calling the view model', () => {

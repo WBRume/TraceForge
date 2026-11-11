@@ -261,15 +261,17 @@ watch(
         @update:thinking-expanded="vm.thinkingExpanded = $event"
       />
 
-      <!-- ─ 对话气泡区（仅自然语言） ─ -->
-      <ChatHistoryPanel
-        :vm="vm"
-        :container-ref="rawVm.chatContainer"
-        @undo-request="handleUndoRequest"
-      />
+      <!-- ─ 对话气泡区 + 快捷操作行：操作条悬浮在消息流底部，消息从半透明浮层后方隐约透出 ─ -->
+      <div class="chat-history-stack">
+        <ChatHistoryPanel
+          :vm="vm"
+          :container-ref="rawVm.chatContainer"
+          @undo-request="handleUndoRequest"
+        />
 
-      <!-- 快捷操作行 -->
-      <VerificationActions :vm="vm" />
+        <!-- 快捷操作行 -->
+        <VerificationActions :vm="vm" />
+      </div>
 
       <!-- 协作预输入：收集窗口进行中时显示在输入框上方 -->
       <PreInputPanel
@@ -537,6 +539,36 @@ watch(
 /* 置顶卡片区同样从悬浮工具栏下方开始（非 SOP 模式） */
 .pinned-cards-area {
   margin-top: var(--chat-overlay-inset, 0px);
+}
+
+/* 消息流 + 底部快捷操作条叠放在同一格：操作条以半透明浮层覆盖消息流底部，
+   消息滚动时从半透明层后方隐约透出；--chat-actions-inset 用于给最后一条消息留出让位空间 */
+.chat-history-stack {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  position: relative;
+  --chat-actions-inset: 44px;
+}
+.chat-history-stack :deep(.chat-history-panel-root) {
+  grid-area: 1 / 1;
+  min-height: 0;
+}
+.chat-history-stack :deep(.verification-actions) {
+  grid-area: 1 / 1;
+  align-self: end;
+  z-index: 20;
+}
+.chat-history-stack :deep(.chat-history) {
+  padding-bottom: calc(var(--space-6) + var(--chat-actions-inset));
+}
+@media (max-width: 760px) {
+  .chat-history-stack {
+    /* 窄屏下操作条可能换行，预留更高的底部空间 */
+    --chat-actions-inset: 76px;
+  }
 }
 
 /* ─── Chat Main ─── */
