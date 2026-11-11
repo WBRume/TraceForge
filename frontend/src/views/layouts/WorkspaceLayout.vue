@@ -11,6 +11,7 @@ import NotificationBell from '@/components/notification/NotificationBell.vue'
 import WorkspaceRepoSetupDialog from '@/components/local-agent/WorkspaceRepoSetupDialog.vue'
 import TaskHostRail from '@/components/chat/task-rail/TaskHostRail.vue'
 import { useTaskRailStore } from '@/stores/taskRail'
+import { isDesktop } from '@/utils/runtime'
 
 const route = useRoute()
 const router = useRouter()
@@ -35,6 +36,8 @@ const maybePromptRepoSetup = async () => {
   if (!workspace) return
   await localAgent.loadLocalConfig()
   await localAgent.setWorkspaceContext(workspace)
+  // 浏览器中的 Web 端不具备本地开发能力，只在桌面客户端引导本地仓库/服务配置。
+  if (!isDesktop()) return
   if (localStorage.getItem(setupKey())) return
   showRepoSetupDialog.value = true
 }
