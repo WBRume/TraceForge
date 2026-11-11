@@ -169,6 +169,10 @@ function formatCodeContext(codeContext: unknown): string {
   }).join('\n\n')
 }
 
+function formatMarkdownList(items: string[]): string {
+  return items.map((item) => `- ${item}`).join('\n')
+}
+
 function formatSimilarCases(similarCases: unknown): string {
   if (!Array.isArray(similarCases)) return ''
   const rows = similarCases.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
@@ -290,9 +294,11 @@ export function buildDiagnosisRagMarkdown(
 ): string {
   const title = taskName.trim() || '问题定位结果'
   const confidenceText = `置信度：${payload.confidence}%`
-  const analysisText = [payload.evidence_chain, confidenceText].filter(Boolean).join('\n\n')
+  const evidenceText = formatMarkdownList(payload.evidence || [])
+  const analysisText = [evidenceText, confidenceText].filter(Boolean).join('\n\n')
+  const fixStepsText = formatMarkdownList(payload.fix_steps || [])
   const solutionParts = [
-    payload.fix_suggestion,
+    fixStepsText,
     payload.fix_code ? `修复代码：\n\`\`\`\n${payload.fix_code}\n\`\`\`` : '',
   ].filter(Boolean).join('\n\n')
 
@@ -325,37 +331,49 @@ function detailString(detail: Record<string, unknown>, key: string): string | un
   return typeof value === 'string' && value.trim() ? value : undefined
 }
 
+function detailStringList(detail: Record<string, unknown>, key: string): string[] {
+  const value = detail[key]
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map((item) => item.trim())
+}
+
 function detailNumber(detail: Record<string, unknown>, key: string): number | undefined {
   if (detail[key] === undefined || detail[key] === null) return undefined
   const value = Number(detail[key])
   return Number.isFinite(value) ? value : undefined
 }
 
-function caseAnalysisProcess(detail: Record<string, unknown>, fallback: string): string {
-  const evidence = detailString(detail, 'evidence_chain')
-  const confidence = detailNumber(detail, 'confidence')
-  if (!evidence) return fallback
-
-  const confidenceText = confidence === undefined ? '' : `置信度：${confidence}%`
-  const fallbackText = fallback || ''
-  const isDefaultStyle = !fallbackText || (
-    fallbackText.includes(evidence)
-    && /置信度\s*[:：]\s*\d+%/.test(fallbackText)
-  )
-  if (!isDefaultStyle) return fallbackText
-  return [evidence, confidenceText].filter(Boolean).join('\n\n')
+// 案例表单保存的是段落文本，只有与自动生成的原文一致时才用结构化快照排版。
+function matchesGeneratedCaseText(value: string | null | undefined, generated: string): boolean {
+  return value === undefined || value?.replaceAll('\r\n', '\n') === generated.replaceAll('\r\n', '\n')
 }
 
-function caseSolution(detail: Record<string, unknown>, fallback: string): string {
-  const fixCode = detailString(detail, 'fix_code')
-  const suggestion = detailString(detail, 'fix_suggestion')
-  if (!fixCode && !suggestion) return fallback
+function caseAnalysisProcess(detail: Record<string, unknown>, value: string | null | undefined): string {
+  const evidence = detailStringList(detail, 'evidence')
+  if (!evidence.length) return value ?? ''
 
-  // 保留案例可编辑文本中的说明部分；已转换生成的“修复代码:”旧文本统一替换为带围栏的 Markdown 代码块。
-  const fallbackSuggestion = fallback.replace(/\n*修复代码:[\s\S]*$/, '').trim()
-  const baseSuggestion = fallbackSuggestion || suggestion || ''
+  const confidence = detailNumber(detail, 'confidence')
+  const confidenceText = confidence === undefined ? '' : `置信度: ${confidence}%`
+  const generated = [...evidence, confidenceText].filter(Boolean).join('\n\n')
+  if (!matchesGeneratedCaseText(value, generated)) return value ?? ''
+
+  const formattedConfidence = confidence === undefined ? '' : `置信度：${confidence}%`
+  return [formatMarkdownList(evidence), formattedConfidence].filter(Boolean).join('\n\n')
+}
+
+function caseSolution(detail: Record<string, unknown>, value: string | null | undefined): string {
+  const fixCode = detailString(detail, 'fix_code')?.trim()
+  const steps = detailStringList(detail, 'fix_steps')
+  if (!fixCode && !steps.length) return value ?? ''
+
+  const generatedCode = fixCode ? `修复代码:\n${fixCode}` : ''
+  const generated = [...steps, generatedCode].filter(Boolean).join('\n\n')
+  if (!matchesGeneratedCaseText(value, generated)) return value ?? ''
+
   const codeBlock = fixCode ? `修复代码：\n\`\`\`\n${fixCode}\n\`\`\`` : ''
-  return [baseSuggestion, codeBlock].filter(Boolean).join('\n\n')
+  return [formatMarkdownList(steps), codeBlock].filter(Boolean).join('\n\n')
 }
 
 function caseCodeContext(detail: Record<string, unknown>, fallback: string): string {
@@ -393,9 +411,9 @@ export function buildCaseRagMarkdown(caseDetail: RagCaseDetail): string {
     repositories: caseDetail.repositories || undefined,
     problemDescription: caseDetail.source_task_phenomenon || caseDetail.problem_description || '',
     resultContent: detailString(detail, 'summary') || '',
-    analysisProcess: caseAnalysisProcess(detail, caseDetail.analysis_process || ''),
+    analysisProcess: caseAnalysisProcess(detail, caseDetail.analysis_process),
     rootCause: caseDetail.root_cause || detailString(detail, 'root_cause') || '',
-    solution: caseSolution(detail, caseDetail.solution || ''),
+    solution: caseSolution(detail, caseDetail.solution),
     codeContext: caseCodeContext(detail, caseDetail.code_context || ''),
     similarCases: detail.similar_cases,
     callChain: detail.call_chain,

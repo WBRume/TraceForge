@@ -10,8 +10,8 @@ vi.mock('vue-i18n', () => ({
 const payload = (overrides: Partial<DiagnosisResultPayload> = {}): DiagnosisResultPayload => ({
   summary: '连接池在高峰期被耗尽',
   root_cause: '连接池配置过小',
-  evidence_chain: '日志显示获取连接超时',
-  fix_suggestion: '扩容连接池并增加熔断',
+  evidence: ['日志显示获取连接超时'],
+  fix_steps: ['扩容连接池并增加熔断'],
   fix_code: 'pool.maxActive = 200',
   code_context: [
     { file_path: 'src/pool.py', start_line: 12, end_line: 34, snippet: 'pool = Pool(maxActive=50)', note: '连接池配置' },
@@ -57,6 +57,40 @@ describe('DiagnosisResultCard', () => {
     expect(wrapper.text()).toContain('85%')
   })
 
+  it('renders result, evidence and fix suggestions as the action board', () => {
+    const wrapper = mountCard({
+      payload: payload({
+        evidence: [
+          '源码证据：`fetch_all_orders()` 没有 owner 条件。',
+          '日志证据：user 42 返回了 user 57 的订单。',
+          '对照证据：按用户查询只返回 42。',
+        ],
+        fix_steps: [
+          '改为 `fetch_orders_by_owner(current_user.id)`。',
+          '增加结果集归属校验。',
+          '补充两用户回归测试。',
+        ],
+      }),
+    })
+
+    expect(wrapper.find('.dc-summary-board').exists()).toBe(true)
+    expect(wrapper.findAll('.dc-summary-board .dc-summary-row')).toHaveLength(2)
+    expect(wrapper.findAll('.dc-summary-label').map((label) => label.text())).toEqual([
+      'diagnosis.summary_label',
+      'diagnosis.root_cause_label',
+    ])
+    expect(wrapper.findAll('.dc-evidence-head span').map((label) => label.text())).toEqual([
+      'diagnosis.evidence_index_label',
+      'diagnosis.evidence_label',
+    ])
+    expect(wrapper.findAll('.dc-evidence-table .dc-evidence-row')).toHaveLength(3)
+    expect(wrapper.findAll('.dc-fix-board .dc-fix-point')).toHaveLength(3)
+    expect(wrapper.find('.dc-code-head').exists()).toBe(true)
+    expect(wrapper.findAll('.dc-icode').length).toBeGreaterThan(0)
+    expect(wrapper.find('.dc-evidence-table').text()).toContain('user 42 返回了 user 57 的订单')
+    expect(wrapper.find('.dc-evidence-table').text()).not.toContain('1) 源码证据')
+  })
+
   it('keeps unbroken paths and generated code in bounded content containers', () => {
     const longPath = `D:/project/${'nested-path-'.repeat(80)}popup.html`
     const longCode = `const generatedValue = '${'x'.repeat(2000)}'`
@@ -95,6 +129,26 @@ describe('DiagnosisResultCard', () => {
 
     // 保存后退出编辑态
     expect(wrapper.findAll('textarea')).toHaveLength(0)
+  })
+
+  it('edits evidence and fix steps as line-separated arrays', async () => {
+    const wrapper = mountCard()
+
+    await buttonByText(wrapper, 'diagnosis.edit')!.trigger('click')
+    const evidenceTextarea = wrapper
+      .findAll('textarea')
+      .find((el) => (el.element as HTMLTextAreaElement).value.includes('日志显示获取连接超时'))!
+    await evidenceTextarea.setValue('第一条证据\n第二条证据')
+
+    const fixTextarea = wrapper
+      .findAll('textarea')
+      .find((el) => (el.element as HTMLTextAreaElement).value.includes('扩容连接池并增加熔断'))!
+    await fixTextarea.setValue('第一步\n第二步')
+
+    await buttonByText(wrapper, 'diagnosis.save_draft')!.trigger('click')
+    const saved = wrapper.emitted('save')![0][0] as DiagnosisResultPayload
+    expect(saved.evidence).toEqual(['第一条证据', '第二条证据'])
+    expect(saved.fix_steps).toEqual(['第一步', '第二步'])
   })
 
   it('cancel edit restores the original payload', async () => {

@@ -9,8 +9,8 @@ import type { DiagnosisResultPayload } from '@/types/diagnosis'
 const diagnosisPayload: DiagnosisResultPayload = {
   summary: '连接池在高峰期被耗尽',
   root_cause: '连接池配置过小',
-  evidence_chain: '日志显示获取连接超时',
-  fix_suggestion: '扩容连接池并增加熔断',
+  evidence: ['日志显示获取连接超时'],
+  fix_steps: ['扩容连接池并增加熔断'],
   fix_code: 'pool.maxActive = 200',
   code_context: [
     { file_path: 'src/pool.py', start_line: 12, end_line: 34, snippet: 'pool = Pool(maxActive=50)', note: '连接池配置' },
@@ -87,14 +87,14 @@ describe('ragMarkdown', () => {
       code_context: '工作区关联仓库: billing-service\n\n相关代码上下文:\nsrc/pool.py',
       analysis_process: '压测复现并查看日志\n\n置信度: 85%',
       root_cause: '连接池耗尽',
-      solution: '扩容连接池并增加熔断',
+      solution: '扩容连接池并增加熔断\n\n修复代码:\npool.maxActive = 200',
       category: 'PUBLIC',
       priority: 'P1',
       status: 'APPROVED',
       diagnosis_detail: {
         summary: '连接池在高峰期被耗尽',
-        evidence_chain: '压测复现并查看日志',
-        fix_suggestion: '扩容连接池并增加熔断',
+        evidence: ['压测复现并查看日志'],
+        fix_steps: ['扩容连接池并增加熔断'],
         fix_code: 'pool.maxActive = 200',
         confidence: 85,
         similar_cases: [{ title: '连接池耗尽排查' }],
@@ -128,12 +128,12 @@ describe('ragMarkdown', () => {
     expect(markdown).toContain('## 结果内容')
     expect(markdown).toContain('连接池在高峰期被耗尽')
     expect(markdown).toContain('## 分析过程')
-    expect(markdown).toContain('压测复现并查看日志')
+    expect(markdown).toContain('- 压测复现并查看日志')
     expect(markdown).toContain('置信度：85%')
     expect(markdown).toContain('## 根因')
     expect(markdown).toContain('连接池耗尽')
     expect(markdown).toContain('## 解决方案')
-    expect(markdown).toContain('扩容连接池并增加熔断')
+    expect(markdown).toContain('- 扩容连接池并增加熔断')
     expect(markdown).toContain('```\npool.maxActive = 200\n```')
     expect(markdown).toContain('## 代码上下文')
     expect(markdown).toContain('1. src/pool.py:12-34')
@@ -149,6 +149,41 @@ describe('ragMarkdown', () => {
     expect(markdown).not.toContain('review_round')
     expect(markdown).not.toContain('reviewer_id')
     expect(markdown).not.toContain('approved_at')
+  })
+
+  it('exports the edited analysis and solution from a case created from a diagnosis', () => {
+    const analysis = '压测复现\n\n置信度: 85%\n\n补充：回放发现连接泄漏'
+    const solution = '关闭泄漏连接\n\n修复代码:\npool.release(connection)'
+    const markdown = buildCaseRagMarkdown({
+      analysis_process: analysis,
+      solution,
+      diagnosis_detail: {
+        evidence: ['压测复现'],
+        confidence: 85,
+        fix_steps: ['扩容连接池'],
+        fix_code: 'pool.maxActive = 200',
+      },
+    })
+
+    expect(markdown).toContain(`## 分析过程\n\n${analysis}`)
+    expect(markdown).toContain(`## 解决方案\n\n${solution}`)
+    expect(markdown).not.toContain('扩容连接池')
+    expect(markdown).not.toContain('pool.maxActive = 200')
+  })
+
+  it.each(['', null])('omits case sections cleared to %j', (cleared) => {
+    const markdown = buildCaseRagMarkdown({
+      analysis_process: cleared,
+      solution: cleared,
+      diagnosis_detail: {
+        evidence: ['压测复现'],
+        fix_steps: ['扩容连接池'],
+        fix_code: 'pool.maxActive = 200',
+      },
+    })
+
+    expect(markdown).not.toContain('## 分析过程')
+    expect(markdown).not.toContain('## 解决方案')
   })
 
   it('keeps version placeholder in exported product section when version is absent', () => {

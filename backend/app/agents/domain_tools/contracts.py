@@ -17,8 +17,8 @@ class DiagnosisSubmission(DiagnosisResultPayload):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     summary: Text
     root_cause: Text
-    evidence_chain: Text
-    fix_suggestion: Text
+    evidence: list[Text] = Field(min_length=1, max_length=50)
+    fix_steps: list[Text] = Field(min_length=1, max_length=50)
 
 
 class ReviewProposal(Artifact):

@@ -64,6 +64,7 @@ def test_prompt_suffix_declares_diagnosis_contract():
             assert "每轮回复结束时" not in suffix
             assert "JSON" not in suffix
             assert "fix_suggestion" not in suffix
+            assert "fix_steps" not in suffix
             assert "fix_code" not in suffix
     finally:
         engine.dispose()
@@ -98,10 +99,15 @@ def test_summary_prompt_requires_tool_and_preserves_readonly_fork_context():
             valid = {
                 "summary": "连接池耗尽",
                 "root_cause": "池配置过小",
-                "evidence_chain": "日志超时",
-                "fix_suggestion": "扩容",
+                "evidence": ["日志超时"],
+                "fix_steps": ["扩容连接池"],
             }
             assert DiagnosisSubmission.model_validate(valid, strict=True).root_cause == "池配置过小"
+            schema = DiagnosisSubmission.model_json_schema()
+            assert schema["properties"]["evidence"]["type"] == "array"
+            assert schema["properties"]["fix_steps"]["type"] == "array"
+            assert "evidence_chain" not in schema["properties"]
+            assert "fix_suggestion" not in schema["properties"]
             for invalid in ({**valid, "confidence": 150}, {**valid, "confidence": "85%"}, {"diagnosis": valid}, "正文"):
                 with pytest.raises(ValidationError):
                     DiagnosisSubmission.model_validate(invalid, strict=True)
@@ -186,8 +192,8 @@ def test_upsert_from_user_persists_edits_to_result_and_card():
                 {
                     "summary": "用户修正后的总结",
                     "root_cause": "用户修正根因",
-                    "evidence_chain": "证据链已补充",
-                    "fix_suggestion": "修复建议已补充",
+                    "evidence": ["证据链已补充", "第二条证据"],
+                    "fix_steps": ["修复建议已补充"],
                     "confidence": 88,
                     "code_context": [{"file_path": "src/pool.py", "start_line": 12}],
                     "similar_cases": [{"title": "用户补充案例"}],
@@ -202,8 +208,8 @@ def test_upsert_from_user_persists_edits_to_result_and_card():
             )
             assert result.summary == "用户修正后的总结"
             assert result.root_cause == "用户修正根因"
-            assert result.evidence_chain == "证据链已补充"
-            assert result.fix_suggestion == "修复建议已补充"
+            assert result.evidence_json == ["证据链已补充", "第二条证据"]
+            assert result.fix_steps_json == ["修复建议已补充"]
             assert result.confidence == 88
             assert result.code_context_json[0]["file_path"] == "src/pool.py"
             assert result.similar_cases_json[0]["title"] == "用户补充案例"
@@ -213,6 +219,8 @@ def test_upsert_from_user_persists_edits_to_result_and_card():
             assert message is not None
             assert message.metadata_json["summary"] == "用户修正后的总结"
             assert message.metadata_json["root_cause"] == "用户修正根因"
+            assert message.metadata_json["evidence"] == ["证据链已补充", "第二条证据"]
+            assert message.metadata_json["fix_steps"] == ["修复建议已补充"]
             assert message.metadata_json["confidence"] == 88
     finally:
         engine.dispose()

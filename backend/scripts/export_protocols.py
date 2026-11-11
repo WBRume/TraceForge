@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pydantic import TypeAdapter
 
+from app.agents.domain_tools.contracts import DiagnosisSubmission
 from app.domains.ai.schemas.job_result import JobCompletion
 from app.domains.ai.schemas.queue import QueueJobActionResponse, QueueJobCommand
 from app.domains.api_mock.schemas.api_mock import ApiMockJobResponse
@@ -33,6 +34,7 @@ def schemas():
         "operationReceipt": TypeAdapter(OperationReceipt),
         "submissionReply": SUBMISSION_REPLY,
         "workspaceReply": WORKSPACE_REPLY,
+        "diagnosisSubmission": TypeAdapter(DiagnosisSubmission),
         **{
             "resourceResult_" + key.replace(":", "_"): TypeAdapter(value)
             for key, value in (RESOURCE_RESULTS | RESULT_ACTIONS).items()

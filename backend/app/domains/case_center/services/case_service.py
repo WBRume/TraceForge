@@ -89,7 +89,7 @@ def serialize_case(case: SddCase) -> dict:
     had_diagnosis_detail = isinstance(case.diagnosis_detail_json, dict)
     diagnosis_detail = case.diagnosis_detail_json if had_diagnosis_detail else {}
 
-    # 历史案例可能未在 diagnosis_detail_json 中沉淀 summary/evidence_chain 等 RAG 导出字段；
+    # 案例明细可能未沉淀 summary/evidence/fix_steps 等 RAG 导出字段；
     # 在线从关联定位结果补齐，保证会话内导出与案例详情导出内容一致。
     source_task_phenomenon = None
     if case.source_task is not None:
@@ -102,8 +102,8 @@ def serialize_case(case: SddCase) -> dict:
         diagnosis_detail = dict(diagnosis_detail)
         diagnosis_detail.setdefault("summary", source_diagnosis.summary)
         diagnosis_detail.setdefault("root_cause", source_diagnosis.root_cause)
-        diagnosis_detail.setdefault("evidence_chain", source_diagnosis.evidence_chain)
-        diagnosis_detail.setdefault("fix_suggestion", source_diagnosis.fix_suggestion)
+        diagnosis_detail.setdefault("evidence", source_diagnosis.evidence_json or [])
+        diagnosis_detail.setdefault("fix_steps", source_diagnosis.fix_steps_json or [])
         diagnosis_detail.setdefault("fix_code", source_diagnosis.fix_code)
         diagnosis_detail.setdefault("confidence", int(source_diagnosis.confidence or 0))
     if not diagnosis_detail and not had_diagnosis_detail:
@@ -700,13 +700,23 @@ def create_case_draft_from_task(
         # 证据链+置信度 → 分析过程；调用链路 → diagnosis_detail_json；
         # 根因结论 → 根因；修复建议+修复代码 → 方案；
         # 相关代码上下文 → 代码上下文；结构化明细 → diagnosis_detail_json。
-        analysis_parts = [part for part in [diagnosis_result.evidence_chain] if part]
+        evidence_items = [
+            str(item).strip()
+            for item in (diagnosis_result.evidence_json or [])
+            if str(item).strip()
+        ]
+        analysis_parts = list(evidence_items)
         confidence = diagnosis_result.confidence if diagnosis_result.confidence is not None else 0
         analysis_parts.append(f"置信度: {confidence}%")
         case.analysis_process = "\n\n".join(analysis_parts) or None
         case.root_cause = diagnosis_result.root_cause or None
 
-        solution_parts = [part for part in [diagnosis_result.fix_suggestion] if part]
+        fix_steps = [
+            str(item).strip()
+            for item in (diagnosis_result.fix_steps_json or [])
+            if str(item).strip()
+        ]
+        solution_parts = list(fix_steps)
         fix_code = str(diagnosis_result.fix_code or "").strip()
         if fix_code:
             solution_parts.append("修复代码:\n" + fix_code)
@@ -722,8 +732,8 @@ def create_case_draft_from_task(
             # 保留定位结果的完整 RAG 导出字段，使会话内导出与案例详情导出内容一致。
             "summary": diagnosis_result.summary,
             "root_cause": diagnosis_result.root_cause,
-            "evidence_chain": diagnosis_result.evidence_chain,
-            "fix_suggestion": diagnosis_result.fix_suggestion,
+            "evidence": evidence_items,
+            "fix_steps": fix_steps,
             "fix_code": diagnosis_result.fix_code,
             "confidence": int(diagnosis_result.confidence or 0),
             "similar_cases": (

@@ -72,8 +72,8 @@ const hasContent = computed(() => {
   return Boolean(
     value.summary ||
       value.root_cause ||
-      value.evidence_chain ||
-      value.fix_suggestion ||
+      value.evidence.length ||
+      value.fix_steps.length ||
       value.fix_code ||
       value.code_context.length ||
       value.similar_cases.length ||
@@ -86,6 +86,40 @@ const sortedCallChain = computed(() =>
 )
 
 const confidenceLabel = computed(() => `${local.value.confidence}%`)
+
+function formatIndex(index: number): string {
+  return String(index + 1).padStart(2, '0')
+}
+
+const evidenceDraft = computed({
+  get: () => local.value.evidence.join('\n'),
+  set: (value: string) => {
+    local.value.evidence = value.split(/\r?\n/)
+  },
+})
+
+const fixStepsDraft = computed({
+  get: () => local.value.fix_steps.join('\n'),
+  set: (value: string) => {
+    local.value.fix_steps = value.split(/\r?\n/)
+  },
+})
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/** 只渲染行内 code / bold，先转义再注入，避免 AI 文本直接进入 DOM。 */
+function renderInline(value: string | null | undefined): string {
+  return escapeHtml(String(value || ''))
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code class="dc-icode">$1</code>')
+    .replace(/\n/g, '<br>')
+}
 
 function startEdit() {
   if (!canEdit.value) return
@@ -200,19 +234,36 @@ function chainLabel(node: DiagnosisCallChainNode): string {
           <textarea v-model="local.root_cause" class="dc-textarea" rows="2" :placeholder="t('diagnosis.root_cause_placeholder')" />
         </template>
         <template v-else>
-          <p v-if="local.summary" class="dc-text dc-summary">{{ local.summary }}</p>
-          <p v-if="local.root_cause" class="dc-text dc-root-cause">{{ local.root_cause }}</p>
+          <div class="dc-summary-board">
+            <div v-if="local.summary" class="dc-summary-row">
+              <span class="dc-summary-label">{{ t('diagnosis.summary_label') }}</span>
+              <p class="dc-summary-text" v-html="renderInline(local.summary)" />
+            </div>
+            <div v-if="local.root_cause" class="dc-summary-row dc-summary-row-cause">
+              <span class="dc-summary-label dc-summary-label-cause">{{ t('diagnosis.root_cause_label') }}</span>
+              <p class="dc-summary-text" v-html="renderInline(local.root_cause)" />
+            </div>
+          </div>
         </template>
       </div>
 
       <!-- 证据链 -->
-      <div v-if="local.evidence_chain || editing" class="dc-section">
+      <div v-if="local.evidence.length || editing" class="dc-section">
         <div class="dc-section-head">
           <ClipboardList class="dc-section-icon" />
           <span>{{ t('diagnosis.evidence_chain') }}</span>
         </div>
-        <textarea v-if="editing" v-model="local.evidence_chain" class="dc-textarea" rows="3" :placeholder="t('diagnosis.evidence_chain_placeholder')" />
-        <p v-else class="dc-text">{{ local.evidence_chain }}</p>
+        <textarea v-if="editing" v-model="evidenceDraft" class="dc-textarea" rows="5" :placeholder="t('diagnosis.evidence_chain_placeholder')" />
+        <div v-else class="dc-evidence-table">
+          <div class="dc-evidence-head">
+            <span>{{ t('diagnosis.evidence_index_label') }}</span>
+            <span>{{ t('diagnosis.evidence_label') }}</span>
+          </div>
+          <div v-for="(item, index) in local.evidence" :key="index" class="dc-evidence-row">
+            <span class="dc-evidence-no">{{ formatIndex(index) }}</span>
+            <p class="dc-evidence-text" v-html="renderInline(item)" />
+          </div>
+        </div>
       </div>
 
       <!-- 代码上下文 -->
@@ -250,25 +301,36 @@ function chainLabel(node: DiagnosisCallChainNode): string {
       </div>
 
       <!-- 修复方案 / 修复代码 -->
-      <div v-if="local.fix_suggestion || local.fix_code || editing" class="dc-section">
+      <div v-if="local.fix_steps.length || local.fix_code || editing" class="dc-section">
         <div class="dc-section-head">
           <Code2 class="dc-section-icon" />
           <span>{{ t('diagnosis.fix_plan') }}</span>
         </div>
         <template v-if="editing">
           <label class="dc-label">{{ t('diagnosis.fix_suggestion') }}</label>
-          <textarea v-model="local.fix_suggestion" class="dc-textarea" rows="2" :placeholder="t('diagnosis.fix_suggestion_placeholder')" />
+          <textarea v-model="fixStepsDraft" class="dc-textarea" rows="5" :placeholder="t('diagnosis.fix_suggestion_placeholder')" />
           <label class="dc-label">{{ t('diagnosis.fix_code') }}</label>
           <textarea v-model="local.fix_code" class="dc-textarea dc-code" rows="5" :placeholder="t('diagnosis.fix_code_placeholder')" />
         </template>
         <template v-else>
-          <p v-if="local.fix_suggestion" class="dc-text">{{ local.fix_suggestion }}</p>
-          <div v-if="local.fix_code" class="dc-code-block">
-            <button class="dc-btn-icon" type="button" :title="t('diagnosis.copy_code')" @click="copyFixCode">
-              <Check v-if="copied" class="dc-btn-icon-svg" />
-              <Copy v-else class="dc-btn-icon-svg" />
-            </button>
-            <pre class="dc-code">{{ local.fix_code }}</pre>
+          <div class="dc-fix-board">
+            <ol v-if="local.fix_steps.length" class="dc-fix-points">
+              <li v-for="(point, index) in local.fix_steps" :key="index" class="dc-fix-point">
+                <span class="dc-fix-no">{{ formatIndex(index) }}</span>
+                <p class="dc-fix-text" v-html="renderInline(point)" />
+              </li>
+            </ol>
+            <div v-if="local.fix_code" class="dc-code-block">
+              <div class="dc-code-head">
+                <span class="dc-code-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span class="dc-code-title">{{ t('diagnosis.fix_code') }}</span>
+                <button class="dc-code-copy" type="button" :title="t('diagnosis.copy_code')" @click="copyFixCode">
+                  <Check v-if="copied" class="dc-btn-icon-svg" />
+                  <Copy v-else class="dc-btn-icon-svg" />
+                </button>
+              </div>
+              <pre class="dc-code">{{ local.fix_code }}</pre>
+            </div>
           </div>
         </template>
       </div>
@@ -509,16 +571,182 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   overflow-wrap: anywhere;
 }
 
-.dc-summary {
-  font-weight: 600;
-  color: #111827;
+.dc-summary-board {
+  border: 1px solid #e8e6e3;
+  border-radius: 10px;
+  background: #ffffff;
+  overflow: hidden;
 }
 
-.dc-root-cause {
-  padding: 8px 10px;
-  border-left: 3px solid #2563eb;
+.dc-summary-row {
+  display: grid;
+  grid-template-columns: 4.25rem minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+}
+
+.dc-summary-row + .dc-summary-row {
+  border-top: 1px solid #f1f5f9;
+}
+
+.dc-summary-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.dc-summary-label-cause {
+  border-color: #fdba74;
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.dc-summary-text {
+  margin: 1px 0 0;
+  font-size: 0.79rem;
+  line-height: 1.65;
+  color: #1f2937;
+}
+
+.dc-summary-text,
+.dc-evidence-text,
+.dc-fix-text {
+  overflow-wrap: anywhere;
+  line-break: strict;
+  text-wrap: pretty;
+}
+
+.dc-summary-row-cause .dc-summary-text {
+  color: #44403c;
+}
+
+.dc-evidence-table {
+  border: 1px solid #e8e6e3;
+  border-radius: 10px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.dc-evidence-head,
+.dc-evidence-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+}
+
+.dc-evidence-head {
+  padding: 7px 11px;
+  border-bottom: 1px solid #e8e6e3;
+  background: #f8fafc;
+  color: #94a3b8;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.dc-evidence-head span:first-child {
+  padding-left: 5px;
+}
+
+.dc-evidence-row {
+  padding: 9px 11px;
+}
+
+.dc-evidence-row + .dc-evidence-row {
+  border-top: 1px solid #f1f5f9;
+}
+
+.dc-evidence-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
   background: #eff6ff;
+  color: #1d4ed8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.6rem;
+  font-weight: 800;
+}
+
+.dc-evidence-text {
+  margin: 1px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: #1f2937;
+}
+
+.dc-fix-board {
+  padding: 12px;
+  border: 1px solid #e8e6e3;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.dc-fix-points {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dc-fix-point {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 9px;
+}
+
+.dc-fix-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.6rem;
+  font-weight: 800;
+  box-shadow: inset 0 0 0 1px #e2e8f0;
+}
+
+.dc-fix-text {
+  margin: 1px 0 0;
+  font-size: 0.77rem;
+  line-height: 1.65;
+  color: #44403c;
+}
+
+.diagnosis-card :deep(.dc-icode) {
+  padding: 0 4px;
+  border: 1px solid #e2e8f0;
   border-radius: 4px;
+  background: #f1f5f9;
+  color: #0f172a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  line-height: 1.45;
+}
+
+.dc-summary-text :deep(strong),
+.dc-evidence-text :deep(strong),
+.dc-fix-text :deep(strong) {
+  font-weight: 700;
+  color: #0f172a;
 }
 
 .dc-textarea {
@@ -644,18 +872,69 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   position: relative;
   min-width: 0;
   max-width: 100%;
+  margin-top: 10px;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  background: #0f172a;
+  overflow: hidden;
 }
 
-.dc-code-block .dc-btn-icon {
-  position: absolute;
-  top: 6px;
-  right: 6px;
+.dc-code-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #1e293b;
+  background: #111c33;
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.64rem;
+}
+
+.dc-code-dots {
+  display: inline-flex;
+  gap: 4px;
+  margin-right: 2px;
+}
+
+.dc-code-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #475569;
+}
+
+.dc-code-dots i:nth-child(1) { background: #f87171; }
+.dc-code-dots i:nth-child(2) { background: #fbbf24; }
+.dc-code-dots i:nth-child(3) { background: #4ade80; }
+
+.dc-code-title {
   color: #94a3b8;
 }
 
-.dc-code-block .dc-btn-icon:hover {
+.dc-code-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.dc-code-copy:hover {
   background: #1e293b;
   color: #e2e8f0;
+}
+
+.dc-code-block .dc-code {
+  border: 0;
+  border-radius: 0;
 }
 
 .dc-btn-add {

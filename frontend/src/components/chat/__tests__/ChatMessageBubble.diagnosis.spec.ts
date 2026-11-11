@@ -10,8 +10,8 @@ vi.mock('vue-i18n', () => ({
 const diagnosisMetadata: DiagnosisResultPayload = {
   summary: '连接池耗尽',
   root_cause: '连接池配置过小',
-  evidence_chain: '',
-  fix_suggestion: '',
+  evidence: [],
+  fix_steps: [],
   fix_code: '',
   code_context: [],
   similar_cases: [],

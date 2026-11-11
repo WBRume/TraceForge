@@ -34,7 +34,7 @@ def seed_case(db):
                 {"file": "checkout.py", "function": "checkout", "line": 12, "description": "调用 payment"},
                 {"file": "payment.py", "function": "pay", "line": 34, "description": "返回空对象"},
             ],
-            "evidence_chain": "日志 request-id 关联到空返回",
+            "evidence": ["日志 request-id 关联到空返回"],
         },
     )
     db.add(case)

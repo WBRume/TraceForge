@@ -221,7 +221,12 @@ def test_diagnosis_summary_forks_source_session_read_only(monkeypatch, tmp_path)
             run = active_domain_run.get()
             await run.invoke(
                 run.tool.name,
-                {"summary": "summary", "root_cause": "cause", "evidence_chain": "log", "fix_suggestion": "fix"},
+                {
+                    "summary": "summary",
+                    "root_cause": "cause",
+                    "evidence": ["log"],
+                    "fix_steps": ["fix"],
+                },
                 "one",
             )
             return {"text": "Submitted", "session_id": "forked-session"}

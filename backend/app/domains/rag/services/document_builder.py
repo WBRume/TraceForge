@@ -23,6 +23,13 @@ def _text(value: Any) -> str:
     return text or ""
 
 
+def _text_list(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    items = [str(item).strip() for item in value if str(item).strip()]
+    return "\n".join(f"- {item}" for item in items)
+
+
 def _problem_description(case: SddCase) -> str:
     """问题描述仅使用创建问题定位任务时填写的问题现象；无现象的旧数据回退到案例描述。"""
     if case.source_task is not None:
@@ -110,7 +117,7 @@ def _diagnosis_analysis_text(diagnosis_result: Any) -> str:
     if diagnosis_result is None:
         return ""
     parts: list[str] = []
-    evidence = _text(getattr(diagnosis_result, "evidence_chain", None))
+    evidence = _text_list(getattr(diagnosis_result, "evidence_json", None))
     if evidence:
         parts.append(evidence)
     chain = _call_chain_text(getattr(diagnosis_result, "call_chain_json", None))
@@ -126,9 +133,9 @@ def _diagnosis_solution_text(diagnosis_result: Any) -> str:
     if diagnosis_result is None:
         return ""
     parts: list[str] = []
-    suggestion = _text(getattr(diagnosis_result, "fix_suggestion", None))
-    if suggestion:
-        parts.append(suggestion)
+    steps = _text_list(getattr(diagnosis_result, "fix_steps_json", None))
+    if steps:
+        parts.append(steps)
     fix_code = _text(getattr(diagnosis_result, "fix_code", None))
     if fix_code:
         parts.append("修复代码:\n" + fix_code)
@@ -139,6 +146,8 @@ def _diagnosis_detail(diagnosis_result: Any, case: SddCase) -> Any:
     if diagnosis_result is None:
         return case.diagnosis_detail_json
     return {
+        "evidence": getattr(diagnosis_result, "evidence_json", None) or [],
+        "fix_steps": getattr(diagnosis_result, "fix_steps_json", None) or [],
         "similar_cases": getattr(diagnosis_result, "similar_cases_json", None) or [],
         "call_chain": getattr(diagnosis_result, "call_chain_json", None) or [],
         "code_context": getattr(diagnosis_result, "code_context_json", None) or [],

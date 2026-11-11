@@ -137,8 +137,8 @@ def test_diagnosis_result_upsert_and_validation():
             json={
                 "summary": "连接池在高峰期被耗尽，导致获取连接超时",
                 "root_cause": "连接池耗尽",
-                "evidence_chain": "1. 日志显示获取连接超时\n2. 压测复现",
-                "fix_suggestion": "扩容连接池并增加熔断",
+                "evidence": ["日志显示获取连接超时", "压测复现"],
+                "fix_steps": ["扩容连接池并增加熔断"],
                 "fix_code": "pool.maxActive = 200",
                 "code_context": [
                     {
@@ -218,8 +218,8 @@ def test_case_lifecycle_full_flow():
                     created_by_id=user.id,
                     summary="空指针导致接口偶发超时",
                     root_cause="空指针异常",
-                    evidence_chain="堆栈证据",
-                    fix_suggestion="判空处理",
+                    evidence_json=["堆栈证据"],
+                    fix_steps_json=["判空处理"],
                     fix_code="if (obj != null) { obj.run(); }",
                     confidence=90,
                     code_context_json=[
@@ -259,8 +259,8 @@ def test_case_lifecycle_full_flow():
         )
         assert case["code_context"] and "相关代码上下文:" in case["code_context"]
         assert case["diagnosis_detail"]["summary"] == "空指针导致接口偶发超时"
-        assert case["diagnosis_detail"]["evidence_chain"] == "堆栈证据"
-        assert case["diagnosis_detail"]["fix_suggestion"] == "判空处理"
+        assert case["diagnosis_detail"]["evidence"] == ["堆栈证据"]
+        assert case["diagnosis_detail"]["fix_steps"] == ["判空处理"]
         assert case["diagnosis_detail"]["fix_code"] == "if (obj != null) { obj.run(); }"
         assert case["diagnosis_detail"]["confidence"] == 90
         assert case["diagnosis_detail"]["similar_cases"][0]["reference"] == "case-9"
@@ -328,8 +328,8 @@ def test_serialize_case_backfills_diagnosis_detail_from_source_task():
                     created_by_id=user.id,
                     summary="旧案例未沉淀的 summary",
                     root_cause="旧根因",
-                    evidence_chain="旧证据链",
-                    fix_suggestion="旧修复建议",
+                    evidence_json=["旧证据链"],
+                    fix_steps_json=["旧修复建议"],
                     fix_code="old-fix-code",
                     confidence=77,
                 )
@@ -352,8 +352,8 @@ def test_serialize_case_backfills_diagnosis_detail_from_source_task():
         assert resp.status_code == 200, resp.text
         detail = resp.json()["diagnosis_detail"]
         assert detail["summary"] == "旧案例未沉淀的 summary"
-        assert detail["evidence_chain"] == "旧证据链"
-        assert detail["fix_suggestion"] == "旧修复建议"
+        assert detail["evidence"] == ["旧证据链"]
+        assert detail["fix_steps"] == ["旧修复建议"]
         assert detail["fix_code"] == "old-fix-code"
         assert detail["confidence"] == 77
     finally:

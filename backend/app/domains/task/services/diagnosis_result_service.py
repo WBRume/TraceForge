@@ -79,6 +79,13 @@ def build_diagnosis_summary_prompt(task) -> str:
         "请把当前问题排查会话总结为问题案例。仅总结已观察的事实，区分已验证根因与未验证假设。"
         "不要继续排查、执行命令、修改文件或执行修复。调用 submit_diagnosis 工具提交结果。"
         "证据不足时明确说明缺失信息并降低 confidence；不得补造证据。\n"
+        "字段要求：\n"
+        "1. summary：一段结论概述，说明现象、影响与是否已修复；\n"
+        "2. root_cause：明确的根因结论，无法确认时写清未验证部分；\n"
+        "3. evidence：字符串数组，每项一条独立、可核验的证据；不要写序号、项目符号或 Markdown 列表标记；\n"
+        "4. fix_steps：字符串数组，每项一个可执行建议；不要写序号、项目符号或 Markdown 列表标记；\n"
+        "5. fix_code：可选，给出示例补丁；\n"
+        "6. code_context / call_chain / confidence：按结构化字段提交。\n"
         f"现象: {meta.get('phenomenon', '')}\n优先级: {meta.get('priority', '')}"
     )
     return prompt
@@ -91,14 +98,21 @@ def _clean(value) -> str | None:
     return text or None
 
 
+def _clean_list(values) -> list[str] | None:
+    if not isinstance(values, list):
+        return None
+    cleaned = [str(value).strip() for value in values if str(value).strip()]
+    return cleaned or None
+
+
 # ────────────────────────── 持久化 ──────────────────────────
 
 
 def _apply_payload(result: SddDiagnosisResult, payload: DiagnosisResultPayload) -> None:
     result.summary = _clean(payload.summary)
     result.root_cause = _clean(payload.root_cause)
-    result.evidence_chain = _clean(payload.evidence_chain)
-    result.fix_suggestion = _clean(payload.fix_suggestion)
+    result.evidence_json = _clean_list(payload.evidence)
+    result.fix_steps_json = _clean_list(payload.fix_steps)
     result.fix_code = _clean(payload.fix_code)
     result.confidence = payload.confidence
     result.code_context_json = [item.model_dump(exclude_none=True) for item in payload.code_context] or None
@@ -294,8 +308,8 @@ def serialize_diagnosis_result(result: SddDiagnosisResult) -> dict:
         "created_by_id": result.created_by_id,
         "summary": result.summary,
         "root_cause": result.root_cause,
-        "evidence_chain": result.evidence_chain,
-        "fix_suggestion": result.fix_suggestion,
+        "evidence": result.evidence_json if isinstance(result.evidence_json, list) else [],
+        "fix_steps": result.fix_steps_json if isinstance(result.fix_steps_json, list) else [],
         "fix_code": result.fix_code,
         "code_context": result.code_context_json if isinstance(result.code_context_json, list) else [],
         "similar_cases": result.similar_cases_json if isinstance(result.similar_cases_json, list) else [],

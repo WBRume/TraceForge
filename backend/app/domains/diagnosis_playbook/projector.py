@@ -52,13 +52,13 @@ def project(db, run):
             "MISSING_FINAL_GATES",
         )
         require(all(g["execution_id"] in receipts for g in decisions), "MISSING_SEALED_EVIDENCE")
-        evidence_chain = "\n".join(
+        evidence_text = "\n".join(
             f"{g['step_id']}: PASS / {g['execution_id']} / {g['receipt_digest']}" for g in decisions
         )
         payload = DiagnosisResultPayload(
             summary=f"{spec.spec_json['spec']['metadata']['title']}：已完成限定环境物理验证。",
-            evidence_chain=evidence_chain,
-            fix_suggestion="修复适用范围以本次环境、源码快照及基线/补丁对照回执为准。",
+            evidence=[evidence_text],
+            fix_steps=["修复适用范围以本次环境、源码快照及基线/补丁对照回执为准。"],
         )
         # Do not infer a root cause from an unverified narrative.
         existing_result = db.query(SddDiagnosisResult).filter_by(task_id=task.id).first()
@@ -88,8 +88,8 @@ def project(db, run):
                 creator_id=run.creator_id,
                 title=task.name,
                 problem_description=task.description,
-                analysis_process=evidence_chain,
-                solution=payload.fix_suggestion,
+                analysis_process=evidence_text,
+                solution=payload.fix_steps[0] if payload.fix_steps else None,
                 archive_origin="PLAYBOOK",
                 status="TECHNICALLY_VERIFIED",
             )

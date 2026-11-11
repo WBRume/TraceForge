@@ -4,8 +4,8 @@
 结构化结果协议（AI 会话反填 + 用户可编辑）：
 - summary          AI 返回的结果内容（结论概述）
 - root_cause       根因结论
-- evidence_chain   证据链
-- fix_suggestion   修复方案说明
+- evidence         证据链（逐条、可直接渲染为行动板行）
+- fix_steps        修复建议（逐条、可直接渲染为行动板步骤）
 - fix_code         修复代码/补丁（仅方案建议）
 - code_context     相关代码上下文
 - similar_cases    相似案例
@@ -45,12 +45,12 @@ class DiagnosisCallChainNode(BaseModel):
 
 
 class DiagnosisResultPayload(BaseModel):
-    """结构化定位结果载荷（领域工具与用户编辑共用）。"""
+    """结构化问题案例载荷（领域工具与用户编辑共用）。"""
 
     summary: str | None = None
     root_cause: str | None = None
-    evidence_chain: str | None = None
-    fix_suggestion: str | None = None
+    evidence: list[str] = Field(default_factory=list, max_length=50)
+    fix_steps: list[str] = Field(default_factory=list, max_length=50)
     fix_code: str | None = None
     code_context: list[DiagnosisCodeContextItem] = Field(default_factory=list)
     similar_cases: list[DiagnosisSimilarCaseItem] = Field(default_factory=list)
@@ -69,8 +69,8 @@ class DiagnosisResultResponse(BaseModel):
     created_by_id: str
     summary: str | None = None
     root_cause: str | None = None
-    evidence_chain: str | None = None
-    fix_suggestion: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+    fix_steps: list[str] = Field(default_factory=list)
     fix_code: str | None = None
     code_context: list[DiagnosisCodeContextItem] = Field(default_factory=list)
     similar_cases: list[DiagnosisSimilarCaseItem] = Field(default_factory=list)

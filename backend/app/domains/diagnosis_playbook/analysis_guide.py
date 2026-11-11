@@ -53,7 +53,7 @@ def promote_case(db, case):
         "code_context": source["code_context"] or "",
         "related_code": detail.get("code_context", []) if isinstance(detail, dict) else [],
         "fix_code": detail.get("fix_code", "") if isinstance(detail, dict) else "",
-        "evidence_chain": detail.get("evidence_chain", "") if isinstance(detail, dict) else "",
+        "evidence": detail.get("evidence", []) if isinstance(detail, dict) else [],
     }
     steps = [
         {"id": "symptoms", "objective": "对照历史症状，梳理当前日志、堆栈、时间线和缺失信息。"},

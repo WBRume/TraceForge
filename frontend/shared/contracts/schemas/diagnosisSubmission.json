@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "DiagnosisCallChainNode": {
+      "additionalProperties": false,
+      "properties": {
+        "seq": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seq"
+        },
+        "module": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Module"
+        },
+        "function": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Function"
+        },
+        "file_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File Path"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "title": "DiagnosisCallChainNode",
+      "type": "object"
+    },
+    "DiagnosisCodeContextItem": {
+      "additionalProperties": false,
+      "properties": {
+        "file_path": {
+          "default": "",
+          "title": "File Path",
+          "type": "string"
+        },
+        "start_line": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Line"
+        },
+        "end_line": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Line"
+        },
+        "snippet": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snippet"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "title": "DiagnosisCodeContextItem",
+      "type": "object"
+    },
+    "DiagnosisSimilarCaseItem": {
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "similarity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Similarity"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        },
+        "reference": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference"
+        }
+      },
+      "title": "DiagnosisSimilarCaseItem",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "maxLength": 100000,
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    },
+    "root_cause": {
+      "maxLength": 100000,
+      "minLength": 1,
+      "title": "Root Cause",
+      "type": "string"
+    },
+    "evidence": {
+      "items": {
+        "maxLength": 100000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 50,
+      "minItems": 1,
+      "title": "Evidence",
+      "type": "array"
+    },
+    "fix_steps": {
+      "items": {
+        "maxLength": 100000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 50,
+      "minItems": 1,
+      "title": "Fix Steps",
+      "type": "array"
+    },
+    "fix_code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fix Code"
+    },
+    "code_context": {
+      "items": {
+        "$ref": "#/$defs/DiagnosisCodeContextItem"
+      },
+      "title": "Code Context",
+      "type": "array"
+    },
+    "similar_cases": {
+      "items": {
+        "$ref": "#/$defs/DiagnosisSimilarCaseItem"
+      },
+      "title": "Similar Cases",
+      "type": "array"
+    },
+    "call_chain": {
+      "items": {
+        "$ref": "#/$defs/DiagnosisCallChainNode"
+      },
+      "title": "Call Chain",
+      "type": "array"
+    },
+    "confidence": {
+      "default": 0,
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Confidence",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "summary",
+    "root_cause",
+    "evidence",
+    "fix_steps"
+  ],
+  "title": "DiagnosisSubmission",
+  "type": "object"
+}

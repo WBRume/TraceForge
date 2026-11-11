@@ -43,8 +43,8 @@ class SddDiagnosisResult(Base):
     # ── 定位结果产出（基础字段，案例映射视图） ──
     summary = Column(Text, nullable=True)  # AI 返回的结果内容（结论概述）
     root_cause = Column(Text, nullable=True)  # 根因结论
-    evidence_chain = Column(Text, nullable=True)  # 证据链
-    fix_suggestion = Column(Text, nullable=True)  # 修复方案说明
+    evidence_json = Column(JSON, nullable=True)  # 证据链，逐条字符串数组
+    fix_steps_json = Column(JSON, nullable=True)  # 修复建议，逐条字符串数组
     fix_code = Column(Text, nullable=True)  # 修复代码/补丁（仅方案建议）
     confidence = Column(Integer, nullable=False, default=0)  # 置信度 0-100
 
