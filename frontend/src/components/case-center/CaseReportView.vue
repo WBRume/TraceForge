@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, proxyRefs, watch } from 'vue'
+import { computed, proxyRefs, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
   Download,
   AlertCircle,
-  GitFork,
   GitBranch,
   Target,
   Wrench,
@@ -23,6 +22,10 @@ import {
   History,
   MessagesSquare,
   BookMarked,
+  Check,
+  Copy,
+  ClipboardList,
+  FileCode2,
 } from '@/components/icons'
 import { useCaseCenter } from '@/composables/useCaseCenter'
 import CaseReportSection from './CaseReportSection.vue'
@@ -30,6 +33,7 @@ import CaseReviewTimeline from './CaseReviewTimeline.vue'
 import { useMarkdownExport } from '@/composables/useMarkdownExport'
 import CaseFormDialog from './CaseFormDialog.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
+import { renderInlineMarkdown } from '@/utils/inlineMarkdown'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -95,20 +99,92 @@ const priorityPillTone = (priority: string) => (
 const categoryPillTone = (category: string) => (
   ({ PUBLIC: 'green', PRODUCT: 'blue', SITE: 'amber' } as Record<string, string>)[category] || 'gray'
 )
-const callChainItems = computed(() => {
-  const detail = vm.currentCase?.diagnosis_detail
-  const chain = Array.isArray(detail?.call_chain) ? detail.call_chain : []
-  return chain.map((node: any, index: number) => {
-    const seq = node.seq ?? index + 1
-    const label = [node.module, node.function]
-      .filter((value: unknown) => value != null && String(value).trim() !== '')
-      .join('.') || String(node.file_path || '未命名节点')
-    const parts = [`${seq}. ${label}`]
-    if (node.file_path) parts.push(String(node.file_path))
-    if (node.description) parts.push(String(node.description))
-    return parts.join(' - ')
-  })
+const detail = computed<Record<string, any>>(() => {
+  const value = vm.currentCase?.diagnosis_detail
+  return value && typeof value === 'object' ? (value as Record<string, any>) : {}
 })
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
+}
+
+function objectList(value: unknown): Record<string, any>[] {
+  if (!Array.isArray(value)) return []
+  return value.filter(
+    (item): item is Record<string, any> => Boolean(item) && typeof item === 'object',
+  )
+}
+
+function formatIndex(index: number): string {
+  return String(index + 1).padStart(2, '0')
+}
+
+function contextLocation(item: Record<string, any>): string {
+  const start = Number(item.start_line)
+  const end = Number(item.end_line)
+  const file = String(item.file_path || '')
+  if (!Number.isFinite(start)) return file
+  if (Number.isFinite(end) && end !== start) return `${file}:${start}-${end}`
+  return `${file}:${start}`
+}
+
+const evidenceItems = computed(() => stringList(detail.value.evidence))
+const fixSteps = computed(() => stringList(detail.value.fix_steps))
+const fixCode = computed(() => String(detail.value.fix_code || '').trim())
+const confidence = computed(() => {
+  if (detail.value.confidence === undefined || detail.value.confidence === null) return null
+  const value = Number(detail.value.confidence)
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : null
+})
+const callChainNodes = computed(() =>
+  objectList(detail.value.call_chain).map((node, index) => ({
+    seq: Number(node.seq ?? index + 1),
+    label: [node.module, node.function].filter(Boolean).join('.') || String(node.file_path || '未命名节点'),
+    filePath: String(node.file_path || ''),
+    description: String(node.description || ''),
+  })),
+)
+const codeContextItems = computed(() =>
+  objectList(detail.value.code_context).map((item) => ({
+    location: contextLocation(item),
+    note: String(item.note || ''),
+    snippet: String(item.snippet || ''),
+  })),
+)
+const similarCases = computed(() =>
+  objectList(detail.value.similar_cases).map((item) => ({
+    title: String(item.title || ''),
+    similarity: String(item.similarity || ''),
+    summary: String(item.summary || ''),
+    reference: String(item.reference || ''),
+  })),
+)
+const hasStats = computed(
+  () =>
+    evidenceItems.value.length > 0 ||
+    fixSteps.value.length > 0 ||
+    callChainNodes.value.length > 0 ||
+    confidence.value !== null,
+)
+
+const copied = ref(false)
+let copyResetTimer: number | undefined
+async function copyFixCode() {
+  if (!fixCode.value) return
+  try {
+    await navigator.clipboard.writeText(fixCode.value)
+    copied.value = true
+    window.clearTimeout(copyResetTimer)
+    copyResetTimer = window.setTimeout(() => {
+      copied.value = false
+    }, 1600)
+  } catch {
+    copied.value = false
+  }
+}
 </script>
 
 <template>
@@ -223,28 +299,110 @@ const callChainItems = computed(() => {
       </div>
 
       <!-- ─── Report Body ─── -->
+      <div v-if="hasStats" class="case-stats">
+        <div v-if="evidenceItems.length" class="case-stat">
+          <span>{{ t('case_center.field.evidence_chain') }}</span>
+          <strong>{{ evidenceItems.length }}</strong>
+        </div>
+        <div v-if="fixSteps.length" class="case-stat">
+          <span>{{ t('case_center.field.fix_steps') }}</span>
+          <strong>{{ fixSteps.length }}</strong>
+        </div>
+        <div v-if="callChainNodes.length" class="case-stat">
+          <span>{{ t('case_center.field.call_chain') }}</span>
+          <strong>{{ callChainNodes.length }}</strong>
+        </div>
+        <div v-if="confidence !== null" class="case-stat is-accent">
+          <span>{{ t('case_center.field.confidence') }}</span>
+          <strong>{{ confidence }}%</strong>
+        </div>
+      </div>
+
       <div class="report-grid">
         <div class="report-main">
           <CaseReportSection index="01" :title="t('case_center.field.problem_description')" :icon="AlertCircle" tone="rose">
-            <p class="section-text">{{ vm.currentCase.problem_description || t('case_center.not_set') }}</p>
+            <p class="section-text case-lead">{{ vm.currentCase.problem_description || t('case_center.not_set') }}</p>
           </CaseReportSection>
 
-          <CaseReportSection index="02" :title="t('case_center.report.analysis_title')" :icon="GitFork">
-            <p class="section-text">{{ vm.currentCase.analysis_process || t('case_center.not_set') }}</p>
+          <CaseReportSection index="02" :title="t('case_center.field.evidence_chain')" :icon="ClipboardList">
+            <div v-if="evidenceItems.length" class="case-evidence">
+              <div class="case-evidence-head"><span>序号</span><span>证据</span></div>
+              <div v-for="(item, index) in evidenceItems" :key="index" class="case-evidence-row">
+                <span class="case-evidence-no">{{ formatIndex(index) }}</span>
+                <p class="case-evidence-text" v-html="renderInlineMarkdown(item)" />
+              </div>
+            </div>
+            <p v-else class="section-text">{{ vm.currentCase.analysis_process || t('case_center.not_set') }}</p>
           </CaseReportSection>
-          <CaseReportSection index="03" :title="t('case_center.field.call_chain')" :icon="GitBranch">
-            <ol v-if="callChainItems.length" class="call-chain-list">
-              <li v-for="item in callChainItems" :key="item">{{ item }}</li>
+
+          <CaseReportSection index="03" :title="t('case_center.field.root_cause')" :icon="Target" tone="amber">
+            <div class="case-root-cause" v-html="renderInlineMarkdown(vm.currentCase.root_cause || t('case_center.not_set'))" />
+          </CaseReportSection>
+
+          <CaseReportSection index="04" :title="t('case_center.field.fix_steps')" :icon="Wrench" tone="emerald">
+            <ol v-if="fixSteps.length" class="case-fix-steps">
+              <li v-for="(step, index) in fixSteps" :key="index" class="case-fix-step">
+                <span class="case-fix-no">{{ formatIndex(index) }}</span>
+                <p class="case-fix-text" v-html="renderInlineMarkdown(step)" />
+              </li>
             </ol>
+            <p v-else class="section-text">{{ vm.currentCase.solution || t('case_center.not_set') }}</p>
+
+            <div v-if="fixCode" class="case-code-block">
+              <div class="case-code-head">
+                <span class="case-code-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span class="case-code-title">{{ t('case_center.field.fix_code') }}</span>
+                <button class="case-code-copy" type="button" :title="t('case_center.report.copy_code')" @click="copyFixCode">
+                  <Check v-if="copied" :size="14" />
+                  <Copy v-else :size="14" />
+                </button>
+              </div>
+              <pre class="case-code">{{ fixCode }}</pre>
+            </div>
+          </CaseReportSection>
+
+          <CaseReportSection index="05" :title="t('case_center.field.call_chain')" :icon="GitBranch">
+            <div v-if="callChainNodes.length" class="case-chain">
+              <div v-for="(node, index) in callChainNodes" :key="index" class="case-chain-item">
+                <span class="case-chain-seq">{{ node.seq }}</span>
+                <div class="case-chain-body">
+                  <div class="case-chain-title">
+                    <span>{{ node.label }}</span>
+                    <span v-if="node.filePath" class="case-chain-file">{{ node.filePath }}</span>
+                  </div>
+                  <p v-if="node.description" class="case-chain-desc">{{ node.description }}</p>
+                </div>
+              </div>
+            </div>
             <p v-else class="section-text">{{ t('case_center.not_set') }}</p>
           </CaseReportSection>
 
-          <CaseReportSection index="04" :title="t('case_center.field.root_cause')" :icon="Target" tone="amber">
-            <p class="section-text strong">{{ vm.currentCase.root_cause || t('case_center.not_set') }}</p>
+          <CaseReportSection index="06" :title="t('case_center.field.code_context')" :icon="FileCode2">
+            <div v-if="codeContextItems.length" class="case-context-list">
+              <div v-for="(item, index) in codeContextItems" :key="index" class="case-context-item">
+                <div class="case-context-title">
+                  <FileCode2 :size="14" />
+                  <span>{{ item.location }}</span>
+                  <span v-if="item.note" class="case-context-note">{{ item.note }}</span>
+                </div>
+                <pre v-if="item.snippet" class="case-context-snippet">{{ item.snippet }}</pre>
+              </div>
+            </div>
+            <pre v-else-if="vm.currentCase.code_context" class="case-context-fallback">{{ vm.currentCase.code_context }}</pre>
+            <p v-else class="section-text">{{ t('case_center.not_set') }}</p>
           </CaseReportSection>
 
-          <CaseReportSection index="05" :title="t('case_center.field.solution')" :icon="Wrench" tone="emerald">
-            <p class="section-text strong">{{ vm.currentCase.solution || t('case_center.not_set') }}</p>
+          <CaseReportSection v-if="similarCases.length" index="07" :title="t('case_center.field.similar_cases')" :icon="History">
+            <div class="case-similar-list">
+              <div v-for="(item, index) in similarCases" :key="index" class="case-similar-item">
+                <div class="case-similar-title">
+                  <span>{{ item.title }}</span>
+                  <span v-if="item.similarity" class="case-similar-badge">{{ item.similarity }}</span>
+                </div>
+                <p v-if="item.summary" class="case-similar-summary">{{ item.summary }}</p>
+                <p v-if="item.reference" class="case-similar-ref">{{ item.reference }}</p>
+              </div>
+            </div>
           </CaseReportSection>
         </div>
 
@@ -284,13 +442,6 @@ const callChainItems = computed(() => {
               <div class="info-row">
                 <dt>{{ t('case_center.field.workspace') }}</dt>
                 <dd>{{ vm.currentCase.workspace_name || t('case_center.current_workspace') }}</dd>
-              </div>
-              <div class="info-row">
-                <dt>{{ t('case_center.field.code_context') }}</dt>
-                <dd>
-                  <pre v-if="vm.currentCase.code_context" class="code-context">{{ vm.currentCase.code_context }}</pre>
-                  <span v-else>{{ t('case_center.not_set') }}</span>
-                </dd>
               </div>
             </dl>
           </div>
@@ -731,23 +882,443 @@ const callChainItems = computed(() => {
   word-break: break-word;
 }
 
-/* 根因 / 方案：柔和浅色强调块（无边框条） */
-.report-section.tone-amber .section-text.strong {
-  background: #fffbeb;
-  border: 1px solid #fde68a;
-  border-radius: 12px;
-  padding: 12px 14px;
-  color: #78350f;
-  font-weight: 500;
+.case-lead {
+  font-size: 0.94rem;
+  line-height: 1.8;
+  color: #1e293b;
 }
 
-.report-section.tone-emerald .section-text.strong {
-  background: #ecfdf5;
-  border: 1px solid #a7f3d0;
+.case-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.case-stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+  border: 1px solid #e8edf3;
   border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+
+.case-stat span {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.case-stat strong {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1;
+}
+
+.case-stat.is-accent {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.case-stat.is-accent strong {
+  color: #1d4ed8;
+}
+
+.case-evidence {
+  border: 1px solid #e8edf3;
+  border-radius: 12px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.case-evidence-head,
+.case-evidence-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.case-evidence-head {
+  padding: 8px 14px;
+  border-bottom: 1px solid #e8edf3;
+  background: #f8fafc;
+  color: #94a3b8;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.case-evidence-head span:first-child {
+  padding-left: 5px;
+}
+
+.case-evidence-row {
   padding: 12px 14px;
-  color: #064e3b;
+}
+
+.case-evidence-row + .case-evidence-row {
+  border-top: 1px solid #f1f5f9;
+}
+
+.case-evidence-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.case-evidence-text {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.72;
+  color: #334155;
+  line-break: strict;
+  text-wrap: pretty;
+}
+
+.case-root-cause {
+  padding: 14px 16px;
+  border: 1px solid #fde68a;
+  border-radius: 12px;
+  background: #fffbeb;
+  color: #78350f;
+  font-size: 0.92rem;
   font-weight: 500;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.case-fix-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.case-fix-step {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.case-fix-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid #a7f3d0;
+  border-radius: 8px;
+  background: #ecfdf5;
+  color: #047857;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.case-fix-text {
+  margin: 3px 0 0;
+  font-size: 0.88rem;
+  line-height: 1.72;
+  color: #334155;
+  line-break: strict;
+  text-wrap: pretty;
+}
+
+.case-code-block {
+  margin-top: 14px;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  background: #0f172a;
+  overflow: hidden;
+}
+
+.case-code-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-bottom: 1px solid #1e293b;
+  background: #111c33;
+  color: #94a3b8;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+}
+
+.case-code-dots {
+  display: inline-flex;
+  gap: 4px;
+  margin-right: 2px;
+}
+
+.case-code-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #475569;
+}
+
+.case-code-dots i:nth-child(1) { background: #f87171; }
+.case-code-dots i:nth-child(2) { background: #fbbf24; }
+.case-code-dots i:nth-child(3) { background: #4ade80; }
+
+.case-code-title {
+  color: #94a3b8;
+}
+
+.case-code-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.case-code-copy:hover {
+  background: #1e293b;
+  color: #e2e8f0;
+}
+
+.case-code {
+  margin: 0;
+  padding: 12px 14px;
+  color: #e2e8f0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.6;
+  white-space: pre;
+  overflow: auto;
+  max-width: 100%;
+}
+
+.case-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.case-chain-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid #e8edf3;
+  border-radius: 10px;
+  background: #fbfdff;
+}
+
+.case-chain-seq {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.case-chain-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.case-chain-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: #0f172a;
+}
+
+.case-chain-file {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: #94a3b8;
+  overflow-wrap: anywhere;
+}
+
+.case-chain-desc {
+  margin: 3px 0 0;
+  font-size: 0.82rem;
+  line-height: 1.65;
+  color: #475569;
+  overflow-wrap: anywhere;
+}
+
+.case-context-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.case-context-item {
+  padding: 10px 12px;
+  border: 1px solid #e8edf3;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.case-context-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.case-context-title svg {
+  flex-shrink: 0;
+  color: #2563eb;
+}
+
+.case-context-title > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.case-context-note {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #94a3b8;
+}
+
+.case-context-snippet {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow: auto;
+  max-height: 260px;
+}
+
+.case-context-fallback {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #e8edf3;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow: auto;
+  max-height: 260px;
+}
+
+.case-similar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.case-similar-item {
+  padding: 11px 13px;
+  border: 1px solid #e8edf3;
+  border-radius: 10px;
+  background: #fbfdff;
+}
+
+.case-similar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: #0f172a;
+}
+
+.case-similar-badge {
+  padding: 1px 7px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.66rem;
+  font-weight: 600;
+}
+
+.case-similar-summary {
+  margin: 4px 0 0;
+  font-size: 0.82rem;
+  line-height: 1.65;
+  color: #475569;
+}
+
+.case-similar-ref {
+  margin: 3px 0 0;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: #64748b;
+}
+
+.case-evidence-text :deep(.inline-code),
+.case-fix-text :deep(.inline-code),
+.case-root-cause :deep(.inline-code) {
+  display: inline-block;
+  padding: 0 4px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #0f172a;
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.case-evidence-text :deep(.inline-nb),
+.case-fix-text :deep(.inline-nb),
+.case-root-cause :deep(.inline-nb) {
+  white-space: nowrap;
+}
+
+.case-evidence-text :deep(strong),
+.case-fix-text :deep(strong),
+.case-root-cause :deep(strong) {
+  color: #0f172a;
+  font-weight: 700;
 }
 
 /* ─── Aside ─── */
@@ -829,32 +1400,6 @@ const callChainItems = computed(() => {
   white-space: pre-wrap;
 }
 
-.code-context {
-  margin: 0;
-  padding: 8px 10px;
-  border: 1px solid #e8edf3;
-  border-radius: 8px;
-  background: #f8fafc;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  line-height: 1.55;
-  color: #334155;
-  overflow: auto;
-  max-height: 220px;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-.call-chain-list {
-  margin: 0;
-  padding-left: 1.1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 0.82rem;
-  line-height: 1.55;
-  color: #334155;
-  word-break: break-all;
-}
 .repo-chip {
   display: inline-block;
   margin: 2px 6px 2px 0;

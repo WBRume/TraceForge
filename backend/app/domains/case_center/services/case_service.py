@@ -386,7 +386,25 @@ def update_case(
             f"Case can only be edited in DRAFT or REJECTED state (current: {case.status})",
             status_code=409,
         )
-    _apply_fields(case, data.model_dump(exclude_unset=True))
+    payload = data.model_dump(exclude_unset=True)
+    previous_analysis = case.analysis_process
+    previous_solution = case.solution
+    previous_code_context = case.code_context
+    _apply_fields(case, payload)
+    # A case adopted from a diagnosis result renders the structured detail.
+    # If the user edits the legacy text field, drop the corresponding structured
+    # slice so the report falls back to the edited text instead of showing stale data.
+    detail = dict(case.diagnosis_detail_json) if isinstance(case.diagnosis_detail_json, dict) else {}
+    detail_changed = False
+    if "analysis_process" in payload and case.analysis_process != previous_analysis:
+        detail_changed = detail.pop("evidence", None) is not None or detail_changed
+    if "solution" in payload and case.solution != previous_solution:
+        detail_changed = detail.pop("fix_steps", None) is not None or detail_changed
+        detail_changed = detail.pop("fix_code", None) is not None or detail_changed
+    if "code_context" in payload and case.code_context != previous_code_context:
+        detail_changed = detail.pop("code_context", None) is not None or detail_changed
+    if detail_changed:
+        case.diagnosis_detail_json = detail or None
     db.commit()
     db.refresh(case)
     audit_log(
@@ -700,22 +718,14 @@ def create_case_draft_from_task(
         # 证据链+置信度 → 分析过程；调用链路 → diagnosis_detail_json；
         # 根因结论 → 根因；修复建议+修复代码 → 方案；
         # 相关代码上下文 → 代码上下文；结构化明细 → diagnosis_detail_json。
-        evidence_items = [
-            str(item).strip()
-            for item in (diagnosis_result.evidence_json or [])
-            if str(item).strip()
-        ]
+        evidence_items = [str(item).strip() for item in (diagnosis_result.evidence_json or []) if str(item).strip()]
         analysis_parts = list(evidence_items)
         confidence = diagnosis_result.confidence if diagnosis_result.confidence is not None else 0
         analysis_parts.append(f"置信度: {confidence}%")
         case.analysis_process = "\n\n".join(analysis_parts) or None
         case.root_cause = diagnosis_result.root_cause or None
 
-        fix_steps = [
-            str(item).strip()
-            for item in (diagnosis_result.fix_steps_json or [])
-            if str(item).strip()
-        ]
+        fix_steps = [str(item).strip() for item in (diagnosis_result.fix_steps_json or []) if str(item).strip()]
         solution_parts = list(fix_steps)
         fix_code = str(diagnosis_result.fix_code or "").strip()
         if fix_code:

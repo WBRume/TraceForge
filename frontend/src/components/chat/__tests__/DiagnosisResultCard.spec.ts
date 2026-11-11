@@ -86,7 +86,7 @@ describe('DiagnosisResultCard', () => {
     expect(wrapper.findAll('.dc-evidence-table .dc-evidence-row')).toHaveLength(3)
     expect(wrapper.findAll('.dc-fix-board .dc-fix-point')).toHaveLength(3)
     expect(wrapper.find('.dc-code-head').exists()).toBe(true)
-    expect(wrapper.findAll('.dc-icode').length).toBeGreaterThan(0)
+    expect(wrapper.findAll('.inline-code').length).toBeGreaterThan(0)
     expect(wrapper.find('.dc-evidence-table').text()).toContain('user 42 返回了 user 57 的订单')
     expect(wrapper.find('.dc-evidence-table').text()).not.toContain('1) 源码证据')
   })

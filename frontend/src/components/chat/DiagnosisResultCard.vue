@@ -28,6 +28,7 @@ import {
   type DiagnosisCodeContextItem,
   type DiagnosisResultPayload,
 } from '@/types/diagnosis'
+import { renderInlineMarkdown as renderInline } from '@/utils/inlineMarkdown'
 
 const props = defineProps<{
   payload: DiagnosisResultPayload
@@ -104,22 +105,6 @@ const fixStepsDraft = computed({
     local.value.fix_steps = value.split(/\r?\n/)
   },
 })
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-/** 只渲染行内 code / bold，先转义再注入，避免 AI 文本直接进入 DOM。 */
-function renderInline(value: string | null | undefined): string {
-  return escapeHtml(String(value || ''))
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/`([^`]+)`/g, '<code class="dc-icode">$1</code>')
-    .replace(/\n/g, '<br>')
-}
 
 function startEdit() {
   if (!canEdit.value) return
@@ -731,7 +716,8 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   color: #44403c;
 }
 
-.diagnosis-card :deep(.dc-icode) {
+.diagnosis-card :deep(.inline-code) {
+  display: inline-block;
   padding: 0 4px;
   border: 1px solid #e2e8f0;
   border-radius: 4px;
@@ -740,6 +726,11 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.88em;
   line-height: 1.45;
+  white-space: nowrap;
+}
+
+.diagnosis-card :deep(.inline-nb) {
+  white-space: nowrap;
 }
 
 .dc-summary-text :deep(strong),
