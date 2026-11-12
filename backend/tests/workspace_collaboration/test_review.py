@@ -1,11 +1,13 @@
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
 from app.domains.task.models.session_turn import TaskSessionTurn
 from app.domains.task.models.task import TaskType
+from app.domains.task.models.task_repository import SddTaskRepository
 from app.domains.task.services import task_session_snapshot_service as snapshots
-from app.domains.workspace_collaboration import content, review, service
+from app.domains.workspace_collaboration import content, export, review, service
 from app.domains.workspace_collaboration.models import CollaborationState
 from tests.workspace_collaboration.test_service import enabled, git
 from tests.workspace_collaboration.test_service import environment as repository_environment
@@ -240,6 +242,64 @@ def test_cumulative_diff_returns_only_changed_files(environment):
     assert {(file["repo_slug"], file["path"]) for file in result["files"]} == {("api", "added.txt")}
     entry = result["files"][0]
     assert entry["change"] == "A" and entry["left"] is None and entry["right"]["path"] == "added.txt"
+
+
+def test_repository_free_review_and_zip_preserve_binary_results(environment, tmp_path, monkeypatch):
+    db, task, _ = environment
+    db.query(SddTaskRepository).filter_by(task_id=task.id).delete()
+    root = tmp_path / "standalone"
+    root.mkdir()
+    task.project_path = str(root)
+    (root / "initial.txt").write_bytes(b"unchanged")
+    (root / "code.py").write_bytes(b"original\n")
+    checkpoint = snapshots._create_checkpoint_sync(
+        str(root), [], "none", None, task.workspace_id, "Standalone", task.id, task.name
+    )
+    task.task_meta_json = {"initial_workspace_checkpoint": checkpoint["root"]}
+    (root / "code.py").write_bytes(b"modified\n")
+    (root / "reports").mkdir()
+    report = b"PK\x00\xffbinary"
+    (root / "reports/report.docx").write_bytes(report)
+    (root / ".env").write_text("private")
+    db.commit()
+
+    result = review.diff(db, task, "viewer")
+    entries = {entry["path"]: entry for entry in result["files"]}
+    assert set(entries) == {"code.py", "reports/report.docx"}
+    assert entries["code.py"]["change"] == "M"
+    store = content.ObjectStore(task)
+    assert store.read(entries["code.py"]["left"]["sha256"]) == b"original\n"
+    assert service.get_state(db, task)["repository_configured"] is False
+    assert db.get(CollaborationState, task.id) is None
+
+    selected = [export.ExportFile(path=path, sha256=entry["right"]["sha256"]) for path, entry in entries.items()]
+    with export.archive(store, selected) as output, ZipFile(output) as bundle:
+        assert bundle.read("reports/report.docx") == report
+        assert bundle.read("code.py") == b"modified\n"
+    with pytest.raises(ValueError, match="Unsupported collaboration path"):
+        export.archive(store, [export.ExportFile(path="../report.docx", sha256=selected[0].sha256)])
+
+    (root / "reports/report.docx").write_bytes(b"still being written")
+
+    def busy(*args, **kwargs):
+        raise service.CollaborationError("WRITER_ACTIVE", "running")
+
+    monkeypatch.setattr(service, "_assert_no_writer", busy)
+    running = review.diff(db, task, "viewer")
+    assert running["running"] is True
+    assert running["files"] == result["files"]
+
+
+def test_repository_and_task_root_results_share_the_cumulative_review(environment):
+    db, task, root = environment
+    service._ensure_store(db, task)
+    (root / "report.pdf").write_bytes(b"%PDF-binary\x00")
+    (root / "api/report.pdf").write_bytes(b"%PDF-repository\x00")
+    result = review.diff(db, task, "viewer")
+    assert {(entry["repo_slug"], entry["path"]) for entry in result["files"]} == {
+        ("", "report.pdf"),
+        ("api", "report.pdf"),
+    }
 
 
 def test_initial_engine_output_is_reviewable_before_a_session_turn_is_recorded(environment):

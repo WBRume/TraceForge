@@ -27,7 +27,7 @@ export type CollaborationConflict = {
 /** Cumulative review computed on the server: only changed files travel. */
 export type CollaborationReviewDiff = {
   scope: 'cumulative' | 'round'
-  baseline_snapshot_id: string; cloud_snapshot_id: string; protocol_version: number
+  baseline_snapshot_id: string | null; cloud_snapshot_id: string | null; protocol_version: number
   repositories: Array<{ task_repository_id: string; repo_slug: string; branch_name: string }>
   files: Array<{
     task_repository_id: string; repo_slug: string; path: string; change: 'A' | 'M' | 'D' | 'T'
@@ -37,6 +37,7 @@ export type CollaborationReviewDiff = {
 }
 export type CollaborationState = {
   capabilities?: { manifest_delta?: number }
+  repository_configured?: boolean
   input_mode?: 'LOCAL' | 'CLOUD'
   enabled: boolean; sync_phase: string; state_version: number; workspace_revision: number
   snapshot_id: string | null; input_snapshot_id: string | null; progress_snapshot_id: string | null

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
@@ -13,7 +15,7 @@ from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.task.models.task import SddTask
 from app.domains.workspace.services import workspace_service
 
-from . import content, history, service, session
+from . import content, export, history, service, session
 from .schemas import (
     DeliveryReceipt,
     DisableRequest,
@@ -285,6 +287,33 @@ def download_object(
         raw,
         media_type="application/octet-stream",
         headers={"ETag": '"' + sha256 + '"', "Cache-Control": "private, immutable"},
+    )
+
+
+@router.post("/review/export")
+def export_review(
+    ws_id: str,
+    task_id: str,
+    data: export.ExportRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    task = _task(db, ws_id, task_id, user)
+    store = content.ObjectStore(task)
+    db.close()
+    try:
+        archive = export.archive(store, data.files)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except OverflowError as exc:
+        raise HTTPException(413, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return StreamingResponse(
+        iter(lambda: archive.read(1024 * 1024), b""),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="task-files.zip"', "Cache-Control": "private, no-store"},
+        background=BackgroundTask(archive.close),
     )
 
 

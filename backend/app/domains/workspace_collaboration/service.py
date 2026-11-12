@@ -89,6 +89,10 @@ def repository_metadata(db: Session, task: SddTask) -> list[dict]:
     return result
 
 
+def has_repository_bindings(db: Session, task: SddTask) -> bool:
+    return db.query(SddTaskRepository.id).filter_by(task_id=task.id).first() is not None
+
+
 def _check_session(state: CollaborationState, task: SddTask) -> None:
     _check_task(task)
     if (state.session_generation, state.session_revision) != (task.session_generation, task.session_revision):
@@ -160,8 +164,9 @@ def _bump(state: CollaborationState) -> None:
 
 def get_state(db: Session, task: SddTask) -> dict:
     state = _state(db, task.id, lock=False)
+    configured = has_repository_bindings(db, task)
     try:
-        repositories = repository_metadata(db, task)
+        repositories = repository_metadata(db, task) if configured else []
         repository_error = None
     except CollaborationError as exc:
         repositories = []
@@ -175,6 +180,7 @@ def get_state(db: Session, task: SddTask) -> dict:
             "state_version": 0,
             "workspace_revision": 0,
             "repositories": repositories,
+            "repository_configured": configured,
             "repository_error": repository_error,
             "repository_set_digest": content.digest(repositories),
             "session_generation": task.session_generation,
@@ -188,6 +194,7 @@ def get_state(db: Session, task: SddTask) -> dict:
     result["conflicts"] = state.conflicts_json or []
     result["pending_local_changes"] = state.pending_local_changes_json or []
     result["repositories"] = repositories
+    result["repository_configured"] = configured
     result["capabilities"] = {"manifest_delta": 1}
     result["repository_error"] = repository_error
     result["lease_expires_at"] = state.lease_expires_at.isoformat() + "Z"

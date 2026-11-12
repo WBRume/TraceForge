@@ -54,6 +54,28 @@ function fixture() {
 const global = () => ({ plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })], stubs: { CodeComparison: { props: ['leftLabel', 'rightLabel'], template: '<section class="diff-stub">{{leftLabel}} / {{rightLabel}}</section>' } } })
 
 describe('local collaboration presentation and review', () => {
+  it('offers server task results without exposing desktop collaboration on a repository-free task', () => {
+    const { controller, model, state } = fixture()
+    model.participating.value = false
+    state.value = { ...state.value, repository_configured: false, repositories: [], enabled: false }
+    const current = model.reviewDiff.value!
+    model.reviewDiff.value = {
+      ...current,
+      repositories: [],
+      files: [{ ...current.files[0]!, repo_slug: '', task_repository_id: 'workspace', path: 'reports/result.md' }],
+    }
+    const actions = mount(CollaborationActions, { props: { controller }, global: global() })
+    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: global() })
+    expect(actions.find('[role="switch"]').exists()).toBe(false)
+    expect(actions.find('.session-button').exists()).toBe(false)
+    expect(panel.text()).not.toContain('仓库与版本')
+    expect(panel.get('.file-row .file').attributes('title')).toBe('reports/result.md')
+    expect(panel.get('.file-download').attributes('disabled')).toBeUndefined()
+    expect(panel.text()).toContain('导出当前文件')
+    actions.unmount()
+    panel.unmount()
+  })
+
   it('defaults to cumulative differences even when the latest turn made no edits', async () => {
     const { controller, model, cloud } = fixture()
     model.participating.value = false
@@ -121,7 +143,7 @@ describe('local collaboration presentation and review', () => {
     expect(collaborationReview(proxyRefs(controller), false).files.every(file => file.kind === 'cloud')).toBe(true)
     const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: global() })
     expect(panel.findAll('.file')).toHaveLength(2)
-    expect(panel.findAll('.file-row button')).toHaveLength(2)
+    expect(panel.findAll('.file-row .file-download')).toHaveLength(2)
     expect(panel.find('.diff-stub').exists()).toBe(true)
     expect(panel.find('.repository-settings').exists()).toBe(false)
     expect(model.enable).not.toHaveBeenCalled()

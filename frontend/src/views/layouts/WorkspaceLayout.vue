@@ -37,7 +37,8 @@ const maybePromptRepoSetup = async () => {
   await localAgent.loadLocalConfig()
   await localAgent.setWorkspaceContext(workspace)
   // 浏览器中的 Web 端不具备本地开发能力，只在桌面客户端引导本地仓库/服务配置。
-  if (!isDesktop()) return
+  if (!isDesktop() || String(route.params.wsId || '') !== workspace.id) return
+  if (!localAgent.expectedRemoteUrls.length) return
   if (localStorage.getItem(setupKey())) return
   showRepoSetupDialog.value = true
 }

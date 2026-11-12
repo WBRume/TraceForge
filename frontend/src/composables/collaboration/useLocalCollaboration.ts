@@ -385,7 +385,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
         await reportPreparationFailure(token)
         if (stillPending) return
       }
-      if (mappingsDirty || (available && !nativeIdentityReady) || preparationRequired.value) await loadMappings()
+      if (next.repository_configured !== false && (mappingsDirty || (available && !nativeIdentityReady) || preparationRequired.value)) await loadMappings()
       check(token); loading.value = false
       if (!participating.value && directories.value?.baseline_prefetch === 1
         && next.repositories.length && next.repositories.every(repo => mappings.value[repo.task_repository_id])) {
@@ -485,7 +485,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   watch(busy, value => { if (!value) { operationStage.value = ''; if (!disposed && !leaving.value && (refreshQueued || localRefreshQueued || eventVersion)) void drainUpdates() } })
 
   async function enable() {
-    if (busy.value || !available || !state.value) return
+    if (busy.value || !available || !state.value || state.value.repository_configured === false) return
     if (state.value.enabled) { if (!participating.value) await claimDriver(); else await recover(); return }
     busy.value = true; error.value = ''
     const token = generation, taskId = String(options.task()?.id)
@@ -528,7 +528,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
 
   async function readText(hash: string): Promise<string> {
     let object: { content: string } | null = null
-    if (available) try { object = await native<{ content: string } | null>('read_object', { sha256: hash, optional: true }) }
+    if (available && state.value?.repository_configured !== false) try { object = await native<{ content: string } | null>('read_object', { sha256: hash, optional: true }) }
     catch (reason) { if (!/\bLOCAL_CONTENT_OBJECT_MISSING\b/.test(String(reason))) throw reason }
     const data = object === null ? new Uint8Array(await remote().object(hash)) : base64Bytes(object.content)
     if (data.length > 2 * 1024 * 1024 || data.includes(0)) throw new Error(t('collaboration.binary'))

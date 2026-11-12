@@ -10,7 +10,7 @@ from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTur
 from app.domains.task.services import task_git_snapshot_store as git_store
 from app.domains.task.services import task_snapshot_store as snapshot_files
 
-from . import content, identity, manifest_store, service, session
+from . import content, identity, manifest_store, service, session, workspace_review
 from .models import CollaborationSnapshot, CollaborationState
 
 
@@ -220,6 +220,17 @@ def diff(db, task, user_id, scope: str = "cumulative"):
     if scope not in {"cumulative", "round"}:
         service._fail("REVIEW_SCOPE_INVALID", "Unknown review scope")
     service._check_task(task)
+    if not service.has_repository_bindings(db, task):
+        files, running = workspace_review.diff(db, task, [], scope)
+        return {
+            "scope": scope,
+            "baseline_snapshot_id": None,
+            "cloud_snapshot_id": None,
+            "protocol_version": 2,
+            "repositories": [],
+            "files": files,
+            "running": running,
+        }
     state = service._state(db, task.id)
     if scope == "cumulative":
         baseline = committed_baseline(db, task, user_id)
@@ -254,6 +265,12 @@ def diff(db, task, user_id, scope: str = "cumulative"):
                 "right": right,
             }
         )
+    if scope == "cumulative":
+        root_files, root_running = workspace_review.diff(
+            db, task, [repo["rel_path"] for repo in cloud["repositories"]], scope
+        )
+        files.extend(root_files)
+        running = running or root_running
     return {
         "scope": scope,
         "baseline_snapshot_id": baseline["snapshot_id"],

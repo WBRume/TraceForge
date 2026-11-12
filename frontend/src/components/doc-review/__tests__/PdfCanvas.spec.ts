@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 const renderMock = vi.fn(() => ({ promise: Promise.resolve() }))
@@ -30,7 +30,9 @@ describe('PdfCanvas', () => {
   beforeEach(() => {
     renderMock.mockClear()
     getDocumentMock.mockClear()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({} as CanvasRenderingContext2D)
   })
+  afterEach(() => vi.restoreAllMocks())
 
   it('拉取原文件字节并逐页渲染 canvas', async () => {
     const wrapper = mount(PdfCanvas, {

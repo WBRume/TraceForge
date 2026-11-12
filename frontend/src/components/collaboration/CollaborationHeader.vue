@@ -22,7 +22,8 @@ const active = computed(() => ['loading', 'connecting', 'preparing', 'running', 
 const tone = computed(() => errors.value.length || ui.value?.tone === 'warning' ? 'warning' : active.value ? 'working'
   : ['ready', 'received', 'local'].includes(ui.value?.key || '') ? 'success' : 'neutral')
 const status = computed(() => c.value.reviewRunning && !c.value.participating ? 'Agent 正在执行，完成后更新变更'
-  : ['browse', 'connect'].includes(ui.value?.key || '') ? t('collaboration.phases.OFF') : ui.value?.title)
+  : c.value.state?.repository_configured === false ? t('task_deliverables.workspace_results')
+    : ['browse', 'connect'].includes(ui.value?.key || '') ? t('collaboration.phases.OFF') : ui.value?.title)
 </script>
 
 <template>

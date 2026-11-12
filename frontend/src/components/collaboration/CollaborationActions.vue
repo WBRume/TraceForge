@@ -11,6 +11,7 @@ const props = defineProps<{ controller: LocalCollaboration }>()
 const { t } = useI18n()
 const c = computed(() => proxyRefs(props.controller))
 const ui = useCollaborationPresentation(() => props.controller)
+const available = computed(() => c.value.available && Boolean(c.value.state) && c.value.state?.repository_configured !== false)
 const disabled = computed(() => c.value.busy || c.value.leaving || c.value.loading)
 const confirmingDisconnect = shallowRef(false)
 watch(() => props.controller, () => { confirmingDisconnect.value = false })
@@ -39,13 +40,13 @@ async function recover() {
 
 <template>
   <div class="collaboration-actions">
-    <button v-if="!c.participating && c.available" class="session-button" type="button" :disabled="disabled" @click="connectOrReceive(true)">{{ t('collaboration.session.receive') }}</button>
-    <div v-if="c.available" class="collaboration-switch" :title="!c.participating && c.enabled && !c.canReconnect ? t('collaboration.ui.activeDeviceHint') : ''">
+    <button v-if="!c.participating && available" class="session-button" type="button" :disabled="disabled" @click="connectOrReceive(true)">{{ t('collaboration.session.receive') }}</button>
+    <div v-if="available" class="collaboration-switch" :title="!c.participating && c.enabled && !c.canReconnect ? t('collaboration.ui.activeDeviceHint') : ''">
       <span>{{ t('collaboration.connectionLabel') }}</span>
       <ToggleSwitch :model-value="c.participating" :disabled="disabled || !c.participating && c.enabled && !c.canReconnect" :aria-label="t('collaboration.connectionLabel')" @update:model-value="toggleCollaboration" />
     </div>
-    <button v-if="c.participating && ui && ui.action !== 'none' && c.available" class="session-button primary" type="button" :disabled="disabled" @click="recover">{{ ui.actionLabel }}</button>
-    <div v-if="c.participating && c.driver && c.available" class="auto-receive" :title="t('collaboration.ui.autoReceiveHint')">
+    <button v-if="c.participating && ui && ui.action !== 'none' && available" class="session-button primary" type="button" :disabled="disabled" @click="recover">{{ ui.actionLabel }}</button>
+    <div v-if="c.participating && c.driver && available" class="auto-receive" :title="t('collaboration.ui.autoReceiveHint')">
       <span>{{ t('collaboration.ui.autoReceive') }}</span>
       <ToggleSwitch :model-value="c.progressive" :disabled="c.busy || c.leaving" :aria-label="t('collaboration.ui.autoReceive')" @update:model-value="c.setProgressive" />
     </div>

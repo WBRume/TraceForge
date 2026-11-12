@@ -11,6 +11,14 @@ import CollaborationHistory from './CollaborationHistory.vue'
 import RepositoryUpdatePanel from './RepositoryUpdatePanel.vue'
 import RepositoryUpdateChanges from './RepositoryUpdateChanges.vue'
 import RepositoryUpdateEntry from './RepositoryUpdateEntry.vue'
+import TaskFileFilters from './TaskFileFilters.vue'
+import TaskFileExportBar from './TaskFileExportBar.vue'
+import TaskFilePreviewBar from './TaskFilePreviewBar.vue'
+import TaskPatchPreview from './TaskPatchPreview.vue'
+import ArtifactPreview from '@/components/file-preview/ArtifactPreview.vue'
+import { fileType } from '@/components/file-preview/fileTypes'
+import { useTaskFileExport } from '@/composables/collaboration/useTaskFileExport'
+import { collaborationApi } from '@/services/collaborationApi'
 import { useRepositoryUpdates } from '@/composables/collaboration/useRepositoryUpdates'
 import { useOpenInIde } from '@/composables/collaboration/useOpenInIde'
 import { collaborationFileKey } from '@/composables/collaboration/compare'
@@ -23,7 +31,8 @@ const props = defineProps<{ controller: LocalCollaboration; workspaceId: string;
 const emit = defineEmits<{ error: [message: string] }>()
 const { t } = useI18n()
 const c = computed(() => proxyRefs(props.controller))
-const updates = useRepositoryUpdates(() => props)
+const repositoryFree = computed(() => c.value.state?.repository_configured === false)
+const updates = useRepositoryUpdates(() => props, () => !repositoryFree.value)
 const diffScope = shallowRef<'cumulative' | 'round'>('cumulative')
 function showRemoteChanges() {
   c.value.view.page = 'updates'
@@ -52,11 +61,21 @@ watch(diffScope, () => { pair.value = 'auto' })
 watch(tab, value => { if (value === 'local' || value === 'conflicts') { diffScope.value = 'round'; void c.value.loadReviewRound() } }, { immediate: true })
 
 const searchQuery = shallowRef('')
-const filteredFiles = computed(() => {
-  const list = files.value
+const category = shallowRef<'all' | 'reports' | 'code'>('all')
+const searchedFiles = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
-  if (!query) return list
-  return list.filter(item => item.path.toLowerCase().includes(query) || (item.repo_slug && item.repo_slug.toLowerCase().includes(query)))
+  return query ? files.value.filter(item => item.path.toLowerCase().includes(query) || item.repo_slug.toLowerCase().includes(query)) : files.value
+})
+const reports = computed(() => searchedFiles.value.filter(file => fileType(file.path).report))
+const counts = computed(() => ({
+  all: searchedFiles.value.length,
+  reports: reports.value.length,
+  code: searchedFiles.value.length - reports.value.length,
+}))
+const filteredFiles = computed(() => {
+  if (category.value === 'reports') return reports.value
+  if (category.value === 'code') return searchedFiles.value.filter(file => !fileType(file.path).report)
+  return searchedFiles.value
 })
 /** A runaway list (bad data or a protocol mismatch) must never freeze the panel. */
 const REVIEW_ROW_LIMIT = 300
@@ -64,7 +83,46 @@ const visibleFiles = computed(() => filteredFiles.value.slice(0, REVIEW_ROW_LIMI
 const hiddenFiles = computed(() => Math.max(0, filteredFiles.value.length - REVIEW_ROW_LIMIT))
 const reviewPending = computed(() => !review.value.cloudKnown && !c.value.reviewError)
 
-const active = computed(() => visibleFiles.value.find(file => file.key === selected.value) || files.value.find(file => file.key === selected.value))
+const active = computed(() => visibleFiles.value.find(file => file.key === selected.value))
+const exports = proxyRefs(useTaskFileExport({
+  workspaceId: () => props.workspaceId,
+  taskId: () => props.taskId,
+  scope: () => diffScope.value,
+  files,
+  visibleFiles: filteredFiles,
+  cloud: file => file.kind === 'cloud' ? file.right || file.left : review.value.cloud.get(file.key),
+}))
+const activeExport = computed(() => active.value && exports.entries.get(active.value.key))
+const activePath = computed(() => activeExport.value?.path || (active.value?.repo_slug ? `${active.value.repo_slug}/${active.value.path}` : active.value?.path) || '')
+const previewEngine = computed(() => fileType(activePath.value).engine)
+const previewSource = computed(() => {
+  const file = activeExport.value
+  if (!file || active.value?.kind !== 'cloud' || previewEngine.value === 'code') return undefined
+  const remote = collaborationApi(props.workspaceId, props.taskId)
+  return (signal?: AbortSignal) => remote.object(file.sha256, signal)
+})
+const resolveHtmlAsset = computed(() => {
+  const file = active.value
+  if (!file || previewEngine.value !== 'html') return undefined
+  const origin = 'https://task-artifact.invalid'
+  const base = new URL(file.path.split('/').map(encodeURIComponent).join('/'), origin)
+  const files = new Map(review.value.files.filter(entry => entry.task_repository_id === file.task_repository_id)
+    .map(entry => [entry.path, entry.kind === 'cloud' ? entry.right : review.value.cloud.get(entry.key)]))
+  const remote = collaborationApi(props.workspaceId, props.taskId)
+  return async (reference: string, signal: AbortSignal) => {
+    const url = new URL(reference, base)
+    if (url.origin !== origin) return undefined
+    const source = files.get(decodeURIComponent(url.pathname.slice(1)))
+    if (!source || source.mode === '120000' || source.size > 8 * 1024 * 1024) return undefined
+    return remote.object(source.sha256, signal)
+  }
+})
+watch(() => props.taskId, () => { category.value = 'all'; searchQuery.value = '' })
+watch(repositoryFree, value => {
+  if (!value) return
+  c.value.view.page = 'files'
+  selectDiffScope('cumulative')
+})
 const filters = computed(() => ['all', 'cloud', 'local', ...(ui.value?.conflicts ? ['conflicts'] : [])].map(value => ({
   value, count: value === 'local' && !ui.value?.localAvailable ? '—' : value === 'all' ? review.value.files.length : review.value.files.filter(file => file.kind === value).length,
 })))
@@ -81,7 +139,7 @@ const comparison = computed(() => {
   const leftSource = localPair || (pair.value === 'auto' && file?.kind === 'conflicts' && ui.value?.localAvailable) ? 'localSource' : pair.value === 'auto' && file?.kind === 'local' ? 'receivedSource' : downloadOnly.value ? 'session.beforeReceive' : 'inputSource'
   const rightSource = pair.value === 'auto' && file?.kind === 'local' ? 'localSource' : downloadOnly.value ? 'session.publishedSource' : ui.value?.running ? 'candidateSource' : 'finalSource'
   const cumulative = diffScope.value === 'cumulative' && pair.value === 'auto' && file?.kind === 'cloud'
-  return { left, right, leftLabel: cumulative ? '远端基线' : t(`collaboration.${leftSource}`), rightLabel: cumulative ? '任务版本' : t(`collaboration.${rightSource}`) }
+  return { left, right, leftLabel: cumulative ? file?.repo_slug ? '远端基线' : t('task_deliverables.initial_workspace') : t(`collaboration.${leftSource}`), rightLabel: cumulative ? '任务版本' : t(`collaboration.${rightSource}`) }
 })
 const restoreDescription = computed(() => pendingRestore.value?.conflicts.map(row => {
   const repo = c.value.state?.repositories.find(item => item.task_repository_id === row.task_repository_id)
@@ -140,15 +198,15 @@ async function confirmRestore() {
         <FileText :size="13" />
         <span>变更差异</span>
       </button>
-      <button class="nav-tab-item" :class="{ active: c.view.page === 'settings' }" type="button" @click="c.view.page = 'settings'">
+      <button v-if="!repositoryFree" class="nav-tab-item" :class="{ active: c.view.page === 'settings' }" type="button" @click="c.view.page = 'settings'">
         <GitBranch :size="13" />
         <span>仓库与版本</span>
       </button>
-      <button class="nav-tab-item" :class="{ active: c.view.page === 'backups' }" type="button" @click="c.view.page = 'backups'">
+      <button v-if="!repositoryFree" class="nav-tab-item" :class="{ active: c.view.page === 'backups' }" type="button" @click="c.view.page = 'backups'">
         <Clock :size="13" />
         <span>快照备份</span>
       </button>
-      <button class="nav-tab-item" :class="{ active: c.view.page === 'history' }" type="button" @click="c.view.page = 'history'">
+      <button v-if="!repositoryFree" class="nav-tab-item" :class="{ active: c.view.page === 'history' }" type="button" @click="c.view.page = 'history'">
         <Clock :size="13" />
         <span>协作历史</span>
       </button>
@@ -167,7 +225,7 @@ async function confirmRestore() {
     <CollaborationHistory v-else-if="c.view.page === 'history'" :workspace-id="workspaceId" :task-id="taskId" />
     <RepositoryUpdateChanges v-else-if="c.view.page === 'updates'" :model="updates" @back="c.view.page = 'files'" @close="c.view.page = 'files'" @applied="selectDiffScope('cumulative'); c.view.page = 'files'; c.refreshResults()" />
     <template v-else>
-      <div class="diff-scope-bar">
+      <div v-if="!repositoryFree" class="diff-scope-bar">
         <nav class="diff-purpose-tabs" aria-label="差异用途">
           <button type="button" :class="{ active:diffScope === 'cumulative' }" :aria-pressed="diffScope === 'cumulative'" @click="selectDiffScope('cumulative')">累计差异</button>
           <button type="button" :class="{ active:diffScope === 'round' }" :aria-pressed="diffScope === 'round'" @click="selectDiffScope('round')">本轮差异</button>
@@ -208,16 +266,31 @@ async function confirmRestore() {
           </div>
         </div>
 
-        <div v-else-if="visibleFiles.length" class="file-comparison">
-          <CollaborationFiles :files="visibleFiles" :repositories="c.state?.repositories || []" :selected="selected" :checked="checked" :can-restore="ui.canRestore" :local-available="ui.localAvailable" :running="ui.running" @select="selected = $event; pair = 'auto'" @check="checkFile" />
+        <div v-else-if="files.length" class="file-comparison">
+          <CollaborationFiles
+            :files="visibleFiles" :repositories="c.state?.repositories || []" :selected="selected" :checked="checked"
+            :can-restore="ui.canRestore" :local-available="ui.localAvailable" :running="ui.running"
+            :exports="exports.entries" :export-checked="exports.selected" :exporting="exports.pending"
+            @select="selected = $event; pair = 'auto'" @check="checkFile" @download="exports.single"
+            @export-check="(key, value) => exports.check([key], value)"
+          >
+            <template #toolbar>
+              <TaskFileFilters v-model="category" :counts="counts" :checked="exports.allChecked" :partial="exports.partial" :can-select="!!exports.visibleKeys.length" @select-all="exports.check(exports.visibleKeys, $event)" />
+            </template>
+            <template #empty><p v-if="!visibleFiles.length" class="filtered-empty">{{ t('task_deliverables.no_matches') }}</p></template>
+            <template #footer><TaskFileExportBar :count="exports.selectedFiles.length" :pending="exports.pending" @download="exports.zip" /></template>
+          </CollaborationFiles>
           <div v-if="active" class="diff-workspace">
-            <CodeComparison :path="`${active.repo_slug}/${active.path}`" :left-hash="comparison.left?.sha256" :right-hash="comparison.right?.sha256" :left-label="comparison.leftLabel" :right-label="comparison.rightLabel" :read-text="c.readText" :open-in-ide="ide.available" :ide-title="ide.hint(active.task_repository_id)" @ide-error="ide.error.value = $event" @open-in-ide="position => ide.open(active!.task_repository_id, active!.path, position.line, position.column)">
+            <TaskFilePreviewBar :path="activePath" :size="activeExport?.size" :pending="exports.pending" :removed="active.kind === 'cloud' && !active.right" @download="exports.single(active.key)" />
+            <TaskPatchPreview v-if="previewSource && previewEngine === 'patch'" :source="previewSource" />
+            <ArtifactPreview v-else-if="previewSource" :key="active.key" :name="active.path" :source="previewSource" :resolve-html-asset="resolveHtmlAsset" />
+            <CodeComparison v-else :path="activePath" :left-hash="comparison.left?.sha256" :right-hash="comparison.right?.sha256" :left-label="comparison.leftLabel" :right-label="comparison.rightLabel" :read-text="c.readText" :open-in-ide="ide.available && !!active.repo_slug" :ide-title="ide.hint(active.task_repository_id)" @ide-error="ide.error.value = $event" @open-in-ide="position => ide.open(active!.task_repository_id, active!.path, position.line, position.column)">
               <template v-if="diffScope === 'round'" #tools><BaseSelect v-model="pair" size="sm" :aria-label="t('collaboration.ui.compareVersions')" :options="[{ value: 'auto', label: t('collaboration.ui.defaultComparison') }, { value: 'local-cloud', label: t('collaboration.localCloud'), disabled: !ui.localAvailable }, { value: 'input-cloud', label: t('collaboration.inputCloud') }]" /></template>
             </CodeComparison>
-            <div class="diff-note-bar" :class="{ 'is-decision-bar': active.kind === 'conflicts' && ui.canRestore }">
+            <div v-if="!previewSource" class="diff-note-bar" :class="{ 'is-decision-bar': active.kind === 'conflicts' && ui.canRestore }">
               <p class="diff-note">
                 <span class="diff-note-icon">ℹ</span>
-                <span>{{ diffScope === 'cumulative' && active.kind === 'cloud' ? '显示任务相对当前远端基线的全部累计修改。' : t(active.kind === 'conflicts' ? ui.running ? 'collaboration.ui.previewConflictHint' : 'collaboration.ui.restoreNotice' : active.kind === 'local' ? 'collaboration.ui.localNotice' : ui.running ? 'collaboration.ui.runningNotice' : 'collaboration.ui.agentNotice') }}</span>
+                <span>{{ diffScope === 'cumulative' && active.kind === 'cloud' ? active.repo_slug ? '显示任务相对当前远端基线的全部累计修改。' : t('task_deliverables.workspace_diff') : t(active.kind === 'conflicts' ? ui.running ? 'collaboration.ui.previewConflictHint' : 'collaboration.ui.restoreNotice' : active.kind === 'local' ? 'collaboration.ui.localNotice' : ui.running ? 'collaboration.ui.runningNotice' : 'collaboration.ui.agentNotice') }}</span>
                 <span v-if="comparison.left?.mode !== comparison.right?.mode" class="mode-tag"> · {{ t('collaboration.ui.fileMode') }} {{ comparison.left?.mode || '—' }} → {{ comparison.right?.mode || '—' }}</span>
               </p>
               <div v-if="active.kind === 'conflicts' && ui.canRestore" class="single-file-actions">
@@ -236,8 +309,8 @@ async function confirmRestore() {
               <GitPullRequest v-else :size="24" />
             </div>
             <strong>{{ c.reviewError || (diffScope === 'cumulative' && review.cloudKnown && tab !== 'local' ? '暂无累计修改' : t(tab === 'local' ? 'collaboration.ui.noLocalChanges' : downloadOnly ? 'collaboration.session.noChanges' : 'collaboration.ui.noAgentChanges')) }}</strong>
-            <p>{{ c.reviewError ? '请稍后重试，或到“仓库与版本”检查映射与基线。' : diffScope === 'cumulative' && review.cloudKnown && tab !== 'local' ? '任务相对当前远端基线没有文件差异。' : t(tab === 'local' ? 'collaboration.ui.noLocalHint' : downloadOnly ? 'collaboration.session.noChangesHint' : 'collaboration.ui.noAgentHint') }}</p>
-            <div v-if="!review.files.length && !c.reviewError" class="empty-actions">
+            <p>{{ repositoryFree ? t(c.reviewError ? 'task_deliverables.retry' : ui.running ? 'task_deliverables.running' : 'task_deliverables.no_results') : c.reviewError ? '请稍后重试，或到“仓库与版本”检查映射与基线。' : diffScope === 'cumulative' && review.cloudKnown && tab !== 'local' ? '任务相对当前远端基线没有文件差异。' : t(tab === 'local' ? 'collaboration.ui.noLocalHint' : downloadOnly ? 'collaboration.session.noChangesHint' : 'collaboration.ui.noAgentHint') }}</p>
+            <div v-if="!repositoryFree && !review.files.length && !c.reviewError" class="empty-actions">
               <button class="btn-secondary btn-sm" type="button" @click="c.view.page = 'settings'">查看仓库映射</button>
               <button class="btn-secondary btn-sm" type="button" @click="c.view.page = 'backups'">查看历史快照</button>
             </div>
@@ -426,6 +499,7 @@ async function confirmRestore() {
 /* 主内容对比区 */
 .file-comparison { display: flex; flex: 1; min-height: 0; min-width: 0; background: #ffffff; }
 .diff-workspace { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; background: #ffffff; }
+.filtered-empty { padding: 12px 5px; color: #64748b; font-size: 12px; }
 .diff-note-bar {
   padding: 8px 16px;
   background: #f8fafc;

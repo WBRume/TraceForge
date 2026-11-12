@@ -16,7 +16,9 @@ export function collaborationApi(workspaceId: string, taskId: string) {
     humanChange: async (id: string): Promise<CollaborationHumanChangeDetail> => (await api.get(`${path}/human-changes/${encodeURIComponent(id)}`)).data,
     post: async <T = CollaborationState>(action: string, payload: Record<string, unknown>): Promise<T> => (await api.post(`${path}/${action}`, payload)).data,
     snapshot: async (id: string, base?: string): Promise<CollaborationManifest> => (await api.get(`${path}/snapshots/${encodeURIComponent(id)}`, { ...contentRequest, params: base ? { base_snapshot_id: base } : {} })).data,
-    object: async (hash: string): Promise<ArrayBuffer> => (await api.get(`${path}/objects/${hash}`, { ...contentRequest, responseType: 'arraybuffer' })).data,
+    object: async (hash: string, signal?: AbortSignal): Promise<ArrayBuffer> => (await api.get(`${path}/objects/${hash}`, { ...contentRequest, signal, responseType: 'arraybuffer' })).data,
+    exportFiles: async (files: { path: string; sha256: string }[]): Promise<Blob> =>
+      (await api.post(`${path}/review/export`, { files }, { ...contentRequest, responseType: 'blob' })).data,
     upload: async (hash: string, data: Uint8Array, identity: { client_id: string; instance_id: string; lease_epoch: number }): Promise<void> => { await api.put(`${path}/objects/${hash}`, data, { ...contentRequest, params: identity, headers: { 'Content-Type': 'application/octet-stream' } }) },
   }
 }

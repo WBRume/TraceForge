@@ -13,7 +13,7 @@ function open() { openCollaborationView(props.controller); emit('open') }
 <template>
   <button class="collaboration-entry" :class="ui?.tone" type="button" @click="open">
     <GitPullRequest :size="14" /><span>{{ t('collaboration.title') }}</span>
-    <span class="entry-state"><i />{{ ui?.short }}</span>
+    <span v-if="controller.state.value?.repository_configured !== false" class="entry-state"><i />{{ ui?.short }}</span>
   </button>
 </template>
 

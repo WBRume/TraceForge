@@ -2,7 +2,7 @@ import { computed, onScopeDispose, ref, shallowRef, watch } from 'vue'
 import { formatApiError } from '@/utils/error'
 import { repositoryUpdatesApi, subscribeRepositoryUpdates, type UpdateSummary, type UpdatePlan, type UpdateFileDetail } from '@/services/repositoryUpdates'
 
-export function useRepositoryUpdates(context: () => { workspaceId: string; taskId: string }) {
+export function useRepositoryUpdates(context: () => { workspaceId: string; taskId: string }, enabled = () => true) {
   const summary = shallowRef<UpdateSummary | null>(null)
   const plan = computed(() => summary.value?.plan || null)
   const busy = ref(''), error = ref(''), readError = ref(''), selected = ref('')
@@ -18,6 +18,7 @@ export function useRepositoryUpdates(context: () => { workspaceId: string; taskI
     if (summary.value) summary.value = { ...summary.value, plan: next }
   }
   async function reload() {
+    if (!enabled()) return
     const token = generation, request = ++readVersion
     try {
       const value = await api().get()
@@ -46,7 +47,7 @@ export function useRepositoryUpdates(context: () => { workspaceId: string; taskI
       }
     }
   }
-  watch(() => [context().workspaceId, context().taskId], () => {
+  watch(() => [context().workspaceId, context().taskId, enabled()], () => {
     generation++; summary.value = null; selected.value = ''; detail.value = null; error.value = ''; busy.value = ''
     detailKey = ''; readError.value = ''; pendingRefresh = false
     void reload()
