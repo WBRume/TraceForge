@@ -6,9 +6,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.asset.routers import upload as upload_router
 from app.domains.auth.models.user import User
+from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.local_resource import service as local_resources
+from app.domains.notification.models.task_awareness import TaskAwarenessEvent
 from app.domains.task.models.task import SddTask, TaskStatus, TaskType
+from app.domains.task.models.task_event_outbox import TaskEventOutbox
+from app.domains.task.models.task_status_event import TaskStatusEvent
 from app.domains.task.routers import task as task_router
 from app.domains.task.routers import task_closeout as task_closeout_router
 from app.domains.task.schemas.task_closeout import CompleteTaskCloseoutRequest
@@ -19,9 +24,11 @@ from app.domains.workspace_asset.models.workspace_asset import (
     SddRequirement,
     SddRequirementAuditLog,
     SddTaskFinalSummary,
+    SddTaskProcessAuditLog,
     SddTaskRequirement,
 )
 from app.domains.workspace_asset.routers import workspace_asset as workspace_asset_router
+from app.domains.workspace_asset.services.task_final_workflow import review_service
 from app.domains.workspace_asset.services.tasks.detail import get_task_detail
 from app.domains.workspace_collaboration.models import CollaborationState
 from app.domains.workspace_collaboration.router import router as collaboration_router
@@ -37,6 +44,7 @@ def _build_closeout_app(SessionLocal, user):
             db.close()
 
     app = FastAPI()
+    app.include_router(upload_router.router, prefix="/api")
     app.include_router(task_router.router, prefix="/api")
     app.include_router(task_closeout_router.router, prefix="/api")
     app.include_router(collaboration_router, prefix="/api")
@@ -81,11 +89,36 @@ def test_complete_closeout_allows_no_evidence():
         engine.dispose()
 
 
-def test_complete_closeout_records_evidence_summary_and_done_status():
+@pytest.mark.parametrize("reuse_default", [False, True])
+def test_complete_closeout_records_evidence_summary_and_done_status(reuse_default):
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
-            user, _workspace, _task = _seed_workspace(db, workspace_id="ws-closeout", task_id="task-closeout")
+            user, workspace, task = _seed_workspace(db, workspace_id="ws-closeout", task_id="task-closeout")
+            db.add(
+                SddEvidence(
+                    id="prior-evidence",
+                    workspace_id=workspace.id,
+                    task_id=task.id,
+                    source_type="OTHER",
+                    source_ref="local-test-report",
+                )
+            )
+            if reuse_default:
+                db.add(
+                    SddHumanReview(
+                        id="prior-review",
+                        workspace_id=workspace.id,
+                        task_id=task.id,
+                        reviewer_id=user.id,
+                        review_type=review_service.EXPERT_REVIEW_TYPE,
+                        status="RESOLVED",
+                        title="Saved review title",
+                        source_ref_json={"seed": review_service.DEFAULT_REVIEW_MARKER},
+                        target_ref_json={"targets": [{"target_type": "EVIDENCE", "target_id": "prior-evidence"}]},
+                    )
+                )
+            db.commit()
 
         client = TestClient(_build_closeout_app(SessionLocal, user))
         response = client.post(
@@ -115,7 +148,7 @@ def test_complete_closeout_records_evidence_summary_and_done_status():
 
         with _session(SessionLocal) as db:
             task = db.get(SddTask, "task-closeout")
-            evidence = db.query(SddEvidence).filter(SddEvidence.task_id == "task-closeout").one()
+            evidence = db.query(SddEvidence).filter_by(task_id=task.id, source_ref="abc1234").one()
             review = db.query(SddHumanReview).filter(SddHumanReview.task_id == "task-closeout").one()
             summary = db.query(SddTaskFinalSummary).filter(SddTaskFinalSummary.task_id == "task-closeout").one()
             detail_task = get_task_detail(db, "ws-closeout", "task-closeout")
@@ -124,10 +157,26 @@ def test_complete_closeout_records_evidence_summary_and_done_status():
             assert evidence.source_ref == "abc1234"
             assert review.status.value == "RESOLVED"
             assert review.review_type == "EXPERT_FINAL_REVIEW"
+            assert review.outcome is None
+            if reuse_default:
+                assert review.id == "prior-review"
+                assert review.title == "Saved review title"
+            assert {target["target_id"] for target in review.target_ref_json["targets"]} == {
+                evidence.id,
+                "prior-evidence",
+            }
+            review_id = review.id
             assert summary.final_status.value == "PARTIAL"
             assert detail_task is not None
             assert detail_task.task.status == "COMPLETED"
             assert detail_task.process_summary.coverage_status != "verified"
+
+        workflow = client.get(f"/api/workspaces/{workspace.id}/workspace-assets/tasks/{task.id}/final-workflow")
+        assert workflow.status_code == 200, workflow.text
+        review = workflow.json()["reviews"][0]
+        assert review["id"] == review_id
+        assert review["outcome"] is None
+        assert {target["target_id"] for target in review["target_refs"]} == {"prior-evidence", *payload["evidence_ids"]}
 
         old_complete = client.post("/api/workspaces/ws-closeout/tasks/task-closeout/complete")
         old_cancel = client.post("/api/workspaces/ws-closeout/tasks/task-closeout/cancel")
@@ -196,6 +245,98 @@ def test_failure_closeout_allows_no_attachment_and_preserves_summary():
             assert db.get(SddTask, task.id).status == TaskStatus.FAILED
             assert db.query(SddEvidence).count() == 0
             assert db.query(SddTaskFinalSummary).one().summary == "Unable to reproduce the issue"
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "action,status,fields",
+    [
+        ("complete", "COMPLETED", {"completion_summary": "Accepted externally", "landing_method": "HUMAN_ADJUSTED"}),
+        (
+            "fail",
+            "FAILED",
+            {"failure_summary": "Delivery blocked", "failure_stage": "CODING", "failure_reason": "OTHER"},
+        ),
+    ],
+)
+def test_closeout_rolls_back_all_records_and_replays_committed_receipt(monkeypatch, tmp_path, action, status, fields):
+    engine, sessions = _build_db()
+    try:
+        with _session(sessions) as db:
+            user, workspace, task = _seed_workspace(db)
+
+        client = TestClient(_build_closeout_app(sessions, user), raise_server_exceptions=False)
+        endpoint = f"/api/workspaces/{workspace.id}/tasks/{task.id}/closeout/{action}"
+        monkeypatch.setattr(upload_router, "UPLOAD_DIR", str(tmp_path))
+        upload = client.post("/api/upload", files={"file": ("build.log", b"build output", "text/plain")})
+        assert upload.status_code == 200, upload.text
+        uploaded = upload.json()
+        request = {
+            **fields,
+            "evidence_attachments": [{"filename": uploaded["filename"], "source_uri": uploaded["url"]}],
+        }
+
+        def reject_after_write(write):
+            def reject(db, *args, **kwargs):
+                result = write(db, *args, **kwargs)
+                if action == "fail" or result is not None:
+                    db.flush()
+                    raise RuntimeError("Simulated failure before commit")
+                return result
+
+            return reject
+
+        with monkeypatch.context() as patch:
+            if action == "complete":
+                patch.setattr(
+                    review_service,
+                    "ensure_expert_review_for_task",
+                    reject_after_write(review_service.ensure_expert_review_for_task),
+                )
+            else:
+                patch.setattr(
+                    status_machine,
+                    "remember_command_result",
+                    reject_after_write(status_machine.remember_command_result),
+                )
+            assert client.post(endpoint, json=request).status_code == 500
+
+        record_counts = {
+            SddEvidence: 1,
+            SddTaskFinalSummary: 1,
+            SddHumanReview: int(action == "complete"),
+            SddTaskProcessAuditLog: 3 if action == "complete" else 2,
+            SddDashboardMetric: 1,
+            TaskStatusEvent: 1,
+            TaskEventOutbox: 1,
+            TaskAwarenessEvent: 1,
+        }
+        with _session(sessions) as db:
+            task = db.get(SddTask, task.id)
+            assert task.status == TaskStatus.RUNNING
+            assert task.business_state == "TASK_IN_PROGRESS"
+            assert task.status_seq == 0
+            assert all(db.query(model).count() == 0 for model in record_counts)
+        assert client.get(uploaded["url"]).content == b"build output"
+
+        from app.domains.task.services import task_event_publisher
+
+        with monkeypatch.context() as patch:
+            patch.setattr(task_event_publisher, "wake", Mock(side_effect=RuntimeError("Response lost after commit")))
+            assert client.post(endpoint, json=request).status_code == 500
+
+        with _session(sessions) as db:
+            original = status_machine.receipt(db, task.id, f"closeout:{action.upper()}")
+            assert original is not None
+            assert original["status"] == status
+        replay = client.post(endpoint, json=request)
+        assert replay.status_code == 200, replay.text
+        assert replay.json() == original
+        with _session(sessions) as db:
+            assert {model: db.query(model).count() for model in record_counts} == record_counts
+            assert db.query(SddEvidence).one().source_uri == uploaded["url"]
+            assert db.query(SddTaskFinalSummary).one().final_evidence_ids_json == original["evidence_ids"]
     finally:
         engine.dispose()
 

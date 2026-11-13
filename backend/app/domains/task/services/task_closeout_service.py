@@ -382,7 +382,7 @@ def complete_task_closeout(
     )
     from app.domains.workspace_asset.services.task_final_workflow.review_service import ensure_expert_review_for_task
 
-    ensure_expert_review_for_task(db, task, actor_id)
+    ensure_expert_review_for_task(db, task, actor_id, include_current_evidence=True)
     db.commit()
     return result
 

@@ -13,6 +13,7 @@ from app.domains.workspace_asset.models.workspace_asset import (
     ClarificationStatus,
     HumanReviewStatus,
     SddClarification,
+    SddEvidence,
     SddHumanReview,
     TaskProcessAuditAction,
     TaskProcessRecordType,
@@ -147,7 +148,7 @@ def _review_clarification_question(title: str, body: str | None) -> str:
     return title
 
 
-def _evidence_target_refs(task: SddTask) -> list[dict]:
+def _evidence_target_refs(evidence: Iterable[SddEvidence]) -> list[dict]:
     return [
         {
             "target_type": "EVIDENCE",
@@ -160,7 +161,7 @@ def _evidence_target_refs(task: SddTask) -> list[dict]:
                 "source_path": item.source_path,
             },
         }
-        for item in (task.evidence_items or [])
+        for item in evidence
     ]
 
 
@@ -168,11 +169,14 @@ def ensure_expert_review_for_task(
     db: Session,
     task: SddTask,
     actor_id: str | None,
+    *,
+    include_current_evidence: bool = False,
 ) -> SddHumanReview | None:
-    """Create only the default seed review; users can add more review items."""
+    """Ensure the default review exists and include missing evidence at closeout."""
     if enum_value(task.status) != TaskStatus.COMPLETED.value:
         return None
-    if not task.evidence_items:
+    evidence = db.query(SddEvidence).filter_by(workspace_id=task.workspace_id, task_id=task.id).all()
+    if not evidence:
         return None
 
     existing_reviews = (
@@ -193,7 +197,10 @@ def ensure_expert_review_for_task(
         ),
         None,
     )
+    targets = _evidence_target_refs(evidence)
     if existing_default:
+        if include_current_evidence:
+            _append_default_review_targets(db, existing_default, actor_id, targets)
         return existing_default
 
     review = SddHumanReview(
@@ -208,7 +215,7 @@ def ensure_expert_review_for_task(
         title="Expert final-state review",
         body="Review completed task evidence and final-state readiness.",
         source_ref_json={"seed": DEFAULT_REVIEW_MARKER},
-        target_ref_json={"targets": _evidence_target_refs(task)},
+        target_ref_json={"targets": targets},
         resolved_at=datetime.utcnow(),
     )
     db.add(review)
@@ -226,6 +233,30 @@ def ensure_expert_review_for_task(
         reason="Task reached DONE with evidence; seeded an expert review item.",
     )
     return review
+
+
+def _append_default_review_targets(
+    db: Session, review: SddHumanReview, actor_id: str | None, targets: list[dict]
+) -> None:
+    before = human_review_response(review)
+    existing_evidence_ids = {ref.get("target_id") for ref in before.target_refs if ref.get("target_type") == "EVIDENCE"}
+    missing = [ref for ref in targets if ref["target_id"] not in existing_evidence_ids]
+    if not missing:
+        return
+    review.target_ref_json = {**(before.target_ref or {}), "targets": [*before.target_refs, *missing]}
+    db.flush()
+    add_process_audit(
+        db,
+        workspace_id=review.workspace_id,
+        task_id=review.task_id,
+        record_type=TaskProcessRecordType.HUMAN_REVIEW,
+        record_id=review.id,
+        action=TaskProcessAuditAction.UPDATED,
+        actor_id=actor_id,
+        before=before.model_dump(mode="json"),
+        after=human_review_response(review).model_dump(mode="json"),
+        reason="Added task evidence to the default expert review during completion closeout.",
+    )
 
 
 def create_review(

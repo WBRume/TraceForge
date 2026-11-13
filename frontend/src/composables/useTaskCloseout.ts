@@ -15,10 +15,13 @@ type UploadResponse = {
   url: string
 }
 
+type CloseoutPayload = Omit<CompleteCloseoutPayload, 'evidence_attachments'> | Omit<FailCloseoutPayload, 'evidence_attachments'>
+
 export function useTaskCloseout() {
   const { t } = useI18n()
   const saving = shallowRef(false)
   const error = shallowRef<string | null>(null)
+  const uploadedFiles = new WeakMap<File, CloseoutEvidenceAttachment>()
 
   function closeoutError(reason: unknown): string {
     const code = (reason as { response?: { data?: { detail?: { code?: string } } } } | null)
@@ -31,33 +34,42 @@ export function useTaskCloseout() {
   async function uploadEvidenceFiles(files: File[]): Promise<CloseoutEvidenceAttachment[]> {
     const attachments: CloseoutEvidenceAttachment[] = []
     for (const file of files) {
+      const uploaded = uploadedFiles.get(file)
+      if (uploaded) {
+        attachments.push(uploaded)
+        continue
+      }
       const form = new FormData()
       form.append('file', file)
       const response = await api.post<UploadResponse>('/upload', form)
-      attachments.push({
+      const attachment = {
         filename: response.data.filename || file.name,
         source_uri: response.data.url,
         source_path: response.data.path,
         source_label: response.data.filename || file.name,
         content_type: file.type || null,
         size: file.size,
-      })
+      }
+      uploadedFiles.set(file, attachment)
+      attachments.push(attachment)
     }
     return attachments
   }
 
-  async function completeTask(
+  async function submitCloseout(
     workspaceId: string,
     taskId: string,
-    payload: Omit<CompleteCloseoutPayload, 'evidence_attachments'>,
+    action: 'complete' | 'fail',
+    payload: CloseoutPayload,
     files: File[],
   ): Promise<TaskCloseoutResponse | null> {
+    if (saving.value) return null
     saving.value = true
     error.value = null
     try {
       const evidence_attachments = await uploadEvidenceFiles(files)
       const response = await api.post<TaskCloseoutResponse>(
-        `/workspaces/${workspaceId}/tasks/${taskId}/closeout/complete`,
+        `/workspaces/${workspaceId}/tasks/${taskId}/closeout/${action}`,
         { ...payload, evidence_attachments },
       )
       return response.data
@@ -69,27 +81,22 @@ export function useTaskCloseout() {
     }
   }
 
-  async function failTask(
+  function completeTask(
+    workspaceId: string,
+    taskId: string,
+    payload: Omit<CompleteCloseoutPayload, 'evidence_attachments'>,
+    files: File[],
+  ) {
+    return submitCloseout(workspaceId, taskId, 'complete', payload, files)
+  }
+
+  function failTask(
     workspaceId: string,
     taskId: string,
     payload: Omit<FailCloseoutPayload, 'evidence_attachments'>,
     files: File[],
-  ): Promise<TaskCloseoutResponse | null> {
-    saving.value = true
-    error.value = null
-    try {
-      const evidence_attachments = await uploadEvidenceFiles(files)
-      const response = await api.post<TaskCloseoutResponse>(
-        `/workspaces/${workspaceId}/tasks/${taskId}/closeout/fail`,
-        { ...payload, evidence_attachments },
-      )
-      return response.data
-    } catch (err) {
-      error.value = closeoutError(err)
-      return null
-    } finally {
-      saving.value = false
-    }
+  ) {
+    return submitCloseout(workspaceId, taskId, 'fail', payload, files)
   }
 
   return {

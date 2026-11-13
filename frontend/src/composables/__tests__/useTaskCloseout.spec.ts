@@ -79,4 +79,34 @@ describe('useTaskCloseout', () => {
     )
     expect(apiMock.post.mock.calls.some((call) => String(call[0]).endsWith('/cancel'))).toBe(false)
   })
+
+  it.each([
+    {
+      method: 'completeTask', endpoint: 'complete', status: 'COMPLETED',
+      fields: { completion_summary: 'Verified externally', landing_method: 'HUMAN_ADJUSTED' },
+    },
+    {
+      method: 'failTask', endpoint: 'fail', status: 'FAILED',
+      fields: { failure_summary: 'External build failed', failure_stage: 'COMPILE', failure_reason: 'COMPILE_ERROR' },
+    },
+  ] as const)('reuses uploaded references when retrying $endpoint after a lost response', async scenario => {
+    const { useTaskCloseout } = await import('@/composables/useTaskCloseout')
+    const closeout = useTaskCloseout()
+    const file = new File(['log'], 'build.log')
+    const receipt = { status: scenario.status, evidence_ids: ['evidence'], final_summary_id: 'summary' }
+    apiMock.post
+      .mockResolvedValueOnce({ data: { filename: 'build.log', path: 'uploads/stable.log', url: '/api/upload/files/stable.log' } })
+      .mockRejectedValueOnce(new Error('Connection lost'))
+      .mockResolvedValueOnce({ data: receipt })
+    const submit = () => scenario.method === 'completeTask'
+      ? closeout.completeTask('ws', 'task', scenario.fields, [file])
+      : closeout.failTask('ws', 'task', scenario.fields, [file])
+
+    expect(await submit()).toBeNull()
+    expect(await submit()).toEqual(receipt)
+    expect(apiMock.post.mock.calls.map(([path]) => path)).toEqual([
+      '/upload', `/workspaces/ws/tasks/task/closeout/${scenario.endpoint}`, `/workspaces/ws/tasks/task/closeout/${scenario.endpoint}`,
+    ])
+    expect(apiMock.post.mock.calls[2]).toEqual(apiMock.post.mock.calls[1])
+  })
 })
