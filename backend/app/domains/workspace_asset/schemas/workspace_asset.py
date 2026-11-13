@@ -544,6 +544,13 @@ class WorkbenchDeltaResponse(BaseModel):
     updated_at: datetime | None = None
 
 
+class EvidenceAttachmentResponse(BaseModel):
+    id: str
+    filename: str
+    content_type: str
+    size: int
+
+
 class EvidenceResponse(BaseModel):
     id: str
     workspace_id: str
@@ -554,6 +561,7 @@ class EvidenceResponse(BaseModel):
     status: str
     evidence_type: str = "CODE"
     source: ExternalEvidenceRef
+    attachments: list[EvidenceAttachmentResponse] = Field(default_factory=list)
     title: str | None = None
     summary: str | None = None
     confirmed_by_id: str | None = None

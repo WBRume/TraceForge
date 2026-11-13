@@ -50,7 +50,6 @@ COPY backend/app ${APP_HOME}/app
 
 # 运行态目录（由 compose 挂卷持久化，见 docker-compose.yml）
 RUN mkdir -p ${APP_HOME}/storage/skills \
-             ${APP_HOME}/uploads \
              ${APP_HOME}/tmp/api_mock_workspace \
              ${APP_HOME}/tmp/cli_state \
              ${APP_HOME}/tmp/workspace_archive \

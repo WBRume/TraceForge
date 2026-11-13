@@ -6,8 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
-from app.domains.asset.routers import upload as upload_router
-from app.domains.auth.models.user import User
+from app.domains.auth.models.user import User, WorkspaceMember, WorkspaceRole
 from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.local_resource import service as local_resources
 from app.domains.notification.models.task_awareness import TaskAwarenessEvent
@@ -16,8 +15,8 @@ from app.domains.task.models.task_event_outbox import TaskEventOutbox
 from app.domains.task.models.task_status_event import TaskStatusEvent
 from app.domains.task.routers import task as task_router
 from app.domains.task.routers import task_closeout as task_closeout_router
-from app.domains.task.schemas.task_closeout import CompleteTaskCloseoutRequest
 from app.domains.task.services import status_machine
+from app.domains.workspace_asset.models.evidence_attachment import TaskEvidenceAttachment
 from app.domains.workspace_asset.models.workspace_asset import (
     SddEvidence,
     SddHumanReview,
@@ -29,6 +28,7 @@ from app.domains.workspace_asset.models.workspace_asset import (
 )
 from app.domains.workspace_asset.routers import workspace_asset as workspace_asset_router
 from app.domains.workspace_asset.services.task_final_workflow import review_service
+from app.domains.workspace_asset.services.task_process import evidence_attachments
 from app.domains.workspace_asset.services.tasks.detail import get_task_detail
 from app.domains.workspace_collaboration.models import CollaborationState
 from app.domains.workspace_collaboration.router import router as collaboration_router
@@ -44,7 +44,6 @@ def _build_closeout_app(SessionLocal, user):
             db.close()
 
     app = FastAPI()
-    app.include_router(upload_router.router, prefix="/api")
     app.include_router(task_router.router, prefix="/api")
     app.include_router(task_closeout_router.router, prefix="/api")
     app.include_router(collaboration_router, prefix="/api")
@@ -56,6 +55,20 @@ def _build_closeout_app(SessionLocal, user):
     app.dependency_overrides[workspace_asset_router.get_db] = _override_db
     app.dependency_overrides[workspace_asset_router.get_current_user] = lambda: user
     return app
+
+
+@pytest.fixture(autouse=True)
+def _attachment_storage(monkeypatch, tmp_path):
+    monkeypatch.setattr(evidence_attachments, "ATTACHMENT_ROOT", tmp_path / "attachments")
+
+
+def upload_closeout_file(client, workspace_id, task_id, name="build.log"):
+    response = client.post(
+        f"/api/workspaces/{workspace_id}/tasks/{task_id}/closeout/attachments",
+        files={"file": (name, b"build output", "text/plain")},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
 
 
 def test_complete_closeout_allows_no_evidence():
@@ -127,18 +140,6 @@ def test_complete_closeout_records_evidence_summary_and_done_status(reuse_defaul
                 "completion_summary": "Implemented locally and compiled in the IDE.",
                 "landing_method": "HUMAN_ADJUSTED",
                 "commit_id": "abc1234",
-                "human_delta": {
-                    "status": "READY",
-                    "title": "Manual API adjustment",
-                    "summary": "Changed the AI output to use the internal API.",
-                    "change_category": "framework_api_misuse",
-                    "change_reason": "The AI output called the wrong helper.",
-                },
-                "decision": {
-                    "status": "ACCEPTED",
-                    "title": "Use existing internal helper",
-                    "body": "Keep implementation aligned with local framework conventions.",
-                },
             },
         )
         assert response.status_code == 200
@@ -193,20 +194,14 @@ def test_failure_closeout_records_failure_evidence_and_rejected_summary():
             user, _workspace, _task = _seed_workspace(db, workspace_id="ws-fail-closeout", task_id="task-fail-closeout")
 
         client = TestClient(_build_closeout_app(SessionLocal, user))
+        upload = upload_closeout_file(client, "ws-fail-closeout", "task-fail-closeout", "compile.log")
         response = client.post(
             "/api/workspaces/ws-fail-closeout/tasks/task-fail-closeout/closeout/fail",
             json={
                 "failure_stage": "COMPILE",
                 "failure_reason": "COMPILE_ERROR",
                 "failure_summary": "Local compile failed after applying the AI plan.",
-                "evidence_attachments": [
-                    {
-                        "filename": "compile.log",
-                        "source_uri": "/api/upload/files/compile.log",
-                        "source_path": "uploads/compile.log",
-                        "source_label": "compile.log",
-                    }
-                ],
+                "evidence_attachments": [{"attachment_id": upload["id"]}],
             },
         )
         assert response.status_code == 200
@@ -249,6 +244,57 @@ def test_failure_closeout_allows_no_attachment_and_preserves_summary():
         engine.dispose()
 
 
+def test_attachment_permissions_follow_evidence_and_require_the_exact_association():
+    engine, sessions = _build_db()
+    try:
+        with _session(sessions) as db:
+            owner, workspace, task = _seed_workspace(db)
+            viewer = User(id="reader", display_name="Reader", email="reader@example.com", hashed_password="x")
+            outsider = User(id="outsider", display_name="Outsider", email="outsider@example.com", hashed_password="x")
+            db.add_all([viewer, outsider])
+            db.add(
+                WorkspaceMember(
+                    workspace_id=workspace.id,
+                    user_id=viewer.id,
+                    role=WorkspaceRole.VIEWER,
+                    permissions_json='["VIEW_ASSETS"]',
+                )
+            )
+            db.commit()
+        owner_client = TestClient(_build_closeout_app(sessions, owner))
+        viewer_client = TestClient(_build_closeout_app(sessions, viewer))
+        outsider_client = TestClient(_build_closeout_app(sessions, outsider))
+        uploaded = upload_closeout_file(owner_client, workspace.id, task.id, "测试报告.pdf")
+        task_url = f"/api/workspaces/{workspace.id}/tasks/{task.id}"
+        assert (
+            viewer_client.post(f"{task_url}/closeout/attachments", files={"file": ("x.pdf", b"x")}).status_code == 403
+        )
+        completed = owner_client.post(
+            f"{task_url}/closeout/complete",
+            json={
+                "landing_method": "HUMAN_ADJUSTED",
+                "completion_summary": "Verified",
+                "evidence_attachments": [{"attachment_id": uploaded["id"]}],
+            },
+        )
+        assert completed.status_code == 200, completed.text
+        evidence_id = completed.json()["evidence_ids"][0]
+        evidence_url = f"/api/workspaces/{workspace.id}/workspace-assets/tasks/{task.id}/evidence"
+        file_url = f"{evidence_url}/{evidence_id}/attachments/{uploaded['id']}"
+        assert viewer_client.get(f"{evidence_url}/{evidence_id}").json()["attachments"] == [uploaded]
+        received = viewer_client.get(file_url)
+        assert received.status_code == 200
+        assert received.content == b"build output"
+        assert received.headers["content-disposition"].startswith("attachment; filename*=")
+        assert received.headers["content-type"] == "application/pdf"
+        assert outsider_client.get(file_url).status_code == 403
+        assert viewer_client.get(file_url.replace(evidence_id, "other-evidence")).status_code == 404
+        assert viewer_client.get(file_url.replace(f"/tasks/{task.id}/", "/tasks/other-task/")).status_code == 404
+        assert viewer_client.get(f"/api/upload/files/{uploaded['id']}").status_code == 404
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.parametrize(
     "action,status,fields",
     [
@@ -260,7 +306,7 @@ def test_failure_closeout_allows_no_attachment_and_preserves_summary():
         ),
     ],
 )
-def test_closeout_rolls_back_all_records_and_replays_committed_receipt(monkeypatch, tmp_path, action, status, fields):
+def test_closeout_rolls_back_all_records_and_replays_committed_receipt(monkeypatch, action, status, fields):
     engine, sessions = _build_db()
     try:
         with _session(sessions) as db:
@@ -268,13 +314,10 @@ def test_closeout_rolls_back_all_records_and_replays_committed_receipt(monkeypat
 
         client = TestClient(_build_closeout_app(sessions, user), raise_server_exceptions=False)
         endpoint = f"/api/workspaces/{workspace.id}/tasks/{task.id}/closeout/{action}"
-        monkeypatch.setattr(upload_router, "UPLOAD_DIR", str(tmp_path))
-        upload = client.post("/api/upload", files={"file": ("build.log", b"build output", "text/plain")})
-        assert upload.status_code == 200, upload.text
-        uploaded = upload.json()
+        uploaded = upload_closeout_file(client, workspace.id, task.id)
         request = {
             **fields,
-            "evidence_attachments": [{"filename": uploaded["filename"], "source_uri": uploaded["url"]}],
+            "evidence_attachments": [{"attachment_id": uploaded["id"]}],
         }
 
         def reject_after_write(write):
@@ -318,7 +361,9 @@ def test_closeout_rolls_back_all_records_and_replays_committed_receipt(monkeypat
             assert task.business_state == "TASK_IN_PROGRESS"
             assert task.status_seq == 0
             assert all(db.query(model).count() == 0 for model in record_counts)
-        assert client.get(uploaded["url"]).content == b"build output"
+            pending = db.get(TaskEvidenceAttachment, uploaded["id"])
+            assert pending.evidence_id is None
+            assert evidence_attachments.attachment_path(pending).read_bytes() == b"build output"
 
         from app.domains.task.services import task_event_publisher
 
@@ -335,7 +380,7 @@ def test_closeout_rolls_back_all_records_and_replays_committed_receipt(monkeypat
         assert replay.json() == original
         with _session(sessions) as db:
             assert {model: db.query(model).count() for model in record_counts} == record_counts
-            assert db.query(SddEvidence).one().source_uri == uploaded["url"]
+            assert db.get(TaskEvidenceAttachment, uploaded["id"]).evidence_id == original["evidence_ids"][0]
             assert db.query(SddTaskFinalSummary).one().final_evidence_ids_json == original["evidence_ids"]
     finally:
         engine.dispose()
@@ -387,11 +432,20 @@ def test_closeout_records_result_while_code_work_is_blocked(
 
         client = TestClient(_build_closeout_app(sessions, user))
         endpoint = f"/api/workspaces/{workspace.id}/tasks/{task.id}/closeout/{action}"
+        uploaded = upload_closeout_file(client, workspace.id, task.id)
         request = {
             **fields,
-            "evidence_attachments": [{"filename": "log.txt", "source_uri": "/api/upload/files/log.txt"}],
+            "evidence_attachments": [{"attachment_id": uploaded["id"]}],
         }
-        response = client.post(endpoint, json={**request, "confirmed_server_snapshot_id": "stale"})
+        assert client.post(endpoint, json={**request, "confirmed_server_snapshot_id": "stale"}).status_code == 422
+        assert (
+            client.post(
+                endpoint,
+                json={**request, "evidence_attachments": [{"attachment_id": uploaded["id"], "source_path": "old.log"}]},
+            ).status_code
+            == 422
+        )
+        response = client.post(endpoint, json=request)
         assert response.status_code == 200, response.text
         assert response.json()["status"] == expected_status
         assert "confirmed_server_snapshot_id" not in response.json()
@@ -404,42 +458,6 @@ def test_closeout_records_result_while_code_work_is_blocked(
             if phase:
                 collaboration = db.get(CollaborationState, task.id)
                 assert (collaboration.sync_phase, collaboration.snapshot_id) == (phase, snapshot_id)
-    finally:
-        engine.dispose()
-
-
-def test_closeout_replays_legacy_receipt_without_resubmitting_snapshot():
-    engine, sessions = _build_db()
-    try:
-        with _session(sessions) as db:
-            user, workspace, task = _seed_workspace(db)
-            payload = CompleteTaskCloseoutRequest(
-                completion_summary="Already accepted", landing_method="HUMAN_ADJUSTED"
-            )
-            content = payload.model_dump(mode="json", exclude={"disconnect_collaboration_lease_epoch"})
-            event_key = "closeout:COMPLETE"
-            status_machine.dispatch(
-                db,
-                task,
-                status_machine.Trigger.COMPLETE,
-                event_key=event_key,
-                actor_id=user.id,
-                reason=payload.completion_summary,
-                content={**content, "confirmed_server_snapshot_id": "historical"},
-            )
-            status_machine.remember_command_result(
-                db,
-                task.id,
-                event_key,
-                {**status_machine.snapshot(task), "confirmed_server_snapshot_id": "historical"},
-            )
-            db.commit()
-
-        client = TestClient(_build_closeout_app(sessions, user))
-        response = client.post(f"/api/workspaces/{workspace.id}/tasks/{task.id}/closeout/complete", json=content)
-        assert response.status_code == 200, response.text
-        assert response.json()["status"] == "COMPLETED"
-        assert "confirmed_server_snapshot_id" not in response.json()
     finally:
         engine.dispose()
 

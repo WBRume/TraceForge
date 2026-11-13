@@ -492,6 +492,13 @@ export type WorkbenchDelta = {
   updated_at?: string | null
 }
 
+export type EvidenceAttachment = {
+  id: string
+  filename: string
+  content_type: string
+  size: number
+}
+
 export type Evidence = {
   id: string
   workspace_id: string
@@ -508,6 +515,10 @@ export type Evidence = {
   confirmed_at?: string | null
   created_at?: string | null
   updated_at?: string | null
+}
+
+export type EvidenceDetail = Evidence & {
+  attachments: EvidenceAttachment[]
 }
 
 export type Decision = {

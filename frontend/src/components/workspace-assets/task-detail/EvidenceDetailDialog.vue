@@ -4,8 +4,9 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Copy, GitCommitHorizontal, GitPullRequest, FileText, CheckCircle2, XCircle, Clock, AlertTriangle } from '@/components/icons'
 import { useTaskDetailSections } from '@/composables/useTaskDetailSections'
-import type { Evidence, TaskFinalSummary } from '@/types/workspaceAssets'
+import type { EvidenceDetail } from '@/types/workspaceAssets'
 import { closeoutOptionLabelKey, isDiagnosisLandingMethod } from '@/utils/taskCloseout'
+import EvidenceAttachments from './EvidenceAttachments.vue'
 
 const props = defineProps<{
   visible: boolean
@@ -22,28 +23,24 @@ const { t } = useI18n()
 const sections = useTaskDetailSections()
 
 const loading = ref(false)
-const evidence = ref<Evidence | null>(null)
-const finalSummary = ref<TaskFinalSummary | null>(null)
+const evidence = ref<EvidenceDetail | null>(null)
 
-watch(() => props.visible, async (isOpen) => {
-  if (isOpen && props.evidenceId) {
-    loading.value = true
+watch([() => props.visible, () => props.workspaceId, () => props.taskId, () => props.evidenceId],
+  async ([isOpen, workspaceId, taskId, evidenceId], _, onCleanup) => {
+    let active = true
+    onCleanup(() => { active = false })
     evidence.value = null
-    finalSummary.value = null
+    loading.value = Boolean(isOpen && evidenceId)
+    if (!isOpen || !evidenceId) return
     try {
-      const [ev, summary] = await Promise.all([
-        sections.loadEvidenceDetail(props.workspaceId, props.taskId, props.evidenceId),
-        sections.loadFinalSummary(props.workspaceId, props.taskId).catch(() => null),
-      ])
-      evidence.value = ev
-      finalSummary.value = summary
+      const detail = await sections.loadEvidenceDetail(workspaceId, taskId, evidenceId)
+      if (active) evidence.value = detail
     } catch {
-      evidence.value = null
+      if (active) evidence.value = null
     } finally {
-      loading.value = false
+      if (active) loading.value = false
     }
-  }
-})
+  }, { immediate: true })
 
 function close() {
   emit('update:visible', false)
@@ -96,9 +93,8 @@ const landingMethodLabel = computed(() => {
 })
 
 const failureInfo = computed(() => {
-  const risk = finalSummary.value?.remaining_risk
-  const stage = closeoutMeta.value?.failure_stage || risk?.match(/Failure stage:\s*([^;]+)/)?.[1]?.trim()
-  const reason = closeoutMeta.value?.failure_reason || risk?.match(/reason:\s*([^.]+)/)?.[1]?.trim()
+  const stage = closeoutMeta.value?.failure_stage
+  const reason = closeoutMeta.value?.failure_reason
   if (!stage && !reason) return null
   const stageKey = stage ? closeoutOptionLabelKey('failure_stage_options', stage) : null
   const reasonKey = reason ? closeoutOptionLabelKey('failure_reason_options', reason) : null
@@ -122,16 +118,20 @@ function formatDate(dateStr?: string | null): string {
   return new Date(dateStr).toLocaleString()
 }
 
-function hasSourceInfo(e: Evidence): boolean {
-  return !!(e.source?.source_ref || e.source?.source_uri || e.source?.source_path || e.source?.source_label)
-}
+const showSourceInfo = computed(() => {
+  if (closeoutMeta.value?.kind === 'closeout_attachment') return false
+  const source = evidence.value?.source
+  return Boolean(source?.source_ref || source?.source_uri || source?.source_path || source?.source_label)
+})
 </script>
 
 <template>
   <el-dialog
     :model-value="visible"
     :title="t('workspace_assets.task_detail.workbench.evidence_detail.title')"
-    width="560px"
+    width="min(560px, calc(100vw - 32px))"
+    body-class="evidence-detail-dialog-body"
+    align-center
     append-to-body
     destroy-on-close
     @close="close"
@@ -140,7 +140,7 @@ function hasSourceInfo(e: Evidence): boolean {
       <el-skeleton :rows="4" animated />
     </div>
 
-    <div v-else-if="evidence" class="detail-content">
+    <div v-else-if="visible && evidence" class="detail-content">
       <div class="detail-header">
         <span class="type-badge" :style="{ background: typeColor(evidence.evidence_type) }">{{ evidence.evidence_type }}</span>
         <span class="status-chip" :style="{ color: statusColor(evidence.status), borderColor: statusColor(evidence.status) }">
@@ -182,7 +182,16 @@ function hasSourceInfo(e: Evidence): boolean {
         </div>
       </div>
 
-      <div v-if="hasSourceInfo(evidence)" class="detail-section">
+      <EvidenceAttachments
+        v-if="evidence.attachments.length"
+        :key="evidence.id"
+        :workspace-id="workspaceId"
+        :task-id="taskId"
+        :evidence-id="evidence.id"
+        :attachments="evidence.attachments"
+      />
+
+      <div v-if="showSourceInfo" class="detail-section">
         <label>{{ t('workspace_assets.task_detail.workbench.evidence_detail.source_info') }}</label>
         <div class="source-detail-grid">
           <div class="source-detail-row">
@@ -251,6 +260,11 @@ function hasSourceInfo(e: Evidence): boolean {
 </template>
 
 <style scoped>
+:global(.evidence-detail-dialog-body) {
+  max-height: calc(100dvh - 10rem);
+  overflow-y: auto;
+}
+
 .detail-loading {
   padding: 8px 0;
 }

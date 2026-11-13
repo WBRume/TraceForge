@@ -25,6 +25,7 @@ from app.domains.local_resource.client import ResourceClient
 from app.domains.task.models.deletion import TaskDeletionCleanup
 from app.domains.task.models.task import SddTask
 from app.domains.task.services.task_cli_paths import _safe_rmtree, _task_state_root
+from app.domains.workspace_asset.services.task_process import evidence_attachments
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -112,6 +113,7 @@ def _cleanup_files(workspace_id: str, task_id: str) -> None:
         raise ValueError("CLI workspace directory resolves outside the CLI state root")
     _safe_rmtree(str(cli))
     _rmdir_if_empty(cli.parent)
+    _remove_owned_directory(evidence_attachments.ATTACHMENT_ROOT.resolve() / task_id)
 
     snapshots = Path(settings.TASK_SESSION_SNAPSHOT_ROOT).resolve()
     collaboration = Path(settings.COLLABORATION_SNAPSHOT_ROOT or snapshots / "collaboration").resolve()

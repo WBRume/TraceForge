@@ -67,6 +67,19 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 管理员也可在系统配置中管理受支持的功能和连接，已保存的配置会覆盖对应环境默认值。任务使用其绑定的 Agent；修改平台默认值不会自动迁移既有任务。
 
+### OpenCode / DSH 服务切换
+
+修改服务地址前，先确认新地址指向原服务及其会话存储，还是指向独立实例。换实例或换主机时，需要保留的原生会话应由运维人员在 Agent 侧备份和恢复。TraceForge 展示已保存的聊天历史、作业结果和产物，Agent 上下文由 OpenCode 或 DSH 管理。
+
+1. **清点未结束作业。** 在原服务上等待作业完成，或请求停止并确认结果。若原服务不可达且结果未知，先保留原作业记录，确认旧作业已结束或已停止后再向同一工作区派发替代作业。
+2. **按 Agent 备份会话数据。** 以旧实例运行账号和实际部署配置为准，容器部署需核对挂载的持久化卷。
+
+   - **OpenCode**：备份实际使用的会话数据库和关联的持久化数据。使用 SQLite 时，服务在线期间应通过 SQLite 的备份机制获取一致快照。只需保留指定会话时，也可使用部署版本支持的原生会话导出与导入。 [OpenCode 数据位置](https://opencode.ai/docs/cli/#paths) · [会话导入导出](https://opencode.ai/docs/cli/commands/#session) · [SQLite 备份说明](https://www.sqlite.org/backup.html)
+   - **DSH**：备份实际配置的完整会话存储目录，保留按工作目录和会话 ID 组织的目录结构，以及会话目录内的持久化文件。使用 JSONL 持久化时，以部署配置指定的会话根目录为准。 [DSH 会话持久化说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/session/session-persistence-jsonl/README.md)
+
+3. **记录运行环境。** 记录 Agent 版本、启动配置和工作目录映射。更换主机时，另行备份工作区的未提交改动及需要保留的本地文件。
+4. **在目标服务验证后再下线旧服务。** 从 TraceForge 后端验证新地址和认证可用，并在目标 Agent 上抽查需要保留的会话，确认能按原 ID 打开、会话归属正确且关联到对应任务工作区。新地址指向同一份会话存储时，也要核验原会话可读。若原会话确认不可用，用户仍可查看 TraceForge 保存的历史，并在新会话里重新提供所需背景。
+
 ### 接入新的 Agent
 
 实现 [AgentBackend](app/agents/contract.py) 的执行、停止和资源释放接口，以及 `bind_tools(request, tools)` 异步上下文管理器。在应用启动时通过 [register_backend](app/agents/registry.py) 注册；内置接入入口是 [adapters/register_all](app/agents/adapters/__init__.py)。注册后，工作区选项、平台配置、连接测试和模型选择读取同一份元数据，不需要在业务 domain 或前端增加 Agent 名称分支。

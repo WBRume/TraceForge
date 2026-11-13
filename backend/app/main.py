@@ -30,7 +30,7 @@ from app.domains.api_mock.services import api_mock_service
 from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
 from app.domains.asset.models.asset import SddAsset
 from app.domains.asset.routers import assets as asset_assets
-from app.domains.asset.routers import decision, upload
+from app.domains.asset.routers import decision
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
 from app.domains.auth.errors import OAuthAPIError, oauth_api_error_handler
 from app.domains.auth.models.user import User, WorkspaceMember
@@ -224,7 +224,6 @@ app.include_router(case_center_router.global_router, prefix="/api")
 app.include_router(decision.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(asset_assets.router, prefix="/api")
-app.include_router(upload.router, prefix="/api")
 app.include_router(skill.router, prefix="/api")
 app.include_router(api_mock.router, prefix="/api")
 app.include_router(provision.router, prefix="/api")
@@ -244,9 +243,6 @@ app.include_router(system_config.router, prefix="/api")
 app.include_router(feature_configs.router, prefix="/api")
 app.include_router(rag_outbox_router.router, prefix="/api")
 app.include_router(api_mock.gateway_router)
-
-# ── 静态文件挂载 ──
-# app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
 async def _authenticate_task_ws(websocket: WebSocket, task_id: str) -> dict | None:

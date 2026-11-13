@@ -23,6 +23,7 @@ from app.domains.task.schemas.task_closeout import (
     TaskCloseoutResponse,
 )
 from app.domains.task.services import status_machine as sm
+from app.domains.workspace_asset.models.evidence_attachment import TaskEvidenceAttachment
 from app.domains.workspace_asset.models.workspace_asset import (
     RequirementAuditAction,
     SddRequirement,
@@ -34,7 +35,7 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
 )
 from app.domains.workspace_asset.services.requirements.presenters import add_requirement_audit
 from app.domains.workspace_asset.services.task_final_workflow import summary_service
-from app.domains.workspace_asset.services.task_process import evidence_writes
+from app.domains.workspace_asset.services.task_process import evidence_attachments, evidence_writes
 from app.domains.workspace_collaboration.models import CollaborationState
 from app.domains.workspace_collaboration.session import disconnect_driver, driver_connected
 
@@ -114,29 +115,18 @@ def _prepare_closeout(db: Session, task: SddTask, actor_id: str, lease_epoch: in
 
 
 def _attachment_evidence(
-    attachment: CloseoutEvidenceAttachment,
+    attachment: TaskEvidenceAttachment,
     *,
     title_prefix: str,
     evidence_type: str,
     change_reason: str,
 ) -> EvidenceCreateRequest:
-    source_uri = _clean(attachment.source_uri)
-    source_path = _clean(attachment.source_path)
-    if not source_uri and not source_path:
-        raise TaskCloseoutError("Evidence attachment must include source_uri or source_path.", status_code=422)
-    filename = _clean(attachment.filename) or "Evidence attachment"
+    filename = attachment.filename
     return EvidenceCreateRequest(
         evidence_type=evidence_type,
         source_type="OTHER",
-        source_uri=source_uri,
-        source_label=_clean(attachment.source_label) or filename,
-        source_path=source_path,
-        source_metadata={
-            "kind": "closeout_attachment",
-            "filename": filename,
-            "content_type": attachment.content_type,
-            "size": attachment.size,
-        },
+        source_label=filename,
+        source_metadata={"kind": "closeout_attachment"},
         title=f"{title_prefix}: {filename}",
         summary="Evidence attachment uploaded during Task closeout.",
         change_reason=change_reason,
@@ -144,7 +134,7 @@ def _attachment_evidence(
 
 
 def _complete_evidence_payloads(
-    payload: CompleteTaskCloseoutRequest, task_type: TaskType
+    payload: CompleteTaskCloseoutRequest, task_type: TaskType, attachments: list[TaskEvidenceAttachment]
 ) -> list[EvidenceCreateRequest]:
     evidence: list[EvidenceCreateRequest] = []
     commit_id = _clean(payload.commit_id)
@@ -189,7 +179,7 @@ def _complete_evidence_payloads(
                 change_reason="Task completion closeout.",
             )
         )
-    for attachment in payload.evidence_attachments:
+    for attachment in attachments:
         evidence.append(
             _attachment_evidence(
                 attachment,
@@ -207,7 +197,9 @@ def _complete_evidence_payloads(
     return evidence
 
 
-def _failure_evidence_payloads(payload: FailTaskCloseoutRequest, task_type: TaskType) -> list[EvidenceCreateRequest]:
+def _failure_evidence_payloads(
+    payload: FailTaskCloseoutRequest, task_type: TaskType, attachments: list[TaskEvidenceAttachment]
+) -> list[EvidenceCreateRequest]:
     evidence = [
         _attachment_evidence(
             attachment,
@@ -215,7 +207,7 @@ def _failure_evidence_payloads(payload: FailTaskCloseoutRequest, task_type: Task
             evidence_type="FAILURE",
             change_reason="Task failure closeout.",
         )
-        for attachment in payload.evidence_attachments
+        for attachment in attachments
     ]
     for item in evidence:
         item.source_metadata = {
@@ -225,6 +217,40 @@ def _failure_evidence_payloads(payload: FailTaskCloseoutRequest, task_type: Task
             "failure_reason": payload.failure_reason,
         }
     return evidence
+
+
+def _pending_attachments(
+    db: Session,
+    task: SddTask,
+    actor_id: str,
+    references: list[CloseoutEvidenceAttachment],
+) -> list[TaskEvidenceAttachment]:
+    return evidence_attachments.load_pending(
+        db,
+        task.workspace_id,
+        task.id,
+        actor_id,
+        [reference.attachment_id for reference in references],
+    )
+
+
+def _write_closeout_evidence(
+    db: Session,
+    task: SddTask,
+    actor_id: str,
+    payloads: list[EvidenceCreateRequest],
+    attachments: list[TaskEvidenceAttachment],
+) -> list[str]:
+    evidence_ids = [
+        evidence_writes.create_evidence(
+            db, task.workspace_id, task.id, actor_id, payload, _skip_phase_check=True, commit=False
+        )
+        for payload in payloads
+    ]
+    # Each uploaded file is its own evidence item, after any references in the payload.
+    for attachment, evidence_id in zip(attachments, evidence_ids[len(evidence_ids) - len(attachments) :], strict=True):
+        attachment.evidence_id = evidence_id
+    return evidence_ids
 
 
 def _finalize_task(
@@ -267,9 +293,6 @@ def _replay_closeout(
     content: dict,
     previous: dict,
 ) -> TaskCloseoutResponse:
-    # Preserve the original fingerprint for requests already recorded by older versions.
-    if "confirmed_server_snapshot_id" in previous:
-        content["confirmed_server_snapshot_id"] = previous["confirmed_server_snapshot_id"]
     task = db.query(SddTask).filter_by(id=task_id, workspace_id=workspace_id).one()
     sm.dispatch(
         db, task, trigger, event_key=f"closeout:{trigger.value}", actor_id=actor_id, reason=message, content=content
@@ -301,7 +324,8 @@ def complete_task_closeout(
     _validate_closeout_values(task, payload)
     task_type = TaskType(task.task_type or TaskType.DEVELOPMENT)
     is_diagnosis = task_type == TaskType.DIAGNOSIS
-    evidence_payloads = _complete_evidence_payloads(payload, task_type)
+    attachments = _pending_attachments(db, task, actor_id, payload.evidence_attachments)
+    evidence_payloads = _complete_evidence_payloads(payload, task_type, attachments)
 
     if payload.requirement_id:
         requirement = db.query(SddRequirement).filter_by(id=payload.requirement_id, workspace_id=workspace_id).first()
@@ -333,12 +357,7 @@ def complete_task_closeout(
                 source_metadata={"created_from": "task_closeout"},
             )
 
-    evidence_ids = [
-        evidence_writes.create_evidence(
-            db, workspace_id, task_id, actor_id, evidence_payload, _skip_phase_check=True, commit=False
-        )
-        for evidence_payload in evidence_payloads
-    ]
+    evidence_ids = _write_closeout_evidence(db, task, actor_id, evidence_payloads, attachments)
 
     final_summary_id = summary_service.upsert_final_summary(
         db,
@@ -410,14 +429,9 @@ def fail_task_closeout(
     _prepare_closeout(db, task, actor_id, payload.disconnect_collaboration_lease_epoch)
     _validate_closeout_values(task, payload)
     task_type = TaskType(task.task_type or TaskType.DEVELOPMENT)
-    evidence_payloads = _failure_evidence_payloads(payload, task_type)
-
-    evidence_ids = [
-        evidence_writes.create_evidence(
-            db, workspace_id, task_id, actor_id, evidence_payload, _skip_phase_check=True, commit=False
-        )
-        for evidence_payload in evidence_payloads
-    ]
+    attachments = _pending_attachments(db, task, actor_id, payload.evidence_attachments)
+    evidence_payloads = _failure_evidence_payloads(payload, task_type, attachments)
+    evidence_ids = _write_closeout_evidence(db, task, actor_id, evidence_payloads, attachments)
 
     final_summary_id = summary_service.upsert_final_summary(
         db,

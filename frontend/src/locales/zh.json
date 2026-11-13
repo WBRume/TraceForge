@@ -3219,6 +3219,13 @@
         },
         "evidence_detail": {
           "title": "证据详情",
+          "attachments": "附件",
+          "attachment_preview": "预览",
+          "attachment_download": "下载",
+          "attachment_close_preview": "关闭预览",
+          "attachment_forbidden": "你无权访问此附件。",
+          "attachment_missing": "附件文件不存在或已移除。",
+          "attachment_failed": "读取附件失败，请重试。",
           "summary": "摘要",
           "source_info": "来源信息",
           "source_type": "类型",

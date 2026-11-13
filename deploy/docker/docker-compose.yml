@@ -83,7 +83,6 @@ services:
     volumes:
       # 运行态与资产卷：这些目录丢了 = 会话断 / 资产丢，必须持久化
       - ./volumes/storage:/app/storage
-      - ./volumes/uploads:/app/uploads
       - ./volumes/tmp:/app/tmp
       - ./volumes/logs:/app/logs
       # Claude CLI 登录态。若改用 API Key，删除此挂载并在 .env 配 ANTHROPIC_API_KEY

@@ -4,14 +4,14 @@ import { createI18n } from 'vue-i18n'
 import zh from '@/locales/zh.json'
 import EvidenceDetailDialog from '../EvidenceDetailDialog.vue'
 
-const sections = vi.hoisted(() => ({ loadEvidenceDetail: vi.fn(), loadFinalSummary: vi.fn() }))
+const sections = vi.hoisted(() => ({ loadEvidenceDetail: vi.fn() }))
 vi.mock('@/composables/useTaskDetailSections', () => ({ useTaskDetailSections: () => sections }))
 
-async function openDetail(metadata: Record<string, string>, remainingRisk?: string) {
+async function openDetail(metadata: Record<string, string>, sourceUri?: string) {
   sections.loadEvidenceDetail.mockResolvedValue({
-    id: 'evidence', title: 'Diagnostic log', source: { source_metadata: metadata },
+    id: 'evidence', title: 'Diagnostic log', source: { source_metadata: metadata, source_uri: sourceUri },
+    attachments: [],
   })
-  sections.loadFinalSummary.mockResolvedValue({ remaining_risk: remainingRisk })
   const wrapper = mount(EvidenceDetailDialog, {
     props: { visible: false, evidenceId: 'evidence', workspaceId: 'ws', taskId: 'task' },
     global: {
@@ -33,23 +33,27 @@ describe('closeout evidence labels', () => {
     wrapper.unmount()
   })
 
-  it('uses the evidence failure metadata instead of a later summary', async () => {
+  it('shows the failure stage and reason saved on the evidence', async () => {
     const wrapper = await openDetail({
       kind: 'closeout_attachment', failure_stage: 'REPRODUCTION', failure_reason: 'NOT_REPRODUCIBLE',
-    }, 'Failure stage: COMPILE; reason: COMPILE_ERROR.')
+    })
     expect(wrapper.text()).toContain('问题复现与验证')
     expect(wrapper.text()).toContain('问题无法复现')
-    expect(wrapper.text()).not.toContain('编译错误')
     wrapper.unmount()
   })
 
-  it('keeps historical development evidence readable', async () => {
-    const wrapper = await openDetail({ kind: 'closeout_commit', landing_method: 'HUMAN_ADJUSTED' },
-      'Failure stage: COMPILE; reason: COMPILE_ERROR.')
+  it('renders a PR link for reference evidence', async () => {
+    const url = 'https://example.com/pull/42'
+    const wrapper = await openDetail({ kind: 'closeout_pr', landing_method: 'HUMAN_ADJUSTED' }, url)
     expect(wrapper.text()).toContain('落地方式')
     expect(wrapper.text()).toContain('人工调整后实现')
-    expect(wrapper.text()).toContain('编译阶段')
-    expect(wrapper.text()).toContain('编译错误')
+    expect(wrapper.get('a').attributes('href')).toBe(url)
+    wrapper.unmount()
+  })
+
+  it('does not use a source URL as an attachment when there is no associated file', async () => {
+    const wrapper = await openDetail({ kind: 'closeout_attachment' }, '/api/upload/files/old.log')
+    expect(wrapper.find('a').exists()).toBe(false)
     wrapper.unmount()
   })
 })

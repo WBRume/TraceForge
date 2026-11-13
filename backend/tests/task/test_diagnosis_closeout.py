@@ -8,12 +8,14 @@ from app.domains.workspace_asset.models.workspace_asset import (
     SddTaskProcessAuditLog,
     SddTaskRequirement,
 )
-from tests.task.test_task_closeout import _build_closeout_app
+from app.domains.workspace_asset.services.task_process import evidence_attachments
+from tests.task.test_task_closeout import _build_closeout_app, upload_closeout_file
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session
 
 
 @pytest.fixture
-def closeout_task():
+def closeout_task(monkeypatch, tmp_path):
+    monkeypatch.setattr(evidence_attachments, "ATTACHMENT_ROOT", tmp_path / "attachments")
     engine, sessions = _build_db()
     try:
         with _session(sessions) as db:
@@ -31,7 +33,8 @@ def test_diagnosis_completion_records_method_without_implying_code_implementatio
     sessions, client, workspace_id, task_id = closeout_task
     payload = {"completion_summary": "Root cause identified from runtime logs", "landing_method": "AI_DIAGNOSED"}
     if with_attachment:
-        payload["evidence_attachments"] = [{"filename": "runtime.log", "source_uri": "/api/upload/files/runtime.log"}]
+        upload = upload_closeout_file(client, workspace_id, task_id, "runtime.log")
+        payload["evidence_attachments"] = [{"attachment_id": upload["id"]}]
     response = client.post(f"/api/workspaces/{workspace_id}/tasks/{task_id}/closeout/complete", json=payload)
     assert response.status_code == 200, response.text
     with _session(sessions) as db:
@@ -58,9 +61,8 @@ def test_diagnosis_failure_persists_stage_and_reason(closeout_task, with_attachm
         "failure_summary": "Available logs do not reproduce the issue",
     }
     if with_attachment:
-        payload["evidence_attachments"] = [
-            {"filename": "reproduction.log", "source_uri": "/api/upload/files/repro.log"}
-        ]
+        upload = upload_closeout_file(client, workspace_id, task_id, "reproduction.log")
+        payload["evidence_attachments"] = [{"attachment_id": upload["id"]}]
     response = client.post(f"/api/workspaces/{workspace_id}/tasks/{task_id}/closeout/fail", json=payload)
     assert response.status_code == 200, response.text
     with _session(sessions) as db:
@@ -96,13 +98,16 @@ def test_task_type_mismatch_is_rejected_before_closeout_writes(closeout_task, ta
         f"/api/workspaces/{workspace_id}/tasks/{task_id}/closeout/{action}",
         json={
             **fields,
-            "completion_summary": "Root cause confirmed",
-            "failure_summary": "Blocked",
-            "requirement_id": "must-not-be-linked",
-            "evidence_attachments": [{"filename": "test.log", "source_uri": "/api/upload/files/test.log"}],
+            **(
+                {"completion_summary": "Root cause confirmed", "requirement_id": "must-not-be-linked"}
+                if action == "complete"
+                else {"failure_summary": "Blocked"}
+            ),
+            "evidence_attachments": [{"attachment_id": "unused-attachment-id"}],
         },
     )
     assert response.status_code == 422, response.text
+    assert isinstance(response.json()["detail"], str)
     with _session(sessions) as db:
         assert db.get(SddTask, task_id).status == original_status
         assert db.query(SddEvidence).count() == 0

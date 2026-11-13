@@ -5,6 +5,7 @@ Workspace Assets API routes.
 import asyncio
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.offload import run_db_txn
@@ -87,6 +88,7 @@ from app.domains.workspace_asset.services.task_final_workflow import (
 from app.domains.workspace_asset.services.task_process import (
     clarification_writes,
     decision_writes,
+    evidence_attachments,
     evidence_writes,
     human_delta_writes,
 )
@@ -781,6 +783,33 @@ def get_workspace_asset_task_evidence_detail(
     if not result:
         raise HTTPException(status_code=404, detail="Evidence not found")
     return result
+
+
+@router.get("/tasks/{task_id}/evidence/{evidence_id}/attachments/{attachment_id}", response_class=FileResponse)
+def get_workspace_asset_task_evidence_attachment(
+    ws_id: str,
+    task_id: str,
+    evidence_id: str,
+    attachment_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _verify_view_assets(ws_id, current_user, db)
+    attachment = evidence_attachments.get_for_evidence(db, ws_id, task_id, evidence_id, attachment_id)
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    try:
+        path = evidence_attachments.attachment_path(attachment)
+    except WorkspaceAssetError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Attachment file not found")
+    return FileResponse(
+        path,
+        media_type=attachment.content_type,
+        filename=attachment.filename,
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.get("/tasks/{task_id}/decisions", response_model=TaskDecisionsSectionResponse)

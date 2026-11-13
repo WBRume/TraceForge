@@ -768,6 +768,7 @@ def get_task_evidence(
 
 def get_task_evidence_detail(db: Session, workspace_id: str, task_id: str, evidence_id: str) -> EvidenceResponse | None:
     from app.domains.workspace_asset.services.common.process_presenters import evidence_response
+    from app.domains.workspace_asset.services.task_process.evidence_attachments import list_for_evidence
 
     evidence = (
         db.query(SddEvidence)
@@ -780,7 +781,9 @@ def get_task_evidence_detail(db: Session, workspace_id: str, task_id: str, evide
     )
     if not evidence:
         return None
-    return evidence_response(evidence)
+    result = evidence_response(evidence)
+    result.attachments = list_for_evidence(db, evidence)
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -3214,6 +3214,13 @@
         },
         "evidence_detail": {
           "title": "Evidence Details",
+          "attachments": "Attachments",
+          "attachment_preview": "Preview",
+          "attachment_download": "Download",
+          "attachment_close_preview": "Close preview",
+          "attachment_forbidden": "You do not have access to this attachment.",
+          "attachment_missing": "The attachment is missing or has been removed.",
+          "attachment_failed": "Could not load the attachment. Try again.",
           "summary": "Summary",
           "source_info": "Source Information",
           "source_type": "Type",

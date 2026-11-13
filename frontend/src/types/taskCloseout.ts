@@ -17,12 +17,7 @@ export type FailureStage = CloseoutOptions['failure_stage_options'][number]
 export type FailureReason = CloseoutOptions['failure_reason_options'][number]
 
 export type CloseoutEvidenceAttachment = {
-  filename: string
-  source_uri?: string | null
-  source_path?: string | null
-  source_label?: string | null
-  content_type?: string | null
-  size?: number | null
+  attachment_id: string
 }
 
 export type CompleteCloseoutPayload = {

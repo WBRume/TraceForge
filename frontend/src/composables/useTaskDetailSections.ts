@@ -4,7 +4,7 @@ import type {
   Clarification,
   Decision,
   DecisionLight,
-  Evidence,
+  EvidenceDetail,
   EvidenceLight,
   HumanDeltaLight,
   HumanReview,
@@ -203,8 +203,8 @@ export function useTaskDetailSections() {
     return response.data
   }
 
-  async function loadEvidenceDetail(workspaceId: string, taskId: string, evidenceId: string): Promise<Evidence> {
-    const response = await api.get<Evidence>(
+  async function loadEvidenceDetail(workspaceId: string, taskId: string, evidenceId: string): Promise<EvidenceDetail> {
+    const response = await api.get<EvidenceDetail>(
       `/workspaces/${workspaceId}/workspace-assets/tasks/${taskId}/evidence/${evidenceId}`,
     )
     return response.data

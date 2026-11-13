@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, get_args
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 DevelopmentLandingMethodValue = Literal[
     "AI_IMPLEMENTED",
@@ -80,15 +80,14 @@ TASK_CLOSEOUT_VALUES = {
 
 
 class CloseoutEvidenceAttachment(BaseModel):
-    filename: str
-    source_uri: str | None = None
-    source_path: str | None = None
-    source_label: str | None = None
-    content_type: str | None = None
-    size: int | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    attachment_id: str = Field(min_length=1, max_length=36)
 
 
 class CompleteTaskCloseoutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     disconnect_collaboration_lease_epoch: int | None = Field(default=None, ge=1)
     requirement_id: str | None = Field(default=None, min_length=1, max_length=36)
     completion_summary: str = Field(min_length=1)
@@ -100,6 +99,8 @@ class CompleteTaskCloseoutRequest(BaseModel):
 
 
 class FailTaskCloseoutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     disconnect_collaboration_lease_epoch: int | None = Field(default=None, ge=1)
     failure_stage: FailureStageValue
     failure_reason: FailureReasonValue

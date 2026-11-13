@@ -17,7 +17,7 @@ describe('useTaskCloseout', () => {
   it('uploads evidence files before completing a task through closeout API', async () => {
     const { useTaskCloseout } = await import('@/composables/useTaskCloseout')
     apiMock.post
-      .mockResolvedValueOnce({ data: { filename: 'evidence.txt', path: 'uploads/evidence.txt', url: '/api/upload/files/evidence.txt' } })
+      .mockResolvedValueOnce({ data: { id: 'attachment-1' } })
       .mockResolvedValueOnce({ data: { task_id: 'task-1', workspace_id: 'ws-1', status: 'COMPLETED', evidence_ids: ['evidence-1'] } })
 
     const closeout = useTaskCloseout()
@@ -33,7 +33,7 @@ describe('useTaskCloseout', () => {
       [file],
     )
 
-    expect(apiMock.post).toHaveBeenNthCalledWith(1, '/upload', expect.any(FormData))
+    expect(apiMock.post).toHaveBeenNthCalledWith(1, '/workspaces/ws-1/tasks/task-1/closeout/attachments', expect.any(FormData))
     expect(apiMock.post).toHaveBeenNthCalledWith(
       2,
       '/workspaces/ws-1/tasks/task-1/closeout/complete',
@@ -41,12 +41,7 @@ describe('useTaskCloseout', () => {
         completion_summary: 'Implemented locally.',
         landing_method: 'HUMAN_ADJUSTED',
         commit_id: 'abc123',
-        evidence_attachments: [
-          expect.objectContaining({
-            filename: 'evidence.txt',
-            source_uri: '/api/upload/files/evidence.txt',
-          }),
-        ],
+        evidence_attachments: [{ attachment_id: 'attachment-1' }],
       }),
     )
     expect(result?.status).toBe('COMPLETED')
@@ -55,7 +50,7 @@ describe('useTaskCloseout', () => {
   it('submits failure closeout without calling old cancel endpoint', async () => {
     const { useTaskCloseout } = await import('@/composables/useTaskCloseout')
     apiMock.post
-      .mockResolvedValueOnce({ data: { filename: 'compile.log', path: 'uploads/compile.log', url: '/api/upload/files/compile.log' } })
+      .mockResolvedValueOnce({ data: { id: 'attachment-1' } })
       .mockResolvedValueOnce({ data: { task_id: 'task-1', workspace_id: 'ws-1', status: 'FAILED', evidence_ids: ['evidence-1'] } })
 
     const closeout = useTaskCloseout()
@@ -95,7 +90,7 @@ describe('useTaskCloseout', () => {
     const file = new File(['log'], 'build.log')
     const receipt = { status: scenario.status, evidence_ids: ['evidence'], final_summary_id: 'summary' }
     apiMock.post
-      .mockResolvedValueOnce({ data: { filename: 'build.log', path: 'uploads/stable.log', url: '/api/upload/files/stable.log' } })
+      .mockResolvedValueOnce({ data: { id: 'attachment-1' } })
       .mockRejectedValueOnce(new Error('Connection lost'))
       .mockResolvedValueOnce({ data: receipt })
     const submit = () => scenario.method === 'completeTask'
@@ -105,7 +100,8 @@ describe('useTaskCloseout', () => {
     expect(await submit()).toBeNull()
     expect(await submit()).toEqual(receipt)
     expect(apiMock.post.mock.calls.map(([path]) => path)).toEqual([
-      '/upload', `/workspaces/ws/tasks/task/closeout/${scenario.endpoint}`, `/workspaces/ws/tasks/task/closeout/${scenario.endpoint}`,
+      '/workspaces/ws/tasks/task/closeout/attachments',
+      `/workspaces/ws/tasks/task/closeout/${scenario.endpoint}`, `/workspaces/ws/tasks/task/closeout/${scenario.endpoint}`,
     ])
     expect(apiMock.post.mock.calls[2]).toEqual(apiMock.post.mock.calls[1])
   })

@@ -25,6 +25,7 @@ for model_module in (
     "app.domains.notification.models.task_awareness",
     "app.domains.rag.models",
     "app.domains.workspace_collaboration.models",
+    "app.domains.workspace_asset.models.evidence_attachment",
     "app.models.ai_job",
     "app.models.api_mock",
     "app.models.asset",
