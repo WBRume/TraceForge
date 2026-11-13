@@ -1,8 +1,8 @@
 """
 预输入超时 Worker：后台轮询到期未提交的收集窗口并自动提交。
 
-本地单进程 + DB 行级 CAS（submit_pre_input 内部 UPDATE ... WHERE status='COLLECTING'）
-保证与 WS 手动提交 / 全员完成自动提交并发安全。
+手动、全员完成和超时提交共享任务锁及消息受理事务。
+已受理的预输入由普通消息 dispatcher 恢复交付。
 """
 
 from __future__ import annotations

@@ -292,7 +292,7 @@ def _prepare_chat_turn_sync(
 
 
 def _accept_turn_input(db, task, turn, actor_id):
-    # Pre-input turns bypass the ordinary chat submission receipt.
+    # Direct turns can still enter through legacy session control paths.
     if task.status in {TaskStatus.ROUND_COMPLETED, TaskStatus.AWAITING_INPUT}:
         sm.dispatch(db, task, sm.Trigger.INPUT_SUBMITTED, event_key=f"input-turn:{turn.id}", actor_id=actor_id)
 
@@ -409,10 +409,19 @@ def _persist_chat_turn_sync(
     )
     turn.ai_job_id = job.id
     _apply_initialization(db, task, prepared, job, checkpoint_root)
-    if metadata.get("_collaboration_control") and metadata.get("pre_input_id"):
-        from app.domains.task.models.pre_input import SddTaskPreInput
+    if submission is not None and metadata.get("_collaboration_control") and metadata.get("pre_input_id"):
+        from app.domains.task.models.pre_input import PreInputStatus, SddTaskPreInput
 
-        pre_input = db.query(SddTaskPreInput).filter_by(id=metadata["pre_input_id"], task_id=task_id).first()
+        pre_input = (
+            db.query(SddTaskPreInput)
+            .filter_by(
+                id=metadata["pre_input_id"],
+                task_id=task_id,
+                creator_id=submission.creator_id,
+                status=PreInputStatus.SUBMITTED,
+            )
+            .first()
+        )
         if pre_input:
             pre_input.submitted_message_id = message.id
     # 阅读捕获与源消息同事务（task 行锁已取得）：先登记条目，

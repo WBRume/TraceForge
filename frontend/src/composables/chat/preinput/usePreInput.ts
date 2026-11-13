@@ -95,12 +95,13 @@ export function usePreInput(options: {
       return
     }
     if (type === 'pre_input_submitted') {
-      // 合并后的消息由随后的 chat_message 事件 upsert 进消息列表
+      // 正式消息由 chat_submission_update 写入会话。
+      if (payload?.task_id && String(payload.task_id) !== String(options.getCurrentTask()?.id || '')) return
       preInputRevision += 1
       if (activePreInput.value?.id === payload?.id) {
         activePreInput.value = null
+        ElMessage.success(t('preInput.submitted_toast'))
       }
-      ElMessage.success(t('preInput.submitted_toast'))
       return
     }
     if (type === 'pre_input_error') {
@@ -165,8 +166,9 @@ export function usePreInput(options: {
   }
 
   const submitPreInputManually = (): boolean => {
-    if (!isPreInputCreator.value) return false
-    return options.sendAction('pre_input_submit', {})
+    const pi = activePreInput.value
+    if (!pi || !isPreInputCreator.value) return false
+    return options.sendAction('pre_input_submit', { pre_input_id: pi.id })
   }
 
   const cancelPreInput = (): boolean => {

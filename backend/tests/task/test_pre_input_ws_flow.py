@@ -131,7 +131,8 @@ def ws_env(monkeypatch, tmp_path):
     async def _publish_on_wake():
         from app.domains.task.services import task_event_publisher
 
-        await task_event_publisher.publish_once()
+        while await task_event_publisher.publish_once():
+            pass
 
     from app.domains.task.services import chat_submission_service
 
@@ -195,15 +196,36 @@ def test_ws_pre_input_full_flow(ws_env):
             assert joined == "hello traceforge"
 
             # 3) 立即提交（发起人）
-            owner_ws.send_json({"type": "pre_input_submit", "payload": {}})
-            chat_evt = _receive_business(owner_ws)
-            assert chat_evt["type"] == "chat_message"
-            # 内容 = 文档原文，无拼接标签
-            assert chat_evt["payload"]["content"] == "hello traceforge"
-            assert chat_evt["payload"]["metadata"]["segments"]
+            pre_input_id = evt["payload"]["id"]
+            owner_ws.send_json({"type": "pre_input_submit", "payload": {"pre_input_id": pre_input_id}})
+            accepted = _receive_business(owner_ws)
+            assert accepted["type"] == "chat_submission_update"
+            assert accepted["payload"]["receipt"]["status"] == "PREPARING"
+            assert accepted["payload"]["receipt"]["client_message_id"] == f"pre-input:{pre_input_id}"
             done_evt = _receive_business(owner_ws)
             assert done_evt["type"] == "pre_input_submitted"
             assert done_evt["payload"]["status"] == "SUBMITTED"
+            chat_evt = _receive_business(owner_ws)
+            while chat_evt["type"] == "task_status_changed":
+                chat_evt = _receive_business(owner_ws)
+            assert chat_evt["type"] == "chat_submission_update"
+            assert chat_evt["payload"]["receipt"]["status"] == "EXECUTING"
+            message = chat_evt["payload"]["message"]
+            assert message["content"] == "hello traceforge"
+            assert message["metadata"]["segments"]
+
+            # Retrying the original submit while the next document is open
+            # must leave the new document editable.
+            owner_ws.send_json({"type": "pre_input_create", "payload": {"main_text": "next document"}})
+            next_input = _receive_business(owner_ws)["payload"]
+            assert next_input["id"] != pre_input_id
+            owner_ws.send_json({"type": "pre_input_submit", "payload": {"pre_input_id": pre_input_id}})
+            owner_ws.send_json({"type": "pre_input_edit_document", "payload": {"text": "next document edited"}})
+            next_update = _receive_business(owner_ws)
+            assert next_update["type"] == "pre_input_update"
+            assert next_update["payload"]["id"] == next_input["id"]
+            assert next_update["payload"]["status"] == "COLLECTING"
+            assert next_update["payload"]["main_text"] == "next document edited"
 
 
 def test_ws_chat_message_persists_receipt_before_background_preparation(ws_env, monkeypatch):

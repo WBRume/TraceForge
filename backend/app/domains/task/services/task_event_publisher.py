@@ -132,6 +132,7 @@ async def publish_once() -> int:
                         "workspace_collaboration_update",
                         "task_repository_update",
                         "chat_message",
+                        "pre_input_submitted",
                         "task_status_changed",
                     }
                     else "chat_submission_update",

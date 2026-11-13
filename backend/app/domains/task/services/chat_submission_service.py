@@ -34,6 +34,7 @@ from app.domains.task.services.task_attempt_recovery_service import BLOCKING, re
 
 logger = get_logger(__name__, category="task_execution")
 _runners: dict[str, asyncio.Task] = {}
+PRE_INPUT_CLIENT_ID_PREFIX = "pre-input:"
 
 # PREPARING → {EXECUTING, FAILED}; EXECUTING → {SUCCEEDED, FAILED}.  Terminal
 # states are final; the fallback reconciler re-validates before converging.
@@ -266,6 +267,8 @@ async def accept(*, task_id, actor_id, client_message_id, content, metadata=None
     client_id, text = str(client_message_id or "").strip(), str(content or "").strip()
     if not client_id or len(client_id) > 128 or not text:
         raise SubmissionError("消息内容和消息标识不能为空", "MESSAGE_INVALID", 400)
+    if client_id.lower().startswith(PRE_INPUT_CLIENT_ID_PREFIX):
+        raise SubmissionError("该消息标识由协作预输入保留", "MESSAGE_INVALID", 400)
     clean = dict(metadata or {})
     # These fields are exclusively server-owned.
     for key in ("submission_id", "knowledge_state", "client_message_id", "_collaboration_control"):

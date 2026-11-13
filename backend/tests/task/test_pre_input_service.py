@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import create_engine
@@ -12,15 +13,18 @@ import app.domains.workflow.models.provision_job
 import app.domains.workflow.models.task_change
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
 from app.database import Base
+from app.domains.ai.models.ai_job import SddAiJob
 from app.domains.ai.services.jobs import (
     publishing as ai_publishing,
 )
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
 from app.domains.notification.models.notification import SddUserNotification
 from app.domains.task.models.chat import ChatMessage
+from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.pre_input import PreInputStatus
 from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.task.services import pre_input_service
+from app.domains.task.models.task_event_outbox import TaskEventOutbox
+from app.domains.task.services import chat_submission_service, pre_input_service, task_session_service
 
 
 @pytest.fixture()
@@ -140,15 +144,16 @@ def _noop_enqueue(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ai_publishing, "enqueue_task_chat_job", _noop)
     monkeypatch.setattr(
-        pre_input_service.task_session_service.task_session_snapshot_service,
+        task_session_service.task_session_snapshot_service,
         "create_checkpoint",
         _fake_checkpoint,
     )
     monkeypatch.setattr(
-        pre_input_service.task_session_service.task_session_snapshot_service,
+        task_session_service.task_session_snapshot_service,
         "cleanup_checkpoint",
         _fake_cleanup,
     )
+    monkeypatch.setattr(chat_submission_service, "schedule", lambda submission_id: None)
 
 
 def test_create_initializes_document_with_creator_attribution(db_session):
@@ -363,13 +368,16 @@ def test_auto_submit_when_all_mentioned_participated(db_session):
         )
     )
     assert result["auto_submitted"] is True
-    assert result["submission"]["chat_message_id"]
+    receipt = result["submission"]["submission"]
+    assert receipt["status"] == "PREPARING"
     assert pre_input_service.get_active_pre_input(db, task.id) is None
 
     pre_input = _get(db, pre_input_id)
     assert pre_input.status == PreInputStatus.SUBMITTED
     assert pre_input.submit_reason == "all_done"
-    message = db.get(ChatMessage, result["submission"]["chat_message_id"])
+    asyncio.run(chat_submission_service._run(receipt["id"]))
+    db.refresh(pre_input)
+    message = db.get(ChatMessage, pre_input.submitted_message_id)
     assert message.creator_id == "u-owner"
 
 
@@ -407,13 +415,14 @@ def test_submit_content_and_segment_metadata(db_session):
     created = _create(mentioned_user_ids=[], edit_permission="ALL")
     pre_input_id = created["pre_input_id"]
     _replace_span(pre_input_id, "u-member", False, 6, 11, "world", "traceforge")
-    asyncio.run(
+    result = asyncio.run(
         pre_input_service.submit_pre_input(
             pre_input_id=pre_input_id,
             actor_user_id="u-owner",
             reason="manual",
         )
     )
+    asyncio.run(chat_submission_service._run(result["submission"]["id"]))
 
     from app.domains.task.models.chat import ChatMessage
 
@@ -435,6 +444,90 @@ def test_submit_content_and_segment_metadata(db_session):
     assert forge["created_by"] == "u-member"
     contributed = {p["user_id"] for p in metadata["participants"]}
     assert {"u-owner", "u-member"} <= contributed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_status", [TaskStatus.ROUND_COMPLETED, TaskStatus.INTERRUPTED])
+async def test_recover_pre_input_after_acceptance_before_scheduling(db_session, monkeypatch, task_status):
+    db = db_session
+    task = _seed(db, task_status=task_status)["task"]
+    task.session_id = "existing-session"
+    db.commit()
+    text = "  preserve the original document\n"
+    created = await pre_input_service.create_pre_input(
+        task_id=task.id,
+        creator_id="u-owner",
+        main_text=text.strip(),
+        mentioned_user_ids=[],
+        edit_permission="ALL",
+        wait_seconds=180,
+    )
+    pre_input_id = created["pre_input_id"]
+    await pre_input_service.edit_pre_input_document(
+        pre_input_id=pre_input_id, task_id=task.id, user_id="u-owner", is_expert=False, new_text=text
+    )
+    submit = {"task_id": task.id, "pre_input_id": pre_input_id, "actor_user_id": "u-owner", "reason": "manual"}
+    schedule = AsyncMock(side_effect=asyncio.CancelledError)
+    monkeypatch.setattr(pre_input_service, "schedule_control", schedule)
+
+    with pytest.raises(asyncio.CancelledError):
+        await pre_input_service.submit_pre_input(**submit)
+
+    pre_input = _get(db, pre_input_id)
+    receipt = db.query(TaskChatSubmission).one()
+    assert receipt.client_message_id == f"pre-input:{pre_input_id}"
+    assert receipt.status == "PREPARING"
+    assert receipt.content == text
+    assert pre_input.status == PreInputStatus.SUBMITTED
+    assert pre_input.submitted_message_id is None
+    assert db.query(ChatMessage).count() == db.query(SddAiJob).count() == 0
+    assert await pre_input_service.submit_pre_input(**submit) is None
+
+    scheduled = []
+    monkeypatch.setattr(chat_submission_service, "schedule", scheduled.append)
+    await chat_submission_service.recover()
+    assert scheduled == [receipt.id]
+    await chat_submission_service._run(receipt.id)
+    await chat_submission_service._run(receipt.id)
+    db.expire_all()
+    message = db.query(ChatMessage).one()
+    job = db.query(SddAiJob).one()
+    assert pre_input.submitted_message_id == receipt.chat_message_id == message.id
+    assert receipt.ai_job_id == job.id
+    assert message.content == text
+    assert job.session_id == "existing-session"
+
+
+@pytest.mark.asyncio
+async def test_pre_input_acceptance_rolls_back_when_receipt_cannot_commit(db_session, monkeypatch):
+    from app.domains.workspace_collaboration import hooks
+
+    db = db_session
+    task = _seed(db, task_status=TaskStatus.ROUND_COMPLETED)["task"]
+    created = await pre_input_service.create_pre_input(
+        task_id=task.id,
+        creator_id="u-owner",
+        main_text="Collaborative prompt",
+        mentioned_user_ids=[],
+        edit_permission="ALL",
+        wait_seconds=180,
+    )
+    pre_input_id = created["pre_input_id"]
+    submit = {"task_id": task.id, "pre_input_id": pre_input_id, "actor_user_id": "u-owner", "reason": "manual"}
+
+    def reject_input(*args):
+        raise chat_submission_service.SubmissionError("Workspace busy")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(hooks, "request_input", reject_input)
+        with pytest.raises(pre_input_service.PreInputError, match="Workspace busy"):
+            await pre_input_service.submit_pre_input(**submit)
+
+    db.refresh(task)
+    assert task.status == TaskStatus.ROUND_COMPLETED
+    assert _get(db, pre_input_id).status == PreInputStatus.COLLECTING
+    assert db.query(TaskChatSubmission).count() == db.query(TaskEventOutbox).count() == 0
+    assert (await pre_input_service.submit_pre_input(**submit))["submission"]["status"] == "PREPARING"
 
 
 def test_cancel_only_by_creator(db_session):

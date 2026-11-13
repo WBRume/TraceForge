@@ -44,17 +44,34 @@ async def schedule_control(receipt):
 
 
 def accept_pre_input(db, task_id, actor_id, text, metadata):
-    from app.domains.task.models.task import SddTask
+    from app.domains.task.models.task import SddTask, TaskStatus
+    from app.domains.task.services.chat_submission_service import PRE_INPUT_CLIENT_ID_PREFIX
 
-    if not enabled(db, task_id):
-        return None
+    task = db.get(SddTask, task_id)
+    client_id = f"{PRE_INPUT_CLIENT_ID_PREFIX}{metadata['pre_input_id']}"
+    if task.status == TaskStatus.INTERRUPTED:
+        from app.domains.task.services.task_session_control_service import (
+            TaskSessionControlError,
+            _prepare_interrupted_resume,
+        )
+        from app.engine.session import get_engine
+
+        engine = get_engine(task_id)
+        if engine and engine.running:
+            raise TaskSessionControlError("Task is already running", status_code=409)
+        prepared = _prepare_interrupted_resume(
+            db, task_id=task_id, actor_user_id=actor_id, idempotency_key=None, prompt=text, confirm_continue=False
+        )
+        return _accept_resumed_control(
+            db, task, actor_id, prepared, client_id, metadata, content=text, source="pre_input_collaboration"
+        )
     return accept_control(
         db,
-        db.get(SddTask, task_id),
+        task,
         actor_id,
         content=text,
         source="pre_input_collaboration",
-        client_id=f"pre-input:{metadata['pre_input_id']}",
+        client_id=client_id,
         metadata=metadata,
     )
 
@@ -77,13 +94,26 @@ def require_ready(db, task_id, *, actor_id=None):
 
 
 def resume_submission(db, task_id, actor_id, prepared, client_id, metadata=None):
-    from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
     from app.domains.task.models.task import SddTask
 
-    task = db.get(SddTask, task_id)
     if not enabled(db, task_id):
         return None
-    require_ready(db, task_id, actor_id=actor_id)
+    return _accept_resumed_control(
+        db,
+        db.get(SddTask, task_id),
+        actor_id,
+        prepared,
+        client_id,
+        metadata,
+        content=prepared["prompt_text"],
+        source="task_resume",
+    )
+
+
+def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *, content, source):
+    from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+
+    require_ready(db, task.id, actor_id=actor_id)
     sm.dispatch(
         db, task, sm.Trigger.RESUME, event_key=f"resume:{client_id or prepared['old_job_id']}", actor_id=actor_id
     )
@@ -96,13 +126,15 @@ def resume_submission(db, task_id, actor_id, prepared, client_id, metadata=None)
         db,
         task,
         actor_id,
-        content=prepared["prompt_text"],
-        source="task_resume",
+        content=content,
+        prompt=prepared["prompt_text"],
+        source=source,
         client_id=client_id,
         metadata=metadata,
     )
-    old_job = db.get(SddAiJob, prepared["old_job_id"])
-    if old_job is not None:
+    old_job_id = prepared["old_job_id"]
+    old_job = db.get(SddAiJob, old_job_id) if old_job_id else None
+    if old_job is not None and old_job.status == AiJobStatus.INTERRUPTED:
         old_job.status = AiJobStatus.CANCELLED
         old_job.message = "Interrupted attempt superseded by resume preparation"
     return receipt

@@ -651,10 +651,12 @@ class TaskWebSocketHandler:
         if action not in known_actions:
             raise pre_input_service.PreInputError("Unknown pre input action")
 
-        pre_input_brief = await pre_input_service.get_active_pre_input_brief(self._task_id)
-        if not pre_input_brief:
-            raise pre_input_service.PreInputError("No collecting pre input")
-        pre_input_id = pre_input_brief["id"]
+        pre_input_id = str(payload.get("pre_input_id") or "") if action == "pre_input_submit" else ""
+        if not pre_input_id:
+            pre_input_brief = await pre_input_service.get_active_pre_input_brief(self._task_id)
+            if not pre_input_brief:
+                raise pre_input_service.PreInputError("No collecting pre input")
+            pre_input_id = pre_input_brief["id"]
 
         if action == "pre_input_edit_document":
             await pre_input_service.edit_pre_input_document(
@@ -682,10 +684,9 @@ class TaskWebSocketHandler:
                 user_id=self._user.id,
             )
         elif action == "pre_input_submit":
-            if self._user.id != pre_input_brief["creator_id"]:
-                raise pre_input_service.PreInputError("Only the creator can submit")
             await pre_input_service.submit_pre_input(
                 pre_input_id=pre_input_id,
+                task_id=self._task_id,
                 actor_user_id=self._user.id,
                 reason="manual",
             )

@@ -646,6 +646,10 @@ async def resume_interrupted_task(
     引擎检查、checkpoint、turn 创建与广播保持在事件循环。
     """
     idempotency_key = str(client_message_id or "").strip()
+    from app.domains.task.services import chat_submission_service
+
+    if idempotency_key.lower().startswith(chat_submission_service.PRE_INPUT_CLIENT_ID_PREFIX):
+        raise TaskSessionControlError("该消息标识由协作预输入保留", status_code=400)
 
     _prepare_resume_sync = partial(
         _prepare_interrupted_resume,
@@ -660,7 +664,6 @@ async def resume_interrupted_task(
     if prepared.get("duplicate_payload") is not None:
         return prepared["duplicate_payload"]
 
-    from app.domains.task.services import chat_submission_service
     from app.domains.task.services.task_attempt_recovery_service import recover_task_attempts
 
     await recover_task_attempts(task_id, run_txn=run_db_txn)

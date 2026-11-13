@@ -140,11 +140,21 @@ def test_local_preinput_has_no_deadline_or_auto_submit(monkeypatch):
         assert not pre._maybe_auto_submit(db, row)
         with pytest.raises(pre.PreInputError):
             pre._claim_submit_sync(
-                db, pre_input_id=row.id, actor_user_id="u-owner", reason="timeout", now=datetime.utcnow()
+                db,
+                task_id=row.task_id,
+                pre_input_id=row.id,
+                actor_user_id="u-owner",
+                reason="timeout",
+                now=datetime.utcnow(),
             )
         with pytest.raises(pre.PreInputError):
             pre._claim_submit_sync(
-                db, pre_input_id=row.id, actor_user_id="u-member", reason="manual", now=datetime.utcnow()
+                db,
+                task_id=row.task_id,
+                pre_input_id=row.id,
+                actor_user_id="u-member",
+                reason="manual",
+                now=datetime.utcnow(),
             )
     engine.dispose()
 

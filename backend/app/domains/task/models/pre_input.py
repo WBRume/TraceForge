@@ -16,7 +16,7 @@ from app.domains.auth.models.user import generate_uuid
 
 class PreInputStatus(str, PyEnum):
     COLLECTING = "COLLECTING"  # 收集窗口进行中
-    SUBMITTED = "SUBMITTED"  # 已合并提交给 agent
+    SUBMITTED = "SUBMITTED"  # 已受理，交付状态由消息回执跟踪
     CANCELLED = "CANCELLED"  # 发起人取消 / 任务终态自动取消
 
 
