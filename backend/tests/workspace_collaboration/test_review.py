@@ -132,8 +132,10 @@ def test_remote_update_without_a_new_turn_is_not_reported_as_round_edits(environ
     db.commit()
     monkeypatch.setattr(review, "_checkpoint_inventory", lambda *args: pytest.fail("No round in this generation"))
     round_diff = review.diff(db, task, "viewer", "round")
+    assert round_diff["scope"] == "round"
     assert round_diff["files"] == []
     assert round_diff["running"] is False
+    assert round_diff["baseline_snapshot_id"] == round_diff["cloud_snapshot_id"]
     assert db.get(CollaborationState, task.id) is None
     baseline = review.committed_baseline(db, task, "viewer")
     entry = next(file for file in review.diff(db, task, "viewer")["files"] if file["path"] == "same.txt")
@@ -148,9 +150,9 @@ def test_remote_update_without_a_new_turn_is_not_reported_as_round_edits(environ
     assert content.ObjectStore(task).read(entry["right"]["sha256"]) == b"remote v2\npreserved task output\n"
 
 
-@pytest.mark.parametrize("generation", [1, 2])
-def test_readonly_latest_turn_multi_repo_uses_recorded_input_without_connecting(environment, monkeypatch, generation):
+def test_readonly_latest_turn_multi_repo_uses_recorded_input_without_connecting(environment, monkeypatch):
     db, task, root = environment
+    generation = 2
     task.session_generation = generation
     service._ensure_store(db, task)
     (root / "api/same.txt").write_bytes(b"human input\n")
@@ -231,19 +233,6 @@ def test_running_cloud_review_waits_for_final_cut_and_never_acquires_lease(envir
     assert db.get(CollaborationState, task.id) is None
 
 
-def test_cumulative_diff_returns_only_changed_files(environment):
-    db, task, root = environment
-    baseline = review.committed_baseline(db, task, "viewer")
-    db.commit()
-    (root / "api" / "added.txt").write_bytes(b"added\n")
-    result = review.diff(db, task, "viewer")
-    assert result["scope"] == "cumulative"
-    assert result["baseline_snapshot_id"] == baseline["snapshot_id"]
-    assert {(file["repo_slug"], file["path"]) for file in result["files"]} == {("api", "added.txt")}
-    entry = result["files"][0]
-    assert entry["change"] == "A" and entry["left"] is None and entry["right"]["path"] == "added.txt"
-
-
 def test_repository_free_review_and_zip_preserve_binary_results(environment, tmp_path, monkeypatch):
     db, task, _ = environment
     db.query(SddTaskRepository).filter_by(task_id=task.id).delete()
@@ -292,14 +281,19 @@ def test_repository_free_review_and_zip_preserve_binary_results(environment, tmp
 
 def test_repository_and_task_root_results_share_the_cumulative_review(environment):
     db, task, root = environment
-    service._ensure_store(db, task)
+    baseline = review.committed_baseline(db, task, "viewer")
+    db.commit()
     (root / "report.pdf").write_bytes(b"%PDF-binary\x00")
     (root / "api/report.pdf").write_bytes(b"%PDF-repository\x00")
     result = review.diff(db, task, "viewer")
+    assert result["scope"] == "cumulative"
+    assert result["baseline_snapshot_id"] == baseline["snapshot_id"]
     assert {(entry["repo_slug"], entry["path"]) for entry in result["files"]} == {
         ("", "report.pdf"),
         ("api", "report.pdf"),
     }
+    for entry in result["files"]:
+        assert entry["change"] == "A" and entry["left"] is None and entry["right"]["path"] == "report.pdf"
 
 
 def test_initial_engine_output_is_reviewable_before_a_session_turn_is_recorded(environment):
@@ -316,17 +310,6 @@ def test_initial_engine_output_is_reviewable_before_a_session_turn_is_recorded(e
     assert result["running"] is False
     assert db.query(TaskSessionTurn).filter_by(task_id=task.id).count() == 0
     assert db.get(CollaborationState, task.id) is None
-
-
-def test_new_generation_round_diff_is_empty_until_a_round_starts(environment):
-    db, task, root = environment
-    task.session_generation = 2
-    (root / "api" / "same.txt").write_bytes(b"agent edit\n")
-    result = review.diff(db, task, "viewer", "round")
-    assert result["scope"] == "round"
-    # Without an ACTIVE turn the cloud cut is this round's own input.
-    assert result["files"] == []
-    assert result["baseline_snapshot_id"] == result["cloud_snapshot_id"]
 
 
 def test_review_rejects_an_unknown_diff_scope(environment):

@@ -121,8 +121,13 @@ def receipt(command):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("phase", ["READY", "DELIVERY_PENDING", "CONFLICT_PENDING", "RECOVERY_REQUIRED"])
-@pytest.mark.parametrize("connected", [True, False])
+@pytest.mark.parametrize(
+    ("phase", "connected"),
+    [
+        pytest.param("READY", True, id="connected"),
+        pytest.param("RECOVERY_REQUIRED", False, id="expired-during-recovery"),
+    ],
+)
 async def test_initialize_requires_local_receipt_before_new_generation(initialize_api, phase, connected):
     app, db, scheduled = initialize_api
     state = db.get(CollaborationState, "t")

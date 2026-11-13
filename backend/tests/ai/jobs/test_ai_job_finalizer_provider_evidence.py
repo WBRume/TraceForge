@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -28,6 +28,7 @@ from app.agents.contract import (
     EXECUTION_KIND_REMOTE_SESSION,
     AgentAttemptContext,
     AgentAttemptRuntimeState,
+    AgentBackend,
     AgentRunResult,
     AttemptFinalizerEvidence,
     bind_agent_attempt,
@@ -52,6 +53,7 @@ from app.domains.ai.services.jobs import (
 from app.domains.ai.services.jobs.executors import (
     task_chat as ai_task_chat,
 )
+from app.engine.session import engine as engine_module
 
 REMOTE = EXECUTION_KIND_REMOTE_SESSION
 
@@ -124,16 +126,36 @@ def test_remote_success_finalizer_must_receive_provider_evidence():
     assert status == AiJobStatus.SUCCESS, (status, evidence)
 
 
-def test_real_result_object_with_persist_failure_is_provider_outcome():
-    """结果后持久化失败：last_result（真实 result 对象）在引擎内已登记，
-    finalizer 必须仍拿到 provider outcome（业务失败 -> 干净 INTERRUPTED）。"""
-    engine = SimpleNamespace(
-        last_result=AgentRunResult(session_id="remote-1", success=False, result_text="persist failed later"),
-        # 持久化失败的异常路径会把 success 覆盖为 False。
-        last_result_success=False,
-        last_result_text="persist failed later",
-        session_id="remote-1",
-    )
+def test_real_result_object_with_persist_failure_is_provider_outcome(monkeypatch):
+    """真实 provider 结果到达后，即使持久化失败也能收敛为 INTERRUPTED。"""
+    import asyncio
+
+    provider = Mock(spec=AgentBackend, name="provider")
+    provider.name = "opencode"
+    result = AgentRunResult(session_id="remote-1", success=False, result_text="provider finished")
+    monkeypatch.setattr(engine_module.TaskAgentEngine, "_create_engine_backend", lambda _: provider)
+    engine = engine_module.TaskAgentEngine("task-1", "ws-1", "user-1")
+    monkeypatch.setattr(engine, "_prepare_turn_environment", AsyncMock(return_value=(".", {})))
+    monkeypatch.setattr(engine_module, "register_engine", Mock())
+    monkeypatch.setattr(engine_module, "run_agent_backend_with_logging", AsyncMock(return_value=result))
+
+    async def run_db(callback, *args):
+        if callback is engine_module.turn_setup.playbook_turn_sync:
+            return {"fence": None, "prompt": ""}
+        if callback is engine_module.turn_setup.task_model_sync:
+            return None
+        assert callback == engine._persist_provider_state_sync
+        raise OSError("persist failed")
+
+    monkeypatch.setattr(engine_module, "run_db", run_db)
+    monkeypatch.setattr(engine, "_stop_remote_session_after_error", AsyncMock())
+    monkeypatch.setattr(engine.segments, "flush", AsyncMock())
+    monkeypatch.setattr(engine.frontend, "push_status", AsyncMock())
+    monkeypatch.setattr(engine_module, "emit_status_event", AsyncMock())
+    asyncio.run(engine.run("Run the task"))
+    assert engine.last_result_success is False
+    assert engine.last_result_text == "persist failed"
+    assert engine.last_result is result
     evidence = _capture_finalizer_call(engine)
     assert evidence.provider_outcome_seen is True
     status, _ = _decide(evidence, requested=AiJobStatus.INTERRUPTED)
@@ -194,14 +216,6 @@ def test_cancel_and_result_race_uses_provider_outcome():
     assert status == AiJobStatus.CANCELLED
 
 
-def test_runner_provider_seen_requires_real_result_not_run_return():
-    """“run 正常返回”不构成 outcome：last_result_success=False（异常路径）
-    不得让 runner 兜底把 provider_outcome_seen 置 True。"""
-    engine = SimpleNamespace(last_result_success=False, last_result_text="boom")
-    provider_seen = getattr(engine, "last_result", None) is not None
-    assert provider_seen is False
-
-
 # ─────────────────────────── 引擎 provider result 登记 ───────────────────────────
 
 
@@ -224,18 +238,6 @@ def test_engine_provider_result_synthesizes_only_for_true_success():
     for success in (False, None):
         engine = SimpleNamespace(last_result_success=success, last_result_text="x", session_id="s")
         assert ai_task_chat.engine_provider_result(engine) is None
-
-
-def test_engine_records_last_result_before_persist():
-    """引擎必须在持久化之前登记真实 result（持久化失败不抹掉证据）。"""
-    import inspect
-
-    from app.engine.session import TaskAgentEngine
-
-    source = inspect.getsource(TaskAgentEngine.run)
-    persist_pos = source.index("_persist_provider_state")
-    assign_pos = source.index("self.last_result = result")
-    assert assign_pos < persist_pos
 
 
 # ───────────────────────── 事务层：ORPHANED ownership / fence ─────────────────────────

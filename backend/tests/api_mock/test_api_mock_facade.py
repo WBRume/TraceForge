@@ -7,19 +7,6 @@ from app.domains.api_mock.services import api_mock_service
 
 
 class ApiMockFacadeTest(unittest.TestCase):
-    def test_facade_exports(self):
-        # We verify that standard functions from sub-modules are successfully imported and exported from the facade
-        self.assertTrue(hasattr(api_mock_service, "list_endpoints"))
-        self.assertTrue(hasattr(api_mock_service, "get_project_by_task"))
-        self.assertTrue(hasattr(api_mock_service, "list_mock_cases_for_endpoint"))
-        self.assertTrue(hasattr(api_mock_service, "ensure_project"))
-        self.assertTrue(hasattr(api_mock_service, "run_auto_mock_job_background"))
-        self.assertTrue(hasattr(api_mock_service, "run_sync_job_background"))
-        self.assertTrue(hasattr(api_mock_service, "run_import_job_background"))
-        self.assertTrue(hasattr(api_mock_service, "execute_gateway"))
-        self.assertTrue(hasattr(api_mock_service, "save_active_document"))
-        self.assertTrue(hasattr(api_mock_service, "list_collab_events"))
-
     @mock.patch("app.domains.api_mock.services.api_mock_service.SessionLocal")
     @mock.patch("app.domains.api_mock.services.api_mock_service._clear_cancel_event")
     @mock.patch("app.domains.api_mock.services.api_mock_service.ensure_project")

@@ -16,7 +16,6 @@ def test_content_identity_ignores_line_endings_but_not_content():
     assert identity.content_digest(b"a\r\nb") != identity.content_digest(b"a\nc")
     # Binaries keep their exact bytes even when they contain CR/LF sequences.
     binary = bytes([0, 255, 13, 10])
-    assert identity.content_digest(binary) == identity.content_digest(binary)
     assert identity.content_digest(binary) != identity.content_digest(bytes([0, 255, 10, 10]))
 
 

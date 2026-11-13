@@ -12,26 +12,28 @@ from app.domains.workspace_collaboration import content, service
 environment = fixtures.environment
 
 
-def create_conflict(root: Path, kind: str) -> None:
+CONFLICT_PATHS = ("same.txt", "binary.bin", "new.txt")
+
+
+def create_conflicts(root: Path) -> None:
     branch = git(root, "branch", "--show-current")
-    name = "new.txt" if kind == "add-add" else "same.txt"
     git(root, "switch", "-c", "other")
-    (root / name).write_bytes(b"other side\n")
-    git(root, "add", name)
+    for name in CONFLICT_PATHS:
+        (root / name).write_bytes(b"other side\n")
+    git(root, "add", "--", *CONFLICT_PATHS)
     git(root, "commit", "-m", "other")
     git(root, "switch", branch)
-    if kind == "delete-modify":
-        git(root, "rm", name)
-    else:
+    git(root, "rm", "binary.bin")
+    for name in ("same.txt", "new.txt"):
         (root / name).write_bytes(b"task side\n")
-        git(root, "add", name)
+    git(root, "add", "--", "same.txt", "new.txt")
     git(root, "commit", "-m", "task")
     result = run_git(["merge", "--no-edit", "other"], cwd=str(root), decode_text=True)
-    assert result.returncode == 1 and git(root, "ls-files", "-u")
+    assert result.returncode == 1
+    assert set(git(root, "diff", "--name-only", "--diff-filter=U").splitlines()) == set(CONFLICT_PATHS)
 
 
-@pytest.mark.parametrize("kind", ["modify-modify", "delete-modify", "add-add"])
-def test_dual_repo_unmerged_output_delivered_without_touching_git_state(environment, kind):
+def test_dual_repo_unmerged_output_delivered_without_touching_git_state(environment):
     db, task, root = environment
     state = preparing(environment)
     service.handoff(db, task, "u", input_request(environment, state))
@@ -40,17 +42,16 @@ def test_dual_repo_unmerged_output_delivered_without_touching_git_state(environm
     service.authorize_execution(db, task, "submission", "job")
     db.commit()
     original = {}
-    name = "new.txt" if kind == "add-add" else "same.txt"
     for slug in ("api", "web"):
         repo = root / slug
-        create_conflict(repo, kind)
+        create_conflicts(repo)
         original[slug] = {
             "index": (repo / ".git/index").read_bytes(),
             "merge_head": git(repo, "rev-parse", "MERGE_HEAD"),
             "head": git(repo, "rev-parse", "HEAD"),
-            "bytes": (repo / name).read_bytes(),
+            "files": {name: (repo / name).read_bytes() for name in CONFLICT_PATHS},
         }
-        assert content._tracked_modes(repo, [name]) == {name: "100644"}
+        assert content._tracked_modes(repo, list(CONFLICT_PATHS)) == dict.fromkeys(CONFLICT_PATHS, "100644")
     assert service.capture_progress(db, task, "job") is not None
     db.commit()
     state = service.finish_execution(db, task, "job", confirmed_stopped=True)
@@ -61,12 +62,13 @@ def test_dual_repo_unmerged_output_delivered_without_touching_git_state(environm
     for item in snapshot["repositories"]:
         repo = root / item["rel_path"]
         before = original[item["rel_path"]]
-        file = next(f for f in item["files"] if f["path"] == name)
-        assert store.read(file["sha256"]) == before["bytes"]
+        files = {file["path"]: file for file in item["files"]}
+        for name, data in before["files"].items():
+            assert store.read(files[name]["sha256"]) == data
+            assert (repo / name).read_bytes() == data
         assert (repo / ".git/index").read_bytes() == before["index"]
         assert git(repo, "rev-parse", "MERGE_HEAD") == before["merge_head"]
         assert git(repo, "rev-parse", "HEAD") == before["head"]
-        assert (repo / name).read_bytes() == before["bytes"]
     assert acknowledge(environment, state)["sync_phase"] == "READY"
 
 

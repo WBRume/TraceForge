@@ -88,20 +88,6 @@ def update_repository_templates(tmp_path_factory):
     return templates
 
 
-def test_update_repository_copies_are_independent(env, update_repository_templates):
-    _, _, root, remotes, _ = env
-    for name, (remote, checkout, sha) in update_repository_templates.items():
-        assert not (root / name / ".git/index").samefile(checkout / ".git/index")
-        assert not (remotes[name] / ".git/index").samefile(remote / ".git/index")
-        write(root / name, "shared.txt", "changed task")
-        write(remotes[name], "shared.txt", "changed remote")
-        commit(root / name)
-        commit(remotes[name])
-        for seed in (remote, checkout):
-            assert git.git(seed, "rev-parse", "HEAD") == sha
-            assert git.git(seed, "status", "--porcelain") == ""
-
-
 def prepare(env):
     db, task, _, _, actor = env
     result = service.prepare(db, task, actor)

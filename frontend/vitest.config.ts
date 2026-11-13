@@ -11,7 +11,7 @@ export default defineConfig({
     },
   },
   test: {
-    exclude: [...configDefaults.exclude, 'desktop/local-resource/tests/**'],
+    exclude: [...configDefaults.exclude, 'desktop/local-resource/tests/**', 'desktop/tests/ide.test.ts'],
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],

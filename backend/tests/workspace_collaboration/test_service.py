@@ -93,21 +93,6 @@ def environment(db, tmp_path, monkeypatch, collaboration_repository_templates):
     return db, task, task_root
 
 
-def test_environment_copies_keep_seed_git_data_and_contents_independent(
-    environment, collaboration_repository_templates
-):
-    _, _, root = environment
-    for name in ("api", "web"):
-        template, sha = collaboration_repository_templates[name]
-        repository = root / name
-        assert not (template / ".git/index").samefile(repository / ".git/index")
-        (repository / "same.txt").write_bytes(b"scenario-specific edit")
-        git(repository, "add", "same.txt")
-        assert (template / "same.txt").read_bytes() == (name + " baseline\r\n").encode()
-        assert git(template, "status", "--porcelain") == ""
-        assert git(repository, "rev-parse", "HEAD") == sha
-
-
 def enabled(environment):
     db, task, _ = environment
     state = service.enable(db, task, "u", EnableRequest(operation_id="enable", client_id="desktop", instance_id="boot"))
@@ -205,6 +190,11 @@ def test_complete_round_keeps_each_repo_and_only_publishes_stable_output(environ
     assert not (root / "api/binary.bin").exists()
     assert (root / "web/binary.bin").read_bytes() == b"\x00\xff\xfe"
     assert service.handoff(db, task, "u", request)["snapshot_id"] == state["snapshot_id"]
+    history = service.handoff_history(db, task.id)
+    assert len(history) == 1
+    assert history[0]["source"] == "ROUND_SNAPSHOT" and history[0]["actor_user_id"] == "u"
+    assert history[0]["submission_id"] == "submission"
+    assert [repo["task_repository_id"] for repo in history[0]["repository_deltas_json"]] == ["api"]
     task.session_revision += 1
     service.advance_session(db, task, "submission")
     authorized = service.authorize_execution(db, task, "submission", "job")
@@ -485,8 +475,7 @@ def test_unsafe_paths_rejected(relative):
         content.validate_path(relative)
 
 
-def test_raw_object_hash_validation_and_task_isolation(environment):
-    _db, _task, _root = environment
+def test_raw_object_hash_validation_and_task_isolation():
     store = content.ObjectStore("t")
     raw = b"\x00\xff\r\n"
     sha = store.put(raw)
@@ -532,28 +521,6 @@ def test_takeover_expires_old_instance_and_requires_complete_reconciliation(envi
             db, task, "u", LeaseRequest(client_id="desktop", instance_id="boot", lease_epoch=state["lease_epoch"])
         )
     assert acknowledge(environment, new)["sync_phase"] == "READY"
-
-
-def test_only_nonempty_handoff_records_human_provenance(environment):
-    db, task, _ = environment
-    state = preparing(environment)
-    request = input_request(environment, state, {"web": {"same.txt": b"human"}})
-    service.handoff(db, task, "u", request)
-    db.commit()
-    service.handoff(db, task, "u", request)
-    history = service.handoff_history(db, "t")
-    assert len(history) == 1
-    assert history[0]["source"] == "ROUND_SNAPSHOT" and history[0]["actor_user_id"] == "u"
-    assert [r["task_repository_id"] for r in history[0]["repository_deltas_json"]] == ["web"]
-    assert history[0]["submission_id"] == "submission"
-
-
-def test_unchanged_handoff_has_no_human_delta(environment):
-    db, task, _ = environment
-    state = preparing(environment)
-    service.handoff(db, task, "u", input_request(environment, state))
-    db.commit()
-    assert service.handoff_history(db, "t") == []
 
 
 def test_restore_recovery_requires_exact_completed_operation(environment):

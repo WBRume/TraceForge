@@ -77,12 +77,12 @@ def test_frozen_existing_driver_can_renew_and_release_but_identity_is_still_fenc
     assert client.post(PATH + "/lease", json=fence(state)).status_code == 409
 
 
-@pytest.mark.parametrize("action", ["enable", "claim-driver", "recover-input", "recover-output"])
-def test_frozen_task_rejects_new_driver_and_code_recovery(frozen_client, action):
+def test_frozen_task_rejects_new_driver_and_code_recovery(frozen_client):
     client, state, _, _ = frozen_client
-    response = client.post(PATH + "/" + action, json={**fence(state), "operation_id": "forbidden"})
-    assert response.status_code == 403
-    assert response.json()["detail"] == "Baselined task is read-only"
+    for action in ("enable", "claim-driver", "recover-input", "recover-output"):
+        response = client.post(f"{PATH}/{action}", json={**fence(state), "operation_id": "forbidden"})
+        assert response.status_code == 403, (action, response.text)
+        assert response.json()["detail"] == "Baselined task is read-only", action
 
 
 def test_frozen_task_rejects_upload_and_handoff_and_can_disconnect(environment, frozen_client):

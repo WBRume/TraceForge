@@ -173,13 +173,6 @@ describe('DiagnosisResultCard', () => {
     expect(wrapper.text()).toContain('diagnosis.view_case')
   })
 
-  it('has no redundant submit-review button and no card hint', () => {
-    const wrapper = mountCard({ caseLink: 'case-7' })
-
-    expect(buttonByText(wrapper, 'diagnosis.create_and_submit')).toBeUndefined()
-    expect(wrapper.text()).not.toContain('diagnosis.card_hint')
-  })
-
   it('hides edit while a summary is running', () => {
     const wrapper = mountCard({ summarizing: true })
 

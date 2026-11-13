@@ -95,4 +95,5 @@ def test_no_change_does_not_create_human_delta(environment):
     state = preparing(environment)
     service.handoff(db, task, "u", input_request(environment, state))
     db.commit()
+    assert service.handoff_history(db, task.id) == []
     assert db.query(SddHumanDelta).filter_by(task_id=task.id).count() == 0
