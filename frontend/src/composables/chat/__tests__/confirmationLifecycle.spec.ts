@@ -8,6 +8,7 @@ import { createChatJobIngest } from '../jobs/jobIngest'
 import { useSessionState } from '../session/useSessionState'
 import { useTaskStartActions } from '../actions/useTaskStartActions'
 import { useTaskStatusActions } from '../actions/useTaskStatusActions'
+import { messageIdentity } from '../shared/messageIdentity'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
 vi.mock('@/utils/api', () => ({ default: api }))
@@ -20,7 +21,7 @@ const question = (id: string, jobId: string, generation: number) => ({
 })
 
 const createLifecycle = () => {
-  const task = ref({ id: 'task', status: 'RUNNING', status_seq: '1', session_generation: 1 })
+  const task = ref({ id: 'task', status: 'RUNNING', status_seq: '1', session_generation: 1, session_revision: 1 })
   const messages = ref<any[]>([question('old', 'old-job', 1)])
   const jobs = useChatJobs({
     getWorkspaceId: () => 'workspace', getTaskId: () => task.value.id,
@@ -32,19 +33,25 @@ const createLifecycle = () => {
   const engineRunning = ref(false)
   const preparingSubmission = ref(false)
   const putSubmission = vi.fn(() => { preparingSubmission.value = false })
+  const receipts = ref<any[]>([])
+  const sendSubmission = vi.fn(async () => true)
   const syncEngine = () => { engineRunning.value = jobs.hasExecutingJob() }
-  const ingestJob = createChatJobIngest({ jobs, cards, syncEngineFromJobs: syncEngine, onJobUpdate: () => {} })
+  const { ingest: ingestJob, onAccepted } = createChatJobIngest({ jobs, cards, syncEngineFromJobs: syncEngine, onJobUpdate: () => {} })
   const generationBump = vi.fn()
   const interruptTask = vi.fn(async () => ({ task_id: 'task', status: 'INTERRUPTED', status_seq: String(Number(task.value.status_seq) + 1),
     session_generation: task.value.session_generation,
     job: { ...jobs.jobList().find(job => job.status === 'RUNNING'), status: 'INTERRUPTED' } }))
   const state = useSessionState({
     getWorkspaceId: () => 'workspace', getCurrentTask: () => task.value,
-    submissions: { unconfirmedKeys: () => [], current: () => [], put: putSubmission,
-      send: async () => true, clear: () => {} },
-    ingestJob, resetJobs: jobs.reset, syncEngineFromJobs: syncEngine,
+    submissions: { unconfirmedKeys: () => receipts.value.map(row => row.client_message_id), current: () => receipts.value,
+      put: putSubmission, send: sendSubmission, clear: () => {} },
+    ingestJob, jobs, onSnapshotJobAccepted: onAccepted, syncEngineFromJobs: syncEngine,
     convergeFromJobs: () => { syncEngine(); return true }, syncConfirmationCards: cards.syncConfirmationCards,
-    upsertMessage: message => messages.value.push(message), loadHistory: async () => {},
+    messages: {
+      captureIdentitySnapshot: () => new Map(messages.value.map(message => [messageIdentity(message), message])),
+      mergeSessionSnapshot: incoming => messages.value.push(...incoming),
+    },
+    loadHistory: async () => true,
     loadActivePreInput: async () => true, onSessionGenerationBump: generationBump,
     applyTaskStatusSnapshot: snapshot => { applyTaskStatusSnapshot(task.value, snapshot) },
     reloadSpecBootstrap: () => {}, hasTaskSpecification: () => false,
@@ -80,7 +87,8 @@ const createLifecycle = () => {
   })
   ingestJob({ id: 'old-job', task_id: 'task', status: 'RUNNING', progress: 0, session_generation: 1 })
   cards.syncConfirmationCards()
-  return { task, messages, jobs, cards, state, start, status, ingestJob, engineRunning, preparingSubmission, putSubmission, interruptTask, generationBump }
+  return { task, messages, jobs, cards, state, start, status, ingestJob, engineRunning, preparingSubmission,
+    putSubmission, interruptTask, generationBump, receipts, sendSubmission }
 }
 
 describe('confirmation lifecycle', () => {
@@ -181,6 +189,71 @@ describe('confirmation lifecycle', () => {
     expect(await pending).toBe(false)
     expect(runtime.jobs.jobList()).toEqual([])
     expect(runtime.cards.activeHitlCards.value).toHaveLength(0)
+    runtime.state.dispose()
+  })
+
+  it('keeps a newer WS terminal version and a newly observed job while pruning older absent jobs', async () => {
+    const runtime = createLifecycle()
+    const job = { id: 'finishing', status: 'RUNNING' as const, progress: 0, version: 1, session_generation: 1 }
+    runtime.ingestJob(job)
+    let resolve!: (response: any) => void
+    api.get.mockReturnValueOnce(new Promise(response => { resolve = response }))
+    const pending = runtime.state.recoverSession('send-unknown')
+    runtime.ingestJob({ ...job, status: 'SUCCESS', progress: 100, version: 2 })
+    runtime.ingestJob({ ...job, id: 'live' })
+    resolve({ data: { task_id: 'task', session_generation: 1, session_revision: 1, jobs: [job] } })
+    expect(await pending).toBe(true)
+    expect(runtime.jobs.jobList().map(item => item.id)).toEqual(['live'])
+    expect(runtime.engineRunning.value).toBe(true)
+    runtime.ingestJob(job)
+    expect(runtime.jobs.jobList().map(item => item.id)).toEqual(['live'])
+    runtime.state.dispose()
+  })
+
+  it('rejects a same-generation pre-revert snapshot before writing messages or retrying a send', async () => {
+    const runtime = createLifecycle()
+    runtime.receipts.value = [{ task_id: 'task', client_message_id: 'unknown', status: 'UNKNOWN', content: 'prompt' }]
+    let resolve!: (response: any) => void
+    api.get.mockReturnValueOnce(new Promise(response => { resolve = response }))
+    const pending = runtime.state.recoverSession('send-unknown')
+    runtime.state.applyTaskSessionVersion({ task_id: 'task', session_generation: 1, session_revision: 2 })
+    resolve({ data: { task_id: 'task', session_generation: 1, session_revision: 1, messages: [question('removed', 'old-job', 1)] } })
+    expect(await pending).toBe(false)
+    expect(runtime.messages.value.map(message => message.id)).toEqual(['old'])
+    expect(runtime.sendSubmission).not.toHaveBeenCalled()
+    runtime.state.dispose()
+  })
+
+  it('coalesces recovery but only resubmits a key included in that request', async () => {
+    const runtime = createLifecycle()
+    const row = { task_id: 'task', client_message_id: 'queried', status: 'UNKNOWN', content: 'prompt' }
+    runtime.receipts.value = [row]
+    let resolve!: (response: any) => void
+    api.get.mockReturnValueOnce(new Promise(response => { resolve = response }))
+    const pending = runtime.state.recoverSession('send-unknown')
+    runtime.receipts.value.push({ ...row, client_message_id: 'newer' })
+    expect(runtime.state.recoverSession('send-unknown')).toBe(pending)
+    resolve({ data: { task_id: 'task', session_generation: 1, session_revision: 1 } })
+    expect(await pending).toBe(true)
+    expect(runtime.sendSubmission.mock.calls).toEqual([['task', 'queried', 'prompt', undefined]])
+    runtime.state.dispose()
+  })
+
+  it('keeps a newer same-task request in flight after switching away and back', async () => {
+    const runtime = createLifecycle()
+    let resolveOld!: (response: any) => void
+    let resolveCurrent!: (response: any) => void
+    api.get.mockReturnValueOnce(new Promise(response => { resolveOld = response }))
+      .mockReturnValueOnce(new Promise(response => { resolveCurrent = response }))
+    const old = runtime.state.recoverSession('first-entry')
+    runtime.state.beginTaskSwitch()
+    const current = runtime.state.recoverSession('returned-to-same-task')
+    const snapshot = { data: { task_id: 'task', session_generation: 1, session_revision: 1 } }
+    resolveOld(snapshot)
+    expect(await old).toBe(false)
+    expect(runtime.state.recoverSession('parallel-caller')).toBe(current)
+    resolveCurrent(snapshot)
+    expect(await current).toBe(true)
     runtime.state.dispose()
   })
 })

@@ -30,7 +30,7 @@ const createStores = () => {
 describe('createChatJobIngest', () => {
   it('applies the same cross-domain reactions for every job source', () => {
     const { activeJobs, jobs, cards, marked, engineSync, terminalUpdates } = createStores()
-    const ingest = createChatJobIngest({
+    const { ingest } = createChatJobIngest({
       jobs,
       cards,
       syncEngineFromJobs: engineSync,
@@ -59,7 +59,7 @@ describe('createChatJobIngest', () => {
 
   it('ignores malformed jobs without an id', () => {
     const { engineSync, jobs, cards, marked, terminalUpdates } = createStores()
-    const ingest = createChatJobIngest({
+    const { ingest } = createChatJobIngest({
       jobs,
       cards,
       syncEngineFromJobs: engineSync,

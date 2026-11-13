@@ -79,4 +79,17 @@ describe('useChatMessages', () => {
     store.noteSentTime('c9')
     expect(store.visibleMessages.value).toEqual(store.messages.value)
   })
+
+  it('merges snapshot messages without replacing realtime edits or restoring removed identities', () => {
+    const { store } = createMessages()
+    store.upsert({ id: 'updated', content: 'before' })
+    store.upsert({ id: 'removed', content: 'before' })
+    const atRequest = store.captureIdentitySnapshot()
+    store.upsert({ id: 'updated', content: 'live' })
+    store.removeByIds(new Set(['removed']))
+    store.mergeSessionSnapshot([
+      { id: 'updated', content: 'older' }, { id: 'removed', content: 'older' }, { id: 'new', content: 'snapshot' },
+    ], atRequest)
+    expect(store.messages.value).toEqual([{ id: 'updated', content: 'live' }, { id: 'new', content: 'snapshot' }])
+  })
 })

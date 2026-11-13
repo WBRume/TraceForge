@@ -147,7 +147,8 @@ export function useChatSend(options: {
         const accepted = await submission
         if (accepted) options.onModelSubmitted?.(modelSelection)
         if (options.getTaskId() === taskId && accepted) options.scrollTo('chat')
-        if (!accepted && options.submissions.current.value.some((row: any) =>
+        if (options.getTaskId() === taskId && options.getWorkspaceId() === targetWorkspaceId
+          && options.submissions.current.value.some((row: any) =>
           row.client_message_id === clientMessageId && row.status === 'UNKNOWN')) {
           void options.recoverSession('send-unknown')
         }

@@ -13,7 +13,7 @@ export function createTaskWsEventRouter(deps: {
   task: {
     getTaskId: () => string
     patchSessionGeneration: (generation: number) => void
-    applyTaskStatusSnapshot: (snapshot: any) => void
+    applyTaskStatusSnapshot: (snapshot: any) => boolean | void
     getCurrentSessionGeneration: () => number
     getCurrentTaskStatus: () => string
     getCurrentSessionRevision?: () => number
@@ -52,7 +52,7 @@ export function createTaskWsEventRouter(deps: {
   }
   ingestJob: (job: ChatAiJob) => void
   refreshActiveJobs: (taskId: string) => Promise<boolean>
-  applyTaskSessionPayload: (payload: any) => void
+  applyTaskSessionPayload: (payload: any) => boolean | void
   specBootstrapApplyUpdate: (payload: any) => void
   shareSuggestionNudge: (payload: any) => void
   cloudResultsUpdate?: () => void
@@ -280,7 +280,7 @@ export function createTaskWsEventRouter(deps: {
       }
 
       case 'task_interrupted': {
-        deps.applyTaskSessionPayload(payload)
+        if (deps.applyTaskSessionPayload(payload) === false) break
         deps.engine.engineRunning.value = false
         deps.cards.dropStatusCards()
         deps.contextWindowScheduleRefresh()
@@ -288,7 +288,7 @@ export function createTaskWsEventRouter(deps: {
       }
 
       case 'task_resumed': {
-        deps.applyTaskSessionPayload(payload)
+        if (deps.applyTaskSessionPayload(payload) === false) break
         deps.engine.engineRunning.value = true
         deps.contextWindowScheduleRefresh()
         break
@@ -296,6 +296,7 @@ export function createTaskWsEventRouter(deps: {
 
       case 'task_session_reverted': {
         if (String(payload?.task_id || '') !== deps.task.getTaskId()) break
+        if (payload?.task_snapshot && deps.task.applyTaskStatusSnapshot(payload.task_snapshot) === false) break
         deps.playbookEvent?.('playbook.resync', { task_id: deps.task.getTaskId() })
         deps.onSessionGenerationBump()
         const removedIds = new Set<string>(
@@ -314,7 +315,6 @@ export function createTaskWsEventRouter(deps: {
         if (payload?.session_generation !== undefined) {
           deps.task.patchSessionGeneration(Number(payload.session_generation || 0))
         }
-        if (payload?.task_snapshot) deps.task.applyTaskStatusSnapshot(payload.task_snapshot)
         deps.contextWindowScheduleRefresh()
         break
       }

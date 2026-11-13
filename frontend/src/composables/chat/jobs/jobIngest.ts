@@ -19,14 +19,19 @@ export function createChatJobIngest(deps: {
   syncEngineFromJobs: () => void
   onJobUpdate: (job: ChatAiJob) => void
 }) {
-  return (job: ChatAiJob) => {
-    if (!job?.id) return
-    if (deps.jobs.upsert(job) === false) return
+  const onAccepted = (job: ChatAiJob) => {
     noteTaskJobObserved(job)
     if (['SUCCESS', 'FAILED', 'CANCELLED', 'REVERTED', 'INTERRUPTED'].includes(job.status)) {
       deps.cards.markAnsweredForJob(job.id, job.status)
     }
-    deps.syncEngineFromJobs()
     deps.onJobUpdate(job)
   }
+
+  const ingest = (job: ChatAiJob) => {
+    if (!job?.id || deps.jobs.upsert(job) === false) return
+    deps.syncEngineFromJobs()
+    onAccepted(job)
+  }
+
+  return { ingest, onAccepted }
 }

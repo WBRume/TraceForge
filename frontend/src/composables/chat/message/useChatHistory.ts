@@ -71,8 +71,7 @@ export function useChatHistory(options: {
 
   const loadHistory = async (taskId: string, reset: boolean = true) => {
     if (reset && options.route.query.messageId && String(options.route.params.taskId) === taskId) {
-      await loadAnchorContext(String(options.route.query.messageId))
-      return
+      return loadAnchorContext(String(options.route.query.messageId))
     }
     if (reset) historyContext.reset()
     const requestGeneration = ++historyGeneration
@@ -87,7 +86,7 @@ export function useChatHistory(options: {
       const res = await api.get(`/workspaces/${options.getWorkspaceId()}/tasks/${taskId}/history`, {
         params: { page: currentPage.value, page_size: 50 }
       })
-      if (requestGeneration !== historyGeneration || !isCurrentTaskId(taskId)) return
+      if (requestGeneration !== historyGeneration || !isCurrentTaskId(taskId)) return false
       const { messages: hMessages, logs: hLogs, has_more } = res.data
       hasMore.value = has_more
 
@@ -110,24 +109,30 @@ export function useChatHistory(options: {
         // 向上加载更早消息：prepend 到列表前面
         options.messages.applyHistoryPage(mapped, false)
       }
+      return requestGeneration === historyGeneration && isCurrentTaskId(taskId)
     } catch (e) {
       console.error('Failed to load history', e)
+      return false
     }
   }
 
   const loadAnchorContext = async (messageId: string) => {
     const taskId = String(options.getCurrentTask()?.id || '')
-    if (!taskId) return
+    if (!taskId) return false
     bumpGeneration()
+    const requestGeneration = historyGeneration
     options.messages.reset()
     try {
       const result = await historyContext.load(options.getWorkspaceId(), taskId, messageId)
-      if (!result || !isCurrentTaskId(taskId)) return
+      if (!result || requestGeneration !== historyGeneration || !isCurrentTaskId(taskId)) return false
       options.messages.replaceAll(mapHistoryMessages(result.messages))
       hasMore.value = result.has_before
       await highlightMessageFromRouteQuery()
+      return isCurrentTaskId(taskId)
     } catch (error: any) {
-      if (error.code !== 'ERR_CANCELED') ElMessage.warning(error.response?.status === 404 ? '该消息已被撤销或删除' : '历史上下文暂不可用，请回到最新会话')
+      const missing = error.response?.status === 404
+      if (error.code !== 'ERR_CANCELED') ElMessage.warning(missing ? '该消息已被撤销或删除' : '历史上下文暂不可用，请回到最新会话')
+      return missing && isCurrentTaskId(taskId)
     }
   }
 

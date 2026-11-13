@@ -98,6 +98,16 @@ export function useChatMessages(options: {
     messages.value.push(item)
   }
 
+  const mergeSessionSnapshot = (items: any[], atRequest: Map<string, any>) => {
+    if (!items.length) return
+    const current = captureIdentitySnapshot()
+    for (const item of items) {
+      const id = messageIdentity(item)
+      // 保留请求期间收到的更新，也不重新插入已从会话撤回的消息。
+      if (current.get(id) === atRequest.get(id)) upsert(item)
+    }
+  }
+
   return {
     messages,
     visibleMessages,
@@ -108,6 +118,7 @@ export function useChatMessages(options: {
     findByIdentity,
     removeByIds,
     captureIdentitySnapshot,
+    mergeSessionSnapshot,
     applyHistoryPage,
     appendPage,
     upsert,

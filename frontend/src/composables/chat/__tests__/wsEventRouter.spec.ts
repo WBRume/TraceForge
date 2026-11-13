@@ -36,7 +36,7 @@ const createDeps = () => {
     task: {
       getTaskId: () => 't1',
       patchSessionGeneration: (generation: number) => calls.generationPatches.push(generation),
-      applyTaskStatusSnapshot: (snapshot: any) => calls.statusSyncs.push(snapshot),
+      applyTaskStatusSnapshot: (snapshot: any) => { calls.statusSyncs.push(snapshot) },
       getCurrentSessionGeneration: () => 2,
       getCurrentTaskStatus: () => 'RUNNING',
     },
@@ -73,7 +73,10 @@ const createDeps = () => {
     },
     ingestJob: (job: any) => calls.ingested.push(job),
     refreshActiveJobs: (taskId: string) => { calls.activeJobRefreshes.push(taskId); return Promise.resolve(true) },
-    applyTaskSessionPayload: (payload: any) => calls.appliedSessionPayloads.push(payload),
+    applyTaskSessionPayload: (payload: any) => {
+      calls.appliedSessionPayloads.push(payload)
+      return true
+    },
     specBootstrapApplyUpdate: (payload: any) => calls.specUpdates.push(payload),
     shareSuggestionNudge: (payload: any) => calls.suggestionNudges.push(payload),
     preinputHandleEvent: (type: string) => calls.preinputEvents.push(type),

@@ -253,8 +253,8 @@ export function useChatViewModel() {
   })
 
   // job 摄取管线：诊断的终态刷新晚绑定（diagnosis 创建在 ingest 之后，调用发生在运行期）
-  let ingestRef: ((job: any) => void) | null = null
-  const ingestJob = (job: any) => ingestRef?.(job)
+  let ingestRef: ReturnType<typeof createChatJobIngest> | null = null
+  const ingestJob = (job: any) => ingestRef?.ingest(job)
 
   const diagnosis = useDiagnosis({
     getWorkspaceId,
@@ -271,7 +271,7 @@ export function useChatViewModel() {
     cards,
     syncEngineFromJobs: engine.syncFromJobs,
     onJobUpdate: (job) => {
-      if (job.task_snapshot) applyTaskStatusSnapshot(job.task_snapshot)
+      if (job.task_snapshot) sessionState.applyTaskSessionVersion(job.task_snapshot)
       diagnosis.onJobUpdate(job)
     },
   })
@@ -447,11 +447,12 @@ export function useChatViewModel() {
       clear: submissions.clear,
     },
     ingestJob,
-    resetJobs: jobs.reset,
+    jobs,
+    onSnapshotJobAccepted: (job) => ingestRef?.onAccepted(job),
     syncEngineFromJobs: engine.syncFromJobs,
     convergeFromJobs: engine.convergeFromJobs,
     syncConfirmationCards: cards.syncConfirmationCards,
-    upsertMessage: messages.upsert,
+    messages,
     loadHistory: (taskId, reset) => history.loadHistory(taskId, reset),
     loadActivePreInput: (taskId) => preinput.loadActive(taskId),
     onSessionGenerationBump: () => history.bumpGeneration(),
@@ -475,7 +476,7 @@ export function useChatViewModel() {
           return
         }
         if (frameType === 'resume_ok' || frameType === 'resync_ok') {
-          // 首次订阅就绪：replay/屏障已完成，此时 HTTP 快照不会被旧的 WS 增量覆盖
+          // 订阅就绪后通过统一入口合并首屏快照。
           const wasReady = ws.isSubscriptionReady(taskId)
           if (wasReady) void agentModels.reload()
           ws.markSubscriptionReady(taskId)
@@ -496,10 +497,10 @@ export function useChatViewModel() {
         handleWsMessage(frame)
       },
       onResync: async (taskId, frame, _reason, context, signal) => {
-        await sessionState.restoreSessionState(taskId)
-        if (!signal.aborted && context.socket === ws.getSocket() && context.socket.readyState === WebSocket.OPEN) {
-          sendResyncComplete(context.socket, frame, `task:${taskId}`)
-        }
+        const restored = await sessionState.restoreSessionState(taskId)
+        if (signal.aborted || context.socket !== ws.getSocket() || context.socket.readyState !== WebSocket.OPEN) return
+        if (!restored) context.socket.close(4002, 'session_snapshot_failed')
+        else sendResyncComplete(context.socket, frame, `task:${taskId}`)
       },
       onSocketOpen: (taskId) => {
         if (taskState.getTaskId() === taskId && specDrawer.hasTaskSpecification(taskState.currentTask.value)) {
@@ -546,9 +547,9 @@ export function useChatViewModel() {
     task: {
       getTaskId: taskState.getTaskId,
       patchSessionGeneration: (generation) => {
-        if (taskState.currentTask.value) taskState.currentTask.value.session_generation = generation
+        sessionState.applyTaskSessionVersion({ task_id: taskState.getTaskId(), session_generation: generation })
       },
-      applyTaskStatusSnapshot,
+      applyTaskStatusSnapshot: sessionState.applyTaskSessionVersion,
       getCurrentSessionGeneration: () => Number(taskState.currentTask.value?.session_generation || 0),
       getCurrentTaskStatus: () => String(taskState.currentTask.value?.status || ''),
       getCurrentSessionRevision: () => Number(taskState.currentTask.value?.session_revision || 0),
@@ -688,6 +689,7 @@ export function useChatViewModel() {
     engineResetThinking: engine.resetThinking,
     jobsReset: jobs.reset,
     bumpHistoryGeneration: history.bumpGeneration,
+    applyTaskSessionVersion: sessionState.applyTaskSessionVersion,
     loadHistory: async (taskId, reset) => {
       await history.loadHistory(taskId, reset)
       await readingProgress.refresh(taskId)
@@ -738,7 +740,7 @@ export function useChatViewModel() {
     getWorkspaceId,
     engineRunning: engine.engineRunning,
     submissionsClear: submissions.clear,
-    loadHistory: (taskId, reset) => history.loadHistory(taskId, reset),
+    loadHistory: async (taskId, reset) => { await history.loadHistory(taskId, reset) },
     refreshActiveJobs: (taskId) => jobs.loadActive(taskId),
     resetConversationView,
     applyTaskSessionPayload: sessionState.applyTaskSessionPayload,
@@ -792,7 +794,7 @@ export function useChatViewModel() {
     clearConversationView,
     resetHistoryPaging: history.resetPaging,
     bumpHistoryGeneration: history.bumpGeneration,
-    loadHistory: (taskId, reset) => history.loadHistory(taskId, reset),
+    loadHistory: async (taskId, reset) => { await history.loadHistory(taskId, reset) },
     router,
     resolveActionError,
   })

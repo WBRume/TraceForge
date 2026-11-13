@@ -1,7 +1,10 @@
 import api from '@/utils/api'
+import { isOlderTaskStatusSequence } from '@/utils/taskStatusProjection'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
 import { mapHistoryMessages } from '../shared/messageIdentity'
 import { isCanceledRequest } from '../shared/requestGuards'
+import type { useChatJobs } from '../jobs/useChatJobs'
+import type { useChatMessages } from '../message/useChatMessages'
 import type { ChatAiJob } from '../types'
 
 /**
@@ -9,8 +12,7 @@ import type { ChatAiJob } from '../types'
  * 会话切换代次管理，以及 task session 载荷（status/generation/job）的应用。
  *
  * 快照顺序与恢复屏障一致：history 先落地，再以一个 session-state 请求补齐
- * 回执/活跃 job/关联消息与预输入——屏障期间事件被服务端暂存，快照完成后
- * 才放行，故增量不会被子集覆盖。
+ * 回执/活跃 job/关联消息与预输入。没有 WS 屏障的请求同样使用版本合并。
  */
 export function useSessionState(options: {
   getWorkspaceId: () => string
@@ -23,12 +25,13 @@ export function useSessionState(options: {
     clear: (taskId: string) => void
   }
   ingestJob: (job: ChatAiJob) => void
-  resetJobs: () => void
+  jobs: Pick<ReturnType<typeof useChatJobs>, 'snapshotCursor' | 'mergeSnapshot'>
+  onSnapshotJobAccepted: (job: ChatAiJob) => void
   syncEngineFromJobs: () => void
   convergeFromJobs: (taskId: string, items: ChatAiJob[]) => boolean
   syncConfirmationCards: () => void
-  upsertMessage: (message: any) => void
-  loadHistory: (taskId: string, reset?: boolean) => Promise<void>
+  messages: Pick<ReturnType<typeof useChatMessages>, 'captureIdentitySnapshot' | 'mergeSessionSnapshot'>
+  loadHistory: (taskId: string, reset?: boolean) => Promise<boolean>
   loadActivePreInput: (taskId: string) => Promise<boolean>
   onSessionGenerationBump: () => void
   applyTaskStatusSnapshot: (snapshot: any) => void
@@ -38,7 +41,7 @@ export function useSessionState(options: {
   const SESSION_STATE_FALLBACK_MS = 4000
   let sessionStateGeneration = 0
   let sessionStateFlightKey = ''
-  let sessionStateFlight: Promise<void> | null = null
+  let sessionStateFlight: Promise<boolean> | null = null
   let sessionStateSettledKey = ''
   let sessionStateFallbackTimer: number | null = null
   let sessionStateAbort: AbortController | null = null
@@ -102,42 +105,29 @@ export function useSessionState(options: {
     return res.data
   }
 
-  const applySessionSnapshot = (snapshot: any): boolean => {
-    const taskId = String(snapshot?.task_id || '')
-    if (currentTaskId() !== taskId) return false
-    if (Number(snapshot?.session_generation || 0) < Number(options.getCurrentTask()?.session_generation || 0)) return false
-    applyTaskSessionPayload(snapshot)
-    let changed = false
-    for (const receipt of (snapshot?.receipts || []) as any[]) {
-      options.submissions.put(receipt)
-      changed = true
-    }
-    const jobs = (snapshot?.jobs || []) as ChatAiJob[]
-    // 快照是权威集合：缺席的旧作业不能继续保留为运行中。
-    options.resetJobs()
-    for (const job of jobs) {
-      options.ingestJob(job)
-      changed = true
-    }
-    options.convergeFromJobs(taskId, jobs)
-    for (const message of (snapshot?.messages || []) as any[]) {
-      options.upsertMessage(mapHistoryMessages([message])[0])
-      changed = true
-    }
-    options.syncConfirmationCards()
-    return changed
+  const matchesCurrentVersion = (payload: any) => {
+    const task = options.getCurrentTask()
+    if (!task?.id || String(payload?.task_id || '') !== String(task.id)) return false
+    if (payload.workspace_id != null && String(payload.workspace_id) !== options.getWorkspaceId()) return false
+    if (payload.session_generation != null && Number(payload.session_generation) < Number(task.session_generation || 0)) return false
+    if (payload.session_revision != null && Number(payload.session_revision) < Number(task.session_revision || 0)) return false
+    return !isOlderTaskStatusSequence(payload.status_seq, task.status_seq)
   }
 
-  const resolveUnknownReceipts = async (snapshot: any): Promise<void> => {
-    const taskId = String(snapshot?.task_id || '')
-    if (currentTaskId() !== taskId) return
-    const present = new Set((snapshot?.receipts || []).map((row: any) => String(row.client_message_id)))
-    for (const row of options.submissions.current?.() || []) {
-      if (row.task_id !== taskId || row.status !== 'UNKNOWN' || present.has(row.client_message_id)) continue
-      // The server has no record of this key; re-submit with the original
-      // idempotency key — a lost response is never treated as "not received".
-      await options.submissions.send(taskId, row.client_message_id, row.content, row.metadata)
+  const applySessionSnapshot = (snapshot: any, jobCursor: number, messagesAtRequest: Map<string, any>): boolean => {
+    if (!matchesCurrentVersion(snapshot)) return false
+    const taskId = String(snapshot.task_id)
+    const merged = options.jobs.mergeSnapshot(snapshot.jobs || [], jobCursor, snapshot.session_generation)
+    if (!merged) return false
+    applyTaskSessionFields(snapshot)
+    for (const receipt of snapshot.receipts || []) {
+      options.submissions.put(receipt)
     }
+    for (const job of merged.accepted) options.onSnapshotJobAccepted(job)
+    options.convergeFromJobs(taskId, merged.items)
+    options.messages.mergeSessionSnapshot(mapHistoryMessages(snapshot.messages || []), messagesAtRequest)
+    options.syncConfirmationCards()
+    return true
   }
 
   const recoverSession = (reason: string, recoverOptions?: { silent?: boolean }): Promise<boolean> => {
@@ -145,54 +135,77 @@ export function useSessionState(options: {
     if (!taskId) return Promise.resolve(false)
     if (recoverSessionFlight) return recoverSessionFlight
     clearRecoverSessionRetryTimer()
-    const workspace = options.getWorkspaceId()
+    const key = sessionStateKeyFor(taskId)
+    const signal = getAbortSignal()
+    const stillCurrent = () => !signal?.aborted && currentTaskId() === taskId && sessionStateKeyFor(taskId) === key
     const unconfirmed = options.submissions.unconfirmedKeys()
+    const jobCursor = options.jobs.snapshotCursor()
+    const messagesAtRequest = options.messages.captureIdentitySnapshot()
     const flight = (async (): Promise<boolean> => {
       try {
         const snapshot = await fetchSessionState(taskId, unconfirmed)
-        if (options.getWorkspaceId() !== workspace || currentTaskId() !== taskId) return false
-        applySessionSnapshot(snapshot)
-        await resolveUnknownReceipts(snapshot)
-        recoverSessionAttempt = 0
-        return true
+        if (!stillCurrent()) return false
+        const applied = applySessionSnapshot(snapshot, jobCursor, messagesAtRequest)
+        if (applied && unconfirmed.length) {
+          const queried = new Set(unconfirmed)
+          const present = new Set((snapshot.receipts || []).map((row: any) => row.client_message_id))
+          for (const row of options.submissions.current()) {
+            if (!stillCurrent() || !matchesCurrentVersion(snapshot)) break
+            if (row.task_id !== taskId || row.status !== 'UNKNOWN'
+              || !queried.has(row.client_message_id) || present.has(row.client_message_id)) continue
+            // 只有本次确实查询过且服务端缺席的键，才按原幂等键重投。
+            await options.submissions.send(taskId, row.client_message_id, row.content, row.metadata)
+          }
+        }
+        if (!stillCurrent()) return false
+        if (!applied || options.submissions.current().some(row => row.status === 'UNKNOWN')) {
+          recoverSessionAttempt += 1
+          scheduleRecoverSessionRetry(reason)
+        } else {
+          recoverSessionAttempt = 0
+        }
+        return applied
       } catch (error) {
-        if (isCanceledRequest(error)) return false
+        if (!stillCurrent() || isCanceledRequest(error)) return false
         if (!recoverOptions?.silent) console.warn('Failed to recover session state', reason, error)
         // 指数退避 + 抖动重试；恢复正常（成功落地）即停止。
         recoverSessionAttempt += 1
         scheduleRecoverSessionRetry(reason)
         return false
-      } finally {
-        recoverSessionFlight = null
       }
     })()
     recoverSessionFlight = flight
+    void flight.finally(() => {
+      if (recoverSessionFlight === flight) recoverSessionFlight = null
+    })
     return flight
   }
 
   const loadSessionSnapshot = async (taskId: string): Promise<boolean> => {
-    await options.loadHistory(taskId, true)
+    const key = sessionStateKeyFor(taskId)
+    const historyLoaded = await options.loadHistory(taskId, true)
+    if (currentTaskId() !== taskId || sessionStateKeyFor(taskId) !== key) return false
     const [stateLoaded, preInputLoaded] = await Promise.all([
       recoverSession('initial-snapshot', { silent: true }),
       options.loadActivePreInput(taskId),
     ])
-    return stateLoaded && preInputLoaded
+    return historyLoaded && stateLoaded && preInputLoaded
   }
 
   /**
-   * 首屏/恢复快照单飞：同一 workspace + task + 连接代次内只发一组 history/ai-jobs/pre-input；
+   * 首屏/恢复快照单飞：同一 workspace + task + 页面代次内合并 history/session-state/pre-input；
    * 进行中的请求合并复用，force 用于重连/序列缺口后的恢复刷新。
    */
-  const loadSessionStateOnce = (taskId: string, loadOptions?: { force?: boolean }): Promise<void> => {
-    if (!taskId) return Promise.resolve()
+  const loadSessionStateOnce = (taskId: string, loadOptions?: { force?: boolean }): Promise<boolean> => {
+    if (!taskId || currentTaskId() !== taskId) return Promise.resolve(false)
     const key = sessionStateKeyFor(taskId)
     if (sessionStateFlight && sessionStateFlightKey === key) return sessionStateFlight
-    if (!loadOptions?.force && sessionStateSettledKey === key) return Promise.resolve()
+    if (!loadOptions?.force && sessionStateSettledKey === key) return Promise.resolve(true)
     const flight = loadSessionSnapshot(taskId)
       .then((succeeded) => {
         if (succeeded && sessionStateKeyFor(taskId) === key) sessionStateSettledKey = key
+        return succeeded
       })
-      .then(() => undefined)
     sessionStateFlight = flight
     sessionStateFlightKey = key
     void flight.finally(() => {
@@ -205,14 +218,18 @@ export function useSessionState(options: {
   }
 
   /**
-   * 重连/序列缺口的既有恢复协议：恢复屏障期间重建统一快照，
-   * 完成后才由调用方发送 resync_complete，保证 WS 增量晚于快照落地。
+   * 屏障只确认在屏障内读取并成功应用的快照。
    */
   const restoreSessionState = async (taskId: string) => {
-    await loadSessionStateOnce(taskId, { force: true })
+    const key = sessionStateKeyFor(taskId)
+    const earlierLoad = sessionStateFlightKey === key ? sessionStateFlight : recoverSessionFlight
+    if (earlierLoad) await earlierLoad
+    if (sessionStateKeyFor(taskId) !== key || currentTaskId() !== taskId) return false
+    if (!await loadSessionStateOnce(taskId, { force: true })) return false
     if (options.hasTaskSpecification(options.getCurrentTask())) {
       options.reloadSpecBootstrap(taskId)
     }
+    return true
   }
 
   const armSessionStateFallback = (taskId: string) => {
@@ -225,7 +242,7 @@ export function useSessionState(options: {
     }, SESSION_STATE_FALLBACK_MS)
   }
 
-  /** 首次订阅就绪（resume_ok/resync_ok）：replay/屏障已完成，快照不会覆盖 WS 增量 */
+  /** 首次订阅就绪（resume_ok/resync_ok）后启动或复用首屏快照。 */
   const onInitialSubscriptionReady = (taskId: string, wasReady: boolean) => {
     clearSessionStateFallbackTimer()
     // 若兜底快照早于首次就绪落地，就绪后再对齐一次，确保快照不早于 replay 增量
@@ -243,21 +260,17 @@ export function useSessionState(options: {
    * task session 载荷（interrupt/resume/start 等响应与 WS 事件）应用：
    * 状态、会话代次（代次变化时清空回执）、中断信息与携带的 job。
    */
-  const applyTaskSessionPayload = (payload: any) => {
+  const applyTaskSessionFields = (payload: any) => {
     const task = options.getCurrentTask()
-    if (!task?.id) return
-    if (String(payload?.task_id || '') !== String(task.id)) return
-    if (payload?.session_generation != null
-      && Number(payload.session_generation) < Number(task.session_generation || 0)) return
-    if (payload?.session_revision != null) task.session_revision = Math.max(Number(task.session_revision || 0), Number(payload.session_revision))
+    if (payload.session_revision != null) task.session_revision = Number(payload.session_revision)
     options.applyTaskStatusSnapshot(payload)
     if (payload?.session_id !== undefined) {
       task.session_id = payload.session_id
     }
-    if (payload?.session_generation !== undefined) {
-      if (Number(task.session_generation) !== Number(payload.session_generation)) {
+    if (payload.session_generation != null) {
+      if (Number(task.session_generation || 0) !== Number(payload.session_generation)) {
         options.onSessionGenerationBump()
-        options.submissions.clear(String(task.id))
+        if (Number(task.session_generation) > 0) options.submissions.clear(String(task.id))
       }
       task.session_generation = Number(payload.session_generation || 0)
     }
@@ -270,15 +283,27 @@ export function useSessionState(options: {
     if (payload?.submission?.task_id === String(task.id)) {
       options.submissions.put(payload.submission)
     }
+  }
+
+  const applyTaskSessionVersion = (payload: any) => {
+    if (!matchesCurrentVersion(payload)) return false
+    applyTaskSessionFields(payload)
+    return true
+  }
+
+  const applyTaskSessionPayload = (payload: any) => {
+    if (!applyTaskSessionVersion(payload)) return false
     const job = payload?.job as ChatAiJob | undefined
     if (job?.id) {
       options.ingestJob(job)
     } else {
       options.syncEngineFromJobs()
     }
+    return true
   }
 
   const dispose = () => {
+    sessionStateGeneration += 1
     clearSessionStateFallbackTimer()
     clearRecoverSessionRetryTimer()
     sessionStateAbort?.abort()
@@ -294,6 +319,7 @@ export function useSessionState(options: {
     onInitialSubscriptionReady,
     onInitialConnectionUnavailable,
     recoverSession,
+    applyTaskSessionVersion,
     applyTaskSessionPayload,
     dispose,
   }

@@ -93,8 +93,8 @@ export function useEngineState(options: {
    */
   const convergeFromJobs = (taskId: string, items: ChatAiJob[]): boolean => {
     const executingJobs = items.filter(job => isJobExecuting(job.status))
-    if (!executingJobs.length) {
-      engineRunning.value = false
+    engineRunning.value = executingJobs.length > 0
+    if (!engineRunning.value) {
       options.onStatusCardsDrop()
       resetThinking()
       panels.clear(taskId)

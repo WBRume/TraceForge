@@ -24,52 +24,90 @@ export function useChatJobs(options: {
   onLoaded: (taskId: string, items: ChatAiJob[]) => boolean
 }) {
   const activeChatJobs = ref<Record<string, ChatAiJob>>({})
-  // 请求代次：新 job 事件或新请求都会使更早的在途快照失效
-  let requestSeq = 0
-  const observed = new Map<string, ChatAiJob>()
+  let observation = 0
+  let resetAt = 0
+  let lastSnapshotCursor = 0
+  const observed = new Map<string, { job: ChatAiJob; at: number }>()
 
   const jobList = () => Object.values(activeChatJobs.value)
 
   const hasExecutingJob = () => jobList().some(job => isJobExecuting(job.status))
 
   const upsert = (job: ChatAiJob) => {
-    requestSeq += 1
-    if (!job?.id || !acceptsJobSnapshot(observed.get(job.id), job)) return false
-    observed.set(job.id, job)
-    const nextJobs = { ...activeChatJobs.value }
+    if (!job?.id || !acceptsJobSnapshot(observed.get(job.id)?.job, job)) return false
+    observed.set(job.id, { job, at: ++observation })
     if (isJobActive(job.status)) {
-      nextJobs[job.id] = job
-    } else {
+      activeChatJobs.value = { ...activeChatJobs.value, [job.id]: job }
+    } else if (activeChatJobs.value[job.id]) {
+      const nextJobs = { ...activeChatJobs.value }
       delete nextJobs[job.id]
+      activeChatJobs.value = nextJobs
     }
-    activeChatJobs.value = nextJobs
     return true
   }
 
   const reset = () => {
-    requestSeq += 1
+    resetAt = ++observation
     activeChatJobs.value = {}
     observed.clear()
   }
 
-  /** 拉取当前活跃 job 列表并整体重建；onLoaded 由组合根注入（运行面板收敛）。 */
+  const snapshotCursor = () => ++observation
+
+  /** 同 ID 比作业版本；缺席只移除在请求发出后没有更新过的活跃作业。 */
+  const mergeSnapshot = (items: ChatAiJob[], cursor: number, generation?: number) => {
+    if (cursor < resetAt) return null
+    if (cursor < lastSnapshotCursor) return { accepted: [], items: jobList() }
+    lastSnapshotCursor = cursor
+    const current = activeChatJobs.value
+    let next = current
+    const present = new Set<string>()
+    const accepted: ChatAiJob[] = []
+    const isPreviousGeneration = (job: ChatAiJob) => generation != null
+      && job.session_generation != null && job.session_generation < generation
+
+    for (const job of items) {
+      if (!job?.id || isPreviousGeneration(job)) continue
+      present.add(job.id)
+      const prior = observed.get(job.id)
+      if (!acceptsJobSnapshot(prior?.job, job)) {
+        // 已被较早快照移出，但当前快照确认了该版本仍在活跃集合中。
+        if (!next[job.id] && prior && prior.job.version === job.version && isJobActive(prior.job.status)) {
+          if (next === current) next = { ...current }
+          next[job.id] = prior.job
+        }
+        continue
+      }
+      observed.set(job.id, { job, at: ++observation })
+      accepted.push(job)
+      if (isJobActive(job.status)) {
+        if (next === current) next = { ...current }
+        next[job.id] = job
+      } else if (next[job.id]) {
+        if (next === current) next = { ...current }
+        delete next[job.id]
+      }
+    }
+    for (const [id, job] of Object.entries(current)) {
+      if (!isPreviousGeneration(job) && (present.has(id) || (observed.get(id)?.at ?? 0) > cursor)) continue
+      if (next === current) next = { ...current }
+      delete next[id]
+    }
+    if (next !== current) activeChatJobs.value = next
+    return { accepted, items: jobList() }
+  }
+
   const loadActive = async (taskId: string): Promise<boolean> => {
-    const seq = ++requestSeq
+    const cursor = snapshotCursor()
     try {
       const res = await api.get(`/workspaces/${options.getWorkspaceId()}/tasks/${taskId}/ai-jobs`, {
         params: { active_only: true },
         signal: options.getSignal(),
       })
       const items = (res.data?.items || []) as ChatAiJob[]
-      if (
-        seq !== requestSeq
-        || options.getTaskId() !== String(taskId)
-      ) return false
-      activeChatJobs.value = {}
-      for (const job of items) {
-        upsert(job)
-      }
-      return options.onLoaded(taskId, items)
+      if (options.getTaskId() !== String(taskId)) return false
+      const merged = mergeSnapshot(items, cursor)
+      return merged !== null && options.onLoaded(taskId, merged.items)
     } catch (e) {
       if (!isCanceledRequestError(e)) console.warn('Failed to load active AI jobs', e)
       return false
@@ -82,6 +120,8 @@ export function useChatJobs(options: {
     hasExecutingJob,
     upsert,
     reset,
+    snapshotCursor,
+    mergeSnapshot,
     loadActive,
   }
 }

@@ -14,6 +14,12 @@ function sequence(value: unknown): bigint | null {
   return BigInt(String(value))
 }
 
+export function isOlderTaskStatusSequence(incoming: unknown, current: unknown): boolean {
+  const next = sequence(incoming)
+  const previous = sequence(current)
+  return next !== null && previous !== null && next < previous
+}
+
 /** The only task status mutation on the client: apply a server snapshot by version. */
 export function applyTaskStatusSnapshot(target: any, payload: unknown): boolean {
   if (!target || !payload || typeof payload !== 'object') return false

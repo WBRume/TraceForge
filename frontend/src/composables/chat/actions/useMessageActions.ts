@@ -1,4 +1,3 @@
-import { applyTaskStatusSnapshot } from '@/utils/taskStatusProjection'
 import { computed } from 'vue'
 import { nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -29,6 +28,7 @@ export function useMessageActions(options: {
   engineResetThinking: () => void
   jobsReset: () => void
   bumpHistoryGeneration: () => void
+  applyTaskSessionVersion: (payload: any) => boolean
   loadHistory: (taskId: string, reset?: boolean) => Promise<void>
   undoTaskMessage: (taskId: string, messageId: string, undoOptions: { operationId: string }) => Promise<any>
   restoreComposer: (content: string) => void
@@ -95,10 +95,7 @@ export function useMessageActions(options: {
       options.cardsClear()
       options.engineResetThinking()
       options.engineRunning.value = false
-      if (options.getCurrentTask()) {
-        applyTaskStatusSnapshot(options.getCurrentTask(), payload?.task_snapshot)
-        options.getCurrentTask().session_generation = Number(payload?.session_generation || options.getCurrentTask().session_generation || 0)
-      }
+      options.applyTaskSessionVersion(payload?.task_snapshot)
       options.restoreComposer(String(payload?.restored_content ?? msg.content ?? ''))
       await nextTick()
       document.querySelector<HTMLTextAreaElement>('.card-textarea')?.focus()
