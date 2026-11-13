@@ -17,6 +17,8 @@
     "initial_workspace": "任务初始文件",
     "workspace_diff": "显示任务目录相对初始文件的修改。",
     "workspace_results": "任务成果",
+    "refresh": "刷新差异",
+    "review_failed": "差异加载失败。",
     "retry": "请刷新后重试。",
     "running": "Agent 正在执行，完成后会更新成果。",
     "no_results": "任务目录暂无可导出的文件变更。"

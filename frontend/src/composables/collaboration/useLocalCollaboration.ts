@@ -6,8 +6,8 @@ import { formatApiError } from '@/utils/error'
 import { onRepoPreferencesChanged, readRepoPreferences, saveRepoPreferences } from '@/composables/localRepoPreferences'
 import { remoteUrlsMatch } from '@/composables/local-agent/localAgentUtils'
 import { chooseGitRemote, getLocalGitRemotes } from '@/composables/local-agent/localGitRemotes'
-import { collaborationApi, base64Bytes, bytesBase64 } from '@/services/collaborationApi'
-import type { CollaborationBackup, CollaborationCapture, CollaborationConflict, CollaborationManifest, CollaborationMappingCheck, CollaborationReviewDiff, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
+import { collaborationApi, base64Bytes, bytesBase64, decodeCollaborationText } from '@/services/collaborationApi'
+import type { CollaborationBackup, CollaborationCapture, CollaborationConflict, CollaborationManifest, CollaborationMappingCheck, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
 import { expandManifest, expandStatus, manifestDelta } from '../../../shared/collaboration-delta'
 
 const INSTANCE_KEY = 'traceforge.collaboration.instance'
@@ -23,12 +23,6 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const desktop = getSddDesktop()
   const state = shallowRef<CollaborationState | null>(null), local = shallowRef<LocalCollaborationStatus | null>(null)
   const input = shallowRef<CollaborationManifest | null>(null), cloud = shallowRef<CollaborationManifest | null>(null)
-  // Both diff scopes are computed on the server: only changed files are transferred.
-  const reviewDiff = shallowRef<CollaborationReviewDiff | null>(null), roundDiff = shallowRef<CollaborationReviewDiff | null>(null)
-  const reviewRunning = shallowRef(false), reviewLoading = shallowRef(false), reviewError = shallowRef('')
-  let reviewRequested = false, roundRequested = false
-  let reviewRevision = 0, reviewRetry: ReturnType<typeof setTimeout> | undefined
-  const reviewRequests = new Map<string, { key: string; promise: Promise<void> }>()
   const previewConflicts = shallowRef<CollaborationConflict[]>([])
   const error = shallowRef(''), busy = shallowRef(false), loading = shallowRef(true)
   const preparationRequired = shallowRef(false)
@@ -39,7 +33,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const setStage = (stage: string) => { operationStage.value = stage; operationSeconds.value = 0; stageStarted = Date.now() }
   const stageClock = setInterval(() => { if (busy.value && operationStage.value) operationSeconds.value = Math.floor((Date.now() - stageStarted) / 1000) }, 1000)
   const directories = shallowRef<{ mapped_repositories?: number; baseline_prefetch?: number; task_root: string; repositories: Array<{ task_repository_id: string; local_worktree_path: string }> } | null>(null)
-  let prefetchedReview = ''
+  let prefetchedMappings = ''
   const activity = ref({ direction: '', done: 0, total: 0, bytes: 0, totalBytes: 0 })
   const progressive = shallowRef(localStorage.getItem(`traceforge.collaboration.progressive:${options.task()?.id}`) === 'true')
   const view = ref({ page: 'files', tab: 'all', pair: 'auto', selected: '', selectedConflicts: [] as string[], conflictSetId: '' })
@@ -289,8 +283,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       local.value = result; cloud.value = manifest
       if (preview) previewConflicts.value = result.preview_conflicts || []
       if (!preview) { await receipt(manifest.snapshot_id, result, token); lastTarget = manifest.snapshot_id }
-      deliveryRetryRequired.value = false; error.value = ''; reviewError.value = ''
-      void refreshReview()
+      deliveryRetryRequired.value = false; error.value = ''
     } catch (reason) {
       if (token === generation) deliveryRetryRequired.value = true
       throw reason
@@ -312,48 +305,6 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     } finally { if (token === generation) busy.value = false }
   }
 
-  async function loadReviewDiff(scope: 'cumulative' | 'round' = 'cumulative') {
-    if (!reviewRequested || receivedOnce.value) return
-    const context = () => JSON.stringify([generation, reviewRevision, participating.value, receivedOnce.value,
-      state.value?.binding_id, state.value?.snapshot_id, state.value?.progress_snapshot_id,
-      state.value?.session_generation, state.value?.session_revision])
-    const key = context(), pending = reviewRequests.get(scope)
-    if (pending?.key === key) return pending.promise
-    const token = generation
-    if (scope === 'cumulative') reviewLoading.value = true
-    const request = { key, promise: Promise.resolve() }
-    request.promise = (async () => {
-      try {
-        const value = await remote().reviewDiff(scope); check(token)
-        if (key !== context()) return
-        if (scope === 'cumulative') { reviewDiff.value = value; reviewRunning.value = value.running }
-        else roundDiff.value = value
-        reviewError.value = ''
-        // A completion message can arrive before the writer releases its lock.
-        // Recheck that temporary running cut even if no later event is emitted.
-        if (value.running && !reviewRetry) reviewRetry = setTimeout(() => {
-          reviewRetry = undefined
-          if (token === generation && !disposed) refreshResults()
-        }, 1000)
-      } catch (reason) { if (token === generation && key === context()) reviewError.value = formatApiError(reason, t('collaboration.failed')) }
-      finally {
-        if (reviewRequests.get(scope) === request) {
-          reviewRequests.delete(scope)
-          if (token === generation && scope === 'cumulative') reviewLoading.value = false
-        }
-      }
-    })()
-    reviewRequests.set(scope, request)
-    return request.promise
-  }
-  /** The round view has its own change set: fetched the first time it opens. */
-  async function loadReviewRound() { roundRequested = true; await loadReviewDiff('round') }
-  async function refreshReview() {
-    await Promise.all([loadReviewDiff('cumulative'), roundRequested ? loadReviewDiff('round') : Promise.resolve()])
-  }
-  async function loadReview() { reviewRequested = true; prefetchedReview = ''; await refresh() }
-  function refreshResults() { reviewRevision++; if (reviewRequested) void refresh() }
-
   async function reportPreparationFailure(token: number) {
     const failure = failedPreparation
     if (!failure) return
@@ -373,10 +324,6 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     try {
       const next = await remote().state(); check(token)
       state.value = next; observedVersion = next.state_version
-      // The cumulative diff is the only thing the panel waits for: start it now,
-      // in parallel with mapping checks and other refresh work below.
-      const review = reviewRequested ? refreshReview() : Promise.resolve()
-      // The remote baseline is only needed by the round view, which fetches it on demand.
       if (participating.value && driver.value && next.sync_phase === 'PREPARING' && next.input_mode !== 'CLOUD' && next.pending_submission_id !== next.input_submission_id) preparingId = next.pending_submission_id
       // Retry only the failure report after reconnect; do not capture/upload the
       // same failed input again when the acknowledgement was lost.
@@ -385,28 +332,20 @@ function createController(options: { workspaceId: () => string; task: () => Reco
         await reportPreparationFailure(token)
         if (stillPending) return
       }
-      if (next.repository_configured !== false && (mappingsDirty || (available && !nativeIdentityReady) || preparationRequired.value)) await loadMappings()
+      if (available && next.repository_configured !== false && (mappingsDirty || !nativeIdentityReady || preparationRequired.value)) await loadMappings()
       check(token); loading.value = false
       if (!participating.value && directories.value?.baseline_prefetch === 1
         && next.repositories.length && next.repositories.every(repo => mappings.value[repo.task_repository_id])) {
         const repositories = mappedRepositories(), key = JSON.stringify(repositories)
-        if (prefetchedReview !== key) {
-          prefetchedReview = key
+        if (prefetchedMappings !== key) {
+          prefetchedMappings = key
           // Prepare the private cut as soon as this task's mappings are known.
           // Source files and binding ownership are checked again on enable.
           void native('prefetch', { task_id: String(options.task()?.id), repositories }).catch(() => {})
         }
       }
-      if (!next.enabled) { preparationRequired.value = false; deliveryRetryRequired.value = false; await review; return }
-      if (!available || !driver.value || !participating.value || leaving.value) {
-        // Keep a one-time receipt and its comparison pinned to the version actually downloaded.
-        if (receivedOnce.value && !participating.value) return
-        if (reviewRequested) { await review; return }
-        const target = ['RUNNING', 'WAITING_HITL'].includes(next.sync_phase) ? next.progress_snapshot_id || next.snapshot_id : next.snapshot_id
-        if (target && cloud.value?.snapshot_id !== target) { const manifest = await snapshot(target); check(token); cloud.value = manifest }
-        if (next.input_snapshot_id && input.value?.snapshot_id !== next.input_snapshot_id) { const manifest = await snapshot(next.input_snapshot_id); check(token); input.value = manifest }
-        return
-      }
+      if (!next.enabled) { preparationRequired.value = false; deliveryRetryRequired.value = false; return }
+      if (!available || !driver.value || !participating.value || leaving.value) return
       if (next.driver_connected === false) return
       await renew(); check(token)
       // Preparation failures require an explicit retry; events must not hide the failure.
@@ -430,8 +369,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       }
       if (!bindingPrepared(local.value)) { preparationRequired.value = true; throw new Error(t('collaboration.preparationRequired')) }
       if (next.input_snapshot_id) {
-        // A read-only view may have fetched H before this desktop rejoined.
-        // Its metadata does not prove the local baseline accepted that handoff.
+        // Compare the accepted handoff against the native baseline before applying output.
         const accepted = input.value?.snapshot_id === next.input_snapshot_id ? input.value : await snapshot(next.input_snapshot_id); check(token)
         if (next.input_mode !== 'CLOUD' && accepted.source === 'HUMAN_HANDOFF' && !local.value?.target && !local.value?.conflicts?.length
           && (!local.value?.baseline || local.value.baseline.workspace_revision < accepted.workspace_revision)) {
@@ -452,7 +390,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
         await reconcile(candidate, token, true)
         lastProgress = next.progress_snapshot_id
       }
-      await review; error.value = ''
+      error.value = ''
     } catch (reason) {
       if (token === generation) {
         error.value = formatApiError(reason, t('collaboration.failed')); loading.value = false
@@ -531,17 +469,15 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     if (available && state.value?.repository_configured !== false) try { object = await native<{ content: string } | null>('read_object', { sha256: hash, optional: true }) }
     catch (reason) { if (!/\bLOCAL_CONTENT_OBJECT_MISSING\b/.test(String(reason))) throw reason }
     const data = object === null ? new Uint8Array(await remote().object(hash)) : base64Bytes(object.content)
-    if (data.length > 2 * 1024 * 1024 || data.includes(0)) throw new Error(t('collaboration.binary'))
-    return new TextDecoder('utf-8', { fatal: true }).decode(data)
+    return decodeCollaborationText(data, t('collaboration.binary'))
   }
   async function refreshComparison() {
-    if (busy.value) return
-    if (!participating.value && !receivedOnce.value) { mappingsDirty = true; await loadReview(); return }
+    if (busy.value || !available) return
+    if (!participating.value && !receivedOnce.value) { mappingsDirty = true; await refresh(); return }
     const token = generation
     try {
       if (mappingsDirty || preparationRequired.value || !participating.value) await loadMappings()
       check(token)
-      if (!available) return
       if (!participating.value || !enabled.value || preparationRequired.value) { await inspectMappings(generation); error.value = ''; return }
       if (!driver.value) return
       const scanned = await native<LocalCollaborationStatus>('status', { task_id: String(options.task()?.id), verify: true })
@@ -715,7 +651,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     cloud.value = input.value = null
     lastTarget = ''; lastProgress = ''; lastHandoff = ''; lastLease = 0
     preparationRequired.value = deliveryRetryRequired.value = false
-    participating.value = true
+    participating.value = true; receivedOnce.value = false
     localStorage.removeItem(standaloneKey)
     return receipt
   }
@@ -734,10 +670,10 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     void refresh()
   }, { immediate: true })
   onScopeDispose(() => {
-    disposed = true; generation++; clearTimeout(reviewRetry); clearInterval(heartbeat); clearInterval(stageClock); stopMappingUpdates(); stopLocalUpdates?.()
+    disposed = true; generation++; clearInterval(heartbeat); clearInterval(stageClock); stopMappingUpdates(); stopLocalUpdates?.()
     if (directories.value?.baseline_prefetch === 1) void native('discard_prefetch', { task_id: String(options.task()?.id) }).catch(() => {})
   })
-  return { initializationIdentity, resetForInitialization, finishInitialization, reviewDiff, roundDiff, reviewRunning, reviewLoading, reviewError, loadReview, loadReviewRound, refreshResults, participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, onConnectionReady, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
+  return { initializationIdentity, resetForInitialization, finishInitialization, participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, onConnectionReady, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
 }
 type Controller = ReturnType<typeof createController>
 const controllers = new Map<string, { scope: EffectScope; controller: Controller; users: number }>()
@@ -775,14 +711,6 @@ export function useLocalCollaboration(options: { workspaceId: () => string; task
     onCleanup(retained.release)
   }, { immediate: true })
   return {
-    reviewDiff: computed(() => active.value?.reviewDiff.value || null),
-    roundDiff: computed(() => active.value?.roundDiff.value || null),
-    reviewRunning: computed(() => active.value?.reviewRunning.value || false),
-    reviewLoading: computed(() => active.value?.reviewLoading.value || false),
-    reviewError: computed(() => active.value?.reviewError.value || ''),
-    loadReview: async () => { await active.value?.loadReview() },
-    loadReviewRound: async () => { await active.value?.loadReviewRound() },
-    refreshResults: () => active.value?.refreshResults(),
     participating: computed(() => active.value?.participating.value || false), leaving: computed(() => active.value?.leaving.value || false),
     receivedOnce: computed(() => active.value?.receivedOnce.value || false),
     leave: async () => active.value ? active.value.leave() : true, receiveOnce: async () => { await active.value?.receiveOnce() },

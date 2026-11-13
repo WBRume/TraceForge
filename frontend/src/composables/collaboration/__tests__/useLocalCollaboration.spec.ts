@@ -9,10 +9,11 @@ import type { CollaborationManifest, CollaborationState, LocalCollaborationStatu
 const mocks = vi.hoisted(() => ({ desktop: true, changed: vi.fn(), unsubscribe: vi.fn(), api: { reviewDiff: vi.fn(), state: vi.fn(), post: vi.fn(), snapshot: vi.fn(), object: vi.fn(), upload: vi.fn() }, native: vi.fn(), mapping: vi.fn(), setMapping: vi.fn(), directory: vi.fn(), validate: vi.fn(), remotes: vi.fn(), open: vi.fn(), auth: { user: null as { id: string } | null } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => mocks.auth }))
 vi.mock('@/utils/runtime', () => ({ getSddDesktop: () => mocks.desktop ? ({ collaboration: { execute: mocks.native, onChanged: mocks.changed }, config: { getRepoMapping: mocks.mapping, setRepoMapping: mocks.setMapping }, git: { selectDirectory: mocks.directory, validateGitRepo: mocks.validate, getFetchRemotes: mocks.remotes }, system: { openPath: mocks.open } }) : null }))
-vi.mock('@/services/collaborationApi', () => ({ collaborationApi: () => mocks.api, base64Bytes: (content: string) => Uint8Array.from(atob(content), char => char.charCodeAt(0)), bytesBase64: () => 'AQ==' }))
+vi.mock('@/services/collaborationApi', async importOriginal => ({ ...await importOriginal<typeof import('@/services/collaborationApi')>(), collaborationApi: () => mocks.api, bytesBase64: () => 'AQ==' }))
 vi.mock('@/components/collaboration/CodeComparison.vue', () => ({ default: { template: '<div />' } }))
 vi.mock('@/utils/api', () => ({ default: { get:vi.fn().mockResolvedValue({ data:{ repositories:[], plan:null } }) } }))
 import { useLocalCollaboration, type LocalCollaboration } from '../useLocalCollaboration'
+import type { CollaborationReview } from '../useCollaborationReview'
 import { readRepoPreferences, saveRepoPreferences } from '@/composables/localRepoPreferences'
 import CollaborationActions from '@/components/collaboration/CollaborationActions.vue'
 import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
@@ -20,6 +21,10 @@ import { manifestDelta } from '../../../../shared/collaboration-delta'
 
 let state: CollaborationState, manifest: CollaborationManifest, local: LocalCollaborationStatus
 let controller: LocalCollaboration
+const reviewQuery = {
+  results: { cumulative: { diff: null, error: '' }, round: { diff: null, error: '' } },
+  open: () => () => {}, loadRound: vi.fn(), refresh: vi.fn(), onEvent: vi.fn(), readObject: vi.fn(), readText: vi.fn(),
+} satisfies CollaborationReview
 const wrappers: ReturnType<typeof mount>[] = []
 function setup(task: () => Record<string, any> = () => ({ id: manifest.task_id, execution_location: 'SERVER' })) {
   const wrapper = mount(defineComponent({ setup() { controller = useLocalCollaboration({ workspaceId: () => 'ws', task }); return () => null } }), { global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })] } })
@@ -71,89 +76,12 @@ afterEach(async () => {
 })
 
 describe('local collaboration coordinator', () => {
-  it('keeps both review scopes current after joining and receiving another Agent result', async () => {
-    setup(); await flushPromises(); await controller.loadReview(); await controller.loadReviewRound()
-    await controller.enable()
-    mocks.api.reviewDiff.mockImplementation(async (scope = 'cumulative') => ({ scope, baseline_snapshot_id: 'before', cloud_snapshot_id: 'result2', protocol_version: 2, repositories: [], files: [], running: false }))
-    mocks.api.reviewDiff.mockClear()
-    await controller.refresh()
-    expect(controller.participating.value).toBe(true)
-    expect(controller.reviewDiff.value?.cloud_snapshot_id).toBe('result2')
-    expect(controller.roundDiff.value?.cloud_snapshot_id).toBe('result2')
-    expect(new Set(mocks.api.reviewDiff.mock.calls.map(([scope]) => scope))).toEqual(new Set(['cumulative', 'round']))
-  })
-  it('shares a pending review request across concurrent drawer refreshes', async () => {
-    setup(); await flushPromises()
-    let resolve!: (value: any) => void
-    mocks.api.reviewDiff.mockImplementationOnce(() => new Promise(done => { resolve = done }))
-    const first = controller.loadReview(); await flushPromises()
-    const second = controller.loadReview(); await flushPromises()
-    expect(mocks.api.reviewDiff).toHaveBeenCalledTimes(1)
-    resolve({ scope: 'cumulative', baseline_snapshot_id: 'before', cloud_snapshot_id: 'after', protocol_version: 2, repositories: [], files: [], running: false })
-    await Promise.all([first, second]); await flushPromises()
-    expect(controller.reviewDiff.value?.cloud_snapshot_id).toBe('after')
-  })
   it('hydrates JSON scalar replies from the desktop bridge before using their status', async () => {
     const native = mocks.native.getMockImplementation()!
     mocks.native.mockImplementation(async request => JSON.stringify(await native(request)))
     setup(); await flushPromises(); await controller.enable()
     expect(controller.local.value?.state).toBe('READY')
     expect(controller.error.value).toBe('')
-  })
-  it('overlaps optional native preparation with review without blocking a disconnected drawer', async () => {
-    const native = mocks.native.getMockImplementation()!
-    mocks.native.mockImplementation(async request => request.kind === 'describe'
-      ? {...await native(request), baseline_prefetch: 1}
-      : request.kind === 'prefetch' ? new Promise(() => {}) : native(request))
-    setup(); await flushPromises()
-    await controller.loadReview()
-    expect(mocks.native).toHaveBeenCalledWith(expect.objectContaining({kind: 'prefetch'}))
-    expect(controller.reviewDiff.value?.cloud_snapshot_id).toBe('after')
-    expect(controller.blocked.value).toBe(false)
-    expect(controller.participating.value).toBe(false)
-  })
-  it('does not reuse an in-flight diff after a task output event', async () => {
-    setup(); await flushPromises()
-    let resolve!: (value: any) => void
-    mocks.api.reviewDiff.mockImplementationOnce(() => new Promise(done => { resolve = done }))
-    const first = controller.loadReview(); await flushPromises()
-    controller.refreshResults()
-    resolve({ scope: 'cumulative', baseline_snapshot_id: 'before', cloud_snapshot_id: 'stale', protocol_version: 2, repositories: [], files: [], running: false })
-    await first; await flushPromises()
-    expect(mocks.api.reviewDiff).toHaveBeenCalledTimes(2)
-    expect(controller.reviewDiff.value?.cloud_snapshot_id).toBe('after')
-  })
-  it('rechecks a temporary running cut after the final completion event', async () => {
-    setup(); await flushPromises()
-    mocks.api.reviewDiff.mockResolvedValueOnce({ scope: 'cumulative', baseline_snapshot_id: 'before', cloud_snapshot_id: 'before', protocol_version: 2, repositories: [], files: [], running: true })
-    await controller.loadReview()
-    await vi.advanceTimersByTimeAsync(1000); await flushPromises()
-    expect(mocks.api.reviewDiff).toHaveBeenCalledTimes(2)
-    expect(controller.reviewRunning.value).toBe(false)
-    expect(controller.reviewDiff.value?.cloud_snapshot_id).toBe('after')
-    await vi.advanceTimersByTimeAsync(2000)
-    expect(mocks.api.reviewDiff).toHaveBeenCalledTimes(2)
-  })
-  it('clears a failed browsing review after a complete collaboration delivery', async () => {
-    setup(); await flushPromises()
-    mocks.api.reviewDiff.mockRejectedValueOnce(new Error('timeout of 15000ms exceeded'))
-    await controller.loadReview()
-    expect(controller.reviewError.value).toContain('15000ms')
-    await controller.enable()
-    expect(controller.phase.value).toBe('READY')
-    expect(controller.reviewError.value).toBe('')
-    expect(controller.blocked.value).toBe(false)
-  })
-  it('ignores a late browsing failure after the client has joined collaboration', async () => {
-    setup(); await flushPromises()
-    let reject!: (reason: Error) => void
-    mocks.api.reviewDiff.mockImplementationOnce(() => new Promise((_resolve, failed) => { reject = failed }))
-    const browsing = controller.loadReview(); await flushPromises()
-    await controller.enable()
-    reject(new Error('expired browsing request')); await browsing
-    expect(controller.phase.value).toBe('READY')
-    expect(controller.reviewError.value).toBe('')
-    expect(controller.blocked.value).toBe(false)
   })
   it('enables a first-time binding without requesting status for a nonexistent binding', async () => {
     setup(); await flushPromises(); await controller.enable()
@@ -251,44 +179,6 @@ describe('local collaboration coordinator', () => {
     expect(await controller.listBackups()).toEqual({ backup_directory:'', backups:[] })
     expect(mocks.native).not.toHaveBeenCalled()
   })
-  it('loads the cumulative change set lazily and the round one on demand', async () => {
-    mocks.mapping.mockResolvedValue(null)
-    setup(); await flushPromises()
-    expect(mocks.api.reviewDiff).not.toHaveBeenCalled()
-    mocks.native.mockClear(); mocks.api.post.mockClear()
-    await controller.loadReview(); await flushPromises()
-    expect(controller.reviewDiff.value?.cloud_snapshot_id).toBe('after')
-    expect(controller.participating.value).toBe(false)
-    expect(controller.blocked.value).toBe(false)
-    expect(mocks.api.post).not.toHaveBeenCalled()
-    expect(mocks.native).not.toHaveBeenCalled()
-
-    expect(controller.roundDiff.value).toBeNull()
-    await controller.loadReviewRound(); await flushPromises()
-    expect(controller.roundDiff.value?.scope).toBe('round')
-
-    await vi.advanceTimersByTimeAsync(65000)
-    controller.refreshResults(); await flushPromises()
-    expect(mocks.api.reviewDiff.mock.calls.length).toBeGreaterThan(1)
-  })
-  it('loads the cumulative change set in a browser without desktop APIs', async () => {
-    mocks.desktop = false
-    setup(); await flushPromises(); await controller.loadReview(); await flushPromises()
-    expect(controller.reviewDiff.value?.files).toEqual([])
-    expect(controller.reviewError.value).toBe('')
-  })
-  it('refetches the round change set only when it is open', async () => {
-    mocks.desktop = false
-    setup(); await flushPromises(); await controller.loadReview(); await flushPromises()
-    const scopes = () => mocks.api.reviewDiff.mock.calls.map(([scope]) => scope)
-    expect(scopes().every(scope => scope === 'cumulative')).toBe(true)
-    await controller.loadReviewRound(); await flushPromises()
-    expect(scopes()).toContain('round')
-    mocks.api.reviewDiff.mockClear()
-    controller.refreshResults(); await flushPromises()
-    // Once open, the round change set is refreshed alongside the cumulative one.
-    expect(new Set(scopes())).toEqual(new Set(['cumulative', 'round']))
-  })
   it('performs no periodic state, file, or backup reads while connected, retaining only lease renewal', async () => {
     setup(); await flushPromises(); await controller.enable()
     mocks.api.state.mockClear(); mocks.native.mockClear(); mocks.api.post.mockClear()
@@ -371,6 +261,7 @@ describe('local collaboration coordinator', () => {
     expect(controller.state.value?.state_version).toBe(3)
     expect(controller.phase.value).toBe('RUNNING')
     expect(mocks.api.state).toHaveBeenCalledTimes(2)
+    expect(mocks.api.reviewDiff).not.toHaveBeenCalled()
   })
   it('applies the current cloud candidate immediately when auto-receive is enabled and previews after disabling', async () => {
     setup(); await flushPromises(); await controller.enable()
@@ -751,7 +642,7 @@ describe('local collaboration coordinator', () => {
     saveRepoPreferences('ws', mocks.auth.user!.id, [{ repository_id: 'r1', local_path: 'G:/api', configured_git_url: 'https://fork.test/api' }, { repository_id: 'r2', local_path: 'G:/web', configured_git_url: second.repo_url }])
     await flushPromises()
     expect(controller.mappings.value).toEqual({ repo1: { local_path: 'G:/api', configured_git_url: 'https://fork.test/api' }, repo2: { local_path: 'G:/web', configured_git_url: second.repo_url } })
-    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } }), createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] })], stubs: { CodeComparison: true, CollaborationBackups: true } } })
+    const panel = mount(LocalCollaborationPanel, { props: { controller, reviewQuery, workspaceId: 'ws', taskId: 'task' }, global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } }), createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] })], stubs: { CodeComparison: true, CollaborationBackups: true } } })
     wrappers.push(panel)
     await panel.findAll('button').find(button => button.text() === '仓库与版本')!.trigger('click')
     expect(panel.text()).toContain('G:/api')
@@ -940,7 +831,7 @@ describe('local collaboration coordinator', () => {
     await controller.refresh()
     expect(mocks.native).toHaveBeenCalledWith({ kind: 'capture', payload: expect.objectContaining({ manifest_delta: true }) })
   })
-  it('accepts an already viewed handoff before receiving output after rejoining', async () => {
+  it('accepts the handoff before receiving output after rejoining', async () => {
     setup(); await flushPromises(); await controller.enable(); await controller.leave()
     local = {...local, target: undefined, conflicts: []}
     const handoff = {...manifest, snapshot_id: 'handoff2', workspace_revision: 2, source: 'HUMAN_HANDOFF' as const}
@@ -949,7 +840,7 @@ describe('local collaboration coordinator', () => {
       input_snapshot_id: handoff.snapshot_id, input_submission_id: 'submission2', input_mode: 'LOCAL'}
     mocks.api.snapshot.mockImplementation(async id => id === handoff.snapshot_id ? handoff : final)
     await controller.refresh()
-    expect(controller.input.value?.snapshot_id).toBe(handoff.snapshot_id)
+    expect(controller.input.value?.snapshot_id).not.toBe(handoff.snapshot_id)
     const native = mocks.native.getMockImplementation()!
     mocks.native.mockImplementation(async request => {
       if (request.kind === 'accept_input') local = {...local, baseline: handoff}
@@ -1025,6 +916,7 @@ describe('local collaboration coordinator', () => {
     expect(mocks.api.upload).not.toHaveBeenCalled()
     expect(mocks.api.post.mock.calls.some(([action]) => action === 'objects/missing')).toBe(false)
     expect(mocks.api.post).toHaveBeenCalledWith('receipt', expect.objectContaining({ snapshot_id: 'final2' }))
+    expect(mocks.api.reviewDiff).not.toHaveBeenCalled()
     expect(controller.cloud.value?.snapshot_id).toBe('final2')
     expect(controller.phase.value).toBe('READY')
   })

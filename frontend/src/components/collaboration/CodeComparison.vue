@@ -21,7 +21,7 @@ onScopeDispose(() => media.removeEventListener('change', onResize))
 const layout = computed({ get: () => preferredLayout.value || (compact.value ? 'unified' : 'split'), set: value => { preferredLayout.value = value } })
 const original = shallowRef(''), modified = shallowRef('')
 const loading = shallowRef(false), error = shallowRef('')
-watch(() => [props.leftHash, props.rightHash, props.path], async (_, __, onCleanup) => {
+watch([() => props.leftHash, () => props.rightHash, () => props.path, () => props.readText], async (_, __, onCleanup) => {
   let current = true
   onCleanup(() => { current = false })
   loading.value = true; error.value = ''; original.value = ''; modified.value = ''

@@ -6,7 +6,7 @@ import { ElPopover } from 'element-plus'
 import { useCollaborationPresentation } from '@/composables/collaboration/useCollaborationPresentation'
 import type { LocalCollaboration } from '@/composables/collaboration/useLocalCollaboration'
 
-const props = defineProps<{ controller: LocalCollaboration; error?: string }>()
+const props = defineProps<{ controller: LocalCollaboration; error?: string; reviewRunning?: boolean }>()
 const { t } = useI18n()
 const errorOpen = ref(false)
 function closeError(event: KeyboardEvent) {
@@ -14,14 +14,14 @@ function closeError(event: KeyboardEvent) {
   event.preventDefault(); event.stopPropagation(); errorOpen.value = false
 }
 const c = computed(() => proxyRefs(props.controller))
-const errors = computed(() => [...new Set([props.error, c.value.reviewError, c.value.error,
+const errors = computed(() => [...new Set([props.error, c.value.error,
   ...c.value.local?.errors || [], c.value.state?.recovery_message].filter((value): value is string => Boolean(value)))])
 const ui = useCollaborationPresentation(() => props.controller)
 const repositoryCount = computed(() => proxyRefs(props.controller).state?.repositories.length ?? 0)
 const active = computed(() => ['loading', 'connecting', 'preparing', 'running', 'transferring', 'leaving'].includes(ui.value?.key || ''))
 const tone = computed(() => errors.value.length || ui.value?.tone === 'warning' ? 'warning' : active.value ? 'working'
   : ['ready', 'received', 'local'].includes(ui.value?.key || '') ? 'success' : 'neutral')
-const status = computed(() => c.value.reviewRunning && !c.value.participating ? 'Agent 正在执行，完成后更新变更'
+const status = computed(() => props.reviewRunning && !c.value.participating ? t('task_deliverables.running')
   : c.value.state?.repository_configured === false ? t('task_deliverables.workspace_results')
     : ['browse', 'connect'].includes(ui.value?.key || '') ? t('collaboration.phases.OFF') : ui.value?.title)
 </script>

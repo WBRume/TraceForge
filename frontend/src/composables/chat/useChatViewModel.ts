@@ -52,6 +52,7 @@ import { fetchReadingResume } from '@/services/taskReadingApi'
 import { useTaskRailStore } from '@/stores/taskRail'
 import { requirementLabel, type RequirementOption } from '@/types/taskRail'
 import { useLocalCollaboration } from '@/composables/collaboration/useLocalCollaboration'
+import { useCollaborationReview } from '@/composables/collaboration/useCollaborationReview'
 import { useCollaborationLeave } from '@/composables/collaboration/useCollaborationLeave'
 
 /**
@@ -79,6 +80,18 @@ export function useChatViewModel() {
   const taskState = useCurrentTask()
   const annotations = useContextAnnotations(() => taskState.getTaskId() ? `${getWorkspaceId()}:${taskState.getTaskId()}` : '')
   const collaboration = useLocalCollaboration({ workspaceId: getWorkspaceId, task: () => taskState.currentTask.value })
+  const collaborationReview = useCollaborationReview({
+    workspaceId: getWorkspaceId,
+    taskId: () => {
+      const task = taskState.currentTask.value
+      return task?.execution_location === 'SERVER' && task.task_type !== 'DIAGNOSIS' ? String(task.id) : ''
+    },
+    userId: () => String(authStore.user?.id || ''),
+    sessionVersion: () => [taskState.currentTask.value?.session_generation, taskState.currentTask.value?.session_revision],
+    state: () => collaboration.state.value,
+    participating: () => collaboration.participating.value,
+    receivedOnce: () => collaboration.receivedOnce.value,
+  })
   const collaborationLeave = useCollaborationLeave(collaboration)
   const agentModels = useAgentModels(() => ({
     workspaceId: taskState.currentTask.value ? getWorkspaceId() : '',
@@ -470,6 +483,7 @@ export function useChatViewModel() {
           // 就绪后补取一次个人阅读快照（覆盖断线期间的私有变更）
           void readingProgress.onConnectionReady(taskId)
           collaboration.onConnectionReady(taskId)
+          void collaborationReview.refresh()
           playbookEventHandler?.('playbook.resync', { task_id: taskId })
           void import('@/services/repositoryUpdates').then(({ notifyRepositoryUpdate }) => notifyRepositoryUpdate({ task_id: taskId }))
           return
@@ -580,8 +594,11 @@ export function useChatViewModel() {
     applyTaskSessionPayload: sessionState.applyTaskSessionPayload,
     specBootstrapApplyUpdate: specBootstrap.applyUpdate,
     shareSuggestionNudge: (payload) => shareSuggestionNudgeHandler?.(payload),
-    collaborationUpdate: collaboration.onEvent,
-    cloudResultsUpdate: collaboration.refreshResults,
+    collaborationUpdate: payload => {
+      collaborationReview.onEvent(payload)
+      collaboration.onEvent(payload)
+    },
+    cloudResultsUpdate: () => { void collaborationReview.refresh() },
     preinputHandleEvent: preinput.handleEvent,
     skillsMergeTraceEvent: skills.mergeRuntimeTraceEvent,
     skillsScheduleUsageRefresh: skills.scheduleRuntimeUsageRefresh,
@@ -1096,6 +1113,7 @@ export function useChatViewModel() {
     selectAgentModel: agentModels.select,
     reloadAgentModels: agentModels.reload,
     collaboration,
+    collaborationReview,
     collaborationLeave,
     sendChat: send.sendChat,
     sendChatContent: send.sendChatContent,

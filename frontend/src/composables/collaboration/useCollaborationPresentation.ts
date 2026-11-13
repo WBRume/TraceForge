@@ -7,7 +7,7 @@ export type CollaborationAction = 'none' | 'connect' | 'recover' | 'reconnect' |
 
 /** One presentation contract for the entry, drawer and composer; never changes execution permissions. */
 export function collaborationPresentation(c: CollaborationContext) {
-  const running = Boolean(c.reviewRunning || c.participating && ['RUNNING', 'WAITING_HITL'].includes(c.phase))
+  const running = c.participating && ['RUNNING', 'WAITING_HITL'].includes(c.phase)
   const conflicts = c.conflicts.length || (c.participating ? c.state?.conflicts?.length : 0) || 0
   const localCount = c.local?.local_changes?.filter(file => !c.conflicts.some(conflict =>
     conflict.task_repository_id === file.task_repository_id && conflict.path === file.path)).length || 0

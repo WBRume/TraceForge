@@ -17,6 +17,8 @@
     "initial_workspace": "Initial task files",
     "workspace_diff": "Changes in the task directory since preparation.",
     "workspace_results": "Task results",
+    "refresh": "Refresh differences",
+    "review_failed": "Unable to load differences.",
     "retry": "Refresh to try again.",
     "running": "Results will update when the Agent finishes.",
     "no_results": "There are no file changes to export from this task directory."

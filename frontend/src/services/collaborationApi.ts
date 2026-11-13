@@ -1,5 +1,5 @@
 import api from '@/utils/api'
-import type { CollaborationManifest, CollaborationReviewDiff, CollaborationState, CollaborationHumanChangePage, CollaborationHumanChangeDetail } from '@/types/collaboration'
+import type { CollaborationManifest, CollaborationReviewDiff, CollaborationReviewScope, CollaborationState, CollaborationHumanChangePage, CollaborationHumanChangeDetail } from '@/types/collaboration'
 
 // Multi-repository manifests and raw objects can exceed a normal API request's
 // transfer time. Lease and state requests retain the short default timeout.
@@ -9,8 +9,8 @@ export function collaborationApi(workspaceId: string, taskId: string) {
   const path = `/workspaces/${encodeURIComponent(workspaceId)}/tasks/${encodeURIComponent(taskId)}/collaboration`
   return {
     // Both review scopes are computed on the server; only changed files travel.
-    reviewDiff: async (scope: 'cumulative' | 'round' = 'cumulative'): Promise<CollaborationReviewDiff> =>
-      (await api.get(`${path}/review/diff`, { ...contentRequest, params: { scope } })).data,
+    reviewDiff: async (scope: CollaborationReviewScope = 'cumulative', signal?: AbortSignal): Promise<CollaborationReviewDiff> =>
+      (await api.get(`${path}/review/diff`, { ...contentRequest, params: { scope }, signal })).data,
     state: async (): Promise<CollaborationState> => (await api.get(path)).data,
     humanChanges: async (page = 1): Promise<CollaborationHumanChangePage> => (await api.get(`${path}/human-changes`, { params: { page } })).data,
     humanChange: async (id: string): Promise<CollaborationHumanChangeDetail> => (await api.get(`${path}/human-changes/${encodeURIComponent(id)}`)).data,
@@ -25,6 +25,11 @@ export function collaborationApi(workspaceId: string, taskId: string) {
 
 export function base64Bytes(content: string): Uint8Array {
   return Uint8Array.from(atob(content), (char) => char.charCodeAt(0))
+}
+
+export function decodeCollaborationText(data: Uint8Array, binaryMessage: string): string {
+  if (data.length > 2 * 1024 * 1024 || data.includes(0)) throw new Error(binaryMessage)
+  return new TextDecoder('utf-8', { fatal: true }).decode(data)
 }
 export function bytesBase64(data: ArrayBuffer): string {
   const bytes = new Uint8Array(data)

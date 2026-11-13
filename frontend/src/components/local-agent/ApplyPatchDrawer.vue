@@ -18,6 +18,7 @@ import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborati
 import CollaborationHeader from '@/components/collaboration/CollaborationHeader.vue'
 import CollaborationActions from '@/components/collaboration/CollaborationActions.vue'
 import type { LocalCollaboration } from '@/composables/collaboration/useLocalCollaboration'
+import type { CollaborationReview } from '@/composables/collaboration/useCollaborationReview'
 
 const props = defineProps<{
   show: boolean
@@ -25,6 +26,7 @@ const props = defineProps<{
   workspace: Record<string, any> | null
   resourceBlocked?: boolean
   collaboration?: LocalCollaboration
+  collaborationReview?: CollaborationReview
 }>()
 
 const emit = defineEmits<{
@@ -288,7 +290,7 @@ watch(
       <GitPullRequest v-if="!isCollaboration" class="w-4 h-4" />
     </template>
     <template #title>
-      <CollaborationHeader v-if="isCollaboration && collaboration" :controller="collaboration" :error="collaborationError" />
+      <CollaborationHeader v-if="isCollaboration && collaboration" :controller="collaboration" :error="collaborationError" :review-running="collaborationReview?.results.cumulative.diff?.running" />
       <span v-else>{{ $t('chat.change_apply_drawer_title') }}</span>
     </template>
     <template #actions>
@@ -300,7 +302,7 @@ watch(
       </button>
     </template>
 
-    <LocalCollaborationPanel v-if="isCollaboration && collaboration && task" :controller="collaboration" :workspace-id="workspaceId" :task-id="String(task.id)" @error="collaborationError = $event" />
+    <LocalCollaborationPanel v-if="isCollaboration && collaboration && collaborationReview && task" :controller="collaboration" :review-query="collaborationReview" :workspace-id="workspaceId" :task-id="String(task.id)" @error="collaborationError = $event" />
     <section v-else class="apply-patch-drawer">
       <OwnResourceApply v-if="proposal && !isCollaboration" :workspace-id="workspaceId" :proposal-id="proposal.id" />
       <!-- Top Bar: Task & Status Context -->

@@ -24,9 +24,10 @@ export type CollaborationConflict = {
   expected_sha256?: string | null; cloud_sha256?: string | null
   local?: CollaborationFile | null; base?: CollaborationFile | null; cloud?: CollaborationFile | null; reason?: string
 }
-/** Cumulative review computed on the server: only changed files travel. */
+export type CollaborationReviewScope = 'cumulative' | 'round'
+/** Server-computed review containing only the changed files. */
 export type CollaborationReviewDiff = {
-  scope: 'cumulative' | 'round'
+  scope: CollaborationReviewScope
   baseline_snapshot_id: string | null; cloud_snapshot_id: string | null; protocol_version: number
   repositories: Array<{ task_repository_id: string; repo_slug: string; branch_name: string }>
   files: Array<{

@@ -387,6 +387,7 @@ watch(
       :task="vm.currentTask"
       :workspace="vm.currentWorkspace"
       :collaboration="vm.collaboration"
+      :collaboration-review="vm.collaborationReview"
       @close="showApplyPatchDrawer = false"
     />
 

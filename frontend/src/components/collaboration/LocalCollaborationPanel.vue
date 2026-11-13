@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, proxyRefs, shallowRef, toRaw, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ArrowPathIcon, Check, GitPullRequest, GitBranch, FileText, Clock, Search, Shield } from '@/components/icons'
+import { ArrowPathIcon, Check, GitPullRequest, GitBranch, FileText, Clock, RefreshCw, Search, Shield } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import CodeComparison from './CodeComparison.vue'
@@ -18,22 +18,22 @@ import TaskPatchPreview from './TaskPatchPreview.vue'
 import ArtifactPreview from '@/components/file-preview/ArtifactPreview.vue'
 import { fileType } from '@/components/file-preview/fileTypes'
 import { useTaskFileExport } from '@/composables/collaboration/useTaskFileExport'
-import { collaborationApi } from '@/services/collaborationApi'
 import { useRepositoryUpdates } from '@/composables/collaboration/useRepositoryUpdates'
 import { useOpenInIde } from '@/composables/collaboration/useOpenInIde'
 import { collaborationFileKey } from '@/composables/collaboration/compare'
 import { collaborationReview } from '@/composables/collaboration/review'
 import { useCollaborationPresentation } from '@/composables/collaboration/useCollaborationPresentation'
 import type { LocalCollaboration } from '@/composables/collaboration/useLocalCollaboration'
-import type { CollaborationBackup, CollaborationConflict } from '@/types/collaboration'
+import type { CollaborationReview } from '@/composables/collaboration/useCollaborationReview'
+import type { CollaborationBackup, CollaborationConflict, CollaborationReviewScope } from '@/types/collaboration'
 
-const props = defineProps<{ controller: LocalCollaboration; workspaceId: string; taskId: string }>()
+const props = defineProps<{ controller: LocalCollaboration; reviewQuery: CollaborationReview; workspaceId: string; taskId: string }>()
 const emit = defineEmits<{ error: [message: string] }>()
 const { t } = useI18n()
 const c = computed(() => proxyRefs(props.controller))
 const repositoryFree = computed(() => c.value.state?.repository_configured === false)
 const updates = useRepositoryUpdates(() => props, () => !repositoryFree.value)
-const diffScope = shallowRef<'cumulative' | 'round'>('cumulative')
+const diffScope = shallowRef<CollaborationReviewScope>('cumulative')
 function showRemoteChanges() {
   c.value.view.page = 'updates'
   const conflict = updates.files.value.find(file => file.conflict)
@@ -41,7 +41,6 @@ function showRemoteChanges() {
 }
 watch(() => props.taskId, () => { diffScope.value = 'cumulative' })
 const ide = useOpenInIde(() => c.value, () => props.workspaceId)
-watch(() => props.controller, controller => { void controller.loadReview() }, { immediate: true })
 watch(ide.error, message => emit('error', message))
 const ui = useCollaborationPresentation(() => props.controller)
 const downloadOnly = computed(() => c.value.receivedOnce && !c.value.participating)
@@ -49,16 +48,24 @@ const tab = computed({ get: () => c.value.view.tab, set: value => { c.value.view
 const pair = computed({ get: () => c.value.view.pair, set: value => { c.value.view.pair = value } })
 const selected = computed({ get: () => c.value.view.selected, set: value => { c.value.view.selected = value } })
 const checked = computed({ get: () => c.value.view.selectedConflicts, set: value => { c.value.view.selectedConflicts = value } })
-const review = computed(() => collaborationReview(c.value, Boolean(ui.value?.localAvailable), diffScope.value))
+const cloudResult = computed(() => props.reviewQuery.results[diffScope.value])
+const reviewError = computed(() => downloadOnly.value && diffScope.value === 'round' ? '' : cloudResult.value.error)
+const running = computed(() => Boolean(ui.value?.running || !downloadOnly.value && cloudResult.value.diff?.running))
+const review = computed(() => collaborationReview(c.value, Boolean(ui.value?.localAvailable), diffScope.value, cloudResult.value.diff))
+const repositories = computed(() => cloudResult.value.diff?.repositories.length ? cloudResult.value.diff.repositories : c.value.state?.repositories || [])
 const files = computed(() => review.value.files.filter(file => diffScope.value === 'cumulative' || tab.value === 'all' || file.kind === tab.value))
-function selectDiffScope(scope: 'cumulative' | 'round') {
+function selectDiffScope(scope: CollaborationReviewScope) {
   tab.value = 'all'
   diffScope.value = scope
-  // The round view needs both manifests; they are fetched only when it opens.
-  if (scope === 'round') void c.value.loadReviewRound()
 }
+watch([() => props.reviewQuery, () => c.value.view.page, () => props.taskId], ([query, page], _, cleanup) => {
+  if (page !== 'files') return
+  cleanup(query.open())
+  if (diffScope.value === 'round') void query.loadRound()
+}, { immediate: true })
 watch(diffScope, () => { pair.value = 'auto' })
-watch(tab, value => { if (value === 'local' || value === 'conflicts') { diffScope.value = 'round'; void c.value.loadReviewRound() } }, { immediate: true })
+watch(diffScope, scope => { if (scope === 'round' && c.value.view.page === 'files') void props.reviewQuery.loadRound() })
+watch(tab, value => { if (value === 'local' || value === 'conflicts') diffScope.value = 'round' }, { immediate: true })
 
 const searchQuery = shallowRef('')
 const category = shallowRef<'all' | 'reports' | 'code'>('all')
@@ -81,7 +88,7 @@ const filteredFiles = computed(() => {
 const REVIEW_ROW_LIMIT = 300
 const visibleFiles = computed(() => filteredFiles.value.slice(0, REVIEW_ROW_LIMIT))
 const hiddenFiles = computed(() => Math.max(0, filteredFiles.value.length - REVIEW_ROW_LIMIT))
-const reviewPending = computed(() => !review.value.cloudKnown && !c.value.reviewError)
+const reviewPending = computed(() => !review.value.cloudKnown && !reviewError.value)
 
 const active = computed(() => visibleFiles.value.find(file => file.key === selected.value))
 const exports = proxyRefs(useTaskFileExport({
@@ -98,8 +105,7 @@ const previewEngine = computed(() => fileType(activePath.value).engine)
 const previewSource = computed(() => {
   const file = activeExport.value
   if (!file || active.value?.kind !== 'cloud' || previewEngine.value === 'code') return undefined
-  const remote = collaborationApi(props.workspaceId, props.taskId)
-  return (signal?: AbortSignal) => remote.object(file.sha256, signal)
+  return (signal?: AbortSignal) => props.reviewQuery.readObject(file.sha256, signal)
 })
 const resolveHtmlAsset = computed(() => {
   const file = active.value
@@ -108,13 +114,12 @@ const resolveHtmlAsset = computed(() => {
   const base = new URL(file.path.split('/').map(encodeURIComponent).join('/'), origin)
   const files = new Map(review.value.files.filter(entry => entry.task_repository_id === file.task_repository_id)
     .map(entry => [entry.path, entry.kind === 'cloud' ? entry.right : review.value.cloud.get(entry.key)]))
-  const remote = collaborationApi(props.workspaceId, props.taskId)
   return async (reference: string, signal: AbortSignal) => {
     const url = new URL(reference, base)
     if (url.origin !== origin) return undefined
     const source = files.get(decodeURIComponent(url.pathname.slice(1)))
     if (!source || source.mode === '120000' || source.size > 8 * 1024 * 1024) return undefined
-    return remote.object(source.sha256, signal)
+    return props.reviewQuery.readObject(source.sha256, signal)
   }
 })
 watch(() => props.taskId, () => { category.value = 'all'; searchQuery.value = '' })
@@ -137,7 +142,7 @@ const comparison = computed(() => {
   const left = localPair ? review.value.local.get(file?.key || '') : pair.value === 'input-cloud' ? review.value.input.get(file?.key || '') : file?.left
   const right = pair.value !== 'auto' ? review.value.cloud.get(file?.key || '') : file?.right
   const leftSource = localPair || (pair.value === 'auto' && file?.kind === 'conflicts' && ui.value?.localAvailable) ? 'localSource' : pair.value === 'auto' && file?.kind === 'local' ? 'receivedSource' : downloadOnly.value ? 'session.beforeReceive' : 'inputSource'
-  const rightSource = pair.value === 'auto' && file?.kind === 'local' ? 'localSource' : downloadOnly.value ? 'session.publishedSource' : ui.value?.running ? 'candidateSource' : 'finalSource'
+  const rightSource = pair.value === 'auto' && file?.kind === 'local' ? 'localSource' : downloadOnly.value ? 'session.publishedSource' : running.value ? 'candidateSource' : 'finalSource'
   const cumulative = diffScope.value === 'cumulative' && pair.value === 'auto' && file?.kind === 'cloud'
   return { left, right, leftLabel: cumulative ? file?.repo_slug ? '远端基线' : t('task_deliverables.initial_workspace') : t(`collaboration.${leftSource}`), rightLabel: cumulative ? '任务版本' : t(`collaboration.${rightSource}`) }
 })
@@ -146,6 +151,8 @@ const restoreDescription = computed(() => pendingRestore.value?.conflicts.map(ro
   return `${repo?.repo_slug || row.task_repository_id}/${row.path}${!row.cloud ? ` · ${t('collaboration.delete')}` : ''}`
 }).join('\n') || '')
 const canReconnect = computed(() => c.value.canReconnect)
+const readComparisonText = computed(() => diffScope.value === 'round' && (downloadOnly.value || pair.value === 'local-cloud' || pair.value === 'auto' && active.value?.kind !== 'cloud')
+  ? c.value.readText : props.reviewQuery.readText)
 const activeConflict = computed(() => c.value.conflicts.find(item => collaborationFileKey(item.task_repository_id, item.path) === active.value?.key))
 const deviceHint = computed(() => c.value.state?.driver_connected === false ? canReconnect.value ? 'reconnectHint' : 'reconnectElsewhereHint' : 'activeDeviceHint')
 
@@ -223,7 +230,7 @@ async function confirmRestore() {
       <CollaborationBackups v-else :controller="controller" @select="backup = $event" />
     </template>
     <CollaborationHistory v-else-if="c.view.page === 'history'" :workspace-id="workspaceId" :task-id="taskId" />
-    <RepositoryUpdateChanges v-else-if="c.view.page === 'updates'" :model="updates" @back="c.view.page = 'files'" @close="c.view.page = 'files'" @applied="selectDiffScope('cumulative'); c.view.page = 'files'; c.refreshResults()" />
+    <RepositoryUpdateChanges v-else-if="c.view.page === 'updates'" :model="updates" @back="c.view.page = 'files'" @close="c.view.page = 'files'" @applied="selectDiffScope('cumulative'); c.view.page = 'files'" />
     <template v-else>
       <div v-if="!repositoryFree" class="diff-scope-bar">
         <nav class="diff-purpose-tabs" aria-label="差异用途">
@@ -242,6 +249,9 @@ async function confirmRestore() {
             </button>
           </nav>
           <div class="filter-right-tools">
+            <button class="review-refresh" type="button" :title="t('task_deliverables.refresh')" :aria-label="t('task_deliverables.refresh')" @click="reviewQuery.refresh()">
+              <RefreshCw :size="14" />
+            </button>
             <button v-if="diffScope === 'round'" class="human-records-link" type="button" @click="c.view.page = 'history'">人工修改记录</button>
             <div class="file-search-box">
               <Search :size="13" class="search-icon" />
@@ -266,10 +276,11 @@ async function confirmRestore() {
           </div>
         </div>
 
-        <div v-else-if="files.length" class="file-comparison">
+        <p v-if="reviewError && files.length" class="review-error" role="alert">{{ reviewError }}</p>
+        <div v-if="!reviewPending && files.length" class="file-comparison">
           <CollaborationFiles
-            :files="visibleFiles" :repositories="c.state?.repositories || []" :selected="selected" :checked="checked"
-            :can-restore="ui.canRestore" :local-available="ui.localAvailable" :running="ui.running"
+            :files="visibleFiles" :repositories="repositories" :selected="selected" :checked="checked"
+            :can-restore="ui.canRestore" :local-available="ui.localAvailable" :running="running"
             :exports="exports.entries" :export-checked="exports.selected" :exporting="exports.pending"
             @select="selected = $event; pair = 'auto'" @check="checkFile" @download="exports.single"
             @export-check="(key, value) => exports.check([key], value)"
@@ -284,13 +295,13 @@ async function confirmRestore() {
             <TaskFilePreviewBar :path="activePath" :size="activeExport?.size" :pending="exports.pending" :removed="active.kind === 'cloud' && !active.right" @download="exports.single(active.key)" />
             <TaskPatchPreview v-if="previewSource && previewEngine === 'patch'" :source="previewSource" />
             <ArtifactPreview v-else-if="previewSource" :key="active.key" :name="active.path" :source="previewSource" :resolve-html-asset="resolveHtmlAsset" />
-            <CodeComparison v-else :path="activePath" :left-hash="comparison.left?.sha256" :right-hash="comparison.right?.sha256" :left-label="comparison.leftLabel" :right-label="comparison.rightLabel" :read-text="c.readText" :open-in-ide="ide.available && !!active.repo_slug" :ide-title="ide.hint(active.task_repository_id)" @ide-error="ide.error.value = $event" @open-in-ide="position => ide.open(active!.task_repository_id, active!.path, position.line, position.column)">
+            <CodeComparison v-else :path="activePath" :left-hash="comparison.left?.sha256" :right-hash="comparison.right?.sha256" :left-label="comparison.leftLabel" :right-label="comparison.rightLabel" :read-text="readComparisonText" :open-in-ide="ide.available && !!active.repo_slug" :ide-title="ide.hint(active.task_repository_id)" @ide-error="ide.error.value = $event" @open-in-ide="position => ide.open(active!.task_repository_id, active!.path, position.line, position.column)">
               <template v-if="diffScope === 'round'" #tools><BaseSelect v-model="pair" size="sm" :aria-label="t('collaboration.ui.compareVersions')" :options="[{ value: 'auto', label: t('collaboration.ui.defaultComparison') }, { value: 'local-cloud', label: t('collaboration.localCloud'), disabled: !ui.localAvailable }, { value: 'input-cloud', label: t('collaboration.inputCloud') }]" /></template>
             </CodeComparison>
             <div v-if="!previewSource" class="diff-note-bar" :class="{ 'is-decision-bar': active.kind === 'conflicts' && ui.canRestore }">
               <p class="diff-note">
                 <span class="diff-note-icon">ℹ</span>
-                <span>{{ diffScope === 'cumulative' && active.kind === 'cloud' ? active.repo_slug ? '显示任务相对当前远端基线的全部累计修改。' : t('task_deliverables.workspace_diff') : t(active.kind === 'conflicts' ? ui.running ? 'collaboration.ui.previewConflictHint' : 'collaboration.ui.restoreNotice' : active.kind === 'local' ? 'collaboration.ui.localNotice' : ui.running ? 'collaboration.ui.runningNotice' : 'collaboration.ui.agentNotice') }}</span>
+                <span>{{ diffScope === 'cumulative' && active.kind === 'cloud' ? active.repo_slug ? '显示任务相对当前远端基线的全部累计修改。' : t('task_deliverables.workspace_diff') : t(active.kind === 'conflicts' ? running ? 'collaboration.ui.previewConflictHint' : 'collaboration.ui.restoreNotice' : active.kind === 'local' ? 'collaboration.ui.localNotice' : running ? 'collaboration.ui.runningNotice' : 'collaboration.ui.agentNotice') }}</span>
                 <span v-if="comparison.left?.mode !== comparison.right?.mode" class="mode-tag"> · {{ t('collaboration.ui.fileMode') }} {{ comparison.left?.mode || '—' }} → {{ comparison.right?.mode || '—' }}</span>
               </p>
               <div v-if="active.kind === 'conflicts' && ui.canRestore" class="single-file-actions">
@@ -302,15 +313,15 @@ async function confirmRestore() {
         </div>
 
         <!-- 空状态：高品质微光卡片与操作引导 -->
-        <div v-else class="empty-state">
+        <div v-else-if="!reviewPending" class="empty-state">
           <div class="empty-state-card">
-            <div class="empty-state-icon" :class="{ 'is-empty-clean': !review.files.length && !c.reviewError }">
-              <Check v-if="!review.files.length && !downloadOnly && !c.reviewError" :size="24" />
+            <div class="empty-state-icon" :class="{ 'is-empty-clean': !review.files.length && !reviewError }">
+              <Check v-if="!review.files.length && !downloadOnly && !reviewError" :size="24" />
               <GitPullRequest v-else :size="24" />
             </div>
-            <strong>{{ c.reviewError || (diffScope === 'cumulative' && review.cloudKnown && tab !== 'local' ? '暂无累计修改' : t(tab === 'local' ? 'collaboration.ui.noLocalChanges' : downloadOnly ? 'collaboration.session.noChanges' : 'collaboration.ui.noAgentChanges')) }}</strong>
-            <p>{{ repositoryFree ? t(c.reviewError ? 'task_deliverables.retry' : ui.running ? 'task_deliverables.running' : 'task_deliverables.no_results') : c.reviewError ? '请稍后重试，或到“仓库与版本”检查映射与基线。' : diffScope === 'cumulative' && review.cloudKnown && tab !== 'local' ? '任务相对当前远端基线没有文件差异。' : t(tab === 'local' ? 'collaboration.ui.noLocalHint' : downloadOnly ? 'collaboration.session.noChangesHint' : 'collaboration.ui.noAgentHint') }}</p>
-            <div v-if="!repositoryFree && !review.files.length && !c.reviewError" class="empty-actions">
+            <strong>{{ reviewError || (diffScope === 'cumulative' && review.cloudKnown && tab !== 'local' ? '暂无累计修改' : t(tab === 'local' ? 'collaboration.ui.noLocalChanges' : downloadOnly ? 'collaboration.session.noChanges' : 'collaboration.ui.noAgentChanges')) }}</strong>
+            <p>{{ reviewError ? t('task_deliverables.retry') : repositoryFree ? t(running ? 'task_deliverables.running' : 'task_deliverables.no_results') : diffScope === 'cumulative' && review.cloudKnown && tab !== 'local' ? '任务相对当前远端基线没有文件差异。' : t(tab === 'local' ? 'collaboration.ui.noLocalHint' : downloadOnly ? 'collaboration.session.noChangesHint' : 'collaboration.ui.noAgentHint') }}</p>
+            <div v-if="!repositoryFree && !review.files.length && !reviewError" class="empty-actions">
               <button class="btn-secondary btn-sm" type="button" @click="c.view.page = 'settings'">查看仓库映射</button>
               <button class="btn-secondary btn-sm" type="button" @click="c.view.page = 'backups'">查看历史快照</button>
             </div>
@@ -348,6 +359,9 @@ async function confirmRestore() {
 .diff-purpose-tabs { display:flex; gap:2px; padding:3px; border-radius:7px; background:#f1f5f9; }
 .diff-purpose-tabs button { border:0; border-radius:5px; padding:5px 12px; color:#64748b; font-size:12px; background:transparent; cursor:pointer; }
 .diff-purpose-tabs button.active { color:#0284c7; background:#fff; box-shadow:0 1px 3px #0f172a12; }
+.review-refresh { display:grid; place-items:center; width:30px; height:30px; border:0; border-radius:6px; color:#64748b; background:transparent; cursor:pointer; }
+.review-refresh:hover { color:#0284c7; background:#f1f5f9; }
+.review-error { margin:0; padding:8px 16px; color:var(--color-danger, #b91c1c); font-size:12px; }
 .diff-purpose-tabs button:focus-visible { outline:2px solid #38bdf8; outline-offset:2px; }
 .update-entry { margin-left:auto; }
 .result-summary { font-size:12px; font-weight:500; color:#334155; } .result-summary small { margin-left:8px; color:#64748b; font-size:11px; font-weight:400; }

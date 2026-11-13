@@ -7,6 +7,7 @@ import api from '@/utils/api'
 import { collaborationPresentation, openCollaborationView } from '../useCollaborationPresentation'
 import { collaborationReview } from '../review'
 import type { LocalCollaboration } from '../useLocalCollaboration'
+import type { CollaborationReview } from '../useCollaborationReview'
 import type { CollaborationManifest, CollaborationReviewDiff, CollaborationState, LocalCollaborationStatus } from '@/types/collaboration'
 import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
 import RepositoryUpdateChanges from '@/components/collaboration/RepositoryUpdateChanges.vue'
@@ -41,21 +42,27 @@ function fixture() {
   const model = {
     reviewDiff: ref<CollaborationReviewDiff | null>(changeSet('')),
     roundDiff: ref<CollaborationReviewDiff | null>({ ...changeSet(''), files: [] }),
-    loadReview: vi.fn(), loadReviewRound: vi.fn(), reviewRunning: ref(false), reviewLoading: ref(false), reviewError: ref(''),
     participating: ref(true), leaving: ref(false), receivedOnce: ref(false), leave: vi.fn(), receiveOnce: vi.fn(), enable: vi.fn(), state, local, input: ref(input), cloud: ref<CollaborationManifest | null>(cloud), available: true, supported: ref(true), enabled: ref(true), driver: ref(true), remoteSender: ref(false), phase: computed(() => state.value.sync_phase),
     conflicts: computed(() => local.value.conflicts || []), error: ref(''), busy: ref(false), blocked: ref(false), loading: ref(false), preparationRequired: ref(false), mappingChecks: ref([]), mappings: ref({}),
     activity: ref({ direction: '', done: 0, total: 0, bytes: 0, totalBytes: 0 }), progressive: ref(false), operationStage: ref(''), operationSeconds: ref(0),
     view: ref({ page: 'files', tab: 'all', pair: 'auto', selected: '', selectedConflicts: [] as string[], conflictSetId: '' }),
-    restore: vi.fn(), recover: vi.fn(), cancelPreparation: vi.fn(), claimDriver: vi.fn(), listBackups: vi.fn().mockResolvedValue({ backups: [] }), checkMappings: vi.fn(), selectMapping: vi.fn(), readText: vi.fn().mockResolvedValue('text'), setProgressive: vi.fn(), refresh: vi.fn(), refreshResults:vi.fn(),
+    restore: vi.fn(), recover: vi.fn(), cancelPreparation: vi.fn(), claimDriver: vi.fn(), listBackups: vi.fn().mockResolvedValue({ backups: [] }), checkMappings: vi.fn(), selectMapping: vi.fn(), readText: vi.fn().mockResolvedValue('text'), setProgressive: vi.fn(), refresh: vi.fn(),
   }
   const controller = model as unknown as LocalCollaboration
-  return { controller, model, state, local, input, cloud }
+  const reviewQuery = {
+    results: {
+      get cumulative() { return { diff: model.reviewDiff.value, error: '' } },
+      get round() { return { diff: model.roundDiff.value, error: '' } },
+    },
+    open: vi.fn(() => () => {}), loadRound: vi.fn(), refresh: vi.fn(), onEvent: vi.fn(), readObject: vi.fn(), readText: vi.fn(),
+  } satisfies CollaborationReview
+  return { controller, reviewQuery, model, state, local, input, cloud }
 }
 const global = () => ({ plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })], stubs: { CodeComparison: { props: ['leftLabel', 'rightLabel'], template: '<section class="diff-stub">{{leftLabel}} / {{rightLabel}}</section>' } } })
 
 describe('local collaboration presentation and review', () => {
   it('offers server task results without exposing desktop collaboration on a repository-free task', () => {
-    const { controller, model, state } = fixture()
+    const { controller, reviewQuery, model, state } = fixture()
     model.participating.value = false
     state.value = { ...state.value, repository_configured: false, repositories: [], enabled: false }
     const current = model.reviewDiff.value!
@@ -65,7 +72,7 @@ describe('local collaboration presentation and review', () => {
       files: [{ ...current.files[0]!, repo_slug: '', task_repository_id: 'workspace', path: 'reports/result.md' }],
     }
     const actions = mount(CollaborationActions, { props: { controller }, global: global() })
-    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: global() })
+    const panel = mount(LocalCollaborationPanel, { props: { controller, reviewQuery, workspaceId: 'ws', taskId: 'task' }, global: global() })
     expect(actions.find('[role="switch"]').exists()).toBe(false)
     expect(actions.find('.session-button').exists()).toBe(false)
     expect(panel.text()).not.toContain('仓库与版本')
@@ -77,29 +84,29 @@ describe('local collaboration presentation and review', () => {
   })
 
   it('defaults to cumulative differences even when the latest turn made no edits', async () => {
-    const { controller, model, cloud } = fixture()
+    const { controller, reviewQuery, model, cloud } = fixture()
     model.participating.value = false
     model.input.value = cloud
-    expect(collaborationReview(proxyRefs(controller), false).files).toHaveLength(2)
-    expect(collaborationReview(proxyRefs(controller), false, 'round').files).toHaveLength(0)
-    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
+    expect(collaborationReview(proxyRefs(controller), false, 'cumulative', reviewQuery.results.cumulative.diff).files).toHaveLength(2)
+    expect(collaborationReview(proxyRefs(controller), false, 'round', reviewQuery.results.round.diff).files).toHaveLength(0)
+    const panel = mount(LocalCollaborationPanel, { props:{ controller, reviewQuery, workspaceId:'ws', taskId:'task' }, global:global() })
     expect(panel.text()).toContain('累计差异')
     expect(panel.findAll('.file')).toHaveLength(2)
     expect(panel.get('.diff-stub').text()).toBe('远端基线 / 任务版本')
     panel.unmount()
   })
   it('keeps unsent local edits out of cumulative task results and exposes them in the round view', async () => {
-    const { controller, local, cloud } = fixture()
+    const { controller, reviewQuery, local, cloud } = fixture()
     local.value.manifest = { ...cloud, repositories: cloud.repositories.map(repo => ({ ...repo, files: [
       { ...repo.files[0]!, sha256:'human', content_sha256:'human' }, { path:'local-only.txt', sha256:'new', content_sha256:'new', size:3, mode:'100644' },
     ] })) }
-    const cumulative = collaborationReview(proxyRefs(controller), true)
+    const cumulative = collaborationReview(proxyRefs(controller), true, 'cumulative', reviewQuery.results.cumulative.diff)
     expect(cumulative.files).toHaveLength(2)
     expect(cumulative.files.every(file => file.kind === 'cloud' && file.right?.sha256 === 'agent')).toBe(true)
-    const round = collaborationReview(proxyRefs(controller), true, 'round')
+    const round = collaborationReview(proxyRefs(controller), true, 'round', reviewQuery.results.round.diff)
     expect(round.files).toHaveLength(4)
     expect(round.files.every(file => file.kind === 'local')).toBe(true)
-    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
+    const panel = mount(LocalCollaborationPanel, { props:{ controller, reviewQuery, workspaceId:'ws', taskId:'task' }, global:global() })
     expect(panel.find('.file-filters').exists()).toBe(false)
     expect(panel.findAll('.file')).toHaveLength(2)
     await panel.get('.diff-purpose-tabs button:nth-child(2)').trigger('click')
@@ -111,8 +118,8 @@ describe('local collaboration presentation and review', () => {
     panel.unmount()
   })
   it('opens remote updates as a separate workflow from the two diff purposes and returns to the same purpose', async () => {
-    const { controller } = fixture()
-    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
+    const { controller, reviewQuery } = fixture()
+    const panel = mount(LocalCollaborationPanel, { props:{ controller, reviewQuery, workspaceId:'ws', taskId:'task' }, global:global() })
     await flushPromises()
     expect(panel.get('.diff-purpose-tabs').text()).toBe('累计差异本轮差异')
     expect(panel.find('.diff-scope-bar [role="combobox"]').exists()).toBe(false)
@@ -132,16 +139,19 @@ describe('local collaboration presentation and review', () => {
     expect(controller.view.value.page).toBe('files')
     expect(controller.view.value.tab).toBe('all')
     expect(panel.get('.diff-purpose-tabs button[aria-pressed="true"]').text()).toBe('累计差异')
-    expect(controller.refreshResults).toHaveBeenCalledOnce()
+    expect(reviewQuery.open).toHaveBeenCalledTimes(3)
+    await panel.get('button[aria-label="刷新差异"]').trigger('click')
+    expect(reviewQuery.refresh).toHaveBeenCalledOnce()
+    expect(controller.refresh).not.toHaveBeenCalled()
     panel.unmount()
   })
   it('shows both repositories and diffs before connecting, without showing another device conflicts', async () => {
-    const { controller, model, state } = fixture()
+    const { controller, reviewQuery, model, state } = fixture()
     model.participating.value = false; model.enabled.value = false; model.driver.value = false
     state.value.conflicts = [{ task_repository_id: 'dsh', path: 'shared.txt' } as any]
     expect(collaborationPresentation(proxyRefs(controller))).toMatchObject({ setup: false, localAvailable: false })
-    expect(collaborationReview(proxyRefs(controller), false).files.every(file => file.kind === 'cloud')).toBe(true)
-    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: global() })
+    expect(collaborationReview(proxyRefs(controller), false, 'cumulative', reviewQuery.results.cumulative.diff).files.every(file => file.kind === 'cloud')).toBe(true)
+    const panel = mount(LocalCollaborationPanel, { props: { controller, reviewQuery, workspaceId: 'ws', taskId: 'task' }, global: global() })
     expect(panel.findAll('.file')).toHaveLength(2)
     expect(panel.findAll('.file-row .file-download')).toHaveLength(2)
     expect(panel.find('.diff-stub').exists()).toBe(true)
@@ -150,12 +160,12 @@ describe('local collaboration presentation and review', () => {
     panel.unmount()
   })
   it('keeps one pair of session actions above every tab and routes missing mappings to settings', async () => {
-    const { controller, model } = fixture()
+    const { controller, reviewQuery, model } = fixture()
     model.participating.value = false; model.enabled.value = false
     const host = mount(defineComponent({
       components: { CollaborationHeader, CollaborationActions, LocalCollaborationPanel },
-      setup: () => ({ controller }),
-      template: '<header><CollaborationHeader :controller="controller"/><CollaborationActions :controller="controller"/></header><LocalCollaborationPanel :controller="controller" workspace-id="ws" task-id="task"/>',
+      setup: () => ({ controller, reviewQuery }),
+      template: '<header><CollaborationHeader :controller="controller"/><CollaborationActions :controller="controller"/></header><LocalCollaborationPanel :controller="controller" :review-query="reviewQuery" workspace-id="ws" task-id="task"/>',
     }), { global: global() })
     const receive = () => host.findAll('button').filter(button => button.text() === '接收最新代码')
     const connect = () => host.findAll('input[role="switch"][aria-label="本地协同"]')
@@ -201,10 +211,10 @@ describe('local collaboration presentation and review', () => {
     actions.unmount()
   })
   it('keeps errors in the header across tabs and exposes full details on demand', async () => {
-    const { controller, model } = fixture()
+    const { controller, reviewQuery, model } = fixture()
     model.error.value = '本地仓库未通过启用检查，请处理仓库问题后重试。'
     const header = mount(CollaborationHeader, { props: { controller }, global: global(), attachTo: document.body })
-    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: global() })
+    const panel = mount(LocalCollaborationPanel, { props: { controller, reviewQuery, workspaceId: 'ws', taskId: 'task' }, global: global() })
     expect(header.get('[role="status"]').text()).toContain(model.error.value)
     expect(panel.text()).not.toContain(model.error.value)
     await header.get('button[aria-label="查看错误详情"]').trigger('click'); await flushPromises()
@@ -244,8 +254,8 @@ describe('local collaboration presentation and review', () => {
     actions.unmount()
   })
   it('switches history inside the panel while keeping every navigation tab and the current file selection', async () => {
-    const { controller } = fixture()
-    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: {
+    const { controller, reviewQuery } = fixture()
+    const panel = mount(LocalCollaborationPanel, { props: { controller, reviewQuery, workspaceId: 'ws', taskId: 'task' }, global: {
       ...global(), stubs: { ...global().stubs, CollaborationHistory: { props: ['workspaceId', 'taskId'], template: '<section>历史记录内容</section>' } },
     } })
     const selected = controller.view.value.selected
@@ -306,27 +316,35 @@ describe('local collaboration presentation and review', () => {
     expect(collaborationPresentation(proxyRefs(controller))).toMatchObject({ key: 'device', inputKey: '', localAvailable: false, canRestore: false })
   })
   it('retains both repositories in this-round diffs after delivery has aligned local and cloud files', () => {
-    const { controller, model } = fixture()
+    const { controller, reviewQuery, model } = fixture()
     model.roundDiff.value = { ...(model.reviewDiff.value as CollaborationReviewDiff) }
-    const review = collaborationReview(proxyRefs(controller), true, 'round')
+    const review = collaborationReview(proxyRefs(controller), true, 'round', reviewQuery.results.round.diff)
     expect(review.files).toHaveLength(2)
     expect(new Set(review.files.map(file => file.key)).size).toBe(2)
     expect(review.files.every(file => file.kind === 'cloud' && file.delivered)).toBe(true)
   })
   it('reports an unknown cumulative review as not ready instead of every file being deleted', () => {
-    const { controller, model } = fixture()
+    const { controller, reviewQuery, model } = fixture()
     model.reviewDiff.value = null
-    const review = collaborationReview(proxyRefs(controller), true)
+    const review = collaborationReview(proxyRefs(controller), true, 'cumulative', reviewQuery.results.cumulative.diff)
     expect(review.cloudKnown).toBe(false)
     expect(review.files).toEqual([])
   })
+  it('compares the captured versions for a one-time receipt', () => {
+    const { controller, reviewQuery, model } = fixture()
+    model.participating.value = false
+    model.receivedOnce.value = true
+    const round = collaborationReview(proxyRefs(controller), true, 'round', reviewQuery.results.round.diff)
+    expect(round.files).toHaveLength(2)
+    expect(round.files.every(file => file.left?.sha256 === 'old' && file.right?.sha256 === 'agent' && file.delivered)).toBe(true)
+  })
   it('shows a loading card, not a green check or a full list, until the change set arrives', async () => {
-    const { controller, model } = fixture()
+    const { controller, reviewQuery, model } = fixture()
     model.reviewDiff.value = null
-    const review = collaborationReview(proxyRefs(controller), true)
+    const review = collaborationReview(proxyRefs(controller), true, 'cumulative', reviewQuery.results.cumulative.diff)
     expect(review.cloudKnown).toBe(false)
     expect(review.files).toEqual([])
-    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
+    const panel = mount(LocalCollaborationPanel, { props:{ controller, reviewQuery, workspaceId:'ws', taskId:'task' }, global:global() })
     expect(panel.find('[role="alert"]').exists()).toBe(false)
     const status = panel.get('[role="status"]')
     expect(status.findAll('.file')).toHaveLength(0)
@@ -336,23 +354,23 @@ describe('local collaboration presentation and review', () => {
     panel.unmount()
   })
   it('shows a loading card, not a green check or a full list, while the round change set is missing', async () => {
-    const { controller, model } = fixture()
+    const { controller, reviewQuery, model } = fixture()
     model.roundDiff.value = null
-    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
+    const panel = mount(LocalCollaborationPanel, { props:{ controller, reviewQuery, workspaceId:'ws', taskId:'task' }, global:global() })
     await panel.get('.diff-purpose-tabs button:nth-child(2)').trigger('click')
     expect(panel.find('.empty-state-icon.is-loading').exists()).toBe(true)
     expect(panel.findAll('.file')).toHaveLength(0)
     panel.unmount()
   })
   it('caps a runaway changed-file list so the panel cannot freeze the browser', async () => {
-    const { controller, model } = fixture()
+    const { controller, reviewQuery, model } = fixture()
     const base = model.reviewDiff.value as CollaborationReviewDiff
     model.reviewDiff.value = { ...base, files: Array.from({ length: 350 }, (_, index) => ({
       task_repository_id: 'repo', repo_slug: 'repo', path: `file-${index}.txt`, change: 'M' as const,
       left: { path: `file-${index}.txt`, sha256: `base-${index}`, content_sha256: `base-${index}`, size: 1, mode: '100644' as const },
       right: { path: `file-${index}.txt`, sha256: `cloud-${index}`, content_sha256: `cloud-${index}`, size: 1, mode: '100644' as const },
     })) }
-    const panel = mount(LocalCollaborationPanel, { props:{ controller, workspaceId:'ws', taskId:'task' }, global:global() })
+    const panel = mount(LocalCollaborationPanel, { props:{ controller, reviewQuery, workspaceId:'ws', taskId:'task' }, global:global() })
     expect(panel.findAll('.file')).toHaveLength(300)
     expect(panel.get('.list-limit-bar').text()).toContain('仅显示前 300 个文件')
     expect(panel.get('.list-limit-bar').text()).toContain('350')
@@ -373,7 +391,7 @@ describe('local collaboration presentation and review', () => {
     entry.unmount(); input.unmount()
   })
   it('selects and confirms only one repository, retains selection on cancel, and never restores a running preview', async () => {
-    const { controller, model, state, local, input, cloud } = fixture()
+    const { controller, reviewQuery, model, state, local, input, cloud } = fixture()
     const conflicts = input.repositories.map((repo, index) => ({ task_repository_id: repo.task_repository_id, path: 'shared.txt', local: { ...repo.files[0]!, sha256: 'human', content_sha256: 'human' }, base: repo.files[0], cloud: cloud.repositories[index]!.files[0] }))
     local.value = { ...local.value, conflicts, conflict_set_id: 'set1', manifest: { ...cloud, repositories: cloud.repositories.map(repo => ({ ...repo, files: [{ ...repo.files[0]!, sha256: 'human', content_sha256: 'human' }] })) } }
     state.value.sync_phase = 'CONFLICT_PENDING'; model.blocked.value = true
@@ -384,7 +402,7 @@ describe('local collaboration presentation and review', () => {
     expect(notice.emitted('open')).toHaveLength(1)
     notice.unmount()
     openCollaborationView(controller)
-    const panel = mount(LocalCollaborationPanel, { props: { controller, workspaceId: 'ws', taskId: 'task' }, global: global(), attachTo: document.body })
+    const panel = mount(LocalCollaborationPanel, { props: { controller, reviewQuery, workspaceId: 'ws', taskId: 'task' }, global: global(), attachTo: document.body })
     expect(panel.text()).toContain('当前本地 / Agent 版本')
     expect(panel.findAll('input[type=checkbox]').every(input => !(input.element as HTMLInputElement).checked)).toBe(true)
     await panel.get('input[aria-label="选择 dsh/shared.txt"]').setValue(true)

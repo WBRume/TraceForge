@@ -50,7 +50,7 @@ async function recover() {
       <span>{{ t('collaboration.ui.autoReceive') }}</span>
       <ToggleSwitch :model-value="c.progressive" :disabled="c.busy || c.leaving" :aria-label="t('collaboration.ui.autoReceive')" @update:model-value="c.setProgressive" />
     </div>
-    <button class="icon-btn" type="button" :disabled="c.busy || c.leaving" :title="t('collaboration.refresh')" :aria-label="t('collaboration.refresh')" @click="c.refresh()">
+    <button v-if="c.available && c.state?.repository_configured !== false" class="icon-btn" type="button" :disabled="c.busy || c.leaving" :title="t('collaboration.refresh')" :aria-label="t('collaboration.refresh')" @click="c.refresh()">
       <RefreshCw class="w-4 h-4" />
     </button>
     <ConfirmActionModal :show="confirmingDisconnect" tone="primary" :title="t('collaboration.session.disconnect')" :message="t('collaboration.session.leaveHint')" :cancel-text="t('common.cancel')" :confirm-text="t('collaboration.session.disconnect')" :loading="c.busy || c.leaving" @cancel="confirmingDisconnect = false" @confirm="disconnect" />
