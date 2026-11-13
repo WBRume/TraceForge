@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _ENV_FILE = _BACKEND_ROOT / ".env"
+_DEFAULT_TASK_EVIDENCE_ATTACHMENT_ROOT = "storage/task-evidence-attachments"
 
 
 def _resolve_backend_path(raw_value: str | None, *, fallback: str) -> str:
@@ -249,6 +250,7 @@ class Settings(BaseSettings):
     # ── Workflow ──
     MAX_RETRY_COUNT: int = 3
     SKILLS_STORAGE_ROOT: str = "storage/skills"
+    TASK_EVIDENCE_ATTACHMENT_ROOT: str = _DEFAULT_TASK_EVIDENCE_ATTACHMENT_ROOT
     SKILL_MAX_TEXT_FILE_SIZE_BYTES: int = 10 * 1024 * 1024
     # 工作区根目录默认值（env 层）。留空 = 未启用；
     # 系统配置表（界面保存）非空时覆盖该值，系统配置清空后回退到该 env 默认值。
@@ -443,6 +445,10 @@ class Settings(BaseSettings):
         self.SKILLS_STORAGE_ROOT = _resolve_backend_path(
             self.SKILLS_STORAGE_ROOT,
             fallback="storage/skills",
+        )
+        self.TASK_EVIDENCE_ATTACHMENT_ROOT = _resolve_backend_path(
+            self.TASK_EVIDENCE_ATTACHMENT_ROOT,
+            fallback=_DEFAULT_TASK_EVIDENCE_ATTACHMENT_ROOT,
         )
         self.API_MOCK_TEMP_ROOT = _resolve_backend_path(
             self.API_MOCK_TEMP_ROOT,

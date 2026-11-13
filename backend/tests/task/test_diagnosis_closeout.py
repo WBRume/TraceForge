@@ -1,6 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.domains.task.models.task import SddTask, TaskStatus, TaskType
 from app.domains.workspace_asset.models.workspace_asset import (
     SddEvidence,
@@ -8,14 +9,13 @@ from app.domains.workspace_asset.models.workspace_asset import (
     SddTaskProcessAuditLog,
     SddTaskRequirement,
 )
-from app.domains.workspace_asset.services.task_process import evidence_attachments
 from tests.task.test_task_closeout import _build_closeout_app, upload_closeout_file
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session
 
 
 @pytest.fixture
 def closeout_task(monkeypatch, tmp_path):
-    monkeypatch.setattr(evidence_attachments, "ATTACHMENT_ROOT", tmp_path / "attachments")
+    monkeypatch.setattr(settings, "TASK_EVIDENCE_ATTACHMENT_ROOT", str(tmp_path / "attachments"))
     engine, sessions = _build_db()
     try:
         with _session(sessions) as db:

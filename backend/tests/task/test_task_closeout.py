@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.config import Settings, settings
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.auth.models.user import User, WorkspaceMember, WorkspaceRole
 from app.domains.dashboard.models.metric import SddDashboardMetric
@@ -16,6 +18,7 @@ from app.domains.task.models.task_status_event import TaskStatusEvent
 from app.domains.task.routers import task as task_router
 from app.domains.task.routers import task_closeout as task_closeout_router
 from app.domains.task.services import status_machine
+from app.domains.task.services.task_records import deletion
 from app.domains.workspace_asset.models.evidence_attachment import TaskEvidenceAttachment
 from app.domains.workspace_asset.models.workspace_asset import (
     SddEvidence,
@@ -59,7 +62,37 @@ def _build_closeout_app(SessionLocal, user):
 
 @pytest.fixture(autouse=True)
 def _attachment_storage(monkeypatch, tmp_path):
-    monkeypatch.setattr(evidence_attachments, "ATTACHMENT_ROOT", tmp_path / "attachments")
+    monkeypatch.setattr(settings, "TASK_EVIDENCE_ATTACHMENT_ROOT", str(tmp_path / "attachments"))
+
+
+def test_attachment_root_from_env_controls_upload_and_task_cleanup(monkeypatch, tmp_path):
+    root = tmp_path / "external" / "attachments"
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"TASK_EVIDENCE_ATTACHMENT_ROOT={root.as_posix()}\n", encoding="utf-8")
+    monkeypatch.delenv("TASK_EVIDENCE_ATTACHMENT_ROOT", raising=False)
+    configured = Settings(
+        _env_file=env_file,
+        DB_PASSWORD="test-password",
+        JWT_SECRET_KEY="test-secret-that-is-long-enough-for-validation",
+    )
+    assert Path(configured.TASK_EVIDENCE_ATTACHMENT_ROOT) == root
+    monkeypatch.setattr(settings, "TASK_EVIDENCE_ATTACHMENT_ROOT", configured.TASK_EVIDENCE_ATTACHMENT_ROOT)
+    monkeypatch.setattr(settings, "CLI_STATE_ROOT", str(tmp_path / "cli-state"))
+
+    engine, sessions = _build_db()
+    try:
+        with _session(sessions) as db:
+            user, workspace, task = _seed_workspace(db)
+        client = TestClient(_build_closeout_app(sessions, user))
+        uploaded = upload_closeout_file(client, workspace.id, task.id)
+        assert (root / task.id / uploaded["id"]).read_bytes() == b"build output"
+        other_task = root / "other-task"
+        other_task.mkdir()
+        deletion._cleanup_files(workspace.id, task.id)
+        assert not (root / task.id).exists()
+        assert other_task.is_dir()
+    finally:
+        engine.dispose()
 
 
 def upload_closeout_file(client, workspace_id, task_id, name="build.log"):
@@ -265,6 +298,7 @@ def test_attachment_permissions_follow_evidence_and_require_the_exact_associatio
         viewer_client = TestClient(_build_closeout_app(sessions, viewer))
         outsider_client = TestClient(_build_closeout_app(sessions, outsider))
         uploaded = upload_closeout_file(owner_client, workspace.id, task.id, "测试报告.pdf")
+        assert (Path(settings.TASK_EVIDENCE_ATTACHMENT_ROOT) / task.id / uploaded["id"]).is_file()
         task_url = f"/api/workspaces/{workspace.id}/tasks/{task.id}"
         assert (
             viewer_client.post(f"{task_url}/closeout/attachments", files={"file": ("x.pdf", b"x")}).status_code == 403

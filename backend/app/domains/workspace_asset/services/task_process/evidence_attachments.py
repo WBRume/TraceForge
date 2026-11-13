@@ -8,17 +8,16 @@ from uuid import uuid4
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.domains.task.models.task import SddTask
 from app.domains.workspace_asset.models.evidence_attachment import TaskEvidenceAttachment
 from app.domains.workspace_asset.models.workspace_asset import SddEvidence
 from app.domains.workspace_asset.schemas.workspace_asset import EvidenceAttachmentResponse
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 
-ATTACHMENT_ROOT = Path(__file__).resolve().parents[5] / "storage" / "task-evidence-attachments"
-
 
 def attachment_path(attachment: TaskEvidenceAttachment) -> Path:
-    root = ATTACHMENT_ROOT.resolve()
+    root = Path(settings.TASK_EVIDENCE_ATTACHMENT_ROOT).resolve()
     path = root / attachment.task_id / attachment.id
     if path.resolve() != path or not path.is_relative_to(root):
         raise WorkspaceAssetError("Attachment file not found", status_code=404)

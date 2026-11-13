@@ -44,6 +44,7 @@ OpenCode 与 DSH 服务需另外准备；在系统配置或 `.env` 中填写地�
 
 - `.env` 保存部署环境配置；修改后用 `docker compose up -d --force-recreate api` 重新创建 API 容器，单纯 `restart` 不会更新环境变量。
 - `volumes/` 保存 MySQL、Redis、Skills、上传文件、任务与 CLI 状态、日志和已挂载的凭据。升级前备份数据库、运行数据及配置密钥。
+- 结项证据附件默认保存在宿主机的 `volumes/storage/task-evidence-attachments`。如需指定项目之外的持久化目录，在 `.env` 设置 `TASK_EVIDENCE_ATTACHMENT_HOST_DIR`。`TASK_EVIDENCE_ATTACHMENT_ROOT` 是 API 容器内的绝对路径。切换宿主机目录时，先停止 API 并复制原目录内容，再重新创建 API 容器。
 - API 保持一个进程、一个副本；不要增加 `--workers` 或扩展 `api` 副本。
 - 默认使用轻量搜索，无需启动 Elasticsearch。语义检索、回填和可选的独立 worker 见[搜索部署](../search/README.md)。
 - Web 语音模式通过构建参数 `TRACEFORGE_SPEECH_MODE` 选择，运行服务的在线语音供应商另行配置，见[语音说明](../../frontend/README.md#语音输入构建时选择-api--离线--关闭)。

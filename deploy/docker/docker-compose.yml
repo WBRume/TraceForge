@@ -80,9 +80,14 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      TASK_EVIDENCE_ATTACHMENT_ROOT: ${TASK_EVIDENCE_ATTACHMENT_ROOT:-/app/storage/task-evidence-attachments}
     volumes:
       # 运行态与资产卷：这些目录丢了 = 会话断 / 资产丢，必须持久化
       - ./volumes/storage:/app/storage
+      - type: bind
+        source: ${TASK_EVIDENCE_ATTACHMENT_HOST_DIR:-./volumes/storage/task-evidence-attachments}
+        target: ${TASK_EVIDENCE_ATTACHMENT_ROOT:-/app/storage/task-evidence-attachments}
       - ./volumes/tmp:/app/tmp
       - ./volumes/logs:/app/logs
       # Claude CLI 登录态。若改用 API Key，删除此挂载并在 .env 配 ANTHROPIC_API_KEY
