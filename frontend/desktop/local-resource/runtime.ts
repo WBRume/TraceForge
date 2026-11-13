@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { platform, type JournalDatabase } from './platform'
-import { child, checkoutProvision, fail, git, hash, inside, inspectRepo, provision, readCommitInfo, readJson, writeFiles, type Receipt } from './filesystem'
+import { child, checkoutProvision, fail, hash, inside, inspectRepo, provision, readCommitInfo, readJson, writeFiles, type Receipt } from './filesystem'
 import { applyPatches, generatePatches } from './patches'
 import { skills } from './content'
 import { documents } from './plan-documents'
@@ -10,6 +10,7 @@ import { cleanupSession, forkSession, sessionRoot } from './provider'
 import { CollaborationRuntime } from './collaboration'
 import { rejectManagedWrite } from './collaboration-guard'
 import { initialize } from './initialize'
+import { releaseTask } from './release'
 import { parseContract, validateResourceResult } from '../../shared/contracts/validate'
 import type { ResourceCommand } from '../../shared/contracts/generated/resourceCommand'
 import type { OperationReceipt } from '../../shared/contracts/generated/operationReceipt'
@@ -94,8 +95,8 @@ export class Runtime {
         validateResourceResult(kind, action, result)
         return receipt('SUCCEEDED', result)
       }
-      if (phase === 'register' && prior.state === 'FAILED') {
-        // Registration has a pinned ownership manifest and can resume a known failure.
+      if (kind === 'release' || (phase === 'register' && prior.state === 'FAILED')) {
+        // Release can resume from its manifest after a partial filesystem change.
         this.db.query("UPDATE operations SET state='RUNNING' WHERE id=?").run(operation_id)
       } else if (phase !== 'checkout' || prior.state !== 'RUNNING') {
         fail('EXECUTION_UNKNOWN: 操作结果未知，请按原操作标识查询')
@@ -135,6 +136,11 @@ export class Runtime {
     }
     if (command.kind === 'release' && !task) return { released: true }
     if (!task || task.resource !== command.resource_id) fail('TASK_RESOURCE_BINDING_REQUIRED')
+    if (command.kind === 'release') {
+      releaseTask(this.state, this.roots, command.task_id, command.resource_id, task!.root)
+      this.db.query('DELETE FROM tasks WHERE id=?').run(command.task_id)
+      return { released: true }
+    }
     const root = inside(task!.root, this.roots)
     const receipt = readJson<Receipt>(path.join(this.state, 'tasks', command.task_id + '.json'))
     const dshRoot = sessionRoot(this.config.dsh_session_root)
@@ -154,17 +160,6 @@ export class Runtime {
         if (payload.drill) cleanupSession(dshRoot, id)
         return { session_id: id }
       }
-      case 'release':
-        for (const repo of receipt.repositories) {
-          const target = child(root, repo.rel_path)
-          if (!fs.existsSync(target)) continue
-          if (repo.files_ready !== false && git(target, 'status', '--porcelain')) fail('WORKTREE_HAS_CHANGES: 保留未提交修改，不能删除')
-          if (git(target, 'branch', '--show-current') !== repo.task_branch) fail('WORKTREE_OWNERSHIP_CONFLICT')
-          if (repo.files_ready === false && git(target, 'rev-parse', 'HEAD') !== repo.base_commit_sha) fail('WORKTREE_OWNERSHIP_CONFLICT')
-          git(repo.repo_root, 'worktree', 'remove', ...(repo.files_ready === false ? ['--force'] : []), target)
-          git(repo.repo_root, 'branch', '-D', repo.task_branch)
-        }
-        return { released: true }
       default: fail('UNSUPPORTED_RESOURCE_OPERATION')
     }
   }

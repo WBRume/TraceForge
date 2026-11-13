@@ -128,10 +128,12 @@ async def lifespan(app: FastAPI):
         logger.warning("Feature runtime initialization deferred: {}", type(exc).__name__)
     app.state.feature_runtime.start()
     from app.domains.notification.services.task_awareness_worker import run_worker as run_task_awareness_worker
+    from app.domains.task.services.task_records import deletion as task_deletion
 
     _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
     recovered_queue_count = await ai_job_workers.start_runtime_workers()
     task_awareness_worker = asyncio.create_task(run_task_awareness_worker())
+    task_deletion_worker = asyncio.create_task(task_deletion.run_worker())
     app.state.ai_runtime_ready = True
     if recovered_queue_count:
         logger.info("Recovered {} pending AI job queues", recovered_queue_count)
@@ -140,7 +142,8 @@ async def lifespan(app: FastAPI):
     finally:
         app.state.ai_runtime_ready = False
         task_awareness_worker.cancel()
-        await asyncio.gather(task_awareness_worker, return_exceptions=True)
+        task_deletion_worker.cancel()
+        await asyncio.gather(task_awareness_worker, task_deletion_worker, return_exceptions=True)
         await app.state.feature_runtime.close()
         if _pre_input_worker_task is not None:
             _pre_input_worker_task.cancel()

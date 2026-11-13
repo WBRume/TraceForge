@@ -944,38 +944,79 @@ def get_user_permission_payload(db: Session, workspace_id: str, user_id: str) ->
     }
 
 
-def delete_workspace(db: Session, workspace_id: str) -> bool:
-    ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+def workspace_deletion_tasks(db: Session, workspace_id: str) -> list[str]:
+    from app.domains.task.models.task import SddTask
+
+    return [task_id for (task_id,) in db.query(SddTask.id).filter_by(workspace_id=workspace_id).order_by(SddTask.id)]
+
+
+def delete_workspace(db: Session, workspace_id: str, *, locked_task_ids: list[str] | None = None) -> bool:
+    from app.domains.system_config.services import system_config_service
+    from app.domains.task.models.task import SddTask, TaskStatus
+    from app.domains.task.services.task_records import commands, deletion
+    from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
+
+    ws = db.query(Workspace).filter_by(id=workspace_id).populate_existing().with_for_update().first()
     if not ws:
         return False
-    from app.domains.task.models.task import SddTask, TaskStatus
 
     # A locking read sees newly registered tasks even if the request's earlier
     # permission queries established a MySQL REPEATABLE READ snapshot.
-    if (
-        db.query(SddTask.id)
-        .filter_by(workspace_id=workspace_id, status=TaskStatus.PROVISIONING)
-        .with_for_update()
-        .first()
-    ):
+    tasks = db.query(SddTask).filter_by(workspace_id=workspace_id).populate_existing().with_for_update().all()
+    if any(task.status == TaskStatus.PROVISIONING for task in tasks):
         raise ValueError("工作区有正在准备的任务，请先取消创建并等待清理完成")
+    if locked_task_ids is not None and set(locked_task_ids) != {task.id for task in tasks}:
+        raise ValueError("工作区任务列表已变化，请重试删除")
 
     original_project_path = str(ws.project_path or "").strip()
     configured_remote = str(ws.git_repo_url or "").strip()
+    managed_root = system_config_service.get_config_str(db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR)
+    project_root = os.path.realpath(original_project_path) if original_project_path else ""
+    managed_base = (
+        os.path.realpath(os.path.join(managed_root, system_config_service.WORKSPACE_BASE_SEGMENT))
+        if managed_root
+        else ""
+    )
+    repo_dirs = db.query(SddWorkspaceRepository.base_dir).filter_by(workspace_id=workspace_id).all()
+    owns_repositories = bool(project_root and repo_dirs) and all(
+        base_dir and _is_path_within(os.path.realpath(base_dir), project_root) for (base_dir,) in repo_dirs
+    )
+    managed_path = bool(managed_base and project_root != managed_base and _is_path_within(project_root, managed_base))
     archived_path: str | None = None
+    archived_tasks: list[tuple[str, str]] = []
 
-    if git_worktree_service.should_use_git_worktree(original_project_path, configured_remote):
-        archived_path = git_worktree_service.archive_workspace_repository(
-            workspace_id=workspace_id,
-            project_path=original_project_path,
-            expected_git_repo_url=configured_remote,
-        )
-
+    for task in tasks:
+        deletion.ensure_execution_stopped(db, task.id)
+        deletion.enqueue(db, task)
     try:
+        if os.path.isdir(project_root) and (configured_remote or managed_path or owns_repositories):
+            other_paths = db.query(Workspace.project_path).filter(
+                Workspace.id != workspace_id, Workspace.project_path.isnot(None)
+            )
+            shared = any(
+                _is_path_within(other_root, project_root) or _is_path_within(project_root, other_root)
+                for other_root in (os.path.realpath(other) for (other,) in other_paths if other)
+            )
+            if shared:
+                raise ValueError("工作区目录与其他工作区共用或重叠，无法归档")
+            archived_path = git_worktree_service.archive_workspace_repository(
+                workspace_id=workspace_id,
+                project_path=original_project_path,
+                expected_git_repo_url=configured_remote,
+            )
+        else:
+            for task in tasks:
+                task_path = task.project_path
+                archive = commands.archive_server_task(db, ws, task)
+                if archive:
+                    archived_tasks.append((archive, task_path))
         db.delete(ws)
         db.commit()
-    except Exception as exc:
+    except Exception:
         db.rollback()
+        for archive, task_path in reversed(archived_tasks):
+            if not os.path.lexists(task_path):
+                os.rename(archive, task_path)
         if archived_path and original_project_path:
             try:
                 git_worktree_service.restore_archived_workspace(
@@ -986,7 +1027,7 @@ def delete_workspace(db: Session, workspace_id: str) -> bool:
                 raise RuntimeError(
                     f"Workspace archived but database deletion failed and rollback failed. archive_path={archived_path}"
                 ) from rollback_exc
-        raise RuntimeError("Workspace deletion failed after archive migration") from exc
+        raise
     return True
 
 

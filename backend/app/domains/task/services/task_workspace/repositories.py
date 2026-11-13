@@ -131,6 +131,8 @@ def cleanup_task_repositories(
     workspace: Workspace,
     task: SddTask,
     missing_ok: bool = True,
+    *,
+    strict: bool = False,
 ) -> None:
     """Remove worktrees for every repository binding of a task."""
     bindings = build_task_worktree_bindings(db, workspace, task)
@@ -141,6 +143,7 @@ def cleanup_task_repositories(
         task_root=task.project_path,
         task_id=task.id,
         missing_ok=missing_ok,
+        strict=strict,
     )
 
 

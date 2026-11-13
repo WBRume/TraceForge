@@ -36,6 +36,10 @@ def get_engine(task_id: str, scope_id: str = "main") -> Optional["TaskAgentEngin
     return _active_engines.get(_scope_key(task_id, scope_id))
 
 
+def list_task_engines(task_id: str) -> list["TaskAgentEngine"]:
+    return [engine for engine in _active_engines.values() if engine.task_id == task_id]
+
+
 def register_engine(engine: "TaskAgentEngine", *, mark_running: bool = False) -> None:
     if mark_running:
         engine.running = True

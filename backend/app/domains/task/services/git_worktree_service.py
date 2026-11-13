@@ -316,10 +316,10 @@ def archive_workspace_repository(
 
     abs_project_path = _to_abs_path(project_path, label="project_path")
     _assert_not_root_path(abs_project_path, label="project_path")
+    if os.path.normcase(os.path.realpath(abs_project_path)) != os.path.normcase(abs_project_path):
+        raise GitWorktreeError("Workspace project path traverses a symbolic link or junction", status_code=409)
     if not os.path.isdir(abs_project_path):
         raise GitWorktreeError(f"Workspace project path does not exist: {abs_project_path}", status_code=409)
-    if not is_git_repository(abs_project_path):
-        raise GitWorktreeError(f"Workspace project path is not a git repository: {abs_project_path}", status_code=409)
 
     if expected_git_repo_url:
         ensure_workspace_repo_matches_remote(abs_project_path, expected_git_repo_url)
@@ -328,6 +328,8 @@ def archive_workspace_repository(
         str(archive_root or _default_archive_root()),
         label="archive_root",
     )
+    _assert_not_root_path(archive_root_path, label="archive_root")
+    archive_root_path = os.path.realpath(archive_root_path)
     _assert_not_root_path(archive_root_path, label="archive_root")
 
     try:
@@ -343,12 +345,14 @@ def archive_workspace_repository(
     repo_name = os.path.basename(abs_project_path.rstrip("\\/")) or "repo"
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     archive_parent = os.path.join(archive_root_path, workspace_key)
+    if os.path.realpath(archive_parent) != archive_parent or os.path.dirname(archive_parent) != archive_root_path:
+        raise GitWorktreeError("Workspace archive path escapes archive_root", status_code=409)
     os.makedirs(archive_parent, exist_ok=True)
 
     base_target_name = f"{timestamp}_{repo_name}"
     target_path = os.path.join(archive_parent, base_target_name)
     sequence = 1
-    while os.path.exists(target_path):
+    while os.path.lexists(target_path):
         target_path = os.path.join(archive_parent, f"{base_target_name}_{sequence}")
         sequence += 1
 
@@ -649,6 +653,7 @@ def remove_task_worktrees(
     task_root: str,
     task_id: str,
     missing_ok: bool = True,
+    strict: bool = False,
 ) -> None:
     """Remove every repository worktree of a task (best effort per binding)."""
     errors: list = []
@@ -664,7 +669,7 @@ def remove_task_worktrees(
             )
         except GitWorktreeError as exc:
             errors.append(str(exc))
-    if errors and not missing_ok:
+    if errors and (strict or not missing_ok):
         raise GitWorktreeError(
             "Failed to remove some task worktrees: " + " | ".join(errors),
             status_code=409,

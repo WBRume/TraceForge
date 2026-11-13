@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import AsyncExitStack
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
@@ -30,11 +28,11 @@ from app.domains.task.schemas.task import (
     TaskResponse,
 )
 from app.domains.task.schemas.task_inspection import TaskInspectionResponse
-from app.domains.task.services import task_cli_state_service
 from app.domains.task.services.chat_submission_service import SubmissionError
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.provisioning import creation as task_provisioning_creation
 from app.domains.task.services.task_records import commands as task_task_records_commands
+from app.domains.task.services.task_records import deletion as task_deletion
 from app.domains.task.services.task_records import queries as task_task_records_queries
 from app.domains.task.services.task_session_control_service import TASK_RUNNING_MSG
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
@@ -43,7 +41,6 @@ from app.domains.workflow.schemas.provision import (
     ProvisionJobResponse,
 )
 from app.domains.workflow.services import provision_job_service
-from app.domains.workspace.services import workspace_service
 from app.engine.session import get_engine
 
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
@@ -310,32 +307,24 @@ async def delete_task(
             WorkspacePermission.DELETE_TASK,
             "No permission to delete tasks",
             task_id=task_id,
+            operation="delete",
         ),
     )
 
-    current_task = get_task_or_404(db, task_id, ws_id)
-    ensure_task_not_baselined(current_task)
-    use_workspace_lock = bool(str(current_task.git_repo_url or "").strip()) and (
-        workspace_service.workspace_uses_git_worktree(db, ws_id)
-    )
-
     try:
-        async with AsyncExitStack() as stack:
-            if use_workspace_lock:
-                try:
-                    await stack.enter_async_context(lock_workspace_repo(ws_id))
-                except LockAcquireTimeout as exc:
-                    raise_workspace_lock_conflict(exc)
-            try:
-                await stack.enter_async_context(lock_task(task_id))
-            except LockAcquireTimeout as exc:
-                raise_task_lock_conflict(exc)
-
-            engine = get_engine(task_id)
-            if engine:
-                await engine.stop()
-
-            success = task_task_records_commands.delete_task(db, task_id, ws_id)
+        async with lock_workspace_repo(ws_id), lock_task(task_id):
+            db_bind = get_db_bind(db)
+            await run_route_db_txn(
+                db, db_bind, lambda session: ensure_task_not_baselined(get_task_or_404(session, task_id, ws_id))
+            )
+            await task_deletion.stop_task_execution(db_bind, ws_id, task_id)
+            success = await run_route_db_txn(
+                db, db_bind, lambda session: task_task_records_commands.delete_task(session, task_id, ws_id)
+            )
+    except LockAcquireTimeout as exc:
+        if exc.resource_type == "task":
+            raise_task_lock_conflict(exc)
+        raise_workspace_lock_conflict(exc)
     except ValueError as exc:
         audit_log(
             action="delete_task",
@@ -362,7 +351,6 @@ async def delete_task(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if not success:
         raise HTTPException(status_code=404, detail="Task not found")
-    task_cli_state_service.schedule_task_cli_state_cleanup(ws_id, task_id)
     audit_log(
         action="delete_task",
         outcome="success",

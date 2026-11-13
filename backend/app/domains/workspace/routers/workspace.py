@@ -4,17 +4,19 @@ Workspace API routes.
 
 import asyncio
 import time
+from contextlib import AsyncExitStack
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import (
     LockAcquireTimeout,
+    lock_task,
     lock_workspace_repo,
     make_resource_busy_error,
 )
 from app.core.logging import audit_log, get_logger
-from app.core.offload import run_db_txn
+from app.core.offload import run_db_txn, run_db_txn_with_bind
 from app.dependencies import get_current_user, get_db
 from app.domains.ai.schemas.ai_job import AiJobResponse
 from app.domains.ai.services.jobs import attempts as ai_job_attempts
@@ -39,6 +41,8 @@ from app.domains.asset.schemas.asset import (
     WorkspaceResponse,
 )
 from app.domains.auth.models.user import User
+from app.domains.task.routers.task.deps import raise_task_lock_conflict
+from app.domains.task.services.task_records import deletion as task_deletion
 from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
 from app.domains.workflow.services import provision_job_service
 from app.domains.workspace.services import workspace_service
@@ -400,9 +404,21 @@ async def delete_workspace(
         raise HTTPException(status_code=403, detail="Only owner can delete workspace")
 
     try:
-        async with lock_workspace_repo(ws_id):
-            success = workspace_service.delete_workspace(db, ws_id)
+        async with lock_workspace_repo(ws_id), AsyncExitStack() as locks:
+            db_bind = db.get_bind()
+            task_ids = await run_db_txn_with_bind(
+                db_bind, lambda session: workspace_service.workspace_deletion_tasks(session, ws_id)
+            )
+            for task_id in task_ids:
+                await locks.enter_async_context(lock_task(task_id))
+            for task_id in task_ids:
+                await task_deletion.stop_task_execution(db_bind, ws_id, task_id)
+            success = await run_db_txn_with_bind(
+                db_bind, lambda session: workspace_service.delete_workspace(session, ws_id, locked_task_ids=task_ids)
+            )
     except LockAcquireTimeout as exc:
+        if exc.resource_type == "task":
+            raise_task_lock_conflict(exc)
         _raise_workspace_lock_conflict(exc)
     except ValueError as exc:
         audit_log(

@@ -641,7 +641,7 @@ class TaskAgentEngine:
                     )
                 except asyncio.TimeoutError as exc:
                     raise RuntimeError("Agent run did not exit after cancellation") from exc
-            unregister_engine(self.task_id)
+            unregister_engine(self.task_id, self.scope_id)
             logger.info(f"TaskAgentEngine stopped: {self.task_id}")
         return None
 

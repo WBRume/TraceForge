@@ -35,7 +35,8 @@ def require_operation(db, task, actor_id, operation="execute"):
     allowed = actor_id == task.creator_id or (operation != "generate_patch" and bool(member.is_expert))
     if not allowed:
         raise ResourceError("本地任务仅创建者或专家可操作；生成变更仅限创建者", "LOCAL_TASK_OPERATION_FORBIDDEN", 403)
-    require_online(runtime_profile(db, binding(db, task.id)))
+    if operation != "delete":
+        require_online(runtime_profile(db, binding(db, task.id)))
 
 
 def require_online(config):
@@ -238,9 +239,10 @@ def binding(db, task_id):
     return row
 
 
-def runtime_profile(db, binding_row):
+def runtime_profile(db, binding_row, *, require_access=True):
     config = dict(binding_row.profile_json)
-    require_member(db, config["workspace_id"], config["owner_user_id"])
+    if require_access:
+        require_member(db, config["workspace_id"], config["owner_user_id"])
     current = db.get(LocalResource, binding_row.resource_id)
     if (
         current
