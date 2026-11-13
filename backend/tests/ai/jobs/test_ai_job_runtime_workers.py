@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from unittest.mock import AsyncMock
+
+import pytest
 
 from app.config import settings
 from app.domains.ai.services.jobs import reaper as ai_reaper
@@ -190,3 +193,20 @@ def test_start_runtime_workers_is_idempotent(monkeypatch):
         await ai_workers.shutdown_runtime_workers()
 
     asyncio.run(run())
+
+
+@pytest.mark.asyncio
+async def test_shutdown_stops_heartbeats_and_processes_when_attempt_lookup_fails(monkeypatch):
+    heartbeat = asyncio.create_task(asyncio.Event().wait())
+    monkeypatch.setattr(ai_runtime, "heartbeat_tasks", {"job": heartbeat})
+    monkeypatch.setattr(ai_runtime, "shutting_down", False)
+    monkeypatch.setattr(ai_workers, "run_db", AsyncMock(side_effect=RuntimeError("database unavailable")))
+    stop_all = AsyncMock()
+    monkeypatch.setattr(ai_workers.process_supervisor, "stop_all", stop_all)
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await ai_workers.shutdown_runtime_workers()
+
+    assert heartbeat.cancelled()
+    assert ai_runtime.heartbeat_tasks == {}
+    stop_all.assert_awaited_once_with("WORKER_SHUTDOWN")

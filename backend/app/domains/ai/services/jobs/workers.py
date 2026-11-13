@@ -408,13 +408,23 @@ async def shutdown_runtime_workers() -> None:
         await asyncio.gather(*runners, return_exceptions=True)
     runtime.queue_runners.clear()
     runtime.worker_tasks.clear()
-    owned_attempts = await run_db(reaper.mark_worker_jobs_terminating_sync, "WORKER_SHUTDOWN")
-    heartbeats = list(runtime.heartbeat_tasks.values())
-    for task in heartbeats:
-        task.cancel()
-    if heartbeats:
-        await asyncio.gather(*heartbeats, return_exceptions=True)
-    runtime.heartbeat_tasks.clear()
+    try:
+        await _shutdown_owned_attempts()
+    finally:
+        # Cover spawn races and failures to read or update durable attempt rows.
+        await process_supervisor.stop_all("WORKER_SHUTDOWN")
+
+
+async def _shutdown_owned_attempts() -> None:
+    try:
+        owned_attempts = await run_db(reaper.mark_worker_jobs_terminating_sync, "WORKER_SHUTDOWN")
+    finally:
+        heartbeats = list(runtime.heartbeat_tasks.values())
+        for task in heartbeats:
+            task.cancel()
+        if heartbeats:
+            await asyncio.gather(*heartbeats, return_exceptions=True)
+        runtime.heartbeat_tasks.clear()
     for row in owned_attempts:
         token = str(row.get("run_token") or "")
         result = await process_supervisor.stop_attempt(token, "WORKER_SHUTDOWN") if token else None
@@ -449,7 +459,3 @@ async def shutdown_runtime_workers() -> None:
         if payload:
             runtime.clear_cancel_for_payload(payload)
             await broadcast_job_payload(payload)
-    # Catch any process whose owner row was not visible during the durable
-    # snapshot (for example a spawn race); ProcessSupervisor remains the final
-    # in-memory safety net.
-    await process_supervisor.stop_all("WORKER_SHUTDOWN")

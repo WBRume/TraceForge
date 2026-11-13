@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -67,16 +68,25 @@ async def replace_client(app):
 
 
 async def stop(app):
-    if hasattr(app.state, "search_runtime"):
-        await app.state.search_runtime.stop()
-    if hasattr(app.state, "search_es"):
-        await app.state.search_es.close()
-        await app.state.search_http.aclose()
-    for client, task in getattr(app.state, "search_retired_clients", []):
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        await client.close()
+    retired = getattr(app.state, "search_retired_clients", [])
     app.state.search_retired_clients = []
+    async with AsyncExitStack() as cleanup:
+        for client, task in retired:
+            task.cancel()
+            cleanup.push_async_callback(client.close)
+        if retired:
+            cleanup.push_async_callback(asyncio.gather, *(task for _, task in retired), return_exceptions=True)
+        if hasattr(app.state, "search_http"):
+            cleanup.push_async_callback(app.state.search_http.aclose)
+            del app.state.search_http
+        if hasattr(app.state, "search_es"):
+            cleanup.push_async_callback(app.state.search_es.close)
+            del app.state.search_es
+        if hasattr(app.state, "search_service"):
+            del app.state.search_service
+        if hasattr(app.state, "search_runtime"):
+            cleanup.push_async_callback(app.state.search_runtime.stop)
+            del app.state.search_runtime
 
 
 @router.get("/search/capabilities")

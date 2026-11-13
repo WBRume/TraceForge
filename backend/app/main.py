@@ -5,9 +5,11 @@ FastAPI 主入口
 
 import asyncio
 import json
-from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable, Coroutine
+from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from jose import JWTError
@@ -106,71 +108,78 @@ async def _shutdown_websocket_hubs():
         logger.warning("Failed to shutdown public share websocket hubs")
 
 
+async def _shutdown(label: str, callback: Callable[..., Awaitable[None]], *args: Any) -> None:
+    try:
+        await callback(*args)
+    except Exception:
+        logger.exception("Failed to shut down {}", label)
+
+
+async def _cancel_worker(task: asyncio.Task[None]) -> None:
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+def _log_worker_exit(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        logger.opt(exception=task.exception()).error("Background worker exited unexpectedly: {}", task.get_name())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _pre_input_worker_task
-    app.state.ai_runtime_ready = False
+    from app.domains.notification.services import task_awareness_worker
     from app.domains.system_config.services.feature_runtime import FeatureRuntime
-
-    app.state.feature_runtime = FeatureRuntime(app)
-    await app.state.feature_runtime.initialize()
+    from app.domains.task.services.task_records import deletion as task_deletion
     from app.runtime.evidence_runner.registry import load_configured_bundles
 
-    load_configured_bundles(settings.DIAGNOSIS_PLAYBOOK_BUNDLE_FACTORIES)
-    if settings.DIAGNOSIS_PLAYBOOK_MYSQL_ENVIRONMENTS_FILE:
-        from app.runtime.evidence_runner.bundles.mysql_deadlock.bundle import install
+    app.state.runtime_started = False
+    workers: dict[str, asyncio.Task[None]] = {}
+    app.state.background_workers = workers
+    # Stop producers before the services they submit work to or reconfigure.
+    async with AsyncExitStack() as services, AsyncExitStack() as producers:
+        services.push_async_callback(
+            _shutdown, "offload executors", asyncio.to_thread, shutdown_offload_executors, True
+        )
+        services.push_async_callback(_shutdown, "Redis client", close_redis_client)
+        services.push_async_callback(_shutdown_websocket_hubs)
+        services.push_async_callback(_shutdown, "active workflow engines", shutdown_active_engines)
+        producers.callback(workers.clear)
 
-        install(settings.DIAGNOSIS_PLAYBOOK_MYSQL_ENVIRONMENTS_FILE)
-    await search_router.start(app)
-    try:
-        await app.state.feature_runtime.refresh()
-    except Exception as exc:
-        logger.warning("Feature runtime initialization deferred: {}", type(exc).__name__)
-    app.state.feature_runtime.start()
-    from app.domains.notification.services.task_awareness_worker import run_worker as run_task_awareness_worker
-    from app.domains.task.services.task_records import deletion as task_deletion
+        def start_worker(name: str, run: Callable[[], Coroutine[Any, Any, None]]) -> None:
+            task = asyncio.create_task(run(), name=name)
+            producers.push_async_callback(_cancel_worker, task)
+            workers[name] = task
+            task.add_done_callback(_log_worker_exit)
 
-    _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
-    recovered_queue_count = await ai_job_workers.start_runtime_workers()
-    task_awareness_worker = asyncio.create_task(run_task_awareness_worker())
-    task_deletion_worker = asyncio.create_task(task_deletion.run_worker())
-    app.state.ai_runtime_ready = True
-    if recovered_queue_count:
-        logger.info("Recovered {} pending AI job queues", recovered_queue_count)
-    try:
+        feature_runtime = FeatureRuntime(app)
+        app.state.feature_runtime = feature_runtime
+        producers.push_async_callback(_shutdown, "feature runtime", feature_runtime.close)
+        await feature_runtime.initialize()
+        load_configured_bundles(settings.DIAGNOSIS_PLAYBOOK_BUNDLE_FACTORIES)
+        if settings.DIAGNOSIS_PLAYBOOK_MYSQL_ENVIRONMENTS_FILE:
+            from app.runtime.evidence_runner.bundles.mysql_deadlock.bundle import install
+
+            install(settings.DIAGNOSIS_PLAYBOOK_MYSQL_ENVIRONMENTS_FILE)
+        # Search setup and AI recovery can acquire resources before returning.
+        services.push_async_callback(_shutdown, "search runtime", search_router.stop, app)
+        await search_router.start(app)
+        try:
+            await feature_runtime.refresh()
+        except Exception as exc:
+            logger.warning("Feature runtime initialization deferred: {}", type(exc).__name__)
+        feature_runtime.start()
+
+        start_worker("pre_input", pre_input_deadline_worker.run_pre_input_worker)
+        services.push_async_callback(_shutdown, "AI job runtime", ai_job_workers.shutdown_runtime_workers)
+        recovered_queue_count = await ai_job_workers.start_runtime_workers()
+        if recovered_queue_count:
+            logger.info("Recovered {} pending AI job queues", recovered_queue_count)
+        start_worker("task_awareness", task_awareness_worker.run_worker)
+        start_worker("task_deletion", task_deletion.run_worker)
+
+        producers.callback(setattr, app.state, "runtime_started", False)
+        app.state.runtime_started = True
         yield
-    finally:
-        app.state.ai_runtime_ready = False
-        task_awareness_worker.cancel()
-        task_deletion_worker.cancel()
-        await asyncio.gather(task_awareness_worker, task_deletion_worker, return_exceptions=True)
-        await app.state.feature_runtime.close()
-        if _pre_input_worker_task is not None:
-            _pre_input_worker_task.cancel()
-            await asyncio.gather(_pre_input_worker_task, return_exceptions=True)
-            _pre_input_worker_task = None
-        # Stop new durable claims and queue runners first.  The service then
-        # terminates every locally supervised process before infrastructure closes.
-        try:
-            await ai_job_workers.shutdown_runtime_workers()
-        except Exception:
-            logger.exception("Failed to shutdown AI job runtime")
-        try:
-            await shutdown_active_engines()
-        except Exception:
-            logger.exception("Failed to shutdown active workflow engines")
-        await _shutdown_websocket_hubs()
-
-        await search_router.stop(app)
-        try:
-            await close_redis_client()
-        except Exception:
-            logger.warning("Failed to close redis client on shutdown")
-        try:
-            # 在线程中执行有限等待的 executor 关闭，避免阻塞事件循环
-            await asyncio.get_running_loop().run_in_executor(None, shutdown_offload_executors, True)
-        except Exception:
-            logger.warning("Failed to shutdown offload executors")
 
 
 app = FastAPI(
@@ -179,9 +188,6 @@ app = FastAPI(
     description="规范驱动开发基础平台 API",
     lifespan=lifespan,
 )
-
-_pre_input_worker_task: asyncio.Task | None = None
-app.state.ai_runtime_ready = False
 
 # ── CORS ──
 app.add_middleware(
@@ -680,12 +686,16 @@ def health_check():
 
 
 @app.get("/health/ready")
-def readiness_check():
+async def readiness_check(request: Request):
     worker_health = ai_job_workers.runtime_worker_health()
+    for name, worker in getattr(request.app.state, "background_workers", {}).items():
+        alive = not worker.done()
+        worker_health[name] = {"alive": alive, "healthy": alive}
+        worker_health["healthy"] = worker_health["healthy"] and alive
     containment = ai_job_workers.process_containment_readiness()
-    runtime_ready = bool(getattr(app.state, "ai_runtime_ready", False))
-    ready = runtime_ready and bool(worker_health.get("healthy", False)) and bool(containment.get("ok", True))
-    status = "ready" if ready else ("degraded" if runtime_ready else "starting")
+    runtime_started = getattr(request.app.state, "runtime_started", False)
+    ready = runtime_started and worker_health["healthy"] and containment["ok"]
+    status = "ready" if ready else ("degraded" if runtime_started else "starting")
     return JSONResponse(
         status_code=200 if ready else 503,
         content={

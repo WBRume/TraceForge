@@ -1,8 +1,11 @@
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import FastAPI
 
-from app.domains.search import runtime, sqlite_index
+from app.domains.search import router, runtime, sqlite_index
 
 
 @pytest.fixture(autouse=True)
@@ -92,3 +95,20 @@ def test_worker_failure_is_supervised_and_shutdown_interrupts_backoff(monkeypatc
     asyncio.run(scenario())
     assert "OSError" in caplog.text
     assert "private connection details" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_search_stop_releases_client_after_partial_start(monkeypatch):
+    app = FastAPI()
+    es = SimpleNamespace(close=AsyncMock())
+    monkeypatch.setattr(router, "create_client", lambda: es)
+
+    def fail_http_client(**kwargs):
+        raise RuntimeError("HTTP client startup failed")
+
+    monkeypatch.setattr(router.httpx, "AsyncClient", fail_http_client)
+    with pytest.raises(RuntimeError, match="HTTP client startup failed"):
+        await router.start(app)
+
+    await router.stop(app)
+    es.close.assert_awaited_once()

@@ -4,7 +4,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 import app.domains.ai.models.ai_job
 import app.domains.api_mock.models.api_mock
@@ -26,7 +25,7 @@ from app.domains.auth.models.user import (
 )
 from app.domains.auth.services import auth_service
 from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.task.services import pre_input_worker
+from app.domains.task.services import chat_submission_service, pre_input_worker, task_event_publisher
 from app.domains.websocket.ws import task_handler
 from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
 
@@ -97,11 +96,7 @@ def _seed(db, project_path: str):
 @pytest.fixture()
 def ws_env(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "SEARCH_WORKERS_ENABLED", False)
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    engine = create_engine(f"sqlite:///{tmp_path / 'pre_input.db'}")
     Base.metadata.create_all(engine)
 
     task_root = tmp_path / "task-1"
@@ -115,9 +110,7 @@ def ws_env(monkeypatch, tmp_path):
     # manager 是进程级单例：清掉此前用例留下的连接与房间 journal，避免事件串扰
     main_module.manager.registry.reset()
 
-    # 每次调用返回独立 session（与 recovery_env 一致）：offload 线程与测试主线程
-    # 各自持有 session 对象，避免共享单 session 在并发事务下进入 prepared 状态。
-    # StaticPool 单连接把语句排队串行化，语义上等价于原来的共享 session。
+    # 独立 session 和连接，避免 offload 线程与测试主线程共用 SQLite 事务。
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     test_session = factory()
 
@@ -129,13 +122,10 @@ def ws_env(monkeypatch, tmp_path):
 
     # outbox 发布器：测试不跑后台循环，wake 即同步补发一轮
     async def _publish_on_wake():
-        from app.domains.task.services import task_event_publisher
-
         while await task_event_publisher.publish_once():
             pass
 
-    from app.domains.task.services import chat_submission_service
-
+    monkeypatch.setattr(task_event_publisher, "start", lambda: None)
     monkeypatch.setattr(chat_submission_service, "wake_event_publisher", _publish_on_wake)
 
     async def _noop_enqueue(job_id):
@@ -157,9 +147,12 @@ def ws_env(monkeypatch, tmp_path):
     )
 
     _seed(test_session, str(task_root))
-    yield test_session
-
-    main_module.manager.registry.reset()
+    try:
+        yield test_session
+    finally:
+        test_session.close()
+        engine.dispose()
+        main_module.manager.registry.reset()
 
 
 def test_ws_pre_input_full_flow(ws_env):
