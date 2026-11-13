@@ -98,6 +98,8 @@ def upsert_final_summary(
     task_id: str,
     actor_id: str | None,
     payload: TaskFinalSummaryUpsertRequest | WorkflowFinalSummaryUpsertRequest,
+    *,
+    commit: bool = True,
 ) -> str:
     task = get_task_or_error(db, workspace_id, task_id)
     baseline_service.ensure_task_mutable(task)
@@ -158,7 +160,8 @@ def upsert_final_summary(
         baseline_service.baseline_task(db, task, actor_id)
 
     summary_id = summary.id
-    db.commit()
+    if commit:
+        db.commit()
     return summary_id
 
 

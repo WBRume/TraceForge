@@ -35,7 +35,7 @@ def require_operation(db, task, actor_id, operation="execute"):
     allowed = actor_id == task.creator_id or (operation != "generate_patch" and bool(member.is_expert))
     if not allowed:
         raise ResourceError("本地任务仅创建者或专家可操作；生成变更仅限创建者", "LOCAL_TASK_OPERATION_FORBIDDEN", 403)
-    if operation != "delete":
+    if operation not in {"delete", "closeout"}:
         require_online(runtime_profile(db, binding(db, task.id)))
 
 

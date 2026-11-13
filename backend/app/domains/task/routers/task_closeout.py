@@ -7,8 +7,6 @@ from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.dependencies import get_current_user, get_db
-from app.domains.ai.services.jobs import attempts as ai_job_attempts
-from app.domains.ai.services.jobs import publishing as ai_job_publishing
 from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.local_resource.client import ResourceError
 from app.domains.task.routers.task.deps import get_db_bind, raise_task_lock_conflict, run_route_db_txn
@@ -17,10 +15,8 @@ from app.domains.task.schemas.task_closeout import (
     FailTaskCloseoutRequest,
     TaskCloseoutResponse,
 )
-from app.domains.task.services import task_cli_state_service, task_closeout_service
-from app.domains.task.services.task_records import queries as task_task_records_queries
+from app.domains.task.services import task_closeout_service
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
-from app.engine.session import get_engine
 
 router = APIRouter(prefix="/workspaces/{ws_id}/tasks/{task_id}/closeout", tags=["Task Closeout"])
 
@@ -35,29 +31,16 @@ def _verify_manage_task_status(ws_id: str, current_user: User, db: Session, task
         WorkspacePermission.MANAGE_TASK_STATUS,
         "No permission to manage tasks",
         task_id=task_id,
+        operation="closeout",
     )
-
-
-async def _stop_active_task_session(db: Session, ws_id: str, task_id: str, message: str) -> None:
-    cancelled_job_ids = ai_job_attempts.mark_task_chat_jobs_cancelled(
-        db,
-        workspace_id=ws_id,
-        task_id=task_id,
-        message=message,
-    )
-    engine = get_engine(task_id)
-    if engine:
-        await engine.stop()
-    for job_id in cancelled_job_ids:
-        await ai_job_publishing.publish_job(job_id)
-    task_cli_state_service.schedule_task_cli_state_cleanup(ws_id, task_id)
 
 
 def _raise_closeout_error(exc: Exception) -> None:
     if isinstance(exc, ResourceError):
         raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)})
     if isinstance(exc, task_closeout_service.TaskCloseoutError):
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        detail = {"code": exc.code, "message": str(exc)} if exc.code else str(exc)
+        raise HTTPException(status_code=exc.status_code, detail=detail)
     if isinstance(exc, WorkspaceAssetError):
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
     raise exc
@@ -72,16 +55,13 @@ async def complete_task_closeout(
     db: Session = Depends(get_db),
 ):
     db_bind = get_db_bind(db)
+    db.close()
     await run_route_db_txn(
         db, db_bind, lambda session: _verify_manage_task_status(ws_id, current_user, session, task_id)
     )
     try:
         async with lock_task(task_id):
-            task = task_task_records_queries.get_task(db, task_id, ws_id)
-            if not task:
-                raise HTTPException(status_code=404, detail="Task not found")
             try:
-                db.close()
                 result = await run_route_db_txn(
                     db,
                     db_bind,
@@ -91,7 +71,6 @@ async def complete_task_closeout(
                 )
             except (task_closeout_service.TaskCloseoutError, WorkspaceAssetError, ResourceError) as exc:
                 _raise_closeout_error(exc)
-            await _stop_active_task_session(db, ws_id, task_id, "Task completed through closeout")
             from app.domains.task.services.task_event_publisher import wake
 
             wake()
@@ -109,16 +88,13 @@ async def fail_task_closeout(
     db: Session = Depends(get_db),
 ):
     db_bind = get_db_bind(db)
+    db.close()
     await run_route_db_txn(
         db, db_bind, lambda session: _verify_manage_task_status(ws_id, current_user, session, task_id)
     )
     try:
         async with lock_task(task_id):
-            task = task_task_records_queries.get_task(db, task_id, ws_id)
-            if not task:
-                raise HTTPException(status_code=404, detail="Task not found")
             try:
-                db.close()
                 result = await run_route_db_txn(
                     db,
                     db_bind,
@@ -128,7 +104,6 @@ async def fail_task_closeout(
                 )
             except (task_closeout_service.TaskCloseoutError, WorkspaceAssetError, ResourceError) as exc:
                 _raise_closeout_error(exc)
-            await _stop_active_task_session(db, ws_id, task_id, "Task failed through closeout")
             from app.domains.task.services.task_event_publisher import wake
 
             wake()

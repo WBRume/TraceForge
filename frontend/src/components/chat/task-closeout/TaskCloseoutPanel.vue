@@ -4,6 +4,8 @@ import { CheckCircle2, X, XCircle } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 import CompleteCloseoutForm from './CompleteCloseoutForm.vue'
 import FailCloseoutForm from './FailCloseoutForm.vue'
+import CloseoutAvailability from './CloseoutAvailability.vue'
+import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import { useTaskCloseout } from '@/composables/useTaskCloseout'
 import type { CompleteCloseoutPayload, FailCloseoutPayload } from '@/types/taskCloseout'
 import RequirementPickerSidebar from '@/components/task-create/RequirementPickerSidebar.vue'
@@ -17,6 +19,8 @@ const props = defineProps<{
   taskId: string
   taskName?: string
   taskType?: string
+  agentActive?: boolean
+  userId?: string
   collaboration?: LocalCollaboration
 }>()
 
@@ -29,12 +33,26 @@ const { t } = useI18n()
 const closeout = useTaskCloseout()
 const selectedRequirement = shallowRef<RequirementOption | null>(null)
 const requirementPickerOpen = shallowRef(false)
-const confirmedSnapshot = shallowRef('')
-const collaborationEnabled = computed(() => props.collaboration?.enabled.value)
-const snapshotId = computed(() => props.collaboration?.state.value?.snapshot_id || '')
-const codeReady = computed(() => !props.collaboration?.loading.value && (!collaborationEnabled.value || (props.collaboration?.phase.value === 'READY' && !props.collaboration.busy.value && Boolean(snapshotId.value) && confirmedSnapshot.value === snapshotId.value)))
-watch(() => [props.show, props.taskId, snapshotId.value], () => { confirmedSnapshot.value = '' })
-const snapshotEvidence = () => collaborationEnabled.value ? { confirmed_server_snapshot_id: confirmedSnapshot.value } : {}
+const pendingCloseout = shallowRef<{ leaseEpoch: number; submit: (leaseEpoch?: number) => Promise<void> } | null>(null)
+const collaborationState = computed(() => props.collaboration?.state.value)
+const driverId = computed(() => collaborationState.value?.driver_connected ? collaborationState.value.driver_user_id : undefined)
+const ownHost = computed(() => Boolean(driverId.value && driverId.value === props.userId))
+const connecting = computed(() => props.collaboration?.phase.value === 'ENABLING' || Boolean(props.collaboration?.establishing.value))
+const submissionBlocked = computed(() => Boolean(props.agentActive || connecting.value || (driverId.value && !ownHost.value)))
+const saving = closeout.saving
+
+watch([() => props.taskId, () => props.mode, () => props.show], () => { pendingCloseout.value = null })
+watch([driverId, () => collaborationState.value?.lease_epoch, submissionBlocked], () => {
+  if (!saving.value) pendingCloseout.value = null
+})
+watch([() => props.show, () => props.collaboration], ([show, collaboration], _, onCleanup) => {
+  if (!show || !collaboration) return
+  void collaboration.refresh()
+  const timer = setInterval(() => {
+    if (driverId.value) void collaboration.refresh()
+  }, 10_000)
+  onCleanup(() => clearInterval(timer))
+}, { immediate: true })
 
 const title = computed(() => props.mode === 'complete'
   ? t('chat.closeout.complete_title')
@@ -44,22 +62,56 @@ const description = computed(() => props.mode === 'complete'
   ? t('chat.closeout.complete_desc')
   : t('chat.closeout.failure_desc'))
 
-async function submitComplete(payload: Omit<CompleteCloseoutPayload, 'evidence_attachments'>, files: File[]) {
-  if (!codeReady.value) return
-  const result = await closeout.completeTask(props.workspaceId, props.taskId, { ...payload, ...snapshotEvidence() }, files)
-  if (result) emit('success', result, selectedRequirement.value)
+async function submitWhenAvailable(submit: (leaseEpoch?: number) => Promise<void>) {
+  if (saving.value || submissionBlocked.value) return
+  if (ownHost.value && collaborationState.value?.lease_epoch) {
+    pendingCloseout.value = { leaseEpoch: collaborationState.value.lease_epoch, submit }
+    return
+  }
+  await submit()
 }
 
-async function submitFailure(payload: Omit<FailCloseoutPayload, 'evidence_attachments'>, files: File[]) {
-  if (!codeReady.value) return
-  const result = await closeout.failTask(props.workspaceId, props.taskId, { ...payload, ...snapshotEvidence() }, files)
-  if (result) emit('success', result)
+async function confirmDisconnect() {
+  const pending = pendingCloseout.value
+  if (!pending || saving.value || submissionBlocked.value || !ownHost.value
+    || pending.leaseEpoch !== collaborationState.value?.lease_epoch) return
+  await pending.submit(pending.leaseEpoch)
+  pendingCloseout.value = null
+}
+
+async function saveCloseout(
+  submit: () => Promise<import('@/types/taskCloseout').TaskCloseoutResponse | null>,
+  requirement?: RequirementOption | null,
+) {
+  const result = await submit()
+  void props.collaboration?.refresh()
+  if (result) {
+    if (requirement === undefined) emit('success', result)
+    else emit('success', result, requirement)
+  }
+}
+
+function submitComplete(payload: Omit<CompleteCloseoutPayload, 'evidence_attachments'>, files: File[]) {
+  const { workspaceId, taskId } = props
+  const requirement = selectedRequirement.value
+  return submitWhenAvailable(leaseEpoch => saveCloseout(() => closeout.completeTask(workspaceId, taskId, {
+    ...payload,
+    ...(leaseEpoch === undefined ? {} : { disconnect_collaboration_lease_epoch: leaseEpoch }),
+  }, files), requirement))
+}
+
+function submitFailure(payload: Omit<FailCloseoutPayload, 'evidence_attachments'>, files: File[]) {
+  const { workspaceId, taskId } = props
+  return submitWhenAvailable(leaseEpoch => saveCloseout(() => closeout.failTask(workspaceId, taskId, {
+    ...payload,
+    ...(leaseEpoch === undefined ? {} : { disconnect_collaboration_lease_epoch: leaseEpoch }),
+  }, files)))
 }
 </script>
 
 <template>
   <Teleport to="body">
-    <div v-if="show" class="modal-overlay" @pointerdown.self="emit('close')">
+    <div v-if="show" class="modal-overlay" @pointerdown.self="!saving && !pendingCloseout && emit('close')">
       <section
         class="modal glass-panel closeout-modal"
         :class="[mode === 'complete' ? 'complete-modal' : 'fail-modal', { 'with-requirement-picker':requirementPickerOpen }]"
@@ -93,14 +145,14 @@ async function submitFailure(payload: Omit<FailCloseoutPayload, 'evidence_attach
         </header>
 
         <div class="closeout-body"><div class="modal-content">
-          <div v-if="collaborationEnabled" class="collaboration-closeout">
-            <p v-if="collaboration?.phase.value !== 'READY'">{{ t('collaboration.blocked') }}</p>
-            <label><input type="checkbox" :disabled="collaboration?.phase.value !== 'READY' || collaboration.busy.value" :checked="Boolean(confirmedSnapshot)" @change="confirmedSnapshot = ($event.target as HTMLInputElement).checked ? snapshotId : ''" />{{ t('collaboration.confirmSnapshot', { snapshot: snapshotId }) }}</label>
-          </div>
+          <CloseoutAvailability
+            :agent-active="Boolean(agentActive)" :connecting="connecting" :driver-id="driverId"
+            :profile="collaborationState?.driver_profile" :own-host="ownHost"
+          />
           <CompleteCloseoutForm
             v-if="mode === 'complete'"
             :saving="closeout.saving.value"
-            :submission-blocked="!codeReady"
+            :submission-blocked="submissionBlocked"
             :task-type="taskType" :selected-requirement="selectedRequirement" :requirement-picker-open="requirementPickerOpen"
             @toggle-requirement-picker="requirementPickerOpen = !requirementPickerOpen"
             @cancel="emit('close')"
@@ -110,7 +162,7 @@ async function submitFailure(payload: Omit<FailCloseoutPayload, 'evidence_attach
             v-else
             :task-type="taskType"
             :saving="closeout.saving.value"
-            :submission-blocked="!codeReady"
+            :submission-blocked="submissionBlocked"
             @cancel="emit('close')"
             @submit="submitFailure"
           />
@@ -126,13 +178,21 @@ async function submitFailure(payload: Omit<FailCloseoutPayload, 'evidence_attach
           @select="selectedRequirement = $event" @close="requirementPickerOpen = false" />
         </div>
       </section>
+      <ConfirmActionModal
+        v-if="pendingCloseout"
+        :show="true" :teleport="false" tone="warning" :loading="saving"
+        :title="t('chat.closeout.availability.disconnect_title')"
+        :message="t('chat.closeout.availability.disconnect_message')"
+        :cancel-text="t('common.cancel')"
+        :confirm-text="t('chat.closeout.availability.disconnect_confirm')"
+        @cancel="pendingCloseout = null"
+        @confirm="confirmDisconnect"
+      />
     </div>
   </Teleport>
 </template>
 
 <style scoped>
-.collaboration-closeout { padding: 14px; margin-bottom: 18px; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; font-size: 12px; line-height: 1.7; }
-.collaboration-closeout label { display: flex; gap: 8px; align-items: start; overflow-wrap: anywhere; }.collaboration-closeout p { color: var(--text-secondary); margin: 8px 0; }
 .closeout-body { display:flex; min-height:0; flex:1; overflow:hidden; }
 .closeout-body .modal-content { flex:1; min-width:0; }
 .modal.with-requirement-picker { width:min(1240px, 100%); }

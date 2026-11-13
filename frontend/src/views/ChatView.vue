@@ -430,12 +430,15 @@ watch(
 
     <TaskCloseoutPanel
       v-if="vm.currentTask && vm.closeoutMode"
+      :key="vm.currentTask.id"
       :show="Boolean(vm.closeoutMode)"
       :mode="vm.closeoutMode"
       :workspace-id="String(vm.route.params.wsId || '')"
       :task-id="vm.currentTask.id"
       :task-name="vm.currentTask.name"
       :task-type="vm.currentTask.task_type"
+      :agent-active="vm.closeoutAgentActive"
+      :user-id="vm.closeoutUserId"
       :collaboration="vm.collaboration"
       @close="vm.closeTaskCloseout"
       @success="vm.handleTaskCloseoutSuccess"

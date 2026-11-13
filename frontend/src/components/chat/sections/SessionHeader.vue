@@ -146,10 +146,12 @@ onBeforeUnmount(() => {
       <button class="icon-btn" :disabled="!props.vm.canInitializeAction" @click="props.vm.handleInitialize" :title="t('chat.initialize')">
         <RotateCcw class="w-4 h-4" />
       </button>
-      <button class="icon-btn danger" :disabled="props.vm.isTerminalStatus || !props.vm.canManageTaskStatus" @click="props.vm.handleInterruptClick" :title="t('chat.mark_failed_confirm')">
+      <button class="icon-btn danger" :disabled="props.vm.isTerminalStatus || !props.vm.canCloseTask"
+        @click="props.vm.handleInterruptClick"
+        :title="t(props.vm.isTaskProvisioning ? 'provisioning.cancel_confirm_title' : 'chat.mark_failed_confirm')">
         <XCircle class="w-4 h-4" />
       </button>
-      <button class="icon-btn success" :disabled="props.vm.isTerminalStatus || !props.vm.canManageTaskStatus" @click="props.vm.handleCompleteClick" :title="t('chat.complete_task')">
+      <button class="icon-btn success" :disabled="props.vm.isTaskProvisioning || props.vm.isTerminalStatus || !props.vm.canCloseTask" @click="props.vm.handleCompleteClick" :title="t('chat.complete_task')">
         <CheckCircle2 class="w-4 h-4" />
       </button>
 

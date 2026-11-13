@@ -1042,11 +1042,23 @@
       },
       "submit_complete": "Save and Complete Task",
       "submit_failure": "Save and Mark Failed",
+      "availability": {
+        "agent_active": "The agent is processing the current turn. Submit the task result when it finishes.",
+        "connecting": "A local collaboration connection is being established. Wait for it to finish.",
+        "connection_changed": "The local collaboration connection changed. Check the current connection before submitting.",
+        "own_host": "Your local collaboration host is connected. Confirm the disconnect when submitting.",
+        "other_host": "Another member is connected through local collaboration. Submit the task result after they disconnect.",
+        "host_id": "User ID {id}",
+        "disconnect_title": "Disconnect local collaboration and submit?",
+        "disconnect_message": "Your collaboration host will disconnect and the task result will be saved. Local files and task history will be kept.",
+        "disconnect_confirm": "Disconnect and submit"
+      },
       "complete_saved": "Task completion closeout was recorded. Evidence and Final Summary are available in Task Detail.",
       "failure_saved": "Task failure closeout was recorded. Failure evidence and Final Summary are available in Task Detail.",
       "opened": "Task closeout panel opened",
       "errors": {
         "summary_required": "Enter a completion summary",
+        "submit_failed": "Could not save the task result",
         "failure_summary_required": "Enter a failure summary",
         "evidence_required": "Provide a commit, PR, local reference, or evidence attachment",
         "failure_evidence_required": "Upload at least one failure evidence attachment"
@@ -4242,7 +4254,6 @@
   "collaboration": {
     "createIntent": "Enable local collaboration after creation",
     "createIntentHint": "Review mappings after repositories and branches are ready. Every local HEAD must match its task base commit and every repository must be clean before enabling.",
-    "confirmSnapshot": "Use confirmed cloud snapshot {snapshot}",
     "backups": "Local backups",
     "noBackups": "No local backups",
     "noBackupsHint": "Local files are backed up here before cloud code or conflict resolutions replace them.",

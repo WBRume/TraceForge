@@ -74,7 +74,7 @@ const createLifecycle = () => {
   const status = useTaskStatusActions({
     getCurrentTask: () => task.value, getWorkspaceId: () => 'workspace', engineRunning,
     preparingSubmission,
-    isTaskProvisioning: ref(false), canManageTaskStatus: ref(true), interruptingTask: ref(false),
+    isTaskProvisioning: ref(false), canManageTaskStatus: ref(true), canCloseTask: ref(true), interruptingTask: ref(false),
     cardsDropStatusCards: cards.dropStatusCards, cardsDropByTypes: cards.dropByTypes, jobsReset: jobs.reset,
     messagesPush: message => messages.value.push(message), isHistoryAnchored: () => false,
     scrollToChatBottom: () => {},

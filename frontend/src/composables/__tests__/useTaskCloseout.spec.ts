@@ -7,6 +7,7 @@ const apiMock = vi.hoisted(() => ({
 vi.mock('@/utils/api', () => ({
   default: apiMock,
 }))
+vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 
 describe('useTaskCloseout', () => {
   beforeEach(() => {

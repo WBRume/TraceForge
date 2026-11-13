@@ -90,7 +90,11 @@ async def _locked(
 
 @router.get("")
 def state(ws_id: str, task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return _invoke(db, service.get_state, _task(db, ws_id, task_id, user))
+    return _invoke(
+        db,
+        lambda session, task: service.get_state(session, task, include_driver_profile=True),
+        _task(db, ws_id, task_id, user),
+    )
 
 
 @router.post("/enable")

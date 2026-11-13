@@ -7,9 +7,11 @@ from .models import CollaborationSnapshot
 
 
 def uses_local_input(state, actor_id):
-    return bool(
-        state and state.enabled and state.driver_user_id == actor_id and state.lease_expires_at > datetime.utcnow()
-    )
+    return driver_connected(state) and state.driver_user_id == actor_id
+
+
+def driver_connected(state) -> bool:
+    return bool(state and state.enabled and state.lease_expires_at > datetime.utcnow())
 
 
 def cloud_input_available(state):
@@ -70,12 +72,17 @@ def release_driver(db, task, user_id, request):
     if previous and state.driver_user_id == user_id:
         return service.get_state(db, task)
     service._check_driver_identity(state, user_id, request)
+    disconnect_driver(state)
+    return service._record(db, task, request.operation_id, "RELEASE_DRIVER", request.model_dump())
+
+
+def disconnect_driver(state) -> None:
+    """Revoke the locked driver's lease while preserving its code history."""
     # Fence queued uploads/heartbeats immediately, without stopping the Agent or
     # deleting delivery/conflict evidence needed by the next connection.
     state.lease_epoch += 1
     state.lease_expires_at = datetime.utcnow()
     service._bump(state)
-    return service._record(db, task, request.operation_id, "RELEASE_DRIVER", request.model_dump())
 
 
 def latest_snapshot(db, task, _user_id, _request):

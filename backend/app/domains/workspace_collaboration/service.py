@@ -162,7 +162,9 @@ def _bump(state: CollaborationState) -> None:
         emit_state(db, state)
 
 
-def get_state(db: Session, task: SddTask) -> dict:
+def get_state(db: Session, task: SddTask, *, include_driver_profile: bool = False) -> dict:
+    from .session import driver_connected
+
     state = _state(db, task.id, lock=False)
     configured = has_repository_bindings(db, task)
     try:
@@ -199,7 +201,17 @@ def get_state(db: Session, task: SddTask) -> dict:
     result["repository_error"] = repository_error
     result["lease_expires_at"] = state.lease_expires_at.isoformat() + "Z"
     result["updated_at"] = state.updated_at.isoformat() + "Z" if state.updated_at else None
-    result["driver_connected"] = state.enabled and state.lease_expires_at > datetime.utcnow()
+    result["driver_connected"] = driver_connected(state)
+    if include_driver_profile and result["driver_connected"]:
+        from app.domains.auth.models.user import User
+
+        user = db.get(User, state.driver_user_id)
+        if user:
+            result["driver_profile"] = {
+                "display_name": user.display_name,
+                "avatar_url": user.avatar_url,
+                "avatar_svg": user.avatar_svg,
+            }
     result["input_mode"] = "CLOUD" if state.input_submission_id and state.input_cut_seq is None else "LOCAL"
     return result
 

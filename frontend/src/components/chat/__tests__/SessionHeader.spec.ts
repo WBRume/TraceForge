@@ -44,6 +44,7 @@ const createMockVm = (overrides: Record<string, any> = {}): any => ({
   canInitializeAction: false,
   isTerminalStatus: false,
   canManageTaskStatus: true,
+  canCloseTask: true,
   hidePatchWorkflows: false,
   chatWorkbenchMode: 'platform',
   showSpecEntryButton: false,
@@ -147,6 +148,7 @@ describe('SessionHeader local resource badge', () => {
           localResourceStatus: 'offline',
           localResourceLabel: '本地资源离线',
           localResourceBlocked: true,
+          canManageTaskStatus: false,
         }),
       },
       global: { plugins: [i18n, createPinia()] },
@@ -157,5 +159,7 @@ describe('SessionHeader local resource badge', () => {
     expect(badge.classes()).toContain('is-offline')
     expect(badge.text()).toContain('本地资源离线')
     expect(badge.attributes('title')).toBe('恢复在线后才能发送、撤回或操作本地资源')
+    expect(wrapper.get('button.danger').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('button.success').attributes('disabled')).toBeUndefined()
   })
 })

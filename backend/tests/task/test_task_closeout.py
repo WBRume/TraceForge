@@ -1,9 +1,18 @@
+from datetime import datetime, timedelta
+from unittest.mock import Mock
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.auth.models.user import User
+from app.domains.local_resource import service as local_resources
 from app.domains.task.models.task import SddTask, TaskStatus, TaskType
 from app.domains.task.routers import task as task_router
 from app.domains.task.routers import task_closeout as task_closeout_router
+from app.domains.task.schemas.task_closeout import CompleteTaskCloseoutRequest
+from app.domains.task.services import status_machine
 from app.domains.workspace_asset.models.workspace_asset import (
     SddEvidence,
     SddHumanReview,
@@ -14,6 +23,8 @@ from app.domains.workspace_asset.models.workspace_asset import (
 )
 from app.domains.workspace_asset.routers import workspace_asset as workspace_asset_router
 from app.domains.workspace_asset.services.tasks.detail import get_task_detail
+from app.domains.workspace_collaboration.models import CollaborationState
+from app.domains.workspace_collaboration.router import router as collaboration_router
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session
 
 
@@ -28,6 +39,7 @@ def _build_closeout_app(SessionLocal, user):
     app = FastAPI()
     app.include_router(task_router.router, prefix="/api")
     app.include_router(task_closeout_router.router, prefix="/api")
+    app.include_router(collaboration_router, prefix="/api")
     app.include_router(workspace_asset_router.router, prefix="/api")
     app.dependency_overrides[task_router.get_db] = _override_db
     app.dependency_overrides[task_router.get_current_user] = lambda: user
@@ -184,6 +196,203 @@ def test_failure_closeout_allows_no_attachment_and_preserves_summary():
             assert db.get(SddTask, task.id).status == TaskStatus.FAILED
             assert db.query(SddEvidence).count() == 0
             assert db.query(SddTaskFinalSummary).one().summary == "Unable to reproduce the issue"
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "action,expected_status,fields",
+    [
+        ("complete", "COMPLETED", {"completion_summary": "Accepted externally", "landing_method": "HUMAN_ADJUSTED"}),
+        (
+            "fail",
+            "FAILED",
+            {"failure_summary": "Delivery blocked", "failure_stage": "CODING", "failure_reason": "OTHER"},
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "location,phase,snapshot_id",
+    [("SERVER", "DELIVERY_PENDING", None), ("SERVER", "CONFLICT_PENDING", "cloud"), ("LOCAL", None, None)],
+)
+def test_closeout_records_result_while_code_work_is_blocked(
+    monkeypatch, action, expected_status, fields, location, phase, snapshot_id
+):
+    probe = Mock(side_effect=AssertionError("Closeout must not probe local execution resources"))
+    monkeypatch.setattr(local_resources, "require_online", probe)
+    engine, sessions = _build_db()
+    try:
+        with _session(sessions) as db:
+            user, workspace, task = _seed_workspace(db)
+            task.execution_location = location
+            if phase:
+                task.task_meta_json = {"repository_update": {"state": "RECOVERY_REQUIRED"}}
+                db.add(
+                    CollaborationState(
+                        task_id=task.id,
+                        sync_phase=phase,
+                        snapshot_id=snapshot_id,
+                        session_generation=task.session_generation,
+                        session_revision=task.session_revision,
+                        repository_set_digest="unresolved",
+                        binding_id="binding",
+                        driver_user_id=user.id,
+                        client_id="desktop",
+                        instance_id="instance",
+                        lease_expires_at=datetime.utcnow() - timedelta(minutes=1),
+                    )
+                )
+            db.commit()
+
+        client = TestClient(_build_closeout_app(sessions, user))
+        endpoint = f"/api/workspaces/{workspace.id}/tasks/{task.id}/closeout/{action}"
+        request = {
+            **fields,
+            "evidence_attachments": [{"filename": "log.txt", "source_uri": "/api/upload/files/log.txt"}],
+        }
+        response = client.post(endpoint, json={**request, "confirmed_server_snapshot_id": "stale"})
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == expected_status
+        assert "confirmed_server_snapshot_id" not in response.json()
+        assert client.post(endpoint, json=request).json() == response.json()
+        probe.assert_not_called()
+        with _session(sessions) as db:
+            assert db.get(SddTask, task.id).status.value == expected_status
+            assert db.query(SddTaskFinalSummary).one().review_checklist_json is None
+            assert "collaboration" not in db.query(SddEvidence).one().source_metadata_json
+            if phase:
+                collaboration = db.get(CollaborationState, task.id)
+                assert (collaboration.sync_phase, collaboration.snapshot_id) == (phase, snapshot_id)
+    finally:
+        engine.dispose()
+
+
+def test_closeout_replays_legacy_receipt_without_resubmitting_snapshot():
+    engine, sessions = _build_db()
+    try:
+        with _session(sessions) as db:
+            user, workspace, task = _seed_workspace(db)
+            payload = CompleteTaskCloseoutRequest(
+                completion_summary="Already accepted", landing_method="HUMAN_ADJUSTED"
+            )
+            content = payload.model_dump(mode="json", exclude={"disconnect_collaboration_lease_epoch"})
+            event_key = "closeout:COMPLETE"
+            status_machine.dispatch(
+                db,
+                task,
+                status_machine.Trigger.COMPLETE,
+                event_key=event_key,
+                actor_id=user.id,
+                reason=payload.completion_summary,
+                content={**content, "confirmed_server_snapshot_id": "historical"},
+            )
+            status_machine.remember_command_result(
+                db,
+                task.id,
+                event_key,
+                {**status_machine.snapshot(task), "confirmed_server_snapshot_id": "historical"},
+            )
+            db.commit()
+
+        client = TestClient(_build_closeout_app(sessions, user))
+        response = client.post(f"/api/workspaces/{workspace.id}/tasks/{task.id}/closeout/complete", json=content)
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "COMPLETED"
+        assert "confirmed_server_snapshot_id" not in response.json()
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "action,fields",
+    [
+        ("complete", {"completion_summary": "Accepted externally", "landing_method": "HUMAN_ADJUSTED"}),
+        ("fail", {"failure_summary": "Delivery blocked", "failure_stage": "CODING", "failure_reason": "OTHER"}),
+    ],
+)
+def test_closeout_requires_idle_agent_and_consent_from_the_current_host_owner(action, fields):
+    engine, sessions = _build_db()
+    try:
+        with _session(sessions) as db:
+            user, workspace, task = _seed_workspace(db)
+            other = User(
+                id="host",
+                display_name="Other host",
+                email="host@example.com",
+                hashed_password="x",
+                avatar_url="/avatars/host.png",
+            )
+            db.add(other)
+            db.add(
+                CollaborationState(
+                    task_id=task.id,
+                    sync_phase="CONFLICT_PENDING",
+                    snapshot_id="cloud",
+                    session_generation=task.session_generation,
+                    session_revision=task.session_revision,
+                    repository_set_digest="digest",
+                    binding_id="binding",
+                    driver_user_id=other.id,
+                    client_id="desktop",
+                    instance_id="instance",
+                    lease_epoch=7,
+                    lease_expires_at=datetime.utcnow() + timedelta(minutes=5),
+                )
+            )
+            job = SddAiJob(
+                id="active",
+                workspace_id=workspace.id,
+                task_id=task.id,
+                creator_id=user.id,
+                channel=AiJobChannel.TASK_CHAT,
+                status=AiJobStatus.RUNNING,
+                queue_key=f"TASK_CHAT:{task.id}",
+            )
+            db.add(job)
+            db.commit()
+
+        client = TestClient(_build_closeout_app(sessions, user))
+        task_path = f"/api/workspaces/{workspace.id}/tasks/{task.id}"
+        endpoint = f"{task_path}/closeout/{action}"
+        consent = {**fields, "disconnect_collaboration_lease_epoch": 7}
+        response = client.post(endpoint, json=consent)
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "CLOSEOUT_AGENT_ACTIVE"
+        with _session(sessions) as db:
+            db.get(SddAiJob, job.id).status = AiJobStatus.SUCCESS
+            db.commit()
+
+        response = client.post(endpoint, json=consent)
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "CLOSEOUT_COLLABORATION_CONNECTED"
+        state = client.get(f"{task_path}/collaboration").json()
+        assert state["driver_user_id"] == "host"
+        assert state["driver_profile"] == {
+            "display_name": "Other host",
+            "avatar_url": "/avatars/host.png",
+            "avatar_svg": None,
+        }
+        with _session(sessions) as db:
+            state = db.get(CollaborationState, task.id)
+            assert state.lease_epoch == 7
+            assert db.query(SddTaskFinalSummary).count() == 0
+            state.driver_user_id = user.id
+            db.commit()
+
+        assert client.post(endpoint, json=fields).status_code == 409
+        assert client.post(endpoint, json={**consent, "disconnect_collaboration_lease_epoch": 6}).status_code == 409
+        invalid = {**consent, "evidence_attachments": [{"filename": "missing-reference.txt"}]}
+        assert client.post(endpoint, json=invalid).status_code == 422
+        assert client.get(f"{task_path}/collaboration").json()["driver_connected"] is True
+        result = client.post(endpoint, json=consent)
+        assert result.status_code == 200, result.text
+        assert result.json()["status"] == ("COMPLETED" if action == "complete" else "FAILED")
+        assert client.post(endpoint, json=fields).json() == result.json()
+        state = client.get(f"{task_path}/collaboration").json()
+        assert state["driver_connected"] is False
+        assert state["lease_epoch"] == 8
+        assert state["snapshot_id"] == "cloud"
+        assert state["sync_phase"] == "CONFLICT_PENDING"
     finally:
         engine.dispose()
 

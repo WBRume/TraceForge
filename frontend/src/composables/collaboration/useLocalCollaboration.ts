@@ -25,6 +25,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   const input = shallowRef<CollaborationManifest | null>(null), cloud = shallowRef<CollaborationManifest | null>(null)
   const previewConflicts = shallowRef<CollaborationConflict[]>([])
   const error = shallowRef(''), busy = shallowRef(false), loading = shallowRef(true)
+  const establishing = shallowRef(false)
   const preparationRequired = shallowRef(false)
   const participating = shallowRef(false), leaving = shallowRef(false), receivedOnce = shallowRef(false)
   const deliveryRetryRequired = shallowRef(false)
@@ -94,7 +95,12 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       }
     }
   }
-  const heartbeat = setInterval(() => { void renew().catch(reason => { error.value = formatApiError(reason, t('collaboration.failed')) }) }, 10000)
+  const heartbeat = setInterval(() => {
+    void renew().catch(reason => {
+      error.value = formatApiError(reason, t('collaboration.failed'))
+      void refresh()
+    })
+  }, 10000)
 
   function missingBinding(reason: unknown, taskId: string) {
     const message = String(reason)
@@ -324,6 +330,11 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     try {
       const next = await remote().state(); check(token)
       state.value = next; observedVersion = next.state_version
+      if (participating.value && (next.driver_connected === false || !driver.value)) {
+        await suspendLocal()
+        check(token)
+        participating.value = false
+      }
       if (participating.value && driver.value && next.sync_phase === 'PREPARING' && next.input_mode !== 'CLOUD' && next.pending_submission_id !== next.input_submission_id) preparingId = next.pending_submission_id
       // Retry only the failure report after reconnect; do not capture/upload the
       // same failed input again when the acknowledgement was lost.
@@ -425,6 +436,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   async function enable() {
     if (busy.value || !available || !state.value || state.value.repository_configured === false) return
     if (state.value.enabled) { if (!participating.value) await claimDriver(); else await recover(); return }
+    establishing.value = true
     busy.value = true; error.value = ''
     const token = generation, taskId = String(options.task()?.id)
     try {
@@ -446,7 +458,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       if (accepted.snapshot_id) await reconcile(await snapshot(accepted.snapshot_id), token)
       localStorage.removeItem(operationKey)
     } catch (reason) { if (token === generation) error.value = formatApiError(reason, t('collaboration.failed')) }
-    finally { if (token === generation) busy.value = false }
+    finally { if (token === generation) { establishing.value = false; busy.value = false } }
   }
 
   async function restore(selected: CollaborationConflict[], conflictSetId: string, decision: 'accept' | 'keep' = 'accept') {
@@ -521,6 +533,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
   }
   async function claimDriver() {
     if (!state.value?.enabled || busy.value || !available) return
+    establishing.value = true
     busy.value = true
     const token = generation
     try {
@@ -530,7 +543,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
       check(token); await prepareCurrentBinding(token)
       lastTarget = ''; lastProgress = ''; lastLease = 0; leaseRetryAt = 0; deliveryRetryRequired.value = false; error.value = ''
     } catch (reason) { error.value = formatApiError(reason, t('collaboration.failed')) }
-    finally { busy.value = false }
+    finally { establishing.value = false; busy.value = false }
     await refresh()
   }
   async function recover() {
@@ -664,7 +677,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     void refresh()
   })
   watch(() => [options.workspaceId(), options.task()?.id], () => {
-    generation++; transportStatus = null; state.value = null; local.value = null; input.value = null; cloud.value = null; error.value = ''; busy.value = false; loading.value = supported.value
+    generation++; transportStatus = null; state.value = null; local.value = null; input.value = null; cloud.value = null; error.value = ''; busy.value = false; establishing.value = false; loading.value = supported.value
     lastTarget = ''; lastProgress = ''; lastHandoff = ''; lastLease = 0; leaseRetryAt = 0; failedPreparation = null; mappings.value = {}; preparationRequired.value = false; deliveryRetryRequired.value = false
     refreshQueued = false; localRefreshQueued = false; eventVersion = 0; observedVersion = 0; mappingsDirty = true; directories.value = null
     void refresh()
@@ -673,7 +686,7 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     disposed = true; generation++; clearInterval(heartbeat); clearInterval(stageClock); stopMappingUpdates(); stopLocalUpdates?.()
     if (directories.value?.baseline_prefetch === 1) void native('discard_prefetch', { task_id: String(options.task()?.id) }).catch(() => {})
   })
-  return { initializationIdentity, resetForInitialization, finishInitialization, participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, onConnectionReady, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
+  return { initializationIdentity, resetForInitialization, finishInitialization, participating, leaving, receivedOnce, leave, receiveOnce, supported, available, state, local, cloud, input, error, busy, establishing, loading, preparationRequired, mappingChecks, operationStage, operationSeconds, enabled, driver, remoteSender, canReconnect, phase, label, blocked, conflicts, mappings, refresh, enable, restore, readText, openDirectory, submissionMetadata, directories, activity, progressive, setProgressive, claimDriver, recover, onEvent, onConnectionReady, refreshComparison, checkMappings, selectMapping, view, handoffLocalChanges, listBackups, exportBackup }
 }
 type Controller = ReturnType<typeof createController>
 const controllers = new Map<string, { scope: EffectScope; controller: Controller; users: number }>()
@@ -718,6 +731,7 @@ export function useLocalCollaboration(options: { workspaceId: () => string; task
     state: computed(() => active.value?.state.value || null), local: computed(() => active.value?.local.value || null),
     cloud: computed(() => active.value?.cloud.value || null), input: computed(() => active.value?.input.value || null),
     error: computed(() => active.value?.error.value || ''), busy: computed(() => active.value?.busy.value || false),
+    establishing: computed(() => active.value?.establishing.value || false),
     loading: computed(() => active.value?.loading.value || false), enabled: computed(() => active.value?.enabled.value || false),
     preparationRequired: computed(() => active.value?.preparationRequired.value || false),
     mappingChecks: computed(() => active.value?.mappingChecks.value || []),

@@ -1042,10 +1042,22 @@
       },
       "submit_complete": "保存并完成任务",
       "submit_failure": "保存并标记失败",
+      "availability": {
+        "agent_active": "Agent 正在处理当前回合，结束后可提交任务结果。",
+        "connecting": "正在建立本地协同连接，请等待连接处理完毕。",
+        "connection_changed": "本地协同连接已变化，请确认当前连接状态后再提交。",
+        "own_host": "你的本地协同主机已连接。提交时需要确认断开连接。",
+        "other_host": "其他成员正在本地协同。对方断开连接后可提交任务结果。",
+        "host_id": "用户 ID {id}",
+        "disconnect_title": "断开本地协同并提交？",
+        "disconnect_message": "系统会断开你的协同主机连接，并保存任务结果。本机文件和任务历史会保留。",
+        "disconnect_confirm": "断开并提交"
+      },
       "complete_saved": "任务完成收束已记录，可在 Task Detail 查看 Evidence 与 Final Summary。",
       "failure_saved": "任务失败复盘已记录，可在 Task Detail 查看失败证据与 Final Summary。",
       "opened": "已打开任务收束面板",
       "errors": {
+        "submit_failed": "保存任务结果失败",
         "summary_required": "请填写完成说明",
         "failure_summary_required": "请填写失败说明",
         "evidence_required": "请提供 commit、PR、本地引用或证据附件",
@@ -4247,7 +4259,6 @@
   "collaboration": {
     "createIntent": "创建后启用本地协同",
     "createIntentHint": "仓库和逐仓分支准备完成后核对映射；本地 HEAD 与任务基准一致且全部仓库干净，才能启用。",
-    "confirmSnapshot": "使用已确认云端版本 {snapshot}",
     "backups": "本地备份",
     "noBackups": "暂无本地备份",
     "noBackupsHint": "接收云端代码或处理冲突时，替换前的本地文件会保存在这里。",

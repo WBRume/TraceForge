@@ -1,5 +1,7 @@
 import { readonly, shallowRef } from 'vue'
+import { useI18n } from 'vue-i18n'
 import api from '@/utils/api'
+import { formatApiError } from '@/utils/error'
 import type {
   CloseoutEvidenceAttachment,
   CompleteCloseoutPayload,
@@ -13,17 +15,18 @@ type UploadResponse = {
   url: string
 }
 
-function errorMessage(error: unknown): string {
-  if (typeof error === 'object' && error !== null && 'response' in error) {
-    const response = (error as { response?: { data?: { detail?: string } } }).response
-    if (response?.data?.detail) return response.data.detail
-  }
-  return error instanceof Error ? error.message : 'Task closeout failed'
-}
-
 export function useTaskCloseout() {
+  const { t } = useI18n()
   const saving = shallowRef(false)
   const error = shallowRef<string | null>(null)
+
+  function closeoutError(reason: unknown): string {
+    const code = (reason as { response?: { data?: { detail?: { code?: string } } } } | null)
+      ?.response?.data?.detail?.code
+    if (code === 'CLOSEOUT_AGENT_ACTIVE') return t('chat.closeout.availability.agent_active')
+    if (code === 'CLOSEOUT_COLLABORATION_CONNECTED') return t('chat.closeout.availability.connection_changed')
+    return formatApiError(reason, t('chat.closeout.errors.submit_failed'), t)
+  }
 
   async function uploadEvidenceFiles(files: File[]): Promise<CloseoutEvidenceAttachment[]> {
     const attachments: CloseoutEvidenceAttachment[] = []
@@ -59,7 +62,7 @@ export function useTaskCloseout() {
       )
       return response.data
     } catch (err) {
-      error.value = errorMessage(err)
+      error.value = closeoutError(err)
       return null
     } finally {
       saving.value = false
@@ -82,7 +85,7 @@ export function useTaskCloseout() {
       )
       return response.data
     } catch (err) {
-      error.value = errorMessage(err)
+      error.value = closeoutError(err)
       return null
     } finally {
       saving.value = false

@@ -15,6 +15,7 @@ export function useTaskStatusActions(options: {
   getCurrentTask: () => any
   isTaskProvisioning: { value: boolean }
   canManageTaskStatus: { value: boolean }
+  canCloseTask: { value: boolean }
   getWorkspaceId: () => string
   engineRunning: { value: boolean }
   preparingSubmission?: { value: boolean }
@@ -48,7 +49,7 @@ export function useTaskStatusActions(options: {
   ))
 
   const handleInterruptClick = (): boolean => {
-    if (!options.canManageTaskStatus.value) {
+    if (!options.canCloseTask.value) {
       ElMessage.warning(t('chat.errors.no_permission_manage_task_status'))
       return false
     }
@@ -71,13 +72,13 @@ export function useTaskStatusActions(options: {
   }
 
   const handleCompleteClick = (): boolean => {
-    if (!options.canManageTaskStatus.value) {
+    if (!options.canCloseTask.value) {
       ElMessage.warning(t('chat.errors.no_permission_manage_task_status'))
       return false
     }
 
     const status = options.getCurrentTask()?.status
-    const canCloseout = status && !isTerminalTaskStatus(status)
+    const canCloseout = status && !options.isTaskProvisioning.value && !isTerminalTaskStatus(status)
 
     if (!canCloseout) {
       ElMessage.warning(t('chat.no_running_engine'))

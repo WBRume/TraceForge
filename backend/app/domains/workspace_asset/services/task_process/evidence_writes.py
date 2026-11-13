@@ -46,6 +46,7 @@ def create_evidence(
     payload: EvidenceCreateRequest,
     *,
     _skip_phase_check: bool = False,
+    commit: bool = True,
 ) -> str:
     task = get_task_or_error(db, workspace_id, task_id)
     ensure_task_not_baselined(task)
@@ -105,7 +106,8 @@ def create_evidence(
 
         ensure_expert_review_for_task(db, evidence.task, actor_id)
     created_id = evidence.id
-    db.commit()
+    if commit:
+        db.commit()
     return created_id
 
 

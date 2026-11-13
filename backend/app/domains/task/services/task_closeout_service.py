@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from app.domains.ai.models.ai_job import AiJobChannel, SddAiJob
+from app.domains.ai.services.jobs.constants import SESSION_GUARD_STATUSES
 from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.task.models.task import SddTask, TaskStatus, TaskType
 from app.domains.task.schemas.task_closeout import (
@@ -33,12 +35,15 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
 from app.domains.workspace_asset.services.requirements.presenters import add_requirement_audit
 from app.domains.workspace_asset.services.task_final_workflow import summary_service
 from app.domains.workspace_asset.services.task_process import evidence_writes
+from app.domains.workspace_collaboration.models import CollaborationState
+from app.domains.workspace_collaboration.session import disconnect_driver, driver_connected
 
 
 class TaskCloseoutError(Exception):
-    def __init__(self, message: str, *, status_code: int = 400):
+    def __init__(self, message: str, *, status_code: int = 400, code: str | None = None):
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
 
 
 def _clean(value: str | None) -> str | None:
@@ -63,21 +68,49 @@ def _validate_closeout_values(task: SddTask, payload: CompleteTaskCloseoutReques
 
 
 def _get_open_task(db: Session, workspace_id: str, task_id: str) -> SddTask:
-    task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
+    task = db.query(SddTask).filter_by(id=task_id, workspace_id=workspace_id).with_for_update().first()
     if not task:
         raise TaskCloseoutError("Task not found", status_code=404)
     if task.baselined_at is not None:
         raise TaskCloseoutError("Task is BASELINED and locked for changes", status_code=403)
     if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
         raise TaskCloseoutError("Task is already closed", status_code=409)
-    from app.domains.task.services.task_session_control_service import TaskSessionControlError
-    from app.domains.workspace_collaboration.control import require_ready
-
-    try:
-        require_ready(db, task_id)
-    except TaskSessionControlError as exc:
-        raise TaskCloseoutError(str(exc), status_code=exc.status_code) from exc
+    if task.status == TaskStatus.PROVISIONING:
+        raise TaskCloseoutError("Task resources are being prepared", status_code=409)
     return task
+
+
+def _prepare_closeout(db: Session, task: SddTask, actor_id: str, lease_epoch: int | None) -> None:
+    from app.domains.local_resource.service import require_operation
+    from app.engine.session.registry import list_task_engines
+
+    require_operation(db, task, actor_id, operation="closeout")
+    active_job = (
+        db.query(SddAiJob.id)
+        .filter(
+            SddAiJob.task_id == task.id,
+            SddAiJob.channel == AiJobChannel.TASK_CHAT,
+            SddAiJob.status.in_(SESSION_GUARD_STATUSES),
+        )
+        .first()
+    )
+    if active_job or any(engine.running for engine in list_task_engines(task.id)):
+        raise TaskCloseoutError(
+            "Wait for the Agent to finish before closing this task.",
+            status_code=409,
+            code="CLOSEOUT_AGENT_ACTIVE",
+        )
+
+    state = db.query(CollaborationState).filter_by(task_id=task.id).with_for_update().first()
+    if not driver_connected(state):
+        return
+    if state.driver_user_id != actor_id or state.lease_epoch != lease_epoch:
+        raise TaskCloseoutError(
+            "An active collaboration host must disconnect before closing this task.",
+            status_code=409,
+            code="CLOSEOUT_COLLABORATION_CONNECTED",
+        )
+    disconnect_driver(state)
 
 
 def _attachment_evidence(
@@ -221,19 +254,27 @@ def _finalize_task(
     )
     result = TaskCloseoutResponse(**sm.snapshot(task), **result_fields)
     sm.remember_command_result(db, task.id, key, result.model_dump(mode="json"))
-    db.commit()
-    db.refresh(task)
     return result
 
 
-def _bind_closeout_snapshot(db, task, payload, evidence_payloads):
-    from app.domains.workspace_collaboration.control import closeout_snapshot
-
-    snapshot = closeout_snapshot(db, task, payload.confirmed_server_snapshot_id)
-    if snapshot:
-        for item in evidence_payloads:
-            item.source_metadata = {**(item.source_metadata or {}), "collaboration": snapshot}
-    return snapshot["snapshot_id"] if snapshot else None
+def _replay_closeout(
+    db: Session,
+    workspace_id: str,
+    task_id: str,
+    actor_id: str,
+    trigger: sm.Trigger,
+    message: str,
+    content: dict,
+    previous: dict,
+) -> TaskCloseoutResponse:
+    # Preserve the original fingerprint for requests already recorded by older versions.
+    if "confirmed_server_snapshot_id" in previous:
+        content["confirmed_server_snapshot_id"] = previous["confirmed_server_snapshot_id"]
+    task = db.query(SddTask).filter_by(id=task_id, workspace_id=workspace_id).one()
+    sm.dispatch(
+        db, task, trigger, event_key=f"closeout:{trigger.value}", actor_id=actor_id, reason=message, content=content
+    )
+    return TaskCloseoutResponse(**previous)
 
 
 def complete_task_closeout(
@@ -245,26 +286,22 @@ def complete_task_closeout(
 ) -> TaskCloseoutResponse:
     previous = sm.receipt(db, task_id, "closeout:COMPLETE")
     if previous:
-        task = db.query(SddTask).filter_by(id=task_id, workspace_id=workspace_id).one()
-        sm.dispatch(
+        return _replay_closeout(
             db,
-            task,
+            workspace_id,
+            task_id,
+            actor_id,
             sm.Trigger.COMPLETE,
-            event_key="closeout:COMPLETE",
-            actor_id=actor_id,
-            reason=payload.completion_summary,
-            content=payload.model_dump(mode="json"),
+            payload.completion_summary,
+            payload.model_dump(mode="json", exclude={"disconnect_collaboration_lease_epoch"}),
+            previous,
         )
-        return TaskCloseoutResponse(**previous)
     task = _get_open_task(db, workspace_id, task_id)
-    from app.domains.local_resource.service import require_operation
-
-    require_operation(db, task, actor_id)
+    _prepare_closeout(db, task, actor_id, payload.disconnect_collaboration_lease_epoch)
     _validate_closeout_values(task, payload)
     task_type = TaskType(task.task_type or TaskType.DEVELOPMENT)
     is_diagnosis = task_type == TaskType.DIAGNOSIS
     evidence_payloads = _complete_evidence_payloads(payload, task_type)
-    snapshot_id = _bind_closeout_snapshot(db, task, payload, evidence_payloads)
 
     if payload.requirement_id:
         requirement = db.query(SddRequirement).filter_by(id=payload.requirement_id, workspace_id=workspace_id).first()
@@ -297,7 +334,9 @@ def complete_task_closeout(
             )
 
     evidence_ids = [
-        evidence_writes.create_evidence(db, workspace_id, task_id, actor_id, evidence_payload, _skip_phase_check=True)
+        evidence_writes.create_evidence(
+            db, workspace_id, task_id, actor_id, evidence_payload, _skip_phase_check=True, commit=False
+        )
         for evidence_payload in evidence_payloads
     ]
 
@@ -320,12 +359,9 @@ def complete_task_closeout(
                 else "Review Task Detail evidence and promote reusable knowledge when needed."
             ),
             final_evidence_ids=evidence_ids,
-            review_checklist={"collaboration_snapshot_id": snapshot_id, "unhanded_local_changes_excluded": True}
-            if snapshot_id
-            else None,
-            change_reason=f"Task completion closeout. Method: {payload.landing_method}."
-            + (f" Confirmed server snapshot: {snapshot_id}; unhanded local edits excluded." if snapshot_id else ""),
+            change_reason=f"Task completion closeout. Method: {payload.landing_method}.",
         ),
+        commit=False,
     )
     from app.domains.notification.services.task_awareness import capture_business
 
@@ -337,12 +373,11 @@ def complete_task_closeout(
         actor_id=actor_id,
         message=payload.completion_summary,
         metric_value=1.0,
-        content=payload.model_dump(mode="json"),
+        content=payload.model_dump(mode="json", exclude={"disconnect_collaboration_lease_epoch"}),
         result_fields={
             "business_state": "TASK_COMPLETED",
             "evidence_ids": evidence_ids,
             "final_summary_id": final_summary_id,
-            "confirmed_server_snapshot_id": snapshot_id,
         },
     )
     from app.domains.workspace_asset.services.task_final_workflow.review_service import ensure_expert_review_for_task
@@ -361,28 +396,26 @@ def fail_task_closeout(
 ) -> TaskCloseoutResponse:
     previous = sm.receipt(db, task_id, "closeout:FAIL")
     if previous:
-        task = db.query(SddTask).filter_by(id=task_id, workspace_id=workspace_id).one()
-        sm.dispatch(
+        return _replay_closeout(
             db,
-            task,
+            workspace_id,
+            task_id,
+            actor_id,
             sm.Trigger.FAIL,
-            event_key="closeout:FAIL",
-            actor_id=actor_id,
-            reason=payload.failure_summary,
-            content=payload.model_dump(mode="json"),
+            payload.failure_summary,
+            payload.model_dump(mode="json", exclude={"disconnect_collaboration_lease_epoch"}),
+            previous,
         )
-        return TaskCloseoutResponse(**previous)
     task = _get_open_task(db, workspace_id, task_id)
-    from app.domains.local_resource.service import require_operation
-
-    require_operation(db, task, actor_id)
+    _prepare_closeout(db, task, actor_id, payload.disconnect_collaboration_lease_epoch)
     _validate_closeout_values(task, payload)
     task_type = TaskType(task.task_type or TaskType.DEVELOPMENT)
     evidence_payloads = _failure_evidence_payloads(payload, task_type)
-    snapshot_id = _bind_closeout_snapshot(db, task, payload, evidence_payloads)
 
     evidence_ids = [
-        evidence_writes.create_evidence(db, workspace_id, task_id, actor_id, evidence_payload, _skip_phase_check=True)
+        evidence_writes.create_evidence(
+            db, workspace_id, task_id, actor_id, evidence_payload, _skip_phase_check=True, commit=False
+        )
         for evidence_payload in evidence_payloads
     ]
 
@@ -401,28 +434,26 @@ def fail_task_closeout(
                 else "Review failure evidence, clarify requirements or environment, then initialize a fresh session if needed."
             ),
             final_evidence_ids=evidence_ids,
-            review_checklist={"collaboration_snapshot_id": snapshot_id, "unhanded_local_changes_excluded": True}
-            if snapshot_id
-            else None,
-            change_reason="Task failure closeout."
-            + (f" Confirmed server snapshot: {snapshot_id}; unhanded local edits excluded." if snapshot_id else ""),
+            change_reason="Task failure closeout.",
         ),
+        commit=False,
     )
     from app.domains.notification.services.task_awareness import capture_business
 
     capture_business(db, task, actor_id, "TASK_FAILED", payload.failure_summary)
-    return _finalize_task(
+    result = _finalize_task(
         db,
         task,
         trigger=sm.Trigger.FAIL,
         actor_id=actor_id,
         message=payload.failure_summary,
         metric_value=0.0,
-        content=payload.model_dump(mode="json"),
+        content=payload.model_dump(mode="json", exclude={"disconnect_collaboration_lease_epoch"}),
         result_fields={
             "business_state": "TASK_FAILED",
             "evidence_ids": evidence_ids,
             "final_summary_id": final_summary_id,
-            "confirmed_server_snapshot_id": snapshot_id,
         },
     )
+    db.commit()
+    return result

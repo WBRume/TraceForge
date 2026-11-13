@@ -13,7 +13,7 @@ from app.domains.ai.services.jobs import store as job_store
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
 from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.session_turn import TaskSessionTurn
-from app.domains.task.models.task import SddTask, TaskStatus, TaskType
+from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_repository import SddTaskRepository, TaskRepositoryState
 from app.domains.task.services import chat_submission_service as submissions
 from app.domains.task.services import task_session_service as turns
@@ -246,35 +246,6 @@ def test_browser_request_cannot_reuse_old_binding(collaboration_db):
     db.rollback()
     assert db.get(CollaborationState, "t").sync_phase == "READY"
     assert db.query(TaskChatSubmission).count() == 0
-
-
-@pytest.mark.parametrize("phase,confirmed", [("READY", None), ("READY", "old"), ("CONFLICT_PENDING", "input")])
-def test_closeout_cannot_silently_use_unconfirmed_code(collaboration_db, phase, confirmed):
-    from app.domains.task.services.task_closeout_service import TaskCloseoutError
-    from app.domains.workspace_collaboration.control import closeout_snapshot
-
-    db = collaboration_db
-    db.get(CollaborationState, "t").sync_phase = phase
-    with pytest.raises(TaskCloseoutError):
-        closeout_snapshot(db, db.get(SddTask, "t"), confirmed)
-
-
-def test_closeout_evidence_binds_explicit_server_code_scope(collaboration_db):
-    from app.domains.task.schemas.task_closeout import CompleteTaskCloseoutRequest
-    from app.domains.task.services.task_closeout_service import _bind_closeout_snapshot, _complete_evidence_payloads
-
-    db = collaboration_db
-    payload = CompleteTaskCloseoutRequest(
-        completion_summary="Done",
-        landing_method="HUMAN_ADJUSTED",
-        commit_id="abc",
-        confirmed_server_snapshot_id="input",
-    )
-    evidence = _complete_evidence_payloads(payload, TaskType.DEVELOPMENT)
-    snapshot_id = _bind_closeout_snapshot(db, db.get(SddTask, "t"), payload, evidence)
-    assert snapshot_id == "input"
-    assert evidence[0].source_metadata["collaboration"]["snapshot_id"] == "input"
-    assert evidence[0].source_metadata["collaboration"]["unhanded_local_changes_excluded"] is True
 
 
 @pytest.mark.parametrize("initial_generation", [0, 1])

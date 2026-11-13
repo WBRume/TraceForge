@@ -43,6 +43,7 @@ export type CollaborationState = {
   enabled: boolean; sync_phase: string; state_version: number; workspace_revision: number
   snapshot_id: string | null; input_snapshot_id: string | null; progress_snapshot_id: string | null
   lease_epoch: number; lease_expires_at?: string; driver_user_id?: string
+  driver_profile?: { display_name: string; avatar_url: string | null; avatar_svg: string | null }
   driver_client_id?: string; driver_instance_id?: string; binding_id: string
   client_id?: string; instance_id?: string; pending_submission_id?: string | null; input_submission_id?: string | null
   recovery_kind?: string | null; recovery_message?: string | null; driver_connected?: boolean

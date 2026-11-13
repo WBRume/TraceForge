@@ -402,6 +402,18 @@ describe('local collaboration coordinator', () => {
     mocks.api.post.mockImplementation(post)
     expect(await controller.leave()).toBe(true)
   })
+  it('suspends the native binding when a closeout revokes the server lease', async () => {
+    setup(); await flushPromises(); await controller.enable()
+    mocks.native.mockClear()
+    state = { ...state, driver_connected: false, lease_epoch: state.lease_epoch + 1, state_version: state.state_version + 1 }
+    controller.onEvent({ task_id: manifest.task_id, state_version: state.state_version })
+    await flushPromises()
+    expect(controller.participating.value).toBe(false)
+    expect(mocks.native).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'suspend', payload: expect.objectContaining({ task_id: manifest.task_id, binding_id: 'binding' }),
+    }))
+    expect(mocks.api.post.mock.calls.some(([action]) => action === 'release-driver')).toBe(false)
+  })
   it('configures the selected repository inline without enabling or writing files', async () => {
     manifest.repositories[0]!.repository_id = ''
     saveRepoPreferences('ws', mocks.auth.user!.id, [{ repository_id: '', configured_git_url: 'https://example.test/other', local_path: 'G:/other' }])

@@ -104,7 +104,8 @@ export function useChatViewModel() {
     return task?.creator_id === authStore.user?.id || workspaceContext.isWorkspaceExpert()
   })
   const suggestionOnly = computed(() => taskState.currentTask.value?.execution_location === 'LOCAL' && !localTaskActor.value)
-  const canManageTaskStatus = computed(() => taskState.currentTask.value?.execution_location === 'LOCAL' ? localTaskActor.value && !localResource.blocked.value : workspaceContext.canManageTaskStatus.value)
+  const canCloseTask = computed(() => localResource.isLocal.value ? localTaskActor.value : workspaceContext.canManageTaskStatus.value)
+  const canManageTaskStatus = computed(() => canCloseTask.value && !localResource.blocked.value)
   const canStartTask = computed(() => taskState.currentTask.value?.execution_location === 'LOCAL' ? localTaskActor.value && !localResource.blocked.value : workspaceContext.canStartTask.value)
   const historyContext = useChatMessageContext()
   const submissions = useChatSubmissions({
@@ -762,6 +763,7 @@ export function useChatViewModel() {
     getCurrentTask: () => taskState.currentTask.value,
     isTaskProvisioning: taskState.isTaskProvisioning,
     canManageTaskStatus: canManageTaskStatus,
+    canCloseTask,
     getWorkspaceId,
     engineRunning: engine.engineRunning,
     preparingSubmission: computed(() => submissions.current.value.some(row => row.status === 'PREPARING')),
@@ -1055,7 +1057,10 @@ export function useChatViewModel() {
     currentWorkspace: workspaceContext.currentWorkspace,
     canCreateTask: workspaceContext.canCreateTask,
     canManageTaskStatus: canManageTaskStatus,
+    canCloseTask,
     canDeleteTask: workspaceContext.canDeleteTask,
+    closeoutUserId: computed(() => authStore.user?.id),
+    closeoutAgentActive: computed(() => engine.engineRunning.value || jobs.hasExecutingJob()),
     canExportTask: workspaceContext.canExportTask,
     canEditPlanDocs: workspaceContext.canEditPlanDocs,
     canShareTaskSession,
