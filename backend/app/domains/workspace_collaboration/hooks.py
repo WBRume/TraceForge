@@ -217,14 +217,22 @@ def begin_restore(db, task, operation_id: str) -> None:
         raise TaskSessionUndoError(str(exc), code=exc.code, status_code=exc.status_code) from exc
 
 
-async def finish_restore(task_id: str, run_txn) -> None:
+async def finish_restore(task_id: str, operation_id: str, run_txn) -> None:
     from app.domains.workspace_collaboration import service
 
     try:
-        await run_txn(lambda db: service.finish_restore(db, db.get(SddTask, task_id)))
+        await run_txn(lambda db: service.finish_restore(db, db.get(SddTask, task_id), operation_id))
     except Exception:
         logger.exception("Restored server code still requires local delivery: task_id={}", task_id)
-        await run_txn(lambda db: service.mark_recovery(db, task_id, "历史代码已恢复，等待重新捕获交付版本"))
+        await run_txn(
+            lambda db: service.mark_recovery(
+                db,
+                task_id,
+                "历史代码已恢复，等待重新捕获交付版本",
+                expected_restore_operation_id=operation_id,
+            )
+        )
+        raise
 
 
 def minimal_context(accepted) -> str:

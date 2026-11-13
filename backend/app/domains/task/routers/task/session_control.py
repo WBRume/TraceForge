@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from functools import partial
+
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
+from app.core.offload import run_db_txn_with_bind
 from app.dependencies import get_current_user, get_db
 from app.domains.ai.schemas.ai_job import AiJobListResponse, AiJobResponse
 from app.domains.ai.services.jobs.store import list_task_jobs, serialize_job
@@ -33,6 +36,7 @@ from app.domains.task.services import (
     pre_input_service,
     task_session_control_service,
     task_session_service,
+    task_session_undo_finalization,
 )
 from app.domains.task.services.task_records import queries as task_task_records_queries
 from app.domains.workspace_collaboration.service import CollaborationError
@@ -169,6 +173,7 @@ async def undo_task_message(
     task_id: str,
     message_id: str,
     body: TaskUndoMessageRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -185,12 +190,13 @@ async def undo_task_message(
     )
     db.close()
     try:
-        return await task_session_service.undo_task_message(
+        result = await task_session_service.undo_task_message(
             db,
             task_id=context["task_id"],
             message_id=message_id,
             actor_user_id=current_user.id,
             operation_id=body.operation_id,
+            defer_finalization=True,
         )
     except task_session_service.TaskSessionUndoError as exc:
         raise HTTPException(
@@ -199,6 +205,15 @@ async def undo_task_message(
         ) from exc
     except LockAcquireTimeout as exc:
         raise_task_lock_conflict(exc)
+    # The committed receipt can reach the client while delivery and GC run.
+    # The dispatcher picks up the durable pending row if this process exits.
+    background_tasks.add_task(
+        task_session_undo_finalization.finalize_pending_undo,
+        context["task_id"],
+        body.operation_id.strip(),
+        partial(run_db_txn_with_bind, db_bind),
+    )
+    return result
 
 
 @router.post("/{task_id}/chat-submissions", status_code=202)

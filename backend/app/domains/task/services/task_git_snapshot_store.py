@@ -15,6 +15,7 @@ import shutil
 import stat
 import tempfile
 import time
+from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
@@ -28,12 +29,12 @@ VERSION = 4
 ATTRIBUTES = b"* -text -filter -ident -working-tree-encoding -eol\n"
 
 
-def read_blobs(directory: str, objects: list[tuple[str, int]]):
+def read_blobs(directory: str, objects: list[tuple[str, int]], *, max_blob_size: int | None = 64 * 1024 * 1024):
     """Read raw immutable blobs in bounded batches, never one process per file."""
     batch, total = [], 0
     for item in [*objects, ("", 0)]:
         oid, size = item
-        if size > 64 * 1024 * 1024 or size < 0:
+        if size < 0 or (max_blob_size is not None and size > max_blob_size):
             raise ValueError("Snapshot blob exceeds transfer limits")
         if batch and (not oid or total + size > 32 * 1024 * 1024 or len(batch) >= 1000):
             raw = shadow_git(directory, ["cat-file", "--batch"], "".join(value[0] + "\n" for value in batch).encode())
@@ -639,8 +640,16 @@ def retain_checkpoint(payload: dict, task_root: str, object_store: str, checkpoi
 
 def validate(payload: dict) -> dict:
     result = entries(payload)
+    objects = defaultdict(set)
+    for item in result.values():
+        objects[item["git_dir"]].add((item["oid"], item["size"]))
     for part in payload["partitions"]:
-        shadow_git(part["git_dir"], ["fsck", "--full", "--no-dangling", part["tree"]])
+        directory = part["git_dir"]
+        # Validate connectivity, then hash the blobs reachable from this cut.
+        # Full fsck also decompresses objects from unrelated history and turns.
+        shadow_git(directory, ["fsck", "--connectivity-only", "--no-reflogs", "--no-dangling", part["tree"]])
+        for _ in read_blobs(directory, sorted(objects[directory]), max_blob_size=None):
+            pass
     return result
 
 
@@ -757,6 +766,7 @@ def restore(checkpoint: str, root: str, backup: str) -> None:
             saved["object_store"],
             saved["policy"],
             set(saved["tracked"]),
+            capture_controls=False,
         )
         actual = entries(verified)
         if {p: (e["oid"], e["mode"]) for p, e in actual.items()} != {

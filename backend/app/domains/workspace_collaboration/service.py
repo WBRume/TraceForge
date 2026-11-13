@@ -15,7 +15,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, object_session
 
 from app.domains.task.models.chat import ChatMessage
-from app.domains.task.models.session_turn import TaskSessionTurn
+from app.domains.task.models.session_turn import TaskSessionOperation, TaskSessionOperationStatus, TaskSessionTurn
 from app.domains.task.models.task import SddTask, TaskType
 from app.domains.task.models.task_repository import SddTaskRepository
 
@@ -1028,38 +1028,68 @@ def begin_restore(db: Session, task: SddTask, operation_id: str | None = None) -
     return True
 
 
-def finish_restore(db: Session, task: SddTask) -> dict | None:
+def _restore_pending(state: CollaborationState, operation_id: str) -> bool:
+    return (
+        state.enabled
+        and not state.run_id
+        and state.restore_operation_id == operation_id
+        and (
+            state.sync_phase == "SETTLING"
+            or (state.sync_phase == "RECOVERY_REQUIRED" and state.recovery_kind == "SERVER_OUTPUT")
+        )
+    )
+
+
+def finish_restore(db: Session, task: SddTask, operation_id: str) -> dict | None:
     state = _state(db, task.id)
-    if not state or not state.enabled:
+    if state is None or not _restore_pending(state, operation_id):
         return None
-    if state.sync_phase != "SETTLING":
-        _fail("RESTORE_NOT_PENDING", "A coordinated task restore is not pending")
+    completed = (
+        db.query(TaskSessionOperation.id)
+        .filter_by(task_id=task.id, operation_id=operation_id, status=TaskSessionOperationStatus.REVERTED)
+        .first()
+    )
+    if not completed:
+        _fail("RESTORE_NOT_VERIFIED", "The exact server history restore has not completed")
+    _assert_no_writer(db, task.id)
     state.session_generation = task.session_generation
     state.session_revision = task.session_revision
-    state.run_id = None
     reserved_lease = _reserve_driver_lease(state)
     manifest = _capture(db, task, state, "RESTORE", stable=True)
     _renew_reserved_lease(state, reserved_lease)
     _publish(state, manifest)
     state.sync_phase = "DELIVERY_PENDING"
+    state.restore_operation_id = None
+    state.recovery_kind = None
+    state.recovery_message = None
     state.conflicts_json = []
     db.flush()
     return get_state(db, task)
 
 
-def mark_recovery(db: Session, task_id: str, message: str, *, expected_run_id: str | None = None) -> None:
+def mark_recovery(
+    db: Session,
+    task_id: str,
+    message: str,
+    *,
+    expected_run_id: str | None = None,
+    expected_restore_operation_id: str | None = None,
+) -> None:
     state = _state(db, task_id, nowait=expected_run_id is not None)
-    if expected_run_id is not None and (
-        state is None
-        or state.run_id != expected_run_id
-        or state.sync_phase not in {"RUNNING", "WAITING_HITL", "STOPPING", "SETTLING"}
+    if not state or not state.enabled:
+        return
+    if expected_restore_operation_id is not None and (
+        not _restore_pending(state, expected_restore_operation_id) or state.sync_phase != "SETTLING"
     ):
         return
-    if state and state.enabled:
-        state.sync_phase = "RECOVERY_REQUIRED"
-        state.recovery_kind = "SERVER_OUTPUT"
-        state.recovery_message = message[:1000]
-        _bump(state)
+    if expected_run_id is not None and (
+        state.run_id != expected_run_id or state.sync_phase not in {"RUNNING", "WAITING_HITL", "STOPPING", "SETTLING"}
+    ):
+        return
+    state.sync_phase = "RECOVERY_REQUIRED"
+    state.recovery_kind = "SERVER_OUTPUT"
+    state.recovery_message = message[:1000]
+    _bump(state)
 
 
 def abandon_input(db: Session, task_id: str, submission_id: str) -> None:
@@ -1290,9 +1320,9 @@ def recover_output(db: Session, task: SddTask, user_id: str, request: Fence) -> 
         state.sync_phase == "RECOVERY_REQUIRED" and state.recovery_kind == "SERVER_OUTPUT"
     ):
         _fail("RECOVERY_NOT_PENDING", "No final output capture is awaiting recovery")
-    _assert_no_writer(db, task.id)
     try:
         if state.run_id:
+            _assert_no_writer(db, task.id)
             from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 
             job = db.query(SddAiJob).filter_by(id=state.run_id, task_id=task.id, channel=AiJobChannel.TASK_CHAT).first()
@@ -1306,19 +1336,9 @@ def recover_output(db: Session, task: SddTask, user_id: str, request: Fence) -> 
             state.sync_phase = "RUNNING"
             result = finish_execution(db, task, state.run_id, confirmed_stopped=True)
         else:
-            from app.domains.task.models.session_turn import TaskSessionOperation, TaskSessionOperationStatus
-
-            operation = (
-                db.query(TaskSessionOperation)
-                .filter_by(task_id=task.id, operation_id=state.restore_operation_id)
-                .first()
-                if state.restore_operation_id
-                else None
-            )
-            if not operation or operation.status != TaskSessionOperationStatus.REVERTED:
+            if not state.restore_operation_id:
                 _fail("RESTORE_NOT_VERIFIED", "The exact server history restore has not completed")
-            state.sync_phase = "SETTLING"
-            result = finish_restore(db, task)
+            result = finish_restore(db, task, state.restore_operation_id)
         state.recovery_kind = None
         state.recovery_message = None
         db.flush()

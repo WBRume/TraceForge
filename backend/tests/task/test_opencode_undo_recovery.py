@@ -157,8 +157,31 @@ async def test_recovery_reverts_exact_input_or_verifies_already_removed(monkeypa
     )
     if already_reverted:
         adapter.revert_message.assert_not_awaited()
+        adapter.list_messages.assert_awaited_once_with("session")
     else:
         adapter.revert_message.assert_awaited_once_with("session", "msg-owned")
+    adapter.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_opencode_undo_verifies_top_level_message_ids_after_revert(monkeypatch):
+    adapter = SimpleNamespace(
+        wait_until_idle=AsyncMock(),
+        revert_message=AsyncMock(return_value=True),
+        list_messages=AsyncMock(return_value=[{"id": "msg-owned", "type": "user"}]),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr("app.domains.local_resource.service.provider_for_task", lambda task_id: adapter)
+    turn = SimpleNamespace(
+        id="turn",
+        provider="opencode",
+        provider_session_id="session",
+        provider_message_ids_json={"provider_user_message_id": "msg-owned"},
+    )
+    with pytest.raises(service.TaskSessionUndoError) as error:
+        await service._restore_provider_for_suffix(SimpleNamespace(id="task", session_id="session"), turn, [turn])
+    assert error.value.code == "UNDO_PROVIDER_VERIFY_FAILED"
+    adapter.list_messages.assert_awaited_once_with("session")
     adapter.close.assert_awaited_once()
 
 

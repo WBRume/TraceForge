@@ -3,6 +3,7 @@
 import errno
 import os
 import stat
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -475,6 +476,26 @@ def test_seed_objects_survive_source_object_store_replacement(tmp_path, packed):
     entries = snapshots.validate(saved)
     item = entries["a"]
     assert git(root, "--git-dir=" + item["git_dir"], "cat-file", "blob", item["oid"]) == b"independent source blob"
+
+
+def test_restore_rejects_reachable_blob_checksum_mismatch_before_mutating_files(tmp_path):
+    root = tmp_path / "task"
+    target = write(root, "a.txt", b"original")
+    saved = capture(tmp_path)
+    entry = snapshots.entries(saved)["a.txt"]
+    oid = entry["oid"]
+    object_dir = Path(entry["git_dir"], "objects", oid[:2])
+    object_dir.mkdir(exist_ok=True)
+    blob = object_dir / oid[2:]
+    if blob.exists():
+        blob.chmod(stat.S_IREAD | stat.S_IWRITE)
+    blob.write_bytes(zlib.compress(b"blob 8\0altered!"))
+    target.write_bytes(b"current")
+
+    with pytest.raises(ValueError, match="checksum differs"):
+        restore(tmp_path)
+
+    assert target.read_bytes() == b"current"
 
 
 def test_linked_worktree_uses_own_index(tmp_path):

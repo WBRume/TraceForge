@@ -2,7 +2,7 @@
 
 from enum import Enum as PyEnum
 
-from sqlalchemy import JSON, Column, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Column, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -60,7 +60,10 @@ class TaskSessionTurn(Base):
 
 class TaskSessionOperation(Base):
     __tablename__ = "sdd_task_session_operations"
-    __table_args__ = (UniqueConstraint("task_id", "operation_id", name="uq_task_session_operation_task_id"),)
+    __table_args__ = (
+        UniqueConstraint("task_id", "operation_id", name="uq_task_session_operation_task_id"),
+        Index("ix_task_session_undo_finalization", "finalize_after", "id"),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -74,6 +77,7 @@ class TaskSessionOperation(Base):
         index=True,
     )
     current_state_backup_path = Column(String(1000), nullable=True)
+    finalize_after = Column(DateTime, nullable=True)
     error_code = Column(String(80), nullable=True)
     error_message = Column(Text, nullable=True)
     actor_user_id = Column(String(36), ForeignKey("users.id"), nullable=False)

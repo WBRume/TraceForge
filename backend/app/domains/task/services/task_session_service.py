@@ -7,6 +7,7 @@ import hashlib
 import os
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -831,12 +832,12 @@ async def _restore_provider_for_suffix(
         from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 
         session_id = current_session_id
-        provider_ids: list[str] = []
+        provider_ids: set[str] = set()
         target_user_id = None
         for turn in suffix:
             values = turn.provider_message_ids_json if isinstance(turn.provider_message_ids_json, dict) else {}
             ids = values.get("provider_message_ids") if isinstance(values.get("provider_message_ids"), list) else []
-            provider_ids.extend(str(value).strip() for value in ids if str(value).strip())
+            provider_ids.update(str(value).strip() for value in ids if str(value).strip())
             if turn.id == target.id:
                 target_user_id = str(values.get("provider_user_message_id") or "").strip() or None
         if not session_id:
@@ -854,20 +855,19 @@ async def _restore_provider_for_suffix(
                 session_id,
                 float(getattr(settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 30.0) or 30.0),
             )
-            before = await adapter.list_messages(session_id)
-            before_ids = {str((item.get("info") or item).get("id") or "") for item in before}
+            provider_ids.add(target_user_id)
             # A crash can occur after OpenCode commits the revert but before
             # our worktree/DB commit. Only this same fenced operation may resume.
-            already_reverted = recovering and not before_ids.intersection(set(provider_ids) | {target_user_id})
-            if not already_reverted and not await adapter.revert_message(session_id, target_user_id):
+            if recovering:
+                before = await adapter.list_messages(session_id)
+                if provider_ids.isdisjoint(str(item.get("id") or "") for item in before):
+                    return None
+            if not await adapter.revert_message(session_id, target_user_id):
                 raise TaskSessionUndoError(
                     "OpenCode provider does not support revert", code="UNDO_PROVIDER_REVERT_FAILED"
                 )
             remaining = await adapter.list_messages(session_id)
-            remaining_ids = {
-                str((item.get("info") or item).get("id") or "").strip() for item in remaining if isinstance(item, dict)
-            }
-            if remaining_ids.intersection(set(provider_ids) | {target_user_id}):
+            if not provider_ids.isdisjoint(str(item.get("id") or "") for item in remaining):
                 raise TaskSessionUndoError(
                     "OpenCode provider still exposes reverted messages", code="UNDO_PROVIDER_VERIFY_FAILED"
                 )
@@ -1024,6 +1024,18 @@ def _completed_undo_receipt(db, operation, message_id, actor_id):
     return result
 
 
+def _read_committed_undo(db, task_id, operation_id, message_id, actor_id):
+    operation = (
+        db.query(TaskSessionOperation)
+        .filter_by(task_id=task_id, operation_id=operation_id, status=TaskSessionOperationStatus.REVERTED)
+        .with_for_update()
+        .first()
+    )
+    if operation:
+        return _completed_undo_receipt(db, operation, message_id, actor_id)
+    return None
+
+
 def _prepare_undo_sync(
     db: Session,
     *,
@@ -1143,11 +1155,6 @@ def _prepare_undo_sync(
         "current_backup": os.path.join(
             str(target.checkpoint_path), "current-worktree" if not recovering else f"recovery-worktree-{uuid4().hex}"
         ),
-        "checkpoint_paths": list(
-            dict.fromkeys(
-                str(turn.checkpoint_path or "").strip() for turn in suffix if str(turn.checkpoint_path or "").strip()
-            )
-        ),
     }
 
 
@@ -1205,6 +1212,7 @@ def _complete_undo_sync(
         raise TaskSessionUndoError("Undo operation not found", code="UNDO_OPERATION_NOT_FOUND")
     operation.status = TaskSessionOperationStatus.REVERTED
     operation.finished_at = now
+    operation.finalize_after = now
     from app.agents.session_checkpoint import session_checkpoint_adapter
 
     if session_checkpoint_adapter(context["provider_name"]).replaces_session_id:
@@ -1220,7 +1228,6 @@ def _complete_undo_sync(
         "status": TaskSessionTurnStatus.REVERTED.value,
     }
     sm.remember_command_result(db, task.id, f"revert:{context['operation_id']}", result)
-    db.commit()
     return result
 
 
@@ -1233,14 +1240,16 @@ def _fail_undo_sync(db: Session, *, task_id: str, operation_id: str) -> None:
         )
         .first()
     )
-    if operation:
+    if operation and operation.status != TaskSessionOperationStatus.REVERTED:
         operation.status = TaskSessionOperationStatus.FAILED
         operation.error_code = "UNDO_FAILED"
         operation.error_message = "Undo failed; recovery checkpoint retained"
         operation.finished_at = datetime.utcnow()
         from app.domains.workspace_collaboration import service as collaboration
 
-        collaboration.mark_recovery(db, task_id, "历史恢复失败，请先核对保留的恢复记录")
+        collaboration.mark_recovery(
+            db, task_id, "历史恢复失败，请先核对保留的恢复记录", expected_restore_operation_id=operation_id
+        )
         db.commit()
 
 
@@ -1293,6 +1302,32 @@ async def _compensate_undo_state(
             )
 
 
+async def _notify_undo(task_id: str, operation_id: str, result: dict[str, Any]) -> None:
+    try:
+        await manager.send_message_to_room(
+            task_id,
+            WSMessage(
+                type="task_session_reverted",
+                payload={
+                    "task_id": task_id,
+                    "operation_id": operation_id,
+                    "removed_message_ids": result["removed_message_ids"],
+                    "session_generation": result["session_generation"],
+                    "task_snapshot": result["task_snapshot"],
+                },
+            ),
+        )
+    except Exception:
+        logger.exception("Task session undo broadcast failed: task={}, operation={}", task_id, operation_id)
+
+    try:
+        from app.domains.websocket.ws.public_share_manager import notify_task_shares_history_changed
+
+        await notify_task_shares_history_changed(task_id)
+    except Exception:
+        logger.exception("Task session undo share nudge failed: task={}", task_id)
+
+
 async def undo_task_message(
     db: Session,
     *,
@@ -1301,8 +1336,11 @@ async def undo_task_message(
     message_id: str,
     actor_user_id: str,
     operation_id: str,
+    defer_finalization: bool = False,
 ) -> dict[str, Any]:
-    """Undo a turn while keeping every synchronous ORM phase off-loop."""
+    """Commit the undo off-loop, optionally leaving finalization to the caller."""
+    from app.domains.task.services.task_session_undo_finalization import finalize_undo
+
     operation_id = str(operation_id or "").strip()
     if not operation_id:
         raise TaskSessionUndoError(
@@ -1323,13 +1361,12 @@ async def undo_task_message(
     if not resolved_task_id:
         raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
     db.close()
-    context: dict[str, Any] | None = None
+    run_txn = partial(run_db_txn_with_bind, db_bind)
     async with lock_task(
         resolved_task_id,
         ttl=max(120, int(getattr(settings, "TASK_LOCK_TTL_SECONDS", 120) or 120)),
     ):
-        context = await run_db_txn_with_bind(
-            db_bind,
+        context = await run_txn(
             lambda session: _prepare_undo_sync(
                 session,
                 task_id=resolved_task_id,
@@ -1339,6 +1376,8 @@ async def undo_task_message(
             ),
         )
         if "duplicate_result" in context:
+            if not defer_finalization:
+                await finalize_undo(resolved_task_id, operation_id, run_txn)
             return context["duplicate_result"]
         provider_name = context["provider_name"]
         target = context["target"]
@@ -1350,6 +1389,7 @@ async def undo_task_message(
         )
         provider_backup_ready = False
         forked_dsh_session_id: str | None = None
+        commit_started = False
 
         try:
             engine_was_stopped = await _stop_engine_and_wait(resolved_task_id)
@@ -1358,8 +1398,7 @@ async def undo_task_message(
             await skill_runtime_trace_service.wait_for_pending_writes(
                 float(getattr(settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 30.0) or 30.0)
             )
-            await run_db_txn_with_bind(
-                db_bind,
+            await run_txn(
                 lambda session: _record_undo_backup_path_sync(
                     session,
                     task_id=resolved_task_id,
@@ -1385,8 +1424,8 @@ async def undo_task_message(
                 context["project_path"],
                 context["current_backup"],
             )
-            result = await run_db_txn_with_bind(
-                db_bind,
+            commit_started = True
+            result = await run_txn(
                 lambda session: _complete_undo_sync(
                     session,
                     context=context,
@@ -1394,101 +1433,34 @@ async def undo_task_message(
                     forked_dsh_session_id=forked_dsh_session_id,
                 ),
             )
-            from app.domains.workspace_collaboration.hooks import finish_restore
-
-            await finish_restore(resolved_task_id, lambda body: run_db_txn_with_bind(db_bind, body))
-            for checkpoint_path in context["checkpoint_paths"]:
-                try:
-                    await task_session_snapshot_service.cleanup_checkpoint(checkpoint_path)
-                except Exception as cleanup_exc:
-                    logger.warning(
-                        "Task session undo checkpoint cleanup deferred: task={}, operation={}, checkpoint={}, error={}",
-                        resolved_task_id,
-                        operation_id,
-                        _secret_fingerprint(checkpoint_path),
-                        str(cleanup_exc),
-                    )
-            try:
-                await manager.send_message_to_room(
-                    resolved_task_id,
-                    WSMessage(
-                        type="task_session_reverted",
-                        payload={
-                            "task_id": resolved_task_id,
-                            "operation_id": operation_id,
-                            "removed_message_ids": context["message_ids"],
-                            "session_generation": context["session_generation"],
-                            "task_snapshot": result["task_snapshot"],
-                        },
-                    ),
-                )
-            except Exception as broadcast_exc:
-                logger.warning(
-                    "Task session undo broadcast deferred: task={}, operation={}, error={}",
-                    resolved_task_id,
-                    operation_id,
-                    str(broadcast_exc),
-                )
-            # 公开 READ 分享页的实时 nudge：撤销改变了可见历史
-            try:
-                from app.domains.websocket.ws.public_share_manager import (
-                    notify_task_shares_history_changed,
-                )
-
-                await notify_task_shares_history_changed(resolved_task_id)
-            except Exception as nudge_exc:
-                logger.warning(
-                    "Task session undo share nudge deferred: task={}, error={}",
-                    resolved_task_id,
-                    str(nudge_exc),
-                )
-            return result
-        except TaskSessionUndoError:
-            await _compensate_undo_state(
-                forked_dsh_session_id=forked_dsh_session_id,
-                provider_name=provider_name,
-                target=target,
-                resolved_task_id=resolved_task_id,
-                operation_id=operation_id,
-                provider_backup_ready=provider_backup_ready,
-                context=context,
-            )
-            if context is not None:
-                await run_db_txn_with_bind(
-                    db_bind,
-                    lambda session: _fail_undo_sync(
-                        session,
-                        task_id=resolved_task_id,
-                        operation_id=operation_id,
-                    ),
-                )
-            raise
         except Exception as exc:
-            await _compensate_undo_state(
-                forked_dsh_session_id=forked_dsh_session_id,
-                provider_name=provider_name,
-                target=target,
-                resolved_task_id=resolved_task_id,
-                operation_id=operation_id,
-                provider_backup_ready=provider_backup_ready,
-                context=context,
-            )
-            if context is not None:
-                await run_db_txn_with_bind(
-                    db_bind,
-                    lambda session: _fail_undo_sync(
-                        session,
-                        task_id=resolved_task_id,
-                        operation_id=operation_id,
-                    ),
+            result = None
+            if commit_started:
+                # A lost commit acknowledgement can leave a durable receipt.
+                result = await run_txn(
+                    lambda session: _read_committed_undo(
+                        session, resolved_task_id, operation_id, str(message_id), actor_user_id
+                    )
                 )
-            logger.error(
-                "Task session undo failed: task={}, operation={}, error={}",
-                resolved_task_id,
-                operation_id,
-                str(exc),
-            )
-            raise TaskSessionUndoError(
-                "Undo failed; recovery checkpoint retained",
-                code="UNDO_FAILED",
-            ) from exc
+            if result is None:
+                await _compensate_undo_state(
+                    forked_dsh_session_id=forked_dsh_session_id,
+                    provider_name=provider_name,
+                    target=target,
+                    resolved_task_id=resolved_task_id,
+                    operation_id=operation_id,
+                    provider_backup_ready=provider_backup_ready,
+                    context=context,
+                )
+                await run_txn(
+                    lambda session: _fail_undo_sync(session, task_id=resolved_task_id, operation_id=operation_id)
+                )
+                if isinstance(exc, TaskSessionUndoError):
+                    raise
+                logger.exception("Task session undo failed: task={}, operation={}", resolved_task_id, operation_id)
+                raise TaskSessionUndoError("Undo failed; recovery checkpoint retained", code="UNDO_FAILED") from exc
+
+        if not defer_finalization:
+            await finalize_undo(resolved_task_id, operation_id, run_txn)
+        await _notify_undo(resolved_task_id, operation_id, result)
+        return result

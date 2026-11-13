@@ -6,15 +6,34 @@ import shutil
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.orm import sessionmaker
 
 from app.core.subprocess_runner import run_git
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
+from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.chat_submission import TaskChatSubmission
+from app.domains.task.models.session_turn import (
+    TaskSessionOperation,
+    TaskSessionOperationStatus,
+    TaskSessionTurn,
+    TaskSessionTurnStatus,
+)
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_repository import SddTaskRepository, TaskRepositoryState
+from app.domains.task.services import (
+    task_session_service,
+)
+from app.domains.task.services import (
+    task_session_snapshot_service as snapshots,
+)
+from app.domains.task.services import (
+    task_session_undo_finalization as finalization,
+)
 from app.domains.workspace_collaboration import content, identity, service
 from app.domains.workspace_collaboration.models import CollaborationState
 from app.domains.workspace_collaboration.schemas import (
@@ -538,8 +557,6 @@ def test_unchanged_handoff_has_no_human_delta(environment):
 
 
 def test_restore_recovery_requires_exact_completed_operation(environment):
-    from app.domains.task.models.session_turn import TaskSessionOperation, TaskSessionOperationStatus
-
     db, task, root = environment
     state = acknowledge(environment, enabled(environment))
     service.begin_restore(db, task, "exact-undo")
@@ -567,6 +584,158 @@ def test_restore_recovery_requires_exact_completed_operation(environment):
     assert result["sync_phase"] == "DELIVERY_PENDING" and result["workspace_revision"] == 2
     assert result["session_revision"] == 1
     assert service.get_snapshot(db, "t", result["snapshot_id"])["source"] == "RESTORE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["capture", "capture_and_marker", "cleanup", "commit_acknowledgement"])
+async def test_committed_undo_recovers_delivery_and_cleanup(environment, tmp_path, monkeypatch, failure):
+    db, task, root = environment
+    initial = acknowledge(environment, enabled(environment))
+    monkeypatch.setenv("CLAUDE_HOME", str(tmp_path / "claude"))
+    session_path = Path(snapshots._claude_store_dir(str(root)), "session.jsonl")
+    session_path.parent.mkdir(parents=True)
+    session_prefix = b'{"role":"user","content":"keep"}\n'
+    session_path.write_bytes(session_prefix)
+    task.session_id = "session"
+    checkpoint = Path(
+        snapshots._create_checkpoint_sync(
+            str(root),
+            ["api", "web"],
+            "claude-code",
+            task.session_id,
+            "w",
+            "Multi repo",
+            "t",
+            "Task",
+            initial_checkpoint=task.task_meta_json["initial_workspace_checkpoint"],
+        )["root"]
+    )
+    file = root / "api/same.txt"
+    baseline = file.read_bytes()
+    file.write_bytes(b"changes from the turn")
+    session_path.write_bytes(session_prefix + b'{"role":"user","content":"undo"}\n')
+    db.add_all(
+        [
+            ChatMessage(
+                id=message_id,
+                task_id="t",
+                workspace_id="w",
+                creator_id="u",
+                role="user",
+                content=message_id,
+                session_generation=1,
+                created_at=datetime(2026, 1, day),
+            )
+            for day, message_id in enumerate(("keep", "remove"), start=1)
+        ]
+    )
+    db.add(
+        TaskSessionTurn(
+            id="turn",
+            task_id="t",
+            workspace_id="w",
+            user_message_id="remove",
+            provider="claude-code",
+            provider_session_id="session",
+            checkpoint_path=str(checkpoint),
+            session_generation=1,
+            session_revision=0,
+            turn_index=1,
+            status=TaskSessionTurnStatus.ACTIVE,
+        )
+    )
+    db.commit()
+    monkeypatch.setattr("app.database.SessionLocal", sessionmaker(bind=db.get_bind()))
+    monkeypatch.setattr(
+        task_session_service, "get_lock_provider", AsyncMock(return_value=SimpleNamespace(backend_name="redis"))
+    )
+    monkeypatch.setattr(task_session_service.manager, "send_message_to_room", AsyncMock())
+    capture = service._capture
+    restore_captures = []
+
+    def capture_restored(transaction, task, state, source, *, stable):
+        assert source == "RESTORE"
+        assert transaction.query(TaskSessionOperation).one().status == TaskSessionOperationStatus.REVERTED
+        assert transaction.get(ChatMessage, "remove") is None
+        assert file.read_bytes() == baseline
+        assert session_path.read_bytes() == session_prefix
+        restore_captures.append(source)
+        if failure in {"capture", "capture_and_marker"} and len(restore_captures) == 1:
+            raise OSError("injected snapshot failure after commit")
+        return capture(transaction, task, state, source, stable=stable)
+
+    def fail_recovery_marker(*args, **kwargs):
+        raise OSError("injected failure writing recovery marker")
+
+    cleanup = snapshots.cleanup_checkpoint
+    cleanup_attempts = []
+
+    async def cleanup_checkpoint(path):
+        cleanup_attempts.append(path)
+        if failure == "cleanup" and len(cleanup_attempts) == 1:
+            raise OSError("injected cleanup failure")
+        await cleanup(path)
+
+    monkeypatch.setattr(service, "_capture", capture_restored)
+    if failure == "capture_and_marker":
+        monkeypatch.setattr(service, "mark_recovery", fail_recovery_marker)
+    monkeypatch.setattr(snapshots, "cleanup_checkpoint", cleanup_checkpoint)
+    run_txn = task_session_service.run_db_txn_with_bind
+    commit_acknowledgement_lost = False
+
+    async def lose_commit_acknowledgement(bind, body):
+        nonlocal commit_acknowledgement_lost
+        result = await run_txn(bind, body)
+        if not commit_acknowledgement_lost and isinstance(result, dict) and result.get("status") == "REVERTED":
+            commit_acknowledgement_lost = True
+            raise OSError("injected lost undo commit acknowledgement")
+        return result
+
+    if failure == "commit_acknowledgement":
+        monkeypatch.setattr(task_session_service, "run_db_txn_with_bind", lose_commit_acknowledgement)
+    kwargs = {"task_id": "t", "message_id": "remove", "actor_user_id": "u", "operation_id": "undo"}
+    result = await task_session_service.undo_task_message(db, **kwargs)
+
+    assert result["status"] == "REVERTED"
+    assert commit_acknowledgement_lost == (failure == "commit_acknowledgement")
+    assert result["removed_message_ids"] == ["remove"]
+    assert db.query(ChatMessage.id).all() == [("keep",)]
+    assert db.get(TaskSessionTurn, "turn").status == TaskSessionTurnStatus.REVERTED
+    assert file.read_bytes() == baseline and session_path.read_bytes() == session_prefix
+    if failure != "commit_acknowledgement":
+        assert checkpoint.is_dir()
+        pending_phase = {
+            "capture": "RECOVERY_REQUIRED",
+            "capture_and_marker": "SETTLING",
+            "cleanup": "DELIVERY_PENDING",
+        }
+        assert db.get(CollaborationState, "t").sync_phase == pending_phase[failure]
+        retry_at = db.query(TaskSessionOperation).one().finalize_after
+        assert retry_at is not None
+        monkeypatch.setattr(finalization, "datetime", SimpleNamespace(utcnow=lambda: retry_at))
+    db.close()
+    await finalization.recover_pending_undos()
+    await finalization.recover_pending_undos()
+    assert await task_session_service.undo_task_message(db, **kwargs) == result
+
+    assert db.query(TaskSessionOperation).one().finalize_after is None
+    assert db.query(ChatMessage.id).all() == [("keep",)]
+    assert file.read_bytes() == baseline and session_path.read_bytes() == session_prefix
+    assert not checkpoint.exists()
+    task = db.get(SddTask, "t")
+    assert task.session_id == "session"
+    state = service.get_state(db, task)
+    assert state["sync_phase"] == "DELIVERY_PENDING" and state["recovery_kind"] is None
+    assert state["workspace_revision"] == initial["workspace_revision"] + 1
+    assert state["session_revision"] == result["task_snapshot"]["session_revision"]
+    snapshot = service.get_snapshot(db, "t", state["snapshot_id"])
+    api_repo = next(repo for repo in snapshot["repositories"] if repo["rel_path"] == "api")
+    entry = next(item for item in api_repo["files"] if item["path"] == file.name)
+    assert snapshot["source"] == "RESTORE"
+    assert content.ObjectStore(task).read(entry["sha256"]) == baseline
+    assert acknowledge((db, task, root), state)["sync_phase"] == "READY"
+    assert len(restore_captures) == (2 if failure in {"capture", "capture_and_marker"} else 1)
+    assert cleanup_attempts == [str(checkpoint)] * (2 if failure == "cleanup" else 1)
 
 
 def test_same_restore_operation_can_resume_after_server_failure(environment):

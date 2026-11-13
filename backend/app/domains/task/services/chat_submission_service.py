@@ -496,9 +496,11 @@ def _reconcile_sync(db, task_id=None):
 
 
 async def recover():
+    from app.domains.task.services.task_session_undo_finalization import recover_pending_undos
     from app.domains.workspace_collaboration.hooks import recover_deliveries
 
     await recover_deliveries()
+    await recover_pending_undos()
     for submission_id in await run_db_txn(_reconcile_sync):
         schedule(submission_id)
     await wake_event_publisher()
