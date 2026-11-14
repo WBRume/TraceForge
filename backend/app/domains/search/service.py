@@ -4,7 +4,7 @@ import asyncio
 import html
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import HTTPException
 from sqlalchemy import or_
@@ -12,6 +12,7 @@ from sqlalchemy.orm import load_only
 
 from app.core.feature_settings import feature_settings as settings
 from app.core.offload import run_db_txn
+from app.core.timestamps import utc_isoformat
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember
 from app.domains.case_center.models.case import SddCase
 from app.domains.search import postgres_index, sessions
@@ -141,10 +142,7 @@ def candidate_snippet(projection, query, candidate):
 
 def result_timestamp(projection):
     stamp = projection["created_at"]
-    if stamp is None:
-        return None
-    value = datetime.fromisoformat(stamp)
-    return value.replace(tzinfo=timezone.utc).isoformat() if value.tzinfo is None else stamp
+    return utc_isoformat(datetime.fromisoformat(stamp)) if stamp is not None else None
 
 
 def highlight_segments(fragment):

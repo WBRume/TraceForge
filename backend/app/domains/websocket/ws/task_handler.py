@@ -16,6 +16,7 @@ from app.agents.errors import AgentError
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.logging import get_logger
 from app.core.offload import run_db
+from app.core.timestamps import utc_isoformat
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
 from app.domains.ai.services import chat_message_idempotency_service
 from app.domains.ai.services.chat_message_idempotency_service import ChatMessageClaim
@@ -475,7 +476,7 @@ class TaskWebSocketHandler:
                 chat_message_id=created.message_id,
                 ai_job_id=None,
             )
-            created_at = created.created_at.isoformat() if created.created_at else None
+            created_at = utc_isoformat(created.created_at) if created.created_at else None
             await self._send_chat_ack(
                 request,
                 status="accepted",
@@ -528,7 +529,7 @@ class TaskWebSocketHandler:
         request: _ChatMessageRequest,
         created: task_session_service.CreatedChatTurn,
     ) -> None:
-        created_at = created.created_at.isoformat() if created.created_at else None
+        created_at = utc_isoformat(created.created_at) if created.created_at else None
         try:
             await self._send_chat_ack(
                 request,

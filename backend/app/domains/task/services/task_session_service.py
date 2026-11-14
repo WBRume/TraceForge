@@ -17,6 +17,7 @@ from app.core.distributed_lock import get_lock_provider, lock_task
 from app.core.feature_settings import feature_settings as settings
 from app.core.logging import get_logger
 from app.core.offload import run_db, run_db_txn, run_db_txn_with_bind
+from app.core.timestamps import utc_isoformat
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.ai.services.jobs import constants as ai_job_constants
@@ -121,7 +122,7 @@ def _chat_message_event_dto(db: Session, message: ChatMessage) -> dict[str, Any]
         "creator_is_workspace_expert": bool(member.is_expert) if member else False,
         "creator_avatar_url": creator.avatar_url if creator else None,
         "creator_avatar_svg": creator.avatar_svg if creator else None,
-        "created_at": message.created_at.isoformat() if message.created_at else None,
+        "created_at": utc_isoformat(message.created_at) if message.created_at else None,
         "session_turn_id": message.session_turn_id,
         "session_generation": message.session_generation,
         "reading_item_key": reading_info.get("item_key") if reading_info else None,

@@ -6,6 +6,7 @@ from sqlalchemy import func as sqlfunc
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.core.timestamps import utc_isoformat
 from app.domains.auth.models.user import User, WorkspaceMember
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.log import LogType, SddExecutionLog
@@ -65,13 +66,13 @@ def export_task_session(db: Session, task_id: str, workspace_id: str) -> dict | 
         "project_path": task.project_path,
         "execution_location": task.execution_location,
         "local_resource_id": task.local_resource_id,
-        "created_at": task.created_at.isoformat(),
+        "created_at": utc_isoformat(task.created_at),
         "messages": [
             {
                 "role": msg.role,
                 "content": msg.content,
                 "message_type": msg.message_type,
-                "created_at": msg.created_at.isoformat(),
+                "created_at": utc_isoformat(msg.created_at),
             }
             for msg in sort_chat_messages(list(task.messages or []))
         ],
@@ -335,7 +336,7 @@ def serialize_history_messages(db, task, msg_query, workspace_id, task_id):
                 "role": msg.role.value if hasattr(msg.role, "value") else msg.role,
                 "content": msg.content,
                 "type": msg.message_type.value if hasattr(msg.message_type, "value") else msg.message_type,
-                "created_at": msg.created_at.isoformat(),
+                "created_at": utc_isoformat(msg.created_at),
                 "creator_id": msg.creator_id,
                 "creator_display_name": creators_by_id[msg.creator_id].display_name
                 if msg.creator_id in creators_by_id

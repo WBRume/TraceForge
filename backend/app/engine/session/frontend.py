@@ -13,6 +13,7 @@ from typing import Any
 from app.config import settings
 from app.core.logging import get_logger
 from app.core.offload import run_db
+from app.core.timestamps import utc_isoformat
 from app.database import SessionLocal
 from app.domains.ai.schemas.websocket import (
     WSChatPayload,
@@ -394,7 +395,7 @@ class FrontendFeed:
                 creator_avatar_url=creator.avatar_url if creator else None,
                 creator_avatar_svg=creator.avatar_svg if creator else None,
                 creator_is_workspace_expert=bool(member.is_expert) if member else False,
-                created_at=saved_message.created_at.isoformat(),
+                created_at=utc_isoformat(saved_message.created_at),
                 session_turn_id=saved_message.session_turn_id,
                 session_generation=saved_message.session_generation,
                 reading_item_key=reading_item_key,

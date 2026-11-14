@@ -189,6 +189,7 @@ def test_acl_version_recheck_and_context(db_session, monkeypatch):
     assert len(rows) == 1 and consumed == 1
     result = window(db, task.creator_id, task.workspace_id, task.id, message_id=messages[3].id, before=1, after=1)
     assert [m["id"] for m in result["messages"]] == [m.id for m in messages[2:5]]
+    assert rows[0]["created_at"] == result["messages"][1]["created_at"] == "2026-01-01T00:00:00+00:00"
     assert result["has_before"] and result["has_after"]
     with pytest.raises(HTTPException) as exc:
         window(db, "not-member", task.workspace_id, task.id, message_id=messages[3].id)

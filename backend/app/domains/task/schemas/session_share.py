@@ -9,6 +9,8 @@ from enum import Enum as PyEnum
 
 from pydantic import BaseModel, Field
 
+from app.core.timestamps import UtcTimestamp
+
 # ── 管理侧：创建 / 列表 / 撤销 ──
 
 
@@ -128,7 +130,7 @@ class SharedHistoryMessage(BaseModel):
     role: str
     content: str
     safe_message_type: str
-    created_at: datetime
+    created_at: UtcTimestamp
     safe_card_summary: str | None = None
 
 

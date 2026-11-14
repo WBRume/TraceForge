@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.core.timestamps import UtcTimestamp
+
 CaseCategoryValue = Literal["PUBLIC", "PRODUCT", "SITE", "TEMPORARY"]
 CasePriorityValue = Literal["P0", "P1", "P2", "P3"]
 CaseStatusValue = Literal["DRAFT", "PENDING_REVIEW", "IN_REVIEW", "APPROVED", "REJECTED", "TECHNICALLY_VERIFIED"]
@@ -113,8 +115,8 @@ class CaseResponse(BaseModel):
     submitted_at: datetime | None = None
     reviewed_at: datetime | None = None
     rejected_comment: str | None = None
-    created_at: datetime
-    updated_at: datetime | None = None
+    created_at: UtcTimestamp
+    updated_at: UtcTimestamp | None = None
     creator_name: str | None = None
     source_task_name: str | None = None
     source_task_phenomenon: str | None = None

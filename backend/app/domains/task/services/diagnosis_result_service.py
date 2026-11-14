@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
 from app.core.offload import run_db
+from app.core.timestamps import utc_isoformat
 from app.database import SessionLocal
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
 from app.domains.ai.services.jobs.store import (
@@ -362,7 +363,7 @@ def _build_diagnosis_result_message_payload(db: Session, *, task, message: ChatM
         creator_id=message.creator_id,
         creator_display_name=creator.display_name if creator else None,
         creator_is_workspace_expert=bool(member.is_expert) if member else False,
-        created_at=message.created_at.isoformat() if message.created_at else None,
+        created_at=utc_isoformat(message.created_at) if message.created_at else None,
     ).model_dump()
 
 

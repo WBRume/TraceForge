@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, PlainSerializer, model_validator
 
 from app.agents.model_selection import ModelSelection
+from app.core.timestamps import UtcTimestamp
 from app.domains.local_resource.schemas import TaskExecutionInput
 
 
@@ -100,8 +101,8 @@ class TaskResponse(BaseModel):
     interrupt_reason: str | None = None
     interrupted_by_id: str | None = None
     interrupted_at: datetime | None = None
-    created_at: datetime
-    updated_at: datetime | None = None
+    created_at: UtcTimestamp
+    updated_at: UtcTimestamp | None = None
     requirement_duration_hours: float
     total_cost_usd: float
     total_duration_ms: int
