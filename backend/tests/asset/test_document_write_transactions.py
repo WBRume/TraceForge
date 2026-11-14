@@ -1,15 +1,12 @@
 """Document originals, concurrency fences and transaction failure recovery."""
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Barrier, Event
-from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, text, update
-from sqlalchemy.engine import make_url
+from sqlalchemy import create_engine, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
@@ -21,18 +18,13 @@ from app.domains.asset.services.document import repository, storage, transaction
 from app.domains.asset.services.review import resolutions
 from app.domains.asset.services.review.errors import ReviewError
 from app.domains.task.models.task import SddTask, TaskStatus
+from tests.postgres_support import temporary_postgres_schema
 from tests.workspace_asset.test_workspace_asset_boundary import _seed_workspace
 
 SPEC = b"# Requirement\n\nLogin must work.\n"
-MYSQL_TEST_URL = os.environ.get("TRACEFORGE_TEST_MYSQL_URL", "").strip()
 
 
-@pytest.fixture(
-    params=[
-        "sqlite",
-        pytest.param("mysql", marks=pytest.mark.skipif(not MYSQL_TEST_URL, reason="TRACEFORGE_TEST_MYSQL_URL not set")),
-    ]
-)
+@pytest.fixture(params=["sqlite", "postgresql"])
 def document_engine(request, tmp_path):
     """Use independent connections and an isolated database, never the development schema."""
     if request.param == "sqlite":
@@ -43,19 +35,8 @@ def document_engine(request, tmp_path):
             engine.dispose()
         return
 
-    server_url = make_url(MYSQL_TEST_URL).set(database=None)
-    database_name = f"traceforge_docwrite_{uuid4().hex}"
-    server = create_engine(server_url, isolation_level="AUTOCOMMIT")
-    with server.connect() as conn:
-        conn.execute(text(f"CREATE DATABASE `{database_name}` CHARACTER SET utf8mb4"))
-    engine = create_engine(server_url.set(database=database_name), isolation_level="REPEATABLE READ")
-    try:
+    with temporary_postgres_schema() as engine:
         yield engine
-    finally:
-        engine.dispose()
-        with server.connect() as conn:
-            conn.execute(text(f"DROP DATABASE `{database_name}`"))
-        server.dispose()
 
 
 @pytest.fixture
@@ -79,7 +60,7 @@ def document_db(document_engine, tmp_path, monkeypatch):
 
 
 def _install_sqlite_write_locks(monkeypatch):
-    """Emulate SQLite writer serialization here; only MySQL verifies real row locks."""
+    """Emulate SQLite writer serialization here; only PostgreSQL verifies real row locks."""
     lock_asset = transactions.lock_asset
     lock_task = transactions.lock_task_for_document_write
 

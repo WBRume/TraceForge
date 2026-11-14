@@ -433,17 +433,18 @@ def test_lease_session_and_repository_identity_are_fenced(environment):
 
 
 def test_lease_lock_contention_returns_retryable_busy_without_faking_renewal(environment, monkeypatch):
+    from psycopg.errors import LockNotAvailable
     from sqlalchemy.exc import OperationalError
 
     db, task, _ = environment
     state = enabled(environment)
     deadline = db.get(CollaborationState, "t").lease_expires_at
 
-    def busy(_db, _task_id, *, lock=True, nowait=False):
+    def busy(_query, *, nowait=False):
         assert nowait
-        raise OperationalError("SELECT FOR UPDATE NOWAIT", {}, Exception(3572, "row lock busy"))
+        raise OperationalError("SELECT FOR UPDATE NOWAIT", {}, LockNotAvailable("row lock busy"))
 
-    monkeypatch.setattr(service, "_state", busy)
+    monkeypatch.setattr(type(db.query(SddTask)), "with_for_update", busy)
     with pytest.raises(service.CollaborationError) as failed:
         service.renew_lease(
             db, task, "u", LeaseRequest(**{k: state[k] for k in ("client_id", "instance_id", "lease_epoch")})

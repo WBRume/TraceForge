@@ -372,7 +372,7 @@ def preflight_workspace_conflicts(
     name_rows: list[Workspace] = []
     if normalized_name:
         # 全局校验（不限当前用户）：防止用户 B 创建与用户 A 已建工作区同名的场景；
-        # 名称按大小写不敏感比较，保证 MySQL（ci 排序规则）与 SQLite 行为一致。
+        # 工作区名称按大小写不敏感比较。
         name_rows = db.query(Workspace).filter(func.lower(Workspace.name) == normalized_name.lower()).all()
 
     path_rows: list[Workspace] = []
@@ -960,8 +960,7 @@ def delete_workspace(db: Session, workspace_id: str, *, locked_task_ids: list[st
     if not ws:
         return False
 
-    # A locking read sees newly registered tasks even if the request's earlier
-    # permission queries established a MySQL REPEATABLE READ snapshot.
+    # Lock the current task rows before checking and deleting the workspace.
     tasks = db.query(SddTask).filter_by(workspace_id=workspace_id).populate_existing().with_for_update().all()
     if any(task.status == TaskStatus.PROVISIONING for task in tasks):
         raise ValueError("工作区有正在准备的任务，请先取消创建并等待清理完成")
@@ -1094,7 +1093,7 @@ def accept_invite_in_txn(
     顺序与不变量：
     1. 无锁 locator 读只用于定位 workspace，不以该读的有效性授权；
     2. 先锁 Workspace 行，再以 ``populate_existing() + FOR UPDATE`` 重读
-       link（MySQL 行锁；SQLite 上退化为由条件占用保证原子性）；
+       link（PostgreSQL 行锁；SQLite 由条件占用保证原子性）；
     3. 已是成员 → 幂等放行（不扣次数）；
     4. 锁定后再判断有效期/撤销/名额，过期判定取检查时刻的 ``now``；
     5. 名额占用是条件更新（``used_count < max_uses``）：并发下恰好一个
@@ -1167,9 +1166,7 @@ def accept_invite_in_txn(
         raise
     except IntegrityError:
         savepoint.rollback()
-        # REPEATABLE READ 下普通 SELECT 复用事务旧快照，可能仍看不到并发
-        # 已提交的成员；必须用锁定读（当前读）重读——冲突本身意味着对方
-        # 已提交，因此这里总能读到该成员。
+        # 回滚保存点后重新读取并发事务刚提交的成员。
         existing = (
             db.query(WorkspaceMember)
             .filter(

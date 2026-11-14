@@ -2,7 +2,7 @@
 OAuth 三方登录测试基础设施（T03 / B-19）。
 
 约定（沿用 tests/ 既有风格）：
-- SQLite 内存库（StaticPool）+ ``get_db`` 依赖覆盖 —— 绝不连 MySQL 主库；
+- SQLite 内存库（StaticPool）+ ``get_db`` 依赖覆盖 —— 与业务库隔离；
 - ``github_mock``：用 ``httpx.MockTransport`` 替换 ``GitHubProvider`` 的
   ``_http_client`` 工厂，可编程模拟 GitHub 上游三个端点
   （POST access_token / GET /user / GET /user/emails）；

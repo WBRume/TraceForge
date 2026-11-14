@@ -1,34 +1,22 @@
 """Real PostgreSQL embedding identity races and outbox transaction atomicity."""
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
 from app.domains.search import worker
 from app.domains.search.models import SearchEmbeddingJob, SearchEmbeddingProfile, SearchIndexTarget, SearchOutbox
-
-POSTGRES_TEST_URL = os.environ.get("TRACEFORGE_TEST_POSTGRES_URL", "").strip()
-pytestmark = pytest.mark.skipif(not POSTGRES_TEST_URL, reason="TRACEFORGE_TEST_POSTGRES_URL not set")
+from tests.postgres_support import temporary_postgres_schema
 
 
 @pytest.fixture
 def postgres_factory():
-    server_url = make_url(POSTGRES_TEST_URL).set(database="postgres")
-    name = f"traceforge_embedding_test_{uuid4().hex}"
-    options = {"connect_timeout": 10}
-    server = create_engine(server_url, isolation_level="AUTOCOMMIT", connect_args=options)
-    with server.connect() as conn:
-        conn.execute(text(f"CREATE DATABASE {name}"))
-    engine = create_engine(server_url.set(database=name), connect_args=options)
-    try:
+    with temporary_postgres_schema() as engine:
         Base.metadata.create_all(
             engine,
             tables=[
@@ -37,11 +25,6 @@ def postgres_factory():
             ],
         )
         yield sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-    finally:
-        engine.dispose()
-        with server.connect() as conn:
-            conn.execute(text(f"DROP DATABASE {name}"))
-        server.dispose()
 
 
 def job_values():

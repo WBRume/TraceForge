@@ -29,7 +29,7 @@ def get_asset_version(db: Session, asset_id: str, version_id: str) -> SddAssetVe
 
 
 def next_version_no(db: Session, asset_id: str) -> int:
-    """Allocate under the asset lock using a current read, even under MySQL REPEATABLE READ."""
+    """Allocate the next version while holding the asset lock."""
     latest = (
         db.query(SddAssetVersion.version_no)
         .filter(SddAssetVersion.asset_id == asset_id)

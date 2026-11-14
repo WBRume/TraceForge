@@ -21,11 +21,9 @@ OAuth 三方登录核心服务（B-07 / T02）—— 🔴 三路判定安全红�
    不落库、不写日志、不返回前端（拍板 #9）。
 7. 回调 302 URL 中只有 ticket，不含 JWT；token 只通过 resolve 用 ticket 兑换。
 
-⏱ Q-J 时区修正：MySQL 会话时区为本地（UTC+8），``server_default=func.now()`` 落库为
-本地时间。本模块所有时间字段（``expires_at`` / ``consumed_at`` / ``used_at`` /
+OAuth 时间统一使用 UTC。本模块时间字段（``expires_at`` / ``consumed_at`` / ``used_at`` /
 ``locked_until`` / ``last_login_at``）一律由**应用侧写入 UTC naive 值**
-（``_utcnow()``），过期/冷却比较也只用应用侧 UTC 值，
-**绝不**与 DB ``func.now()`` 生成的 ``created_at`` 比较（否则有 8 小时偏移）。
+（``_utcnow()``），过期和冷却比较使用应用侧 UTC 值。
 """
 
 import json
@@ -139,7 +137,7 @@ def mask_email(email: str | None) -> str:
 def _cleanup_expired(db: Session, *, include_states: bool, include_tickets: bool) -> None:
     """顺带清理：authorize 清 states、callback 清 tickets。
 
-    只删过期且不在冷却中的行；不设 LIMIT（数据量极小，避免 MySQL 方言纠缠）。
+    删除所有已过期且不在冷却期的行。
     """
     now = _utcnow()
     if include_states:

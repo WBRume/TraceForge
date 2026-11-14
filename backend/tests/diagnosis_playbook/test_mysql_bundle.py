@@ -120,14 +120,21 @@ def test_patch_freezing_keeps_baseline_and_rejects_protected_files(tmp_path):
 async def test_real_mysql_controller_and_supervised_four_stage_bundle(db, tmp_path, monkeypatch):
     """Create two uniquely named test schemas; never migrate/reset application DB."""
     import pymysql
+    from sqlalchemy.engine import make_url
 
     from app.config import settings
 
+    url_value = os.environ.get("TRACEFORGE_TEST_MYSQL_URL", "").strip()
+    if not url_value:
+        pytest.fail("Set TRACEFORGE_TEST_MYSQL_URL to run the MySQL diagnosis integration test")
+    url = make_url(url_value)
+    if url.get_backend_name() != "mysql" or not url.host or not url.username:
+        pytest.fail("TRACEFORGE_TEST_MYSQL_URL must specify a MySQL server and user")
     connection = {
-        "host": settings.DB_HOST,
-        "port": settings.DB_PORT,
-        "user": settings.DB_USER,
-        "password": settings.DB_PASSWORD,
+        "host": url.host,
+        "port": url.port or 3306,
+        "user": url.username,
+        "password": url.password or "",
     }
     schema_names = ["tf_playbook_test_" + uuid.uuid4().hex for _ in range(2)]
     observation_db, fixture_db = schema_names
@@ -156,7 +163,7 @@ async def test_real_mysql_controller_and_supervised_four_stage_bundle(db, tmp_pa
                 ),
                 encoding="utf-8",
             )
-            monkeypatch.setenv("TF_TEST_MYSQL_SECRET", settings.DB_PASSWORD)
+            monkeypatch.setenv("TF_TEST_MYSQL_SECRET", connection["password"])
             conn_ref = {k: connection[k] for k in ("host", "port", "user")}
             config = {
                 "work_root": str(tmp_path / "runs"),

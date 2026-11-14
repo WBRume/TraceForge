@@ -1,4 +1,4 @@
-"""Real Git + job orchestration; opt into isolated MySQL/Redis with TF_LIVE_PROVISION=1."""
+"""Real Git + job orchestration; opt into PostgreSQL and Redis with TF_LIVE_PROVISION=1."""
 
 import asyncio
 import json
@@ -11,8 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
@@ -28,6 +27,7 @@ from app.domains.workflow.models.provision_job import ProvisionJobStatus, Provis
 from app.domains.workflow.services import provision_job_service as jobs
 from app.domains.workspace.services.workspace_service import delete_workspace
 from tests.ai.jobs.domain_job_test_utils import run_provision_job
+from tests.postgres_support import temporary_postgres_schema
 
 
 def command(directory, *args):
@@ -38,39 +38,19 @@ def command(directory, *args):
 
 @pytest.fixture(scope="module")
 def provision_engine(tmp_path_factory):
-    root = tmp_path_factory.mktemp("parallel-provision")
-    admin = None
-    schema = "tf_provision_" + uuid4().hex[:16]
     if os.getenv("TF_LIVE_PROVISION") == "1":
-        from dotenv import dotenv_values
+        with temporary_postgres_schema() as engine:
+            Base.metadata.create_all(engine)
+            yield engine
+        return
 
-        config = dotenv_values(Path(__file__).resolve().parents[2] / ".env")
-        url = URL.create(
-            "mysql+pymysql",
-            username=config.get("DB_USER", settings.DB_USER),
-            password=config.get("DB_PASSWORD", settings.DB_PASSWORD),
-            host=config.get("DB_HOST", settings.DB_HOST),
-            port=int(config.get("DB_PORT", settings.DB_PORT)),
-            query={"charset": "utf8mb4"},
-        )
-        admin = create_engine(url, isolation_level="AUTOCOMMIT")
-        with admin.connect() as connection:
-            connection.execute(text(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4"))
-        engine = create_engine(url.set(database=schema), pool_size=12)
-    else:
-        engine = create_engine(
-            f"sqlite:///{root / 'db.sqlite3'}", connect_args={"check_same_thread": False, "timeout": 30}
-        )
+    root = tmp_path_factory.mktemp("parallel-provision")
+    engine = create_engine(f"sqlite:///{root / 'db.sqlite3'}", connect_args={"check_same_thread": False, "timeout": 30})
     try:
         Base.metadata.create_all(engine)
         yield engine
     finally:
         engine.dispose()
-        if admin:
-            assert schema.startswith("tf_provision_") and len(schema) == 29
-            with admin.connect() as connection:
-                connection.execute(text(f"DROP DATABASE `{schema}`"))
-            admin.dispose()
 
 
 @pytest.fixture()

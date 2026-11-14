@@ -1,9 +1,6 @@
-"""Workspace invite-link concurrency integration tests (MySQL instance).
+"""Workspace invite-link concurrency on PostgreSQL.
 
-在独立 MySQL 测试库上验证真实行锁与事务边界
-（SQLite 结果不能称为 MySQL 实测）。实例不可达时整体跳过。测试库为
-独立 schema（``traceforge_invite_link_audit_<随机后缀>``），测完即删，不触碰
-``sdd_platform`` 数据。
+使用 TRACEFORGE_TEST_POSTGRES_URL，在临时 schema 内验证行锁与事务边界。
 
 验收项：
 1. max_uses=1，两个用户同时 accept：恰好一个新增成功，另一个
@@ -18,97 +15,42 @@
 import threading
 import time
 from datetime import timedelta
-from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from app.config import settings
 from app.database import Base
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
 from app.domains.workspace.models.invite_link import WorkspaceInviteLink
 from app.domains.workspace.services import workspace_service as ws
-
-TEST_SCHEMA = "traceforge_invite_link_audit_" + uuid4().hex[:12]
-
-
-def _mysql_reachable() -> bool:
-    try:
-        import pymysql
-
-        conn = pymysql.connect(
-            host=settings.DB_HOST,
-            port=int(settings.DB_PORT),
-            user=settings.DB_USER,
-            password=settings.DB_PASSWORD,
-            connect_timeout=3,
-        )
-        conn.close()
-        return True
-    except Exception:
-        return False
+from tests.postgres_support import temporary_postgres_schema
 
 
-pytestmark = pytest.mark.skipif(not _mysql_reachable(), reason="MySQL instance unreachable")
-
-
-def _server_url() -> str:
-    return (
-        f"mysql+pymysql://{settings.DB_USER}:{settings.DB_PASSWORD}"
-        f"@{settings.DB_HOST}:{settings.DB_PORT}/?charset=utf8mb4"
-    )
-
-
-def _schema_url() -> str:
-    return (
-        f"mysql+pymysql://{settings.DB_USER}:{settings.DB_PASSWORD}"
-        f"@{settings.DB_HOST}:{settings.DB_PORT}/{TEST_SCHEMA}?charset=utf8mb4"
-    )
-
-
-@pytest.fixture(scope="module")
-def mysql_engine():
-    admin = create_engine(_server_url(), connect_args={"connect_timeout": 5})
-    with admin.connect() as conn:
-        conn.execute(text(f"DROP DATABASE IF EXISTS {TEST_SCHEMA}"))
-        conn.execute(text(f"CREATE DATABASE {TEST_SCHEMA} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"))
-        conn.commit()
-    engine = create_engine(_schema_url(), pool_pre_ping=True, pool_size=8, max_overflow=8)
-    Base.metadata.create_all(engine)
-    try:
+@pytest.fixture
+def postgres_engine():
+    with temporary_postgres_schema() as engine:
+        Base.metadata.create_all(engine)
         yield engine
-    finally:
-        engine.dispose()
-        with admin.connect() as conn:
-            conn.execute(text(f"DROP DATABASE IF EXISTS {TEST_SCHEMA}"))
-            conn.commit()
-        admin.dispose()
 
 
 @pytest.fixture()
-def clean_tables(mysql_engine):
-    with mysql_engine.begin() as conn:
-        conn.execute(text("DELETE FROM workspace_members"))
-        conn.execute(text("DELETE FROM workspace_invite_links"))
-        conn.execute(text("DELETE FROM workspaces"))
-        conn.execute(text("DELETE FROM users"))
-    factory = sessionmaker(bind=mysql_engine, expire_on_commit=False)
+def clean_tables(postgres_engine):
+    factory = sessionmaker(bind=postgres_engine, expire_on_commit=False)
     with factory() as db:
         db.add_all(
             [
                 User(
                     id=x,
-                    email=f"{x}@mysql-audit.invalid",
+                    email=f"{x}@postgres-audit.invalid",
                     hashed_password="x",
                     display_name=x,
                 )
                 for x in ("owner", "user-a", "user-b")
             ]
         )
-        db.add(Workspace(id="ws-m", name="audit-mysql", owner_id="owner"))
+        db.add(Workspace(id="ws-m", name="audit-postgres", owner_id="owner"))
         db.commit()
-    return mysql_engine
+    return postgres_engine
 
 
 def _factory(engine):

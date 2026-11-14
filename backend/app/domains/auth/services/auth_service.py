@@ -64,8 +64,7 @@ def decode_token(token: str, expected_type: str = "access") -> dict:
 def normalize_email(email: str | None) -> str:
     """E-12 邮箱归一化：trim + 转小写；不做 ``+tag`` 剥离（E-12：语义因邮箱系统而异）。
 
-    所有 email 判定前必须先归一化（K-13），MySQL 默认 collation 大小写不敏感，
-    应用层显式归一化以保证行为一致。
+    所有 email 判定前先归一化（K-13），保证 PostgreSQL 上的登录和注册按同一规则匹配。
     """
     return (email or "").strip().lower()
 

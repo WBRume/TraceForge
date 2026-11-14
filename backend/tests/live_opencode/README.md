@@ -40,10 +40,10 @@ python -m tests.live_opencode.verify_recovery --run-live
 SQLite 数据库、每进程 HTTP/SSE/所有权轨迹、终态快照、控制台日志和工具执行记录。
 凭据不写入证据。测试仅在自身目录写文件，失败也清理已知的独立会话。
 
-本验收覆盖真实队列/引擎后台进程的硬退出和重启；不启动完整 HTTP 应用，不替代生产 MySQL
+本验收覆盖真实队列/引擎后台进程的硬退出和重启；不启动完整 HTTP 应用，不替代生产 PostgreSQL
 并发验证、浏览器多人进出会话验收或连续 8 小时稳定性测试。
 
-## 完整 HTTP 服务与实际 MySQL
+## 完整 HTTP 服务与实际 PostgreSQL
 
 在已授权重启本机 8000 端口服务的维护窗口中执行：
 
@@ -51,7 +51,7 @@ SQLite 数据库、每进程 HTTP/SSE/所有权轨迹、终态快照、控制台
 python -m tests.live_opencode.verify_http_recovery --run-live --restart-http
 ```
 
-这个入口会重启当前 HTTP 服务，访问真实 MySQL、Redis 和 OpenCode。基础设施读取 `.env`；
+这个入口会重启当前 HTTP 服务，访问真实 PostgreSQL、Redis 和 OpenCode。基础设施读取 `.env`；
 OpenCode 连接同时加载系统配置中保存的覆盖值，包括加密凭据，与完整应用的生效配置一致。
 开始前验证 OpenCode 认证、Redis 连通性及 Redis 锁配置，并检查没有
 PENDING/RUNNING/WAITING_HITL/TERMINATING AI 作业或 PENDING/RUNNING 资源创建作业；
@@ -60,7 +60,7 @@ PENDING/RUNNING/WAITING_HITL/TERMINATING AI 作业或 PENDING/RUNNING 资源创�
 解释器，支持 `python -m app.main` 和 uvicorn 启动方式；启动失败立即报告。退出时按原配置重新启动并检查
 `/health/ready`。原先由 IDE 启动的服务会变为后台运行，IDE 不再持有新进程。
 
-仅在实际 MySQL 中创建独立测试用户、工作区和任务记录，随后通过真实 `/api/auth/login`、
+仅在实际 PostgreSQL 中创建独立测试用户、工作区和任务记录，随后通过真实 `/api/auth/login`、
 `chat-submissions`、`session-state`、`ai-jobs` 和任务 WebSocket 执行验收。
 消息受理、Git 检查点、队列、执行、接管、回执及终态落库均走完整应用。
 两个账号分别为 OWNER / VIEWER；WebSocket 客户端遵守 `resync_required → REST 快照 → resync_complete`
@@ -68,19 +68,19 @@ PENDING/RUNNING/WAITING_HITL/TERMINATING AI 作业或 PENDING/RUNNING 资源创�
 
 `http_service.py` 运行原 `app.main:app` 的全部路由及 lifespan，缩短阈值仅作用于该子进程。
 它只包装真实 HTTP transport 记录不含凭据的请求轨迹，并用本地 stop 文件触发 uvicorn 的正常关闭。
-不会替换 MySQL/Redis、恢复流程、provider 响应或工具结果。
+不会替换 PostgreSQL/Redis、恢复流程、provider 响应或工具结果。
 
 | 场景 | 验证 |
 | --- | --- |
 | `http_graceful_running` | 工具静默 65 秒；两个客户端退出超过 6 秒空闲阈值后，正常关闭完整服务并重启，保留远端执行 |
-| `http_crash_running` | 工具静默 55 秒；强制结束完整 HTTP 进程后重启，重新获取 MySQL 执行所有权 |
+| `http_crash_running` | 工具静默 55 秒；强制结束完整 HTTP 进程后重启，重新获取 PostgreSQL 执行所有权 |
 | `http_crash_finished` | 工具静默 15 秒；完整服务离线期间远端完成，等原 65 秒截止时间已过再启动，补查成功终态 |
 
 三项均断言同一 job/session/prompt/deadline、attempt 由 1 增至 2、旧所有权写入被拒绝、
 SUCCESS 与 SUCCEEDED 回执同时收敛、一条最终回复、一次工具执行和零 interrupt。
 运行中恢复的两项还核对两个重连客户端均收到 `chat_job_done`；离线完成项由 HTTP 快照补齐终态。
 
-证据位于 `backend/tmp/opencode-http-live/<timestamp>/`，包含基础设施版本、MySQL 检查点快照、HTTP/SSE 轨迹、
+证据位于 `backend/tmp/opencode-http-live/<timestamp>/`，包含基础设施版本、PostgreSQL 检查点快照、HTTP/SSE 轨迹、
 客户端事件、真实工具记录及服务恢复/数据清理记录。脚本删除自己创建的 provider sessions，
 通过正常删除 API 清理自身任务和工作区，删除两名专用测试用户；保留本地证据文件。
 不创建 Webhook 端点、不更改 `.env`，普通 pytest 不会收集这些显式入口。

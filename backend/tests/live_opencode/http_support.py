@@ -1,4 +1,4 @@
-"""Real MySQL fixtures and lifecycle controls for explicit HTTP acceptance only."""
+"""Real PostgreSQL fixtures and lifecycle controls for explicit HTTP acceptance only."""
 
 from __future__ import annotations
 
@@ -50,11 +50,13 @@ def load_feature_settings():
 
 
 def baseline():
-    from sqlalchemy import text
+    from sqlalchemy import func, select, text
 
     from app.database import engine
+    from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+    from app.domains.ai.services.queue_service import QUEUE_SOURCE_PROVISION
 
-    assert engine.dialect.name == "mysql", "This acceptance requires the configured MySQL"
+    assert engine.dialect.name == "postgresql", "This acceptance requires the configured PostgreSQL"
     with engine.connect() as db:
         active = [
             dict(row)
@@ -67,14 +69,19 @@ def baseline():
         assert not active, f"Other jobs are active; do not restart: {active}"
         orphaned = db.execute(text("SELECT id FROM sdd_ai_jobs WHERE status = 'ORPHANED'")).scalars().all()
         migration = db.execute(text("SELECT version_num FROM alembic_version")).scalars().all()
-        mysql_version = db.execute(text("SELECT VERSION()")).scalar()
-        provisioning = db.execute(
-            text("SELECT COUNT(*) FROM sdd_provision_jobs WHERE status IN ('PENDING', 'RUNNING')")
-        ).scalar()
+        postgres_version = db.execute(text("SHOW server_version")).scalar()
+        provisioning = db.scalar(
+            select(func.count())
+            .select_from(SddAiJob)
+            .where(
+                SddAiJob.queue_source == QUEUE_SOURCE_PROVISION,
+                SddAiJob.status.in_([AiJobStatus.PENDING, AiJobStatus.RUNNING]),
+            )
+        )
         assert not provisioning, "Provisioning jobs are active; do not restart"
     return {
-        "dialect": "mysql",
-        "mysql_version": mysql_version,
+        "dialect": "postgresql",
+        "postgres_version": postgres_version,
         "migration": migration,
         "preexisting_orphaned_ids": orphaned,
         "active_provision_jobs": provisioning,

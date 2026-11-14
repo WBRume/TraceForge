@@ -100,8 +100,7 @@ def _create_asset_resolution_job_sync(
             raise ReviewError(status_code=404, detail="Resolution proposal not found")
         if proposal.status != AssetResolutionProposalStatus.DRAFT:
             raise ReviewError(status_code=409, detail="Only draft proposals can be rewritten")
-        # Hold the proposal lock through job creation. A locking read also sees
-        # the preceding request's commit under MySQL REPEATABLE READ.
+        # Hold the proposal lock while checking for active jobs and creating the next one.
         active_jobs = (
             db.query(SddAiJob)
             .filter(

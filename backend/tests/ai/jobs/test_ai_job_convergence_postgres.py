@@ -1,34 +1,26 @@
-"""真实 MySQL 双 Session 并发验收。
+"""真实 PostgreSQL 双 Session 并发验收。
 
 SQLite ``StaticPool`` 无法验证 ``SELECT ... FOR UPDATE``；本模块使用两个
-真正独立的 MySQL 连接覆盖：
+真正独立的 PostgreSQL 连接覆盖：
 
 - finalizer 先锁行，cancel 后到（B 阻塞在同一 job 行）；
 - cancel 先锁行，finalizer 后到（fence + termination convergence）；
 - 迟到 progress callback 与 cancel 交错（CAS affected rows = 0）；
 - 旧 run token 与新 attempt 同时到达（CAS fenced no-op）。
 
-约定：测试自行创建/清理唯一命名的临时数据库，绝不连接开发主库执行破坏性
-清理。设置环境变量 ``TRACEFORGE_TEST_MYSQL_URL``（例如
-``mysql+pymysql://user:pass@127.0.0.1:3306``）后运行；未设置时显式 skip
-（上线验收不能只接受 skip 结果）。
+使用 TRACEFORGE_TEST_POSTGRES_URL 指向 PostgreSQL，测试创建并清理独立 schema。
 """
 
 from __future__ import annotations
 
-import importlib
-import os
-import pkgutil
 import threading
 import time
 import uuid
 from datetime import datetime
 
 import pytest
-from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from app import domains as _domains
 from app.database import Base
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.ai_job_convergence_service import (
@@ -45,55 +37,21 @@ from app.domains.ai.services.jobs import (
     registry as ai_registry,
 )
 from tests.ai.jobs.ai_job_test_utils import patched_ai_job_db
-
-for _name in [n for _, n, _ in pkgutil.iter_modules(_domains.__path__)]:
-    try:
-        _models_pkg = importlib.import_module(f"app.domains.{_name}.models")
-    except ModuleNotFoundError:
-        continue
-    if not hasattr(_models_pkg, "__path__"):
-        continue
-    for _, _mod, _ in pkgutil.walk_packages(_models_pkg.__path__, prefix=f"app.domains.{_name}.models."):
-        importlib.import_module(_mod)
+from tests.postgres_support import temporary_postgres_schema
+from tests.workspace_asset.test_workspace_asset_boundary import _seed_workspace
 
 
-MYSQL_TEST_URL = os.environ.get("TRACEFORGE_TEST_MYSQL_URL", "").strip()
-
-pytestmark = pytest.mark.skipif(
-    not MYSQL_TEST_URL,
-    reason="TRACEFORGE_TEST_MYSQL_URL is not configured (real MySQL concurrency tests skipped)",
-)
-
-
-@pytest.fixture(scope="module")
-def mysql_factory():
-    """Create a unique-named temp database, yield a session factory, drop it."""
-    base_url = MYSQL_TEST_URL.rsplit("/", 1)[0]
-    db_name = f"traceforge_test_{uuid.uuid4().hex[:12]}"
-    server_engine = create_engine(base_url, isolation_level="AUTOCOMMIT")
-    with server_engine.connect() as conn:
-        conn.execute(text(f"CREATE DATABASE `{db_name}` CHARACTER SET utf8mb4"))
-    server_engine.dispose()
-
-    engine = create_engine(
-        f"{base_url}/{db_name}",
-        pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=5,
-    )
-    Base.metadata.create_all(engine)
-    yield sessionmaker(bind=engine, expire_on_commit=False)
-    engine.dispose()
-
-    server_engine = create_engine(base_url, isolation_level="AUTOCOMMIT")
-    with server_engine.connect() as conn:
-        conn.execute(text(f"DROP DATABASE IF EXISTS `{db_name}`"))
-    server_engine.dispose()
+@pytest.fixture
+def postgres_factory():
+    with temporary_postgres_schema() as engine:
+        Base.metadata.create_all(engine)
+        yield sessionmaker(bind=engine, expire_on_commit=False)
 
 
 def _seed_running_job(db, *, token="run-1"):
+    _seed_workspace(db)
     job = SddAiJob(
-        id=f"mysql-job-{uuid.uuid4().hex[:8]}",
+        id=f"postgres-job-{uuid.uuid4().hex[:8]}",
         workspace_id="ws-1",
         task_id="task-1",
         channel=AiJobChannel.TASK_CHAT,
@@ -139,8 +97,8 @@ def _run_in_thread(fn):
     return thread, result, started
 
 
-def test_finalizer_locks_row_cancel_waits_then_idempotent(mysql_factory):
-    factory = mysql_factory
+def test_finalizer_locks_row_cancel_waits_then_idempotent(postgres_factory):
+    factory = postgres_factory
     seed_db = factory()
     job = _seed_running_job(seed_db, token="run-lock-a")
     job_id = job.id
@@ -194,8 +152,8 @@ def test_finalizer_locks_row_cancel_waits_then_idempotent(mysql_factory):
         verify.close()
 
 
-def test_cancel_locks_row_finalizer_fences_then_terminates(mysql_factory):
-    factory = mysql_factory
+def test_cancel_locks_row_finalizer_fences_then_terminates(postgres_factory):
+    factory = postgres_factory
     seed_db = factory()
     job = _seed_running_job(seed_db, token="run-lock-b")
     job_id = job.id
@@ -235,8 +193,7 @@ def test_cancel_locks_row_finalizer_fences_then_terminates(mysql_factory):
         session_a.close()
 
     # termination finalizer 依据死亡证据写 CANCELLED 并清 ownership。
-    finish_db = factory()
-    try:
+    with patched_ai_job_db(factory):
         payload = ai_attempts.finish_termination_sync(
             job_id,
             "run-lock-b",
@@ -244,8 +201,6 @@ def test_cancel_locks_row_finalizer_fences_then_terminates(mysql_factory):
             reason="USER_CANCEL",
             failure_code="CANCEL_REQUESTED",
         )
-    finally:
-        finish_db.close()
     assert payload is not None
     assert payload["status"] == AiJobStatus.CANCELLED.value
 
@@ -259,8 +214,8 @@ def test_cancel_locks_row_finalizer_fences_then_terminates(mysql_factory):
         verify.close()
 
 
-def test_late_progress_after_cancel_affects_zero_rows(mysql_factory):
-    factory = mysql_factory
+def test_late_progress_after_cancel_affects_zero_rows(postgres_factory):
+    factory = postgres_factory
     seed_db = factory()
     job = _seed_running_job(seed_db, token="run-late")
     job_id = job.id
@@ -304,8 +259,8 @@ def test_late_progress_after_cancel_affects_zero_rows(mysql_factory):
         verify.close()
 
 
-def test_stale_token_cannot_write_new_attempt(mysql_factory):
-    factory = mysql_factory
+def test_stale_token_cannot_write_new_attempt(postgres_factory):
+    factory = postgres_factory
     seed_db = factory()
     job = _seed_running_job(seed_db, token="run-new-attempt")
     job_id = job.id

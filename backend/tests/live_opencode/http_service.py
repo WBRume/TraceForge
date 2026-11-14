@@ -1,7 +1,7 @@
 """Run the complete HTTP application with process-local acceptance thresholds.
 
 The stop file asks uvicorn to run its normal graceful shutdown / app lifespan.
-MySQL, Redis, auth, HTTP routes, dispatchers and finalizers are the real ones.
+PostgreSQL, Redis, auth, HTTP routes, dispatchers and finalizers are the real ones.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Explicit acceptance against the running full HTTP service and configured MySQL.
+"""Explicit acceptance against the running full HTTP service and configured PostgreSQL.
 
 This restarts port 8000. Run only in an authorized local maintenance window:
 python -m tests.live_opencode.verify_http_recovery --run-live --restart-http
@@ -116,7 +116,7 @@ async def job_matching(task_id, predicate):
 
 
 async def check_stale_owner(original):
-    """The real MySQL fence must reject a previous process's late checkpoint."""
+    """The real PostgreSQL fence must reject a previous process's late checkpoint."""
     from types import SimpleNamespace
 
     from app.agents.errors import AgentExecutionDetached
@@ -244,7 +244,7 @@ async def run_case(root, case, model, adapter, service, ids, tokens):
             recovered = await until(
                 lambda: job_matching(task_id, lambda row: row.get("attempt_count", 0) >= 2),
                 seconds=60,
-                label="MySQL job claimed by new HTTP process",
+                label="PostgreSQL job claimed by new HTTP process",
             )
             assert recovered["checkpoint"] == cp
             assert recovered["worker_boot_id"] != original["worker_boot_id"]
@@ -266,7 +266,7 @@ async def run_case(root, case, model, adapter, service, ids, tokens):
                     lambda row: row.get("status") in {"SUCCESS", "FAILED", "INTERRUPTED", "ORPHANED", "CANCELLED"},
                 ),
                 seconds=spec["hard_seconds"] + 30,
-                label="terminal MySQL job and receipt",
+                label="terminal PostgreSQL job and receipt",
             )
             assert final["status"] == "SUCCESS", final
             assert final["receipt_status"] == "SUCCEEDED", final
@@ -409,5 +409,5 @@ if __name__ == "__main__":
     parser.add_argument("--cases", nargs="+", choices=HTTP_CASES, default=list(HTTP_CASES))
     args = parser.parse_args()
     if not (args.run_live and args.restart_http):
-        parser.error("Real MySQL writes and HTTP service restarts require --run-live --restart-http")
+        parser.error("Real PostgreSQL writes and HTTP service restarts require --run-live --restart-http")
     asyncio.run(main(args))

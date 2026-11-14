@@ -14,7 +14,6 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.mysql import LONGBLOB
 
 from app.database import Base
 
@@ -63,7 +62,7 @@ class CollaborationManifest(Base):
 
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), primary_key=True)
     content_digest = Column(String(64), primary_key=True)
-    repositories_zstd = Column(LargeBinary().with_variant(LONGBLOB(), "mysql"), nullable=False)
+    repositories_zstd = Column(LargeBinary, nullable=False)
 
 
 class CollaborationSnapshot(Base):

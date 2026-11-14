@@ -10,7 +10,7 @@ class TaskChatSubmission(Base):
     __tablename__ = "sdd_task_chat_submissions"
     __table_args__ = (
         UniqueConstraint("task_id", "creator_id", "client_message_id", name="uq_chat_submission_client"),
-        # NULL releases the slot; works on MySQL and SQLite without partial indexes.
+        # NULL releases the slot; the unique constraint permits multiple NULL slots.
         UniqueConstraint("active_task_id", name="uq_chat_submission_active_task"),
     )
 

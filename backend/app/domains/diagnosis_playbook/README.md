@@ -110,9 +110,10 @@ def transfer(tx, source_id, target_id, amount):
 cd G:/proj/TraceForge/backend
 python -m pytest tests/diagnosis_playbook -q
 $env:TRACEFORGE_MYSQL_PLAYBOOK_LIVE='1'
+$env:TRACEFORGE_TEST_MYSQL_URL='mysql+pymysql://test_user:password@127.0.0.1:3306'
 python -m pytest tests/diagnosis_playbook/test_mysql_bundle.py -q
 ```
 
-显式启用的真实 MySQL 测试从现有后端设置读取连接，创建两个 UUID 命名的 `tf_playbook_test_*` 数据库并在 finally 中删除它们，不访问业务表。测试包括真实应用死锁、四阶段受监管 Runner，以及固定模型替身驱动的 engine/profile/MCP/Worker/Case 全链路。固定模型替身测试不能证明真实 Provider 的模型行为或隔离强度。
+真实 MySQL 诊断测试使用 `TRACEFORGE_TEST_MYSQL_URL` 连接诊断实例，创建两个 UUID 命名的 `tf_playbook_test_*` 数据库并在 finally 中删除它们。测试包括真实应用死锁、四阶段受监管 Runner，以及固定模型替身驱动的 engine/profile/MCP/Worker/Case 全链路。固定模型替身测试不能证明真实 Provider 的模型行为或隔离强度。
 
 真实 Claude、DSH、OpenCode 端到端模型调用、强隔离部署和浏览器实际交互仍需环境验收。前端类型检查、构建和 Vitest 与后端/数据库验证分别报告。

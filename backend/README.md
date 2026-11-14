@@ -150,6 +150,8 @@ python -m alembic upgrade head
 
 新增迁移和检查要求见 [Alembic 说明](alembic/README.md)。应用升级前先完成迁移，不通过重建数据库处理版本差异。
 
+业务并发测试通过 `TRACEFORGE_TEST_POSTGRES_URL` 连接 PostgreSQL。设置该变量后，相关测试在连接指定的数据库内自动创建并清理独立 schema，账号需要该库的 `CREATE` 权限。Git 资源准备测试另用 `TF_LIVE_PROVISION=1` 启用真实 PostgreSQL 和 Redis。MySQL 诊断测试使用独立的诊断连接配置。[诊断规程验证说明](app/domains/diagnosis_playbook/README.md#验证)
+
 ## 开发检查
 
 ```powershell

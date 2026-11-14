@@ -119,7 +119,7 @@ class OAuthState(Base):
     )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    # UNIQUE(uq_oauth_states_state) 本身即唯一索引，不再叠加普通索引（避免 MySQL 冗余索引）
+    # UNIQUE(uq_oauth_states_state) 本身即唯一索引，不再叠加普通索引
     state = Column(String(64), nullable=False)
     provider = Column(String(40), nullable=False)
     # login | bind
@@ -152,7 +152,7 @@ class OAuthTicket(Base):
     __table_args__ = (UniqueConstraint("ticket", name="uq_oauth_tickets_ticket"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    # UNIQUE(uq_oauth_tickets_ticket) 本身即唯一索引，不再叠加普通索引（避免 MySQL 冗余索引）
+    # UNIQUE(uq_oauth_tickets_ticket) 本身即唯一索引，不再叠加普通索引
     ticket = Column(String(64), nullable=False)
     provider = Column(String(40), nullable=False)
     # 回调解析出的身份主键（审计与 E-18 冷却查询用）

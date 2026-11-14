@@ -4,11 +4,8 @@ from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import JSON, BigInteger, Boolean, Column, DateTime, Index, Integer, String, Text, UniqueConstraint
-from sqlalchemy.dialects.mysql import DATETIME
 
 from app.database import Base
-
-UTC_DATETIME = DateTime().with_variant(DATETIME(fsp=6), "mysql")
 
 
 def uid():
@@ -25,7 +22,7 @@ class SearchDocumentState(Base):
     source_version = Column(BigInteger, nullable=False, default=1)
     projection_hash = Column(String(64))
     deleted = Column(Boolean, nullable=False, default=False)
-    updated_at = Column(UTC_DATETIME, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     __table_args__ = (
         Index("ix_search_state_workspace", "workspace_id", "entity_key"),
         Index("ix_search_state_task", "task_id", "entity_key"),
@@ -34,13 +31,13 @@ class SearchDocumentState(Base):
 
 class QueueColumns:
     status = Column(String(16), nullable=False, default="pending")
-    available_at = Column(UTC_DATETIME, nullable=False, default=datetime.utcnow)
+    available_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     lease_token = Column(String(36))
-    lease_until = Column(UTC_DATETIME)
+    lease_until = Column(DateTime)
     attempts = Column(Integer, nullable=False, default=0)
     last_error_code = Column(String(80))
-    created_at = Column(UTC_DATETIME, nullable=False, default=datetime.utcnow)
-    finished_at = Column(UTC_DATETIME)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    finished_at = Column(DateTime)
 
 
 class SearchOutbox(QueueColumns, Base):
@@ -75,7 +72,7 @@ class SearchEmbeddingProfile(Base):
     document_prefix = Column(String(200), nullable=False, default="")
     fingerprint = Column(String(64))
     last_error_code = Column(String(80))
-    created_at = Column(UTC_DATETIME, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class SearchIndexTarget(Base):
@@ -90,8 +87,8 @@ class SearchIndexTarget(Base):
     verified = Column(Boolean, nullable=False, default=False)
     activation_phase = Column(String(24))
     activation_token = Column(String(36))
-    activation_until = Column(UTC_DATETIME)
-    created_at = Column(UTC_DATETIME, nullable=False, default=datetime.utcnow)
+    activation_until = Column(DateTime)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class SearchEmbeddingJob(QueueColumns, Base):
@@ -115,7 +112,7 @@ class SearchBackfillRun(QueueColumns, Base):
     id = Column(String(36), primary_key=True, default=uid)
     target_id = Column(String(36), nullable=False)
     stage = Column(String(16), nullable=False, default="task")
-    boundary = Column(UTC_DATETIME, nullable=False, default=datetime.utcnow)
+    boundary = Column(DateTime, nullable=False, default=datetime.utcnow)
     cursor = Column(JSON)
     processed = Column(BigInteger, nullable=False, default=0)
     failed = Column(Integer, nullable=False, default=0)

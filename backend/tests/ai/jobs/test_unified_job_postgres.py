@@ -1,14 +1,11 @@
-"""Real InnoDB races at the artifact/completion/cancellation boundary."""
+"""Real PostgreSQL races at the artifact/completion/cancellation boundary."""
 
-import os
 import threading
 import time
 from datetime import datetime, timedelta
-from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from app.agents import bind_agent_attempt, reset_agent_attempt
@@ -19,21 +16,12 @@ from app.domains.auth.models.user import User
 from app.domains.workflow.models.provision_job import ProvisionJobType, SddProvisionJob
 from app.domains.workflow.services import provision_job_service as provision
 from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
-
-MYSQL_URL = os.environ.get("TRACEFORGE_TEST_MYSQL_URL", "")
-pytestmark = pytest.mark.skipif(not MYSQL_URL, reason="TRACEFORGE_TEST_MYSQL_URL not configured")
+from tests.postgres_support import temporary_postgres_schema
 
 
 @pytest.fixture
-def mysql_jobs(monkeypatch):
-    url = make_url(MYSQL_URL).set(database=None)
-    name = "tf_jobs_" + uuid4().hex
-    options = {"connect_timeout": 10, "read_timeout": 30, "write_timeout": 30}
-    server = create_engine(url, isolation_level="AUTOCOMMIT", connect_args=options)
-    with server.connect() as connection:
-        connection.execute(text(f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4"))
-    engine = create_engine(url.set(database=name), connect_args=options)
-    try:
+def postgres_jobs(monkeypatch):
+    with temporary_postgres_schema() as engine:
         Base.metadata.create_all(engine)
         factory = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
         patch_ai_job_db(monkeypatch, factory)
@@ -47,15 +35,10 @@ def mysql_jobs(monkeypatch):
         monkeypatch.setattr(store, "resolve_execution_kind_for_claim", lambda *_args, **_kwargs: "LOCAL_PROCESS")
         assert store.take_next_pending_job_id_sync(queue_key) == job_id
         yield factory, job_id, attempts.load_attempt_context_sync(job_id)
-    finally:
-        engine.dispose()
-        with server.connect() as connection:
-            connection.execute(text(f"DROP DATABASE `{name}`"))
-        server.dispose()
 
 
-def test_completion_lock_serializes_cancel_and_preserves_artifact(mysql_jobs):
-    factory, job_id, attempt = mysql_jobs
+def test_completion_lock_serializes_cancel_and_preserves_artifact(postgres_jobs):
+    factory, job_id, attempt = postgres_jobs
     session = factory()
     token = bind_agent_attempt(attempt)
     try:
@@ -96,10 +79,10 @@ def test_completion_lock_serializes_cancel_and_preserves_artifact(mysql_jobs):
         session.close()
 
 
-def test_cancel_wins_before_completion_and_rolls_back_artifact(mysql_jobs):
+def test_cancel_wins_before_completion_and_rolls_back_artifact(postgres_jobs):
     from app.agents.errors import AgentCancelledError
 
-    factory, job_id, attempt = mysql_jobs
+    factory, job_id, attempt = postgres_jobs
     with factory() as db:
         assert domain_jobs.request_cancel(db, job_id)
         db.commit()
@@ -117,8 +100,8 @@ def test_cancel_wins_before_completion_and_rolls_back_artifact(mysql_jobs):
         reset_agent_attempt(token)
 
 
-def test_cached_worker_reads_committed_cancel_under_repeatable_read(mysql_jobs):
-    factory, job_id, attempt = mysql_jobs
+def test_cached_worker_reads_committed_cancel(postgres_jobs):
+    factory, job_id, attempt = postgres_jobs
     token = bind_agent_attempt(attempt)
     try:
         with factory() as worker:
@@ -135,27 +118,27 @@ def test_cached_worker_reads_committed_cancel_under_repeatable_read(mysql_jobs):
         reset_agent_attempt(token)
 
 
-def test_business_timestamp_uses_database_clock_after_claim_and_report(mysql_jobs):
-    factory, job_id, attempt = mysql_jobs
+def test_business_timestamp_uses_database_clock_after_claim_and_report(postgres_jobs):
+    factory, job_id, attempt = postgres_jobs
     token = bind_agent_attempt(attempt)
     try:
         with factory() as db:
             job = db.get(SddAiJob, job_id)
-            database_now = db.execute(text("SELECT CURRENT_TIMESTAMP")).scalar()
+            database_now = db.execute(text("SELECT CURRENT_TIMESTAMP::timestamp")).scalar()
             assert abs((job.state_changed_at - database_now).total_seconds()) < 10
             domain_jobs.report(db, job_id, progress=45, message="Clock verification")
             db.commit()
             db.refresh(job)
-            database_now = db.execute(text("SELECT CURRENT_TIMESTAMP")).scalar()
+            database_now = db.execute(text("SELECT CURRENT_TIMESTAMP::timestamp")).scalar()
             assert abs((job.state_changed_at - database_now).total_seconds()) < 10
     finally:
         reset_agent_attempt(token)
 
 
-def test_expired_attempt_cannot_commit_even_with_matching_token(mysql_jobs):
+def test_expired_attempt_cannot_commit_even_with_matching_token(postgres_jobs):
     from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 
-    factory, job_id, attempt = mysql_jobs
+    factory, job_id, attempt = postgres_jobs
     with factory() as db:
         db.get(SddAiJob, job_id).lease_expires_at = datetime.utcnow() - timedelta(seconds=1)
         db.commit()
@@ -167,13 +150,13 @@ def test_expired_attempt_cannot_commit_even_with_matching_token(mysql_jobs):
         reset_agent_attempt(token)
 
 
-def test_concurrent_rerun_commands_share_one_successor(mysql_jobs, monkeypatch):
+def test_concurrent_rerun_commands_share_one_successor(postgres_jobs, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
 
     from app.domains.ai.models.ai_job import AiJobStatus
     from app.domains.ai.services import queue_service
 
-    factory, job_id, _attempt = mysql_jobs
+    factory, job_id, _attempt = postgres_jobs
     monkeypatch.setattr(registry.runtime, "schedule_queue", lambda *_args: None)
     with factory() as db:
         original = db.get(SddAiJob, job_id)
@@ -183,8 +166,7 @@ def test_concurrent_rerun_commands_share_one_successor(mysql_jobs, monkeypatch):
 
     def rerun():
         with factory() as db:
-            # Establish an older REPEATABLE READ snapshot before either
-            # command locks the original job. Successor lookup must be current.
+            # Load the original job before either command acquires the lock.
             db.get(SddAiJob, job_id)
             ready.wait(timeout=10)
             return queue_service.retry_queue_job(db, source="provision", job_id=job_id, user_id="user")["new_job_id"]

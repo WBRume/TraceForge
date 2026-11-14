@@ -175,15 +175,15 @@ const router = useRouter()
         </div>
         <div class="infra-grid">
           <div class="node-card card-infra">
-            <div class="card-title"><Database class="w-4 h-4 text-blue-600" /> MySQL 8.0</div>
-            <div class="card-desc">工作区 · 需求资产库 · 任务决策 · 证据注册表 · 知识实体</div>
+            <div class="card-title"><Database class="w-4 h-4 text-blue-600" /> PostgreSQL 18</div>
+            <div class="card-desc">业务数据 · pg_jieba 全文检索 · pgvector 向量检索</div>
           </div>
           <div class="node-card card-infra">
             <div class="card-title"><Server class="w-4 h-4 text-red-600" /> Redis 内存快照</div>
-            <div class="card-desc">分布式锁 · 会话状态暂存 · 混合检索 PIT 游标 · 隔离分页缓存</div>
+            <div class="card-desc">分布式锁 · 会话状态暂存 · 搜索分页快照</div>
           </div>
           <div class="node-card card-infra">
-            <div class="card-title"><Eye class="w-4 h-4 text-emerald-600" /> Elasticsearch 9.x</div>
+            <div class="card-title"><Eye class="w-4 h-4 text-emerald-600" /> Elasticsearch 9.x（可选）</div>
             <div class="card-desc">BM25 词法全文 + nested kNN 向量 + Python RRF 等权混合检索</div>
           </div>
           <div class="node-card card-infra">

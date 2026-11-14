@@ -53,8 +53,7 @@ def _state(db: Session, task_id: str, *, lock: bool = True, nowait: bool = False
         query = db.query(CollaborationState).filter_by(task_id=task_id)
         return (query.populate_existing().with_for_update(nowait=nowait) if lock else query).first()
     except OperationalError as exc:
-        code = exc.orig.args[0] if exc.orig.args else None
-        if nowait and (code in {1205, 3572} or getattr(exc.orig, "sqlstate", None) == "55P03"):
+        if nowait and getattr(exc.orig, "sqlstate", None) == "55P03":
             _fail("TASK_BUSY", "Workspace capture is in progress; retry shortly")
         raise
 
@@ -498,13 +497,7 @@ def enable(db: Session, task: SddTask, user_id: str, request: EnableRequest) -> 
 
 
 def renew_lease(db: Session, task: SddTask, user_id: str, request: LeaseRequest) -> dict:
-    try:
-        state = _state(db, task.id, nowait=True)
-    except OperationalError as exc:
-        code = exc.orig.args[0] if exc.orig.args else None
-        if code in {1205, 3572} or getattr(exc.orig, "sqlstate", None) == "55P03":
-            _fail("TASK_BUSY", "Workspace capture is in progress; retry the lease shortly")
-        raise
+    state = _state(db, task.id, nowait=True)
     if state is None:
         _fail("COLLABORATION_DISABLED", "Local collaboration is disabled")
     # Expiration requires an explicit claim and a new epoch, even for the same

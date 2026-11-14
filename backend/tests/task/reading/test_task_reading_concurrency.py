@@ -1,17 +1,8 @@
-"""真实 MySQL 并发测试（事务顺序、唯一键、锁竞争）。
+"""PostgreSQL reading-progress concurrency with TRACEFORGE_TEST_POSTGRES_URL."""
 
-按仓库约定打 ``live_revert`` 标记（显式 opt-in）：
-    DB_TEST_DATABASE=sdd_platform_reading_test pytest -m live_revert tests/task/reading/test_task_reading_concurrency.py
-
-使用独立测试库（默认 sdd_platform_reading_test）：测试自建/自清表，不触碰
-sdd_platform 开发数据。SQLite 无行级锁语义，不能替代这里的并发验证。
-"""
-
-import os
 import threading
 
 import pytest
-from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
@@ -20,51 +11,19 @@ from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import reading_progress_service as rps
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.conversation import messages as task_conversation_messages
-
-pytestmark = pytest.mark.live_revert
-
-TEST_DB_NAME = os.environ.get("DB_TEST_DATABASE", "sdd_platform_reading_test")
+from tests.postgres_support import temporary_postgres_schema
 
 
-def _mysql_credentials():
-    from app.config import settings
-
-    return settings
-
-
-def _engine():
-    s = _mysql_credentials()
-    admin = create_engine(
-        f"mysql+pymysql://{s.DB_USER}:{s.DB_PASSWORD}@{s.DB_HOST}:{s.DB_PORT}/?charset=utf8mb4",
-        pool_pre_ping=True,
-    )
-    with admin.connect() as conn:
-        # 独立测试库整库重建（FK 环使逐表 drop 不可靠）；不触碰 sdd_platform 开发数据
-        conn.execute(text(f"DROP DATABASE IF EXISTS `{TEST_DB_NAME}`"))
-        conn.execute(text(f"CREATE DATABASE `{TEST_DB_NAME}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"))
-    admin.dispose()
-    url = f"mysql+pymysql://{s.DB_USER}:{s.DB_PASSWORD}@{s.DB_HOST}:{s.DB_PORT}/{TEST_DB_NAME}?charset=utf8mb4"
-    engine = create_engine(url, pool_pre_ping=True, pool_size=10, max_overflow=10)
-    Base.metadata.create_all(engine)
-    return engine
-
-
-@pytest.fixture(scope="module")
-def mysql_db():
-    engine = _engine()
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    yield SessionLocal
-    engine.dispose()
+@pytest.fixture
+def postgres_db():
+    with temporary_postgres_schema() as engine:
+        Base.metadata.create_all(engine)
+        yield sessionmaker(autoflush=False, bind=engine)
 
 
 @pytest.fixture()
-def seed(mysql_db):
-    db = mysql_db()
-    # 清理上一用例残留：顺序 workspace → users（FK：workspaces.owner_id）
-    db.query(SddTask).filter(SddTask.id.in_(["task-c1", "task-c2"])).delete(synchronize_session=False)
-    db.query(Workspace).filter(Workspace.id == "cws-1").delete(synchronize_session=False)
-    db.query(User).filter(User.id.in_(["cu-a", "cu-b"])).delete(synchronize_session=False)
-    db.commit()
+def seed(postgres_db):
+    db = postgres_db()
     ua = User(id="cu-a", email="ca@example.com", hashed_password="x", display_name="CA")
     ub = User(id="cu-b", email="cb@example.com", hashed_password="x", display_name="CB")
     db.add_all([ua, ub])
@@ -106,7 +65,7 @@ def seed(mysql_db):
         pass
 
     env = Env()
-    env.db_factory = mysql_db
+    env.db_factory = postgres_db
     env.ws_id = ws.id
     yield env
 
@@ -153,7 +112,7 @@ def test_concurrent_message_writes_allocate_unique_change_seq(seed):
         ]
         assert len(seqs) == 20
         assert len(set(seqs)) == 20, "change_seq must be globally unique per task"
-        task = db.query(SddTask).get("task-c1")
+        task = db.get(SddTask, "task-c1")
         assert int(task.reading_change_seq) == 20
     finally:
         db.close()
@@ -305,7 +264,7 @@ def test_concurrent_resume_cas_single_winner(seed):
     assert sorted(outcomes) == [False, True], "exactly one CAS winner"
 
 
-def test_epoch_conflict_blocks_stale_writer_mysql(seed):
+def test_epoch_conflict_blocks_stale_writer(seed):
     db = seed.db_factory()
     try:
         rps.open_reading_session(db, user_id="cu-b", workspace_id=seed.ws_id, task_id="task-c2")

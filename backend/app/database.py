@@ -11,6 +11,7 @@ from app.config import settings
 
 engine = create_engine(
     settings.DATABASE_URL,
+    isolation_level="READ COMMITTED",
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=20,

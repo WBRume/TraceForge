@@ -157,7 +157,7 @@ def test_new_endpoint_uses_utc_and_receives_next_business_event(seeded):
     row = db.query(TaskWebhookEndpoint).one()
     assert before <= row.created_at <= datetime.utcnow()
     assert before <= row.updated_at <= datetime.utcnow()
-    # This default is evaluated in Python, regardless of MySQL session time zone.
+    # This default is evaluated in Python, independent of the database session time zone.
     assert TaskWebhookEndpoint.__table__.c.created_at.default is not None
     assert TaskWebhookEndpoint.__table__.c.created_at.server_default is None
     capture_business(db, task, user.id, "TASK_FAILED", "failure after webhook setup")
