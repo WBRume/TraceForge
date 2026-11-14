@@ -461,9 +461,9 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   min-width: 0;
   box-sizing: border-box;
   border: 1px solid rgba(245, 158, 11, 0.35);
-  border-radius: var(--radius-lg, 12px);
+  border-radius: 18px;
   background: #fffbeb;
-  padding: 14px 16px;
+  padding: 16px 18px;
   box-shadow: 0 10px 24px rgba(120, 53, 15, 0.08);
 }
 
@@ -786,9 +786,9 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   border: 1px solid #e8e6e3;
-  border-radius: 8px;
+  border-radius: 12px;
   background: #ffffff;
 }
 
@@ -1005,7 +1005,7 @@ function chainLabel(node: DiagnosisCallChainNode): string {
 
 .dc-confidence {
   border: 1px solid #e8e6e3;
-  border-radius: 8px;
+  border-radius: 12px;
   padding: 6px 10px 2px;
   background: #ffffff;
 }
@@ -1030,8 +1030,8 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  border-radius: 8px;
-  padding: 6px 12px;
+  border-radius: 9999px;
+  padding: 6px 14px;
   font-size: 0.78rem;
   font-weight: 650;
   cursor: pointer;

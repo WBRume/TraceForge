@@ -112,14 +112,15 @@ const filterLabel = computed(() => activeFilterCount.value
 .task-sidebar {
   width: 280px;
   max-width: 100%;
-  border-radius: 0;
-  border: none;
-  border-right: 1px solid rgba(0,0,0,0.05);
+  border-radius: 18px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 6px 20px -4px rgba(15, 23, 42, 0.05);
   display: flex;
   flex-direction: column;
   background-color: var(--color-surface-white);
   z-index: 5;
   flex: 0 0 auto;
+  overflow: hidden;
   transition: margin-left 0.28s ease, opacity 0.24s ease, visibility 0s;
 }
 
@@ -134,8 +135,8 @@ const filterLabel = computed(() => activeFilterCount.value
 }
 
 .sidebar-header {
-  padding: 16px 10px 12px;
-  border-bottom: 1px solid rgba(0,0,0,0.05);
+  padding: 16px 12px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -158,9 +159,9 @@ const filterLabel = computed(() => activeFilterCount.value
   align-items: center;
   gap: 6px;
   height: 32px;
-  padding: 0 4px 0 8px;
+  padding: 0 6px 0 12px;
   border: 1px solid #dce5ef;
-  border-radius: 8px;
+  border-radius: 9999px;
   background: var(--color-bg-base);
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
@@ -245,7 +246,7 @@ const filterLabel = computed(() => activeFilterCount.value
   height: 24px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: 9999px;
   color: var(--color-primary-600);
   background: var(--color-primary-50);
   cursor: pointer;
@@ -286,7 +287,7 @@ const filterLabel = computed(() => activeFilterCount.value
   background: linear-gradient(135deg, var(--color-primary-500) 0%, var(--color-primary-700) 100%);
   color: white;
   border: none;
-  border-radius: 10px;
+  border-radius: 50%;
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   box-shadow: 0 4px 12px rgba(14, 165, 233, 0.4);

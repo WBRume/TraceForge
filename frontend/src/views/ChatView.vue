@@ -551,6 +551,10 @@ watch(
   width: 100%;
   overflow: hidden;
   position: relative;
+  background-color: transparent;
+  padding: 0;
+  gap: 8px;
+  box-sizing: border-box;
 }
 
 /* 置顶卡片区同样从悬浮工具栏下方开始（非 SOP 模式） */
@@ -597,6 +601,11 @@ watch(
   position: relative;
   container-name: chat-main;
   container-type: inline-size;
+  background-color: var(--color-surface-white, #ffffff);
+  border-radius: 20px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 8px 26px -4px rgba(15, 23, 42, 0.05);
+  overflow: hidden;
   /* 工具栏悬浮层高度（由 SessionHeader 的 ResizeObserver 写入），
      用于内容首屏让位与滚动场景下的可视区内边距 */
   --chat-header-height: 60px;
@@ -616,6 +625,7 @@ watch(
   inset: 0;
   z-index: 40;
   pointer-events: auto;
+  border-radius: 20px;
   background: rgba(255, 255, 255, 0.28);
   border: 1px solid rgba(255, 255, 255, 0.42);
   backdrop-filter: blur(6px) saturate(0.88);

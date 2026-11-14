@@ -62,50 +62,54 @@ const handleItemClick = (item: SidebarItem) => {
 </script>
 
 <template>
-  <aside class="sidebar glass-panel" :class="{ 'is-collapsed': isCollapsed }">
-    <div class="sidebar-header">
-      <button
-        v-if="showBack"
-        class="back-btn"
-        type="button"
-        :title="backTitle"
-        @click="$emit('back')"
-      >
-        <ArrowLeft class="w-5 h-5" />
-      </button>
-      <span class="ws-name truncate sidebar-text" :class="{ 'is-hidden': isCollapsed }">{{ title }}</span>
+  <aside class="sidebar" :class="{ 'is-collapsed': isCollapsed }">
+    <!-- 红框 1：导航主功能岛 -->
+    <div class="sidebar-main-island" data-slot="sidebar-main">
+      <div class="sidebar-header">
+        <button
+          v-if="showBack"
+          class="back-btn"
+          type="button"
+          :title="backTitle"
+          @click="$emit('back')"
+        >
+          <ArrowLeft class="w-5 h-5" />
+        </button>
+        <span class="ws-name truncate sidebar-text" :class="{ 'is-hidden': isCollapsed }">{{ title }}</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <template v-for="item in navItems" :key="`nav-${item.key}`">
+          <router-link
+            v-if="item.to"
+            :to="item.to"
+            class="nav-item"
+            :class="{ active: item.active, 'no-click': item.noClick }"
+            :title="item.title || item.label"
+          >
+            <component :is="item.icon" v-if="item.icon" class="w-5 h-5" />
+            <span class="item-label sidebar-text" :class="{ 'is-hidden': isCollapsed }">{{ item.label }}</span>
+          </router-link>
+
+          <button
+            v-else
+            class="nav-item"
+            type="button"
+            :class="{ active: item.active, 'no-click': item.noClick }"
+            :title="item.title || item.label"
+            :disabled="item.disabled || item.noClick"
+            @click="handleItemClick(item)"
+          >
+            <component :is="item.icon" v-if="item.icon" class="w-5 h-5" />
+            <span class="item-label sidebar-text" :class="{ 'is-hidden': isCollapsed }">{{ item.label }}</span>
+          </button>
+          <slot :name="`context-${item.key}`" :collapsed="isCollapsed"></slot>
+        </template>
+      </nav>
     </div>
 
-    <nav class="sidebar-nav">
-      <template v-for="item in navItems" :key="`nav-${item.key}`">
-        <router-link
-          v-if="item.to"
-          :to="item.to"
-          class="nav-item"
-          :class="{ active: item.active, 'no-click': item.noClick }"
-          :title="item.title || item.label"
-        >
-          <component :is="item.icon" v-if="item.icon" class="w-5 h-5" />
-          <span class="item-label sidebar-text" :class="{ 'is-hidden': isCollapsed }">{{ item.label }}</span>
-        </router-link>
-
-        <button
-          v-else
-          class="nav-item"
-          type="button"
-          :class="{ active: item.active, 'no-click': item.noClick }"
-          :title="item.title || item.label"
-          :disabled="item.disabled || item.noClick"
-          @click="handleItemClick(item)"
-        >
-          <component :is="item.icon" v-if="item.icon" class="w-5 h-5" />
-          <span class="item-label sidebar-text" :class="{ 'is-hidden': isCollapsed }">{{ item.label }}</span>
-        </button>
-        <slot :name="`context-${item.key}`" :collapsed="isCollapsed"></slot>
-      </template>
-    </nav>
-
-    <div v-if="footerItems.length > 0 || showToggleButton" class="sidebar-footer">
+    <!-- 红框 2：导航底部设置微岛 -->
+    <div v-if="footerItems.length > 0 || showToggleButton" class="sidebar-footer sidebar-bottom-island" data-slot="sidebar-bottom">
       <div v-if="$slots['footer-extra']" class="sidebar-footer-extra">
         <slot name="footer-extra"></slot>
       </div>
@@ -155,26 +159,56 @@ const handleItemClick = (item: SidebarItem) => {
   height: 100%;
   display: flex;
   flex-direction: column;
+  gap: 8px;
   border-radius: 0;
   margin-right: 0;
   border: none;
-  border-right: 1px solid rgba(0, 0, 0, 0.06);
+  background: transparent;
   box-shadow: none;
   z-index: 10;
   transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  overflow: hidden;
+  overflow: visible;
   flex-shrink: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  box-sizing: border-box;
 }
 
 .sidebar.is-collapsed {
-  width: 64px;
+  width: 60px;
+}
+
+/* 红框 1：导航主功能岛 */
+.sidebar-main-island {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-white, #ffffff);
+  border-radius: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
+  overflow: hidden;
+  transition: all 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 红框 2：导航底部设置微岛 */
+.sidebar-footer.sidebar-bottom-island {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+  background: var(--color-surface-white, #ffffff);
+  border-radius: 14px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
+  padding: 8px 6px;
+  transition: all 0.24s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .sidebar-header {
-  height: 56px;
+  height: 52px;
   box-sizing: border-box;
   padding: 0 var(--space-4);
   display: flex;
@@ -189,8 +223,10 @@ const handleItemClick = (item: SidebarItem) => {
   border: none;
   color: var(--color-text-muted);
   cursor: pointer;
-  padding: 4px;
-  border-radius: var(--radius-md);
+  padding: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   transition: all var(--transition-fast);
   display: inline-flex;
   align-items: center;
@@ -237,10 +273,10 @@ const handleItemClick = (item: SidebarItem) => {
 .sidebar-nav {
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-4) var(--space-2);
+  padding: 8px 6px;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 4px;
   flex-grow: 1;
 }
 
@@ -249,7 +285,7 @@ const handleItemClick = (item: SidebarItem) => {
   align-items: center;
   gap: var(--space-3);
   padding: 0.625rem var(--space-4);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   color: var(--color-text-body);
   text-decoration: none;
   font-size: 0.875rem;
@@ -279,18 +315,10 @@ button.nav-item {
   font-weight: 500;
 }
 
-.sidebar-footer {
-  padding: var(--space-3) var(--space-2);
-  border-top: 1px solid rgba(0, 0, 0, 0.05);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  flex-shrink: 0;
-}
-
 .sidebar-footer-extra {
   display: flex;
   width: 100%;
+  justify-content: center;
 }
 
 .toggle-btn {
@@ -299,8 +327,10 @@ button.nav-item {
   border: none;
   color: var(--color-text-muted);
   cursor: pointer;
-  padding: 6px 8px;
-  border-radius: var(--radius-md);
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 10px;
   transition: all var(--transition-fast);
   margin-top: 0;
   display: inline-flex;
@@ -310,7 +340,7 @@ button.nav-item {
 
 .is-collapsed .toggle-btn {
   align-self: center;
-  margin-top: 0;
+  margin: 0 auto;
 }
 
 .toggle-btn:hover {
@@ -324,8 +354,12 @@ button.nav-item {
 
 .is-collapsed .nav-item {
   justify-content: center;
-  padding: 0.625rem 0;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  margin: 0 auto;
   gap: 0;
+  border-radius: 10px;
 }
 
 .is-collapsed .sidebar-header {

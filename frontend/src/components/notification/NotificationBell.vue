@@ -152,7 +152,7 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-3);
   padding: 0.625rem var(--space-4);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   color: var(--color-text-body);
   font-weight: 400;
   font-size: 0.875rem;
@@ -223,8 +223,12 @@ onUnmounted(() => {
 <style>
 .sidebar.is-collapsed .notification-nav-item {
   justify-content: center;
-  padding: 0.625rem 0;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  margin: 0 auto;
   gap: 0;
+  border-radius: 10px;
 }
 
 .sidebar.is-collapsed .notification-nav-label {

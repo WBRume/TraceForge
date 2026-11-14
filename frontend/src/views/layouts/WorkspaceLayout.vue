@@ -172,13 +172,18 @@ const sidebarFooterItems = computed(() => {
 .layout-container {
   display: flex;
   height: 100vh;
-  background-color: var(--color-bg-base);
+  background-color: var(--color-bg-base, #f1f5f9);
   overflow: hidden;
+  padding: 8px 8px 8px 8px;
+  gap: 8px;
+  box-sizing: border-box;
 }
 
 .main-content {
   min-width: 0;
   flex-grow: 1;
+  height: 100%;
+  overflow-x: hidden;
   overflow-y: auto;
   position: relative;
   /* Allow the router-view to fill the space */

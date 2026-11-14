@@ -118,7 +118,7 @@ const toggleFollow = (event?: MouseEvent) => {
   position: relative;
   margin-bottom: var(--space-1);
   border: 1px solid transparent;
-  border-radius: var(--radius-md);
+  border-radius: 12px;
   transition: background-color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
@@ -127,7 +127,7 @@ const toggleFollow = (event?: MouseEvent) => {
   width: 100%;
   padding: 10px 58px 10px 10px;
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: 12px;
   color: inherit;
   background: transparent;
   cursor: pointer;
@@ -209,8 +209,8 @@ const toggleFollow = (event?: MouseEvent) => {
 
 .task-type-tag {
   flex-shrink: 0;
-  padding: 1.5px 5.5px;
-  border-radius: 4px;
+  padding: 2px 7px;
+  border-radius: 9999px;
   font-size: 0.6875rem;
   font-weight: 500;
   letter-spacing: 0.02em;

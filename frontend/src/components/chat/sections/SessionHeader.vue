@@ -208,25 +208,24 @@ onBeforeUnmount(() => {
 <style scoped>
 .chat-header {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  min-height: 60px;
+  top: 10px;
+  left: 14px;
+  right: 14px;
+  min-height: 54px;
   min-width: 0;
-  padding: var(--space-2) var(--space-6);
+  padding: var(--space-2) var(--space-4);
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
-  gap: var(--space-4);
-  border-radius: 0;
-  border: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.5);
-  background-color: rgba(248, 250, 252, 0.52);
-  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.46), rgba(255, 255, 255, 0.08));
+  gap: var(--space-3);
+  border-radius: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  background-color: rgba(248, 250, 252, 0.88);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0.3));
   backdrop-filter: blur(14px) saturate(1.4);
   -webkit-backdrop-filter: blur(14px) saturate(1.4);
-  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.05), 0 12px 32px -20px rgba(15, 23, 42, 0.35);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04), 0 1px 2px rgba(15, 23, 42, 0.02);
   z-index: 30;
   flex-shrink: 0;
 }
@@ -360,16 +359,16 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 2px;
-  border-radius: 10px;
+  padding: 3px;
+  border-radius: 9999px;
   background: rgba(148, 163, 184, 0.16);
 }
 .mode-toggle-btn {
   border: none;
   background: transparent;
   color: var(--color-text-muted);
-  border-radius: 8px;
-  padding: 4px 10px;
+  border-radius: 9999px;
+  padding: 4px 12px;
   font-size: 0.75rem;
   cursor: pointer;
 }
@@ -391,7 +390,7 @@ onBeforeUnmount(() => {
   color: var(--color-text-muted);
   cursor: pointer;
   padding: 6px;
-  border-radius: var(--radius-md);
+  border-radius: 9999px;
   transition: all 0.2s;
   display: flex;
   align-items: center;

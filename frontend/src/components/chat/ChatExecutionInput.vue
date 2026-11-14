@@ -439,7 +439,7 @@ defineExpose({ resetPreInputForm, focusInput })
 
 <style scoped>
 .chat-execution-row {
-  margin: var(--space-4) var(--space-6);
+  margin: 10px 14px 14px 14px;
   min-width: 0;
   display: flex;
   align-items: flex-end;
@@ -454,10 +454,10 @@ defineExpose({ resetPreInputForm, focusInput })
   display: flex;
   flex-direction: column;
   background: var(--color-surface-white);
-  border: 1px solid #E2E8F0;
-  border-radius: 16px;
-  padding: 6px 8px 6px 14px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
+  border: 1px solid #cbd5e1;
+  border-radius: 22px;
+  padding: 8px 10px 8px 16px;
+  box-shadow: 0 8px 24px -4px rgba(15, 23, 42, 0.08);
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   /* 建立层叠上下文：保证内部向上弹出的面板盖住上方消息区 */
   position: relative;
@@ -596,8 +596,8 @@ defineExpose({ resetPreInputForm, focusInput })
   align-items: center;
   gap: 6px;
   height: 30px;
-  padding: 0 10px;
-  border-radius: var(--radius-md, 8px);
+  padding: 0 12px;
+  border-radius: 9999px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--color-text-muted, #64748B);

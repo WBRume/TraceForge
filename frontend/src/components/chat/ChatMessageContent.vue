@@ -303,7 +303,7 @@ const showTrailingAvatar = computed(() => (
   max-width: 100%;
   box-sizing: border-box;
   padding: 13px 18px;
-  border-radius: 16px;
+  border-radius: 18px;
   font-size: 0.95rem;
   line-height: 1.65;
   color: #1f2937;
@@ -313,7 +313,7 @@ const showTrailingAvatar = computed(() => (
 }
 
 .role-user .message-bubble {
-  border-top-right-radius: 14px;
+  border-radius: 18px 18px 4px 18px;
   border-color: var(--member-color, #0EA5E9);
   background: #ffffff;
 }
@@ -322,7 +322,7 @@ const showTrailingAvatar = computed(() => (
 .role-assistant .message-bubble {
   background: #ffffff;
   border-color: #dbe3ea;
-  border-top-left-radius: 14px;
+  border-radius: 18px 18px 18px 4px;
 }
 
 .role-system .message-bubble {

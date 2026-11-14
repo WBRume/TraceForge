@@ -27,6 +27,7 @@ backend/scratch/
 /backend/uploads/
 /.trae/
 /uploads/
+/.vite/
 
 # Python
 __pycache__/
