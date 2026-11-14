@@ -9,6 +9,7 @@ from typing import Literal
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy import URL
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _ENV_FILE = _BACKEND_ROOT / ".env"
@@ -51,17 +52,17 @@ class Settings(BaseSettings):
         "ADVISORY_GUARD"
     )
     DIAGNOSIS_PLAYBOOK_EVIDENCE_ROOT: str = str(_BACKEND_ROOT / "tmp" / "playbook_evidence")
+    DIAGNOSIS_PLAYBOOK_PROMOTION_ROOT: str = str(_BACKEND_ROOT / "data" / "playbook-promotion")
     DIAGNOSIS_PLAYBOOK_TOOL_URL: str = "http://127.0.0.1:8000/api/playbook-tools"
     # Trusted deployment modules only; never populated from an API/spec input.
     DIAGNOSIS_PLAYBOOK_BUNDLE_FACTORIES: list[str] = Field(default_factory=list)
     DIAGNOSIS_PLAYBOOK_MYSQL_ENVIRONMENTS_FILE: str = ""
 
-    # Local BM25 starts with the backend; ES/semantic retrieval are optional.
+    # PostgreSQL provides lexical search and optional semantic retrieval.
     SEARCH_ENABLED: bool = True
     SEARCH_WORKERS_ENABLED: bool = True
-    SEARCH_BACKEND: Literal["auto", "elasticsearch", "sqlite"] = "auto"
-    SEARCH_SQLITE_PATH: str = "data/search-bm25.sqlite3"
-    SEARCH_ES_URL: str = "http://127.0.0.1:9200"
+    SEARCH_BACKEND: Literal["auto", "elasticsearch", "postgresql"] = "postgresql"
+    SEARCH_ES_URL: str = ""
     SEARCH_READ_ALIAS: str = "traceforge-search-read"
     SEARCH_ES_USERNAME: str = "elastic"
     SEARCH_ES_PASSWORD: str = ""
@@ -86,16 +87,14 @@ class Settings(BaseSettings):
 
     # ── Database ──
     DB_HOST: str = "localhost"
-    DB_PORT: int = 3306
-    DB_USER: str = "root"
+    DB_PORT: int = 5432
+    DB_USER: str = "traceforge"
     DB_PASSWORD: str = Field(..., min_length=1)
     DB_NAME: str = "sdd_platform"
     # SQLAlchemy echo（打印每条 SQL 及参数）：默认关闭，避免 DEBUG 启动时日志刷屏；排查 SQL 时置 true
     SQL_ECHO: bool = False
-    # MySQL 连接/读写超时（秒），透传 PyMySQL connect_args；防止 offload 线程被无超时查询永久占用
-    DB_CONNECT_TIMEOUT: int = 10
-    DB_READ_TIMEOUT: int = 30
-    DB_WRITE_TIMEOUT: int = 30
+    DB_CONNECT_TIMEOUT: int = Field(default=10, ge=1)
+    DB_STATEMENT_TIMEOUT_SECONDS: int = Field(default=30, ge=1)
     DB_POOL_RECYCLE_SECONDS: int = 3600
     # 同步 DB offload 线程池（app.core.offload）：db 专用 4 起步，压测后调整；git/文件独立池避免互相拖死
     DB_OFFLOAD_WORKERS: int = 4
@@ -112,11 +111,14 @@ class Settings(BaseSettings):
 
     @property
     def DATABASE_URL(self) -> str:
-        return (
-            f"mysql+pymysql://{self.DB_USER}:{self.DB_PASSWORD}"
-            f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
-            f"?charset=utf8mb4"
-        )
+        return URL.create(
+            "postgresql+psycopg",
+            username=self.DB_USER,
+            password=self.DB_PASSWORD,
+            host=self.DB_HOST,
+            port=self.DB_PORT,
+            database=self.DB_NAME,
+        ).render_as_string(hide_password=False)
 
     # ── JWT Authentication ──
     JWT_SECRET_KEY: str = Field(..., min_length=16)

@@ -46,7 +46,9 @@ class ChatMessage(Base):
     metadata_json = Column(JSON, nullable=True)
     session_turn_id = Column(
         String(36),
-        ForeignKey("sdd_task_session_turns.id", ondelete="SET NULL"),
+        ForeignKey(
+            "sdd_task_session_turns.id", name="fk_chat_message_session_turn", ondelete="SET NULL", use_alter=True
+        ),
         nullable=True,
         index=True,
     )

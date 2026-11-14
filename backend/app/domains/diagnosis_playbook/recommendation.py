@@ -1,19 +1,18 @@
 """Playbook recall through the same lexical/vector index used by global search."""
 
-import asyncio
 from functools import partial
 
 from fastapi import HTTPException
 
 from app.core.feature_settings import feature_settings as settings
 from app.core.offload import run_db_txn
-from app.domains.search import sqlite_index
-from app.domains.search.embedding import EmbeddingError, embed
+from app.domains.search import postgres_index
+from app.domains.search.embedding import EmbeddingError
 from app.domains.search.es import scope_filters
 from app.domains.search.models import SearchDocumentState
 from app.domains.search.projection import build_search_projection
 from app.domains.search.rrf import search_target
-from app.domains.search.service import configuration
+from app.domains.search.service import configuration, embed_query
 
 from .models import PlaybookSpec
 from .service import serialize_spec
@@ -99,21 +98,18 @@ async def recommend(es, http, ws_id, text, keyword=""):
         browse = partial(_browse_latest_playbooks, ws_id=ws_id)
 
         return await run_db_txn(browse), "browse"
-    target, profile = await run_db_txn(configuration)
+    target, profile = await run_db_txn(configuration) if postgres_index.es_enabled() else (None, None)
     if not target and settings.SEARCH_BACKEND == "elasticsearch":
         raise HTTPException(status_code=503, detail={"code": "SEARCH_UNAVAILABLE"})
-    mode = "sqlite_bm25"
     hits = None
-    if target and not sqlite_index.local_only():
+    mode = "lexical"
+    if target:
         filters = scope_filters([ws_id], kind="playbook")
         try:
             vector = None
             if profile and target["verified"]:
                 try:
-                    from app.domains.search.budget import reserve
-
-                    await reserve(profile["id"], query=True)
-                    vector = (await embed(http, profile, [query], query=True))[0]
+                    vector = await embed_query(http, profile, query)
                 except EmbeddingError:
                     pass
             hits = await search_target(
@@ -130,7 +126,24 @@ async def recommend(es, http, ws_id, text, keyword=""):
             if settings.SEARCH_BACKEND == "elasticsearch":
                 raise HTTPException(status_code=503, detail={"code": "SEARCH_UNAVAILABLE"}) from exc
     if hits is None:
-        hits = await asyncio.to_thread(sqlite_index.search, query, [ws_id], kind="playbook")
+        _, profile = await run_db_txn(postgres_index.configuration)
+        vector = None
+        if profile:
+            try:
+                vector = await embed_query(http, profile, query)
+            except EmbeddingError:
+                pass
+        hits = await run_db_txn(
+            lambda db: postgres_index.search(
+                db,
+                query,
+                [ws_id],
+                kind="playbook",
+                vector=vector,
+                profile_id=profile["id"] if profile else None,
+            )
+        )
+        mode = "hybrid" if vector else "lexical"
 
     hydrate = partial(_hydrate_playbook_hits, ws_id=ws_id, hits=hits)
 

@@ -6,12 +6,24 @@ from fastapi import HTTPException
 
 from app.config import settings
 from app.domains.auth.models.user import Workspace, WorkspaceMember
-from app.domains.search import service, sessions, sqlite_index
+from app.domains.search import postgres_index, service, sessions
 from app.domains.search.worker import current_document
 from app.domains.task.models.task import SddTask
 
 from .test_search_contracts import _seed_task
 from .test_search_contracts import db_session as db_session
+
+
+def use_test_index(monkeypatch, documents):
+    def recall(db, query, scope, **options):
+        return [
+            {"_id": doc["entity_key"], "_source": {k: v for k, v in doc.items() if k != "content_text"}}
+            for doc in documents
+            if doc["workspace_id"] in scope and query in doc["title"]
+        ]
+
+    monkeypatch.setattr(postgres_index, "search", recall)
+    monkeypatch.setattr(settings, "SEARCH_EMBEDDING_API_KEY", "")
 
 
 @pytest.mark.asyncio
@@ -34,7 +46,7 @@ async def test_workspace_filter_limits_candidates_and_rejects_unauthorized_scope
         ]
     )
     db.commit()
-    sqlite_index.write([current_document(db, f"task:{t.id}") for t in (first, second)])
+    use_test_index(monkeypatch, [current_document(db, f"task:{t.id}") for t in (first, second)])
     db.commit()
 
     async def transaction(fn):
@@ -44,7 +56,7 @@ async def test_workspace_filter_limits_candidates_and_rejects_unauthorized_scope
         return "sid", {"candidates": candidates, "metadata": metadata}
 
     monkeypatch.setattr(service, "run_db_txn", transaction)
-    monkeypatch.setattr(settings, "SEARCH_BACKEND", "sqlite")
+    monkeypatch.setattr(settings, "SEARCH_BACKEND", "postgresql")
     monkeypatch.setattr(settings, "SEARCH_ENABLED", True)
     monkeypatch.setattr(sessions, "create", save)
     monkeypatch.setattr(sessions, "cursor", lambda *args: "cursor")
@@ -61,7 +73,7 @@ async def test_workspace_filter_limits_candidates_and_rejects_unauthorized_scope
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("has_target", [False, True])
-async def test_no_es_and_es_outage_use_bm25_with_source_acl(db_session, monkeypatch, has_target):
+async def test_no_es_and_es_outage_use_postgres_with_source_acl(db_session, monkeypatch, has_target):
     db = db_session
     task = _seed_task(db)
     task.name = "连接池耗尽"
@@ -69,7 +81,7 @@ async def test_no_es_and_es_outage_use_bm25_with_source_acl(db_session, monkeypa
     db.commit()
     document = current_document(db, f"task:{task.id}")
     db.commit()
-    sqlite_index.write([document])
+    use_test_index(monkeypatch, [document])
 
     async def transaction(fn):
         return fn(db)
@@ -77,6 +89,7 @@ async def test_no_es_and_es_outage_use_bm25_with_source_acl(db_session, monkeypa
     monkeypatch.setattr(service, "run_db_txn", transaction)
     monkeypatch.setattr(settings, "SEARCH_BACKEND", "auto")
     monkeypatch.setattr(settings, "SEARCH_ENABLED", True)
+    monkeypatch.setattr(settings, "SEARCH_ES_URL", "http://example.invalid:9200" if has_target else "")
     target = {
         "target_id": "es",
         "physical_index": "search",
@@ -97,7 +110,8 @@ async def test_no_es_and_es_outage_use_bm25_with_source_acl(db_session, monkeypa
         task.creator_id, {"q": "连接池", "retrieval": "hybrid", "type": "all", "limit": 20}
     )
     assert response["executed_retrieval"] == "lexical"
-    assert "sqlite_bm25" in response["degraded_reason"]
+    assert response["backend"] == "postgresql"
+    assert response["degraded_reason"] == ("elasticsearch_unavailable" if has_target else "semantic_index_not_ready")
     assert response["items"][0]["task_name"] == "连接池耗尽"
     assert response["semantic_indexing_state"] == "unavailable"
     assert es.search.await_count == int(has_target)
@@ -116,5 +130,5 @@ async def test_embedding_worker_does_not_call_model_when_es_is_absent(monkeypatc
     monkeypatch.setattr(worker, "embed", embedding)
     es = SimpleNamespace(indices=SimpleNamespace(exists=AsyncMock(return_value=False)))
     with pytest.raises(RuntimeError, match="SEARCH_TRANSPORT_FAILED"):
-        await worker.process_embedding(es, None, {})
+        await worker.process_embedding(es, None, {"target_id": "es"})
     embedding.assert_not_awaited()

@@ -213,7 +213,7 @@ onBeforeUnmount(() => {
 
           <!-- 系统状态与降级提醒 -->
           <p v-if="capabilities.hybrid_available && knowledgeSemanticOnly" class="retrieval-scope-hint">
-            任务与消息按关键词搜索；案例与诊断规程可使用语义检索。
+            当前 Elasticsearch 索引的任务和消息使用关键词检索。
           </p>
           <div v-if="!capabilities.ready" class="status-banner info" role="status">
             <Sparkles class="w-4 h-4 flex-shrink-0 text-sky-500" />
@@ -230,7 +230,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="response?.degraded_reason" class="status-banner warning" role="status">
             <AlertTriangle class="w-4 h-4 flex-shrink-0 text-amber-500" />
-            <span>{{ response.degraded_reason === 'history_lexical_only' ? '任务与消息使用关键词检索；案例和诊断规程支持混合检索。' : response.degraded_reason?.includes('sqlite_bm25') ? '当前使用关键词检索。' : '语义服务暂不可用，本次已自动使用关键词检索。' }}</span>
+            <span>{{ response.executed_retrieval === 'hybrid' ? '当前使用 PostgreSQL 混合检索。' : '本次已自动使用关键词检索。' }}</span>
           </div>
           <div v-if="response?.indexing_state === 'partial'" class="status-banner info" role="status">
             <Sparkles class="w-4 h-4 flex-shrink-0 text-sky-500" />

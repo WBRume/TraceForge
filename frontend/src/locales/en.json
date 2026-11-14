@@ -4249,7 +4249,7 @@
       "beijing": "Beijing",
       "singapore": "Singapore",
       "auto": "Automatic / local fallback",
-      "sqlite": "Local lightweight search",
+      "postgresql": "PostgreSQL full-text and vector search",
       "elasticsearch": "Elasticsearch",
       "semantic": "Semantic / vector search",
       "lexical": "Remote keyword search",

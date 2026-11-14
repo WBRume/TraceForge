@@ -157,7 +157,7 @@ def prepare(db, job_id, token, boot):
         + "\n案例：\n"
         + json.dumps(job.context_json["sources"], ensure_ascii=False)
     )
-    path = Path(settings.SEARCH_SQLITE_PATH).resolve().parent / "playbook-promotion" / job.id
+    path = Path(settings.DIAGNOSIS_PLAYBOOK_PROMOTION_ROOT).resolve() / job.id
     path.mkdir(parents=True, exist_ok=True)
     job.prompt_text = prompt
     update_preview_job_state(

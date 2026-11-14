@@ -150,17 +150,17 @@ def test_recommendations_rank_matches_and_only_include_current_workspace(db):
 
 
 @pytest.mark.asyncio
-async def test_draft_recommendations_search_and_paginate_on_server(db, monkeypatch, tmp_path):
+async def test_draft_recommendations_search_and_paginate_on_server(db, monkeypatch):
     from types import SimpleNamespace
 
     from app.config import settings
     from app.core import offload
     from app.domains.diagnosis_playbook import recommendation
-    from app.domains.search import sqlite_index
+    from app.domains.search import postgres_index
     from app.domains.search.worker import current_document
 
-    monkeypatch.setattr(settings, "SEARCH_SQLITE_PATH", str(tmp_path / "search.sqlite3"))
-    monkeypatch.setattr(settings, "SEARCH_BACKEND", "sqlite")
+    monkeypatch.setattr(settings, "SEARCH_BACKEND", "postgresql")
+    monkeypatch.setattr(settings, "SEARCH_EMBEDDING_API_KEY", "")
     user, workspace, _, case = seed_case(db)
     promoted = analysis_guide.promote_case(db, case)
     for index in range(10):
@@ -172,7 +172,15 @@ async def test_draft_recommendations_search_and_paginate_on_server(db, monkeypat
         analysis_guide.promote_case(db, other)
     docs = [current_document(db, f"playbook:{row.id}") for row in db.query(PlaybookSpec)]
     db.commit()
-    sqlite_index.write(docs)
+
+    def recall(db, query, scope, **options):
+        return [
+            {"_source": doc}
+            for doc in docs
+            if doc["workspace_id"] in scope and query in (doc["title"] + doc["content_text"]).lower()
+        ]
+
+    monkeypatch.setattr(postgres_index, "search", recall)
 
     async def transaction(fn):
         return fn(db)
@@ -188,7 +196,7 @@ async def test_draft_recommendations_search_and_paginate_on_server(db, monkeypat
         workspace.id, router.RecommendationRequest(keyword="checkout"), request, user
     )
     assert searched["total"] == 1 and searched["items"][0]["id"] == promoted["spec"]["id"]
-    assert searched["retrieval"] == "sqlite_bm25"
+    assert searched["retrieval"] == "lexical"
     empty = await router.recommend_draft(
         workspace.id, router.RecommendationRequest(keyword="absentword"), request, user
     )

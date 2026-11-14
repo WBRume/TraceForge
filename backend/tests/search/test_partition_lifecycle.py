@@ -5,7 +5,7 @@ import pytest
 
 from app.config import settings
 from app.domains.case_center.models.case import SddCase
-from app.domains.search import cli, router, sqlite_index, worker
+from app.domains.search import cli, router, worker
 from app.domains.search.models import (
     SearchBackfillRun,
     SearchEmbeddingJob,
@@ -35,7 +35,6 @@ async def test_explicit_es_without_a_target_keeps_outbox_pending(db_session, mon
     event = db.get(SearchOutbox, job["id"])
     assert event.status == "pending"
     assert event.last_error_code == "SEARCH_NO_TARGET"
-    assert not any(sqlite_index.index_path(corpus).exists() for corpus in ("history", "knowledge"))
 
 
 @pytest.mark.asyncio
@@ -92,20 +91,20 @@ async def test_worker_verification_activation_and_capabilities_share_partition_i
     name = "traceforge-search-lifecycle"
     result = await cli.create_index(es, name, profile.id)
     target = db.get(SearchIndexTarget, result["target_id"])
-    assert target.schema_version == 2
+    assert target.schema_version == 3
     assert indices == {f"{name}-history", f"{name}-knowledge"}
     while job := await transaction(lambda db: worker.claim(db, SearchOutbox)):
         await worker.process_body(es, job)
-    assert {j.entity_key for j in db.query(SearchEmbeddingJob)} == {"case:case-1"}
-    assert not any(sqlite_index.index_path(corpus).exists() for corpus in ("history", "knowledge"))
+    assert {j.entity_key for j in db.query(SearchEmbeddingJob)} == {"case:case-1", f"task:{task.id}"}
     assert (f"{name}-history", f"task:{task.id}") in documents
     assert (f"{name}-knowledge", "case:case-1") in documents
 
-    # Verification waits for asset vectors but does not require vectors for history.
+    # Verification waits for vectors in both partitions.
     db.add(SearchBackfillRun(target_id=target.target_id, status="done"))
     db.commit()
     assert not (await cli.verify(es, name))["verified"]
     documents[(f"{name}-knowledge", "case:case-1")].update(semantic_ready=True, embedding_profile_id=profile.id)
+    documents[(f"{name}-history", f"task:{task.id}")].update(semantic_ready=True, embedding_profile_id=profile.id)
     db.query(SearchEmbeddingJob).update({"status": "done"})
     db.commit()
     indices.remove(f"{name}-history")
@@ -119,4 +118,4 @@ async def test_worker_verification_activation_and_capabilities_share_partition_i
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(search_es=es)))
     capabilities = await router.capabilities(request, SimpleNamespace(id=task.creator_id))
     assert capabilities["ready"] and capabilities["hybrid_available"]
-    assert capabilities["semantic_types"] == ["case", "playbook"]
+    assert capabilities["semantic_types"] == ["task", "message", "case", "playbook"]

@@ -6,6 +6,7 @@ from app.core.offload import run_db_txn
 from app.domains.search.embedding import embed, encrypt_key
 from app.domains.search.embedding_protocols import profile_fingerprint
 from app.domains.search.models import SearchBackfillRun, SearchEmbeddingJob, SearchEmbeddingProfile, SearchIndexTarget
+from app.domains.search.postgres_index import es_enabled
 from app.domains.search.projection import digest
 from app.domains.search.storage import SCHEMA_VERSION
 from app.domains.search.worker import dto
@@ -20,7 +21,7 @@ def bind_existing_targets(db, url):
 async def prepare_search(app, values):
     from app.domains.search.es import ensure_indices
 
-    if not values["enabled"] or values["backend"] == "sqlite" or not values["es_url"]:
+    if not values["enabled"] or not es_enabled(values["es_url"], values["backend"]) or not values["es_url"]:
         return None
     key = values["embedding_api_key"]
     profile_id = None

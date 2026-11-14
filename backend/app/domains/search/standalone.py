@@ -7,7 +7,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.feature_settings import feature_settings
 from app.core.offload import run_db_txn
-from app.domains.search import sqlite_index
 from app.domains.search.worker import run
 from app.domains.system_config.services.feature_config_service import environment_snapshot, fingerprint, read
 from app.domains.system_config.services.feature_runtime import load_runtime
@@ -29,7 +28,7 @@ async def load():
             SEARCH_EMBEDDING_API_KEY=values["embedding_api_key"],
         )
         feature_settings.replace(published)
-        _generation = fingerprint(overrides.get("search", {}))
+        _generation = fingerprint(values)
     except SQLAlchemyError:
         logger.warning("Feature store unavailable; retaining last effective worker configuration")
     return _generation
@@ -38,14 +37,12 @@ async def load():
 async def main(kind, once=False):
     while True:
         generation = await load()
-        enabled = feature_settings.SEARCH_ENABLED and (kind != "embedding" or not sqlite_index.local_only())
+        enabled = feature_settings.SEARCH_ENABLED
         if not enabled:
             if once:
                 return False
             await asyncio.sleep(2)
             continue
-        if kind == "search":
-            await sqlite_index.bootstrap(asyncio.Event())
         stop = asyncio.Event()
         consumer = asyncio.create_task(run(kind, once=once, stop_event=stop))
         try:

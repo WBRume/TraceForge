@@ -1,6 +1,6 @@
 """Physical search partitions and retrieval policy, versioned independently of sources."""
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CORPORA = {"history": ("task", "message"), "knowledge": ("case", "playbook")}
 
 
@@ -16,7 +16,7 @@ def corpora_for(kind="all"):
 
 
 def partitioned(target):
-    return target.get("schema_version", 1) >= SCHEMA_VERSION
+    return target.get("schema_version", 1) >= 2
 
 
 def physical_indices(target, kind="all"):
@@ -29,4 +29,4 @@ def write_index(target, kind):
 
 
 def semantic_enabled(target, kind):
-    return not partitioned(target) or kind == "all" or corpus_for(kind) == "knowledge"
+    return target.get("schema_version", 1) != 2 or kind == "all" or corpus_for(kind) == "knowledge"

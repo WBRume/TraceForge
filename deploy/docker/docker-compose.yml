@@ -3,26 +3,25 @@
 #   cp .env.example .env && 修改其中的密钥 / 域名（模板由 backend/.env.example 派生）
 #   docker compose up -d --build
 #
-# 拓扑：mysql + redis + api(单副本) + web(nginx) + migrate(一次性)
+# 拓扑：PostgreSQL + Redis + API（单副本）+ Web（Nginx）+ 一次性迁移
 # 注意：api 严禁扩副本 —— 依赖进程内运行态与 CLI 会话状态。
 
 services:
-  mysql:
-    image: mysql:8.0
-    container_name: traceforge-mysql
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:18.7-jieba-vector}
+    build:
+      context: ./postgres-18-jieba-vector
+    container_name: traceforge-postgres
     restart: unless-stopped
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
-      - --default-time-zone=+08:00
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-sdd_platform}
-      TZ: Asia/Shanghai
+      POSTGRES_USER: ${DB_USER:-traceforge}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      POSTGRES_DB: ${DB_NAME:-sdd_platform}
+      TZ: UTC
     volumes:
-      - ./volumes/mysql:/var/lib/mysql
+      - ./volumes/postgres:/var/lib/postgresql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-change-me}"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -68,7 +67,7 @@ services:
     env_file:
       - .env
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
     restart: "no"
 
@@ -95,7 +94,7 @@ services:
       # git 凭据（工作区 clone / skill 导入需要）：SSH 方式用下面这行
       # - ./volumes/ssh:/root/.ssh:ro
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy

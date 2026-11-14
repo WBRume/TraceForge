@@ -5,15 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import FastAPI
 
-from app.domains.search import router, runtime, sqlite_index
-
-
-@pytest.fixture(autouse=True)
-def isolated_bootstrap(monkeypatch):
-    async def bootstrap(stop_event):
-        await stop_event.wait()
-
-    monkeypatch.setattr(sqlite_index, "bootstrap", bootstrap)
+from app.domains.search import router, runtime
 
 
 @pytest.mark.parametrize("enabled,workers", [(False, True), (True, False)])
@@ -25,11 +17,9 @@ def test_disabled_runtime_does_not_start(monkeypatch, enabled, workers):
     assert owner.tasks == []
 
 
-@pytest.mark.parametrize("local_only,expected", [(False, ["embedding", "search"]), (True, ["search"])])
-def test_runtime_starts_once_and_drains_on_shutdown(monkeypatch, local_only, expected):
+def test_runtime_starts_once_and_drains_on_shutdown(monkeypatch):
     monkeypatch.setattr(runtime.settings, "SEARCH_ENABLED", True)
     monkeypatch.setattr(runtime.settings, "SEARCH_WORKERS_ENABLED", True)
-    monkeypatch.setattr(sqlite_index, "local_only", lambda: local_only)
     started, finished = [], []
 
     async def consumer(kind, stop_event):
@@ -46,18 +36,16 @@ def test_runtime_starts_once_and_drains_on_shutdown(monkeypatch, local_only, exp
         await asyncio.sleep(0)
         await owner.stop()
         await owner.stop()
-        assert sorted(started) == expected
+        assert sorted(started) == ["embedding", "search"]
         assert sorted(finished) == sorted(started)
         assert owner.tasks == []
 
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("local_only,expected", [(False, ["embedding", "search"]), (True, ["search"])])
-def test_shutdown_cancels_stuck_consumers(monkeypatch, local_only, expected):
+def test_shutdown_cancels_stuck_consumers(monkeypatch):
     monkeypatch.setattr(runtime.settings, "SEARCH_ENABLED", True)
     monkeypatch.setattr(runtime.settings, "SEARCH_WORKERS_ENABLED", True)
-    monkeypatch.setattr(sqlite_index, "local_only", lambda: local_only)
     closed = []
 
     async def consumer(kind, stop_event):
@@ -73,7 +61,7 @@ def test_shutdown_cancels_stuck_consumers(monkeypatch, local_only, expected):
         owner.start()
         await asyncio.sleep(0)
         await owner.stop(grace_seconds=0)
-        assert sorted(closed) == expected
+        assert sorted(closed) == ["embedding", "search"]
 
     asyncio.run(scenario())
 

@@ -117,7 +117,7 @@ class SddAiJob(Base):
     agent_backend = Column(String(40), nullable=True)
     session_turn_id = Column(
         String(36),
-        ForeignKey("sdd_task_session_turns.id", ondelete="SET NULL"),
+        ForeignKey("sdd_task_session_turns.id", name="fk_ai_job_session_turn", ondelete="SET NULL", use_alter=True),
         nullable=True,
         index=True,
     )

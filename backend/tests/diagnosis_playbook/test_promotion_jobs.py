@@ -158,7 +158,7 @@ def test_runner_calls_workspace_cli_with_snapshot_and_records_model_output(db, m
     db.commit()
     case.title = "晋升后的修改不应进入已提交快照"
     db.commit()
-    monkeypatch.setattr(settings, "SEARCH_SQLITE_PATH", str(tmp_path / "search.sqlite3"))
+    monkeypatch.setattr(settings, "DIAGNOSIS_PLAYBOOK_PROMOTION_ROOT", str(tmp_path / "promotion"))
     monkeypatch.setattr(selection, "resolve_workspace_backend", lambda *args: "test-backend")
 
     async def transaction(fn):

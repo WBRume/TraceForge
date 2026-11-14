@@ -4,6 +4,7 @@ from copy import deepcopy
 
 from app.core.feature_settings import feature_settings as settings
 from app.domains.search.projection import es_version
+from app.domains.search.relevance import minimum_semantic_similarity
 from app.domains.search.storage import physical_indices, write_index
 
 
@@ -184,6 +185,7 @@ def search_body(query, filters, vector=None, profile_id=None, *, highlight=True)
             "query_vector": vector,
             "k": 200,
             "num_candidates": 1000,
+            "similarity": minimum_semantic_similarity(query),
             "filter": [
                 *deepcopy(filters),
                 {"term": {"semantic_ready": True}},

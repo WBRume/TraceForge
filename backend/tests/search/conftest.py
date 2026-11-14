@@ -1,23 +1,24 @@
-from unittest.mock import AsyncMock
-
 import pytest
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from app.config import settings
-from app.domains.search import sqlite_index, worker
+from app.domains.search import postgres_index, worker
 from app.domains.search.models import SearchEmbeddingJob
 
 
 @pytest.fixture(autouse=True)
-def isolate_local_index(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "SEARCH_SQLITE_PATH", str(tmp_path / "search.sqlite3"))
-    # Runtime lifecycle tests must never start a backfill against the developer DB.
-    monkeypatch.setattr(sqlite_index, "bootstrap", AsyncMock())
+def isolate_postgres_writer(monkeypatch):
+    write = postgres_index.write
+
+    def write_for_fixture(db, docs):
+        if db.get_bind().dialect.name == "postgresql":
+            write(db, docs)
+
+    monkeypatch.setattr(postgres_index, "write", write_for_fixture)
 
 
 @pytest.fixture(autouse=True)
 def sqlite_embedding_queue(monkeypatch):
-    """Adapt SQLite unit fixtures; MySQL integration tests use the production insert."""
+    """Adapt SQLite unit fixtures; PostgreSQL integration tests use the production insert."""
     enqueue = worker._enqueue_embedding_job
 
     def enqueue_for_fixture(db, values):

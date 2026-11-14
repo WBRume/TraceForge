@@ -54,7 +54,7 @@ def _state(db: Session, task_id: str, *, lock: bool = True, nowait: bool = False
         return (query.populate_existing().with_for_update(nowait=nowait) if lock else query).first()
     except OperationalError as exc:
         code = exc.orig.args[0] if exc.orig.args else None
-        if nowait and (code in {1205, 3572} or getattr(exc.orig, "pgcode", None) == "55P03"):
+        if nowait and (code in {1205, 3572} or getattr(exc.orig, "sqlstate", None) == "55P03"):
             _fail("TASK_BUSY", "Workspace capture is in progress; retry shortly")
         raise
 
@@ -502,7 +502,7 @@ def renew_lease(db: Session, task: SddTask, user_id: str, request: LeaseRequest)
         state = _state(db, task.id, nowait=True)
     except OperationalError as exc:
         code = exc.orig.args[0] if exc.orig.args else None
-        if code in {1205, 3572} or getattr(exc.orig, "pgcode", None) == "55P03":
+        if code in {1205, 3572} or getattr(exc.orig, "sqlstate", None) == "55P03":
             _fail("TASK_BUSY", "Workspace capture is in progress; retry the lease shortly")
         raise
     if state is None:

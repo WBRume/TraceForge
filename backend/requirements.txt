@@ -7,6 +7,8 @@ python-multipart==0.0.20
 # Database
 sqlalchemy==2.0.36
 alembic==1.14.1
+psycopg[binary]==3.3.9
+pgvector==0.5.1
 pymysql==1.1.1
 cryptography==44.0.0
 

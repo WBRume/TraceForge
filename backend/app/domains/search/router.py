@@ -12,13 +12,13 @@ from app.core.feature_settings import feature_settings as settings
 from app.core.logging import audit_log
 from app.core.offload import run_db_txn
 from app.dependencies import get_current_user, require_admin
-from app.domains.search import sessions
+from app.domains.search import postgres_index, sessions
 from app.domains.search.embedding import EmbeddingError, embed, encrypt_key, validate_endpoint
 from app.domains.search.embedding_protocols import get_protocol, profile_fingerprint
 from app.domains.search.es import create_client, indices_exist
 from app.domains.search.models import SearchEmbeddingProfile, SearchIndexTarget
 from app.domains.search.service import SearchService, configuration
-from app.domains.search.storage import SCHEMA_VERSION, partitioned
+from app.domains.search.storage import SCHEMA_VERSION
 from app.domains.search.worker import dto
 
 router = APIRouter(tags=["Search"])
@@ -93,42 +93,25 @@ async def stop(app):
 async def capabilities(request: Request, user=Depends(get_current_user)):
     if not settings.SEARCH_ENABLED:
         return {"enabled": False, "ready": False, "hybrid_available": False}
-    target, profile = await run_db_txn(configuration)
-    from .sqlite_index import local_only
-
+    target, profile = await run_db_txn(configuration) if postgres_index.es_enabled() else (None, None)
     ready = False
-    if target and not local_only():
+    if target:
         try:
             ready = await indices_exist(request.app.state.search_es, target)
         except Exception:
             pass
+    local = not ready and settings.SEARCH_BACKEND != "elasticsearch"
+    if local:
+        target, profile = await run_db_txn(postgres_index.configuration)
+        ready = True
     reason = (
-        "embedding_not_configured" if not profile else "semantic_index_not_ready" if not target["verified"] else None
+        "embedding_not_configured"
+        if not profile
+        else "semantic_index_not_ready"
+        if not (local or target["verified"])
+        else None
     )
     hybrid = ready and reason is None
-    if not ready and settings.SEARCH_BACKEND != "elasticsearch":
-        from .sqlite_index import ready as local_ready
-
-        indexing_ready = await asyncio.to_thread(local_ready)
-        return {
-            "enabled": True,
-            "ready": True,
-            "types": ["task", "message", "case", "playbook"],
-            "min_query_length": 2,
-            "max_query_length": 200,
-            "max_limit": 50,
-            "history_context_enabled": True,
-            "indexing_state": "ready" if indexing_ready else "partial",
-            "default_retrieval": "lexical",
-            "available_retrievals": ["lexical"],
-            "hybrid_available": False,
-            "hybrid_unavailable_reason": "sqlite_bm25_only",
-            "semantic_indexing_state": "unavailable",
-            "result_window_size": 200,
-            "max_display_results": 100,
-            "fusion": "bm25",
-            "backend": "sqlite",
-        }
     return {
         "enabled": True,
         "ready": ready,
@@ -138,17 +121,18 @@ async def capabilities(request: Request, user=Depends(get_current_user)):
         "max_limit": 50,
         "history_context_enabled": True,
         "indexing_state": "ready" if target and target["verified"] else "partial",
-        "default_retrieval": "hybrid",
+        "default_retrieval": "hybrid" if hybrid else "lexical",
         "available_retrievals": ["lexical", "hybrid"] if hybrid else ["lexical"],
         "hybrid_available": hybrid,
         "semantic_types": ["case", "playbook"]
-        if target and partitioned(target)
+        if target and target["schema_version"] == 2
         else ["task", "message", "case", "playbook"],
         "hybrid_unavailable_reason": reason,
         "semantic_indexing_state": target["semantic_indexing_state"] if target else "building",
         "result_window_size": 200,
         "max_display_results": 100,
         "fusion": "python_rrf",
+        "backend": "postgresql" if local else "elasticsearch",
     }
 
 

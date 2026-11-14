@@ -98,7 +98,7 @@ class FeatureRuntime:
                 self.app.state.search_runtime.start()
                 self.search_target = None
                 # Existing ENV-only search/index administration remains authoritative.
-                self.search_pending = "search" in overrides and effective["search"]["enabled"]
+                self.search_pending = effective["search"]["enabled"]
             if diagnosis_changed:
                 await self._set_diagnosis(effective["diagnosis"]["worker_enabled"])
             self.applied = effective

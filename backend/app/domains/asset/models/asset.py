@@ -65,7 +65,7 @@ class SddAsset(Base):
     content_json = Column(JSON, nullable=True)
     active_version_id = Column(
         String(36),
-        ForeignKey("sdd_asset_versions.id", ondelete="SET NULL"),
+        ForeignKey("sdd_asset_versions.id", name="fk_asset_active_version", ondelete="SET NULL", use_alter=True),
         nullable=True,
         index=True,
     )

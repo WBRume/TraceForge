@@ -90,8 +90,7 @@ def make_search_client(values):
 async def search_worker_health(values, app):
     from app.domains.search.worker import heartbeat_binding, worker_heartbeats
 
-    local = values["backend"] == "sqlite" or values["backend"] == "auto" and not values["es_url"]
-    kinds = ("search",) if local else ("search", "embedding")
+    kinds = ("search", "embedding")
     workers = getattr(app.state, "search_runtime", None)
     if values["workers_enabled"]:
         return bool(
@@ -110,26 +109,44 @@ async def search_worker_health(values, app):
 
 
 async def probe_search(values, app, draft):
-    from app.domains.search import sqlite_index
+    from app.domains.search import postgres_index
     from app.domains.search.embedding import embed, encrypt_key
+    from app.domains.search.postgres_schema import EMBEDDING_DIMENSION
     from app.domains.search.service import configuration
 
     if not values["enabled"]:
         return result("search", "DISABLED", "off", "全局搜索已停用")
-    local_ready = await asyncio.to_thread(sqlite_index.ready) if values["backend"] != "elasticsearch" else False
-    if values["backend"] == "sqlite" or (values["backend"] == "auto" and not values["es_url"]):
+    local_ready = False
+    if values["backend"] != "elasticsearch":
+        local_target, local_profile = await run_db_txn(postgres_index.configuration)
+        local_ready = local_target["verified"]
+    if not postgres_index.es_enabled(values["es_url"], values["backend"]):
+        if draft and values["embedding_api_key"]:
+            async with httpx.AsyncClient(timeout=4, follow_redirects=False) as client:
+                await embed(
+                    client,
+                    {
+                        "endpoint": values["embedding_endpoint"],
+                        "model_id": values["embedding_model"],
+                        "protocol": values["embedding_protocol"],
+                        "encrypted_api_key": encrypt_key(values["embedding_api_key"]),
+                        "dimension": EMBEDDING_DIMENSION,
+                    },
+                    ["连接测试"],
+                    runtime_credentials=False,
+                )
         online = await search_worker_health(values, app)
+        semantic = bool(local_profile and local_target["semantic_indexing_state"] == "ready")
         return result(
             "search",
-            "READY" if draft or local_ready and online else "DEGRADED",
-            "sqlite",
-            "本地引擎连接通过，保存后构建索引"
-            if draft
-            else "本地轻量检索可用"
-            if local_ready and online
-            else "本地索引或工作进程尚未就绪",
-            "配置远程引擎与向量模型可启用语义检索",
+            "READY"
+            if draft or local_ready and online and (semantic or not values["embedding_api_key"])
+            else "DEGRADED",
+            "postgresql",
+            "PostgreSQL 搜索索引已就绪" if local_ready else "PostgreSQL 搜索索引正在构建",
             index_ready=local_ready,
+            semantic_ready=semantic,
+            semantic_indexing_state=local_target["semantic_indexing_state"],
             worker_online=online,
         )
     if not values["es_url"]:
@@ -150,7 +167,7 @@ async def probe_search(values, app, draft):
         return result(
             "search",
             "DEGRADED",
-            "sqlite" if values["backend"] == "auto" else "elasticsearch",
+            "postgresql" if values["backend"] == "auto" else "elasticsearch",
             "远程引擎不可用，已回退本地检索" if values["backend"] == "auto" else "远程引擎连接或索引权限校验失败",
             "检查地址、认证、证书与索引权限",
             local_index_ready=local_ready,
@@ -215,7 +232,7 @@ async def probe_search(values, app, draft):
     return result(
         "search",
         "READY" if semantic else "DEGRADED",
-        "semantic" if semantic else "lexical" if remote_ready else "sqlite",
+        "semantic" if semantic else "lexical" if remote_ready else "elasticsearch",
         "完整语义与向量检索已就绪" if semantic else "远程连接可用，语义索引尚未就绪",
         "等待索引构建；可在向量索引管理中检查任务与核验结果",
         remote_connected=True,

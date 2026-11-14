@@ -89,11 +89,13 @@ async def embed(client, profile, texts, *, query=False, runtime_credentials=True
                     code = (
                         "EMBEDDING_AUTH_FAILED"
                         if status in (401, 403)
+                        else "EMBEDDING_PAYMENT_REQUIRED"
+                        if status == 402
                         else "EMBEDDING_RATE_LIMITED"
                         if status == 429
                         else "EMBEDDING_PROVIDER_FAILED"
                     )
-                    raise EmbeddingError(code, status == 429 or status >= 500)
+                    raise EmbeddingError(code, status in (402, 429) or status >= 500)
                 raw = bytearray()
                 async for chunk in response.aiter_bytes():
                     raw.extend(chunk)

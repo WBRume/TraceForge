@@ -116,10 +116,10 @@ def backfill_batch(db, run_id, batch_size):
     if run.cursor:
         stamp, identity = datetime.fromisoformat(run.cursor[0]), run.cursor[1]
         query = query.filter(or_(model.created_at > stamp, and_(model.created_at == stamp, model.id > identity)))
-    rows = query.order_by(model.created_at, model.id).limit(batch_size).with_for_update().all()
+    rows = query.order_by(model.created_at, model.id).limit(batch_size).all()
     for source in rows:
         doc = current_document(db, f"{run.stage}:{source.id}")
-        if run.stage == "message" and source.sort_seq is None:
+        if doc and run.stage == "message" and source.sort_seq is None:
             metadata = source.metadata_json if isinstance(source.metadata_json, dict) else {}
             try:
                 source.sort_seq = int(metadata.get("order_index") or 0)

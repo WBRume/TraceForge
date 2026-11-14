@@ -76,12 +76,10 @@ CATALOG = {
                 "搜索引擎",
                 "SEARCH_BACKEND",
                 "select",
-                ("auto", "sqlite", "elasticsearch"),
+                ("postgresql", "auto", "elasticsearch"),
                 hint=(
-                    "作用：选择全局搜索使用的检索引擎。自动模式优先使用远程引擎，"
-                    "不可用时降级为本地检索，也可强制指定后端。\n"
-                    "前提：选择 Elasticsearch 时需先填写可访问的 ES 地址与凭据；"
-                    "本地检索依赖内置 SQLite，无需额外服务。"
+                    "PostgreSQL 提供中文全文检索和向量检索。自动模式优先使用已配置的 Elasticsearch，"
+                    "连接失败时回退到 PostgreSQL。选择 Elasticsearch 时需填写可访问的地址和凭据。"
                 ),
             ),
             ConfigField(
@@ -91,7 +89,7 @@ CATALOG = {
                 "boolean",
                 hint=(
                     "作用：控制是否由后台工作进程增量构建与更新搜索索引。\n"
-                    "前提：需先启用全局搜索；关闭后仅在检索时按需处理，首次查询可能较慢。"
+                    "关闭后由独立的索引与向量工作进程处理索引更新。"
                 ),
             ),
             ConfigField(
@@ -102,7 +100,7 @@ CATALOG = {
                 maximum=500,
                 hint=(
                     "作用：指定远程 Elasticsearch 服务的访问地址。\n"
-                    "前提：仅在搜索引擎选择 Elasticsearch 时生效；"
+                    "前提：搜索引擎选择 Elasticsearch 或自动时生效；"
                     "需包含协议与端口，且服务可从后端网络访问。"
                 ),
             ),

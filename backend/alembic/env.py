@@ -5,7 +5,7 @@ import sys
 from importlib import import_module
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import create_engine, pool
 
 from alembic import context
 
@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from app.config import settings
 from app.database import Base
+from app.domains.search.postgres_schema import metadata as search_metadata
 
 # 显式导入所有模型表以便 Alembic 能够发现它们
 
@@ -52,7 +53,7 @@ for model_module in (
 config = context.config
 
 # Overwrite sqlalchemy.url dynamically
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -62,6 +63,7 @@ if config.config_file_name is not None:
 # add your model's MetaData object here
 # for 'autogenerate' support
 target_metadata = Base.metadata
+migration_metadata = [target_metadata, search_metadata]
 # -----------------------------------------------
 
 
@@ -80,7 +82,7 @@ def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
-        target_metadata=target_metadata,
+        target_metadata=migration_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
     )
@@ -96,14 +98,14 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+    connectable = create_engine(
+        settings.DATABASE_URL,
         poolclass=pool.NullPool,
+        connect_args={"connect_timeout": settings.DB_CONNECT_TIMEOUT, "options": "-c timezone=UTC"},
     )
 
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(connection=connection, target_metadata=migration_metadata)
 
         with context.begin_transaction():
             context.run_migrations()

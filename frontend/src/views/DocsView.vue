@@ -362,14 +362,14 @@ watch(activeTab, async (newTab) => {
               </div>
               <div class="stack-item">
                 <div class="stack-label">持久化存储与基础设施</div>
-                <div class="stack-value">MySQL 8.0 (业务资产) + Redis (快照/锁) + Git Worktree 沙箱</div>
+                <div class="stack-value">PostgreSQL 18 (业务资产与搜索) + Redis (快照/锁) + Git Worktree 沙箱</div>
               </div>
             </div>
 
             <div class="feature-box mt-6">
               <h3 class="flex items-center gap-2"><Cpu class="w-4 h-4 text-blue-600" /> 企业级全局混合检索 (Hybrid RRF Search)</h3>
               <p class="mt-2 text-slate-600 text-sm">
-                平台集成自研混合搜索链路：<strong>BM25 词法全文检索 + nested kNN 语义向量检索 + Python RRF 互惠排名融合</strong>。
+                全局搜索结合 <strong>PostgreSQL 全文检索、pgvector 语义检索和 RRF 排名融合</strong>，覆盖任务、消息、案例和诊断规程。
                 两路召回共用短期 PIT，以 <code>1/(60+rank)</code> 等权融合；分页仅读 Redis 隔离快照，保障高并发下的超低延迟与权限隔离；全局支持双击 Shift 极速唤起。
               </p>
             </div>

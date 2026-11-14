@@ -5,9 +5,7 @@ The application database, indexes and aliases are never modified.
 """
 
 import asyncio
-import importlib.util
 import os
-from pathlib import Path
 from uuid import uuid4
 
 import httpx
@@ -27,6 +25,7 @@ from app.domains.search.models import (
     SearchIndexTarget,
     SearchOutbox,
 )
+from app.domains.search.postgres_schema import metadata as search_metadata
 from app.domains.search.rrf import hybrid_search
 from app.domains.search.worker import claim, process_body, process_embedding
 from app.domains.task.services.conversation import messages as task_conversation_messages
@@ -36,48 +35,34 @@ pytestmark = pytest.mark.skipif(os.getenv("SEARCH_LIVE_TESTS") != "1", reason="o
 
 
 @pytest.fixture()
-def mysql_db(monkeypatch):
+def postgres_db(monkeypatch):
     import app.database as database
 
     name = "traceforge_search_test_" + uuid4().hex[:12]
-    original = create_engine(settings.DATABASE_URL)
+    original = create_engine(settings.DATABASE_URL, isolation_level="AUTOCOMMIT")
     assert name.startswith("traceforge_search_test_")
     with original.begin() as conn:
-        conn.execute(text(f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"))
+        conn.execute(text(f"CREATE DATABASE {name}"))
     engine = create_engine(original.url.set(database=name), pool_size=4, max_overflow=0)
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     monkeypatch.setattr(database, "SessionLocal", factory)
     try:
-        Base.metadata.create_all(engine)
+        with engine.begin() as connection:
+            connection.execute(text("CREATE EXTENSION pg_jieba"))
+            connection.execute(text("CREATE EXTENSION vector"))
+            Base.metadata.create_all(connection)
+            search_metadata.create_all(connection)
         yield engine, factory
     finally:
         engine.dispose()
         with original.begin() as conn:
-            conn.execute(text(f"DROP DATABASE `{name}`"))
+            conn.execute(text(f"DROP DATABASE {name}"))
         original.dispose()
 
 
-def test_mysql_incremental_migration_roundtrip(mysql_db):
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
-
-    engine, factory = mysql_db
-    path = Path(__file__).parents[2] / "alembic/versions/d5f60718293a_global_search.py"
-    spec = importlib.util.spec_from_file_location("search_migration", path)
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
-    with engine.begin() as connection:
-        context = MigrationContext.configure(connection)
-        with Operations.context(context):
-            migration.downgrade()
-            migration.upgrade()
-            migration.downgrade()
-            migration.upgrade()
-        assert connection.execute(text("SHOW COLUMNS FROM chat_messages LIKE 'sort_seq'")).first()
-
-
-def test_mysql_es_embedding_pipeline_and_tombstone(mysql_db, monkeypatch):
-    engine, factory = mysql_db
+def test_postgres_es_embedding_pipeline_and_tombstone(postgres_db, monkeypatch):
+    engine, factory = postgres_db
+    monkeypatch.setattr(settings, "SEARCH_BACKEND", "elasticsearch")
     name = "traceforge-search-test-" + uuid4().hex[:12]
     profile_id = str(uuid4())
     monkeypatch.setattr(settings, "SEARCH_ENABLED", True)

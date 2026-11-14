@@ -9,8 +9,6 @@ from sqlalchemy.orm import Session as _Session
 
 from app.config import settings
 
-# connect/read/write timeout 防止 offload 线程被无超时查询永久占用
-# （connect_args 直接透传 PyMySQL：connect_timeout / read_timeout / write_timeout）
 engine = create_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,
@@ -19,8 +17,7 @@ engine = create_engine(
     pool_recycle=int(settings.DB_POOL_RECYCLE_SECONDS),
     connect_args={
         "connect_timeout": int(settings.DB_CONNECT_TIMEOUT),
-        "read_timeout": int(settings.DB_READ_TIMEOUT),
-        "write_timeout": int(settings.DB_WRITE_TIMEOUT),
+        "options": f"-c timezone=UTC -c statement_timeout={settings.DB_STATEMENT_TIMEOUT_SECONDS * 1000}",
     },
     echo=settings.SQL_ECHO,
 )

@@ -6,7 +6,7 @@
 
 ## 首次启动
 
-以下命令从仓库根目录开始，使用 Windows PowerShell。需要 Python 3.10+、MySQL 8.0、Redis 和 Git；Linux 部署可使用 [Docker](../deploy/docker/README.md)，镜像已处理 Windows 专用依赖。
+以下命令从仓库根目录开始，使用 Windows PowerShell。需要 Python 3.10+、PostgreSQL 18（pg_jieba、pgvector）、Redis 和 Git；Linux 部署可使用 [Docker](../deploy/docker/README.md)，镜像已处理 Windows 专用依赖。
 
 ### 1. 安装依赖
 
@@ -22,11 +22,7 @@ Copy-Item .env.example .env
 
 ### 2. 准备数据库和 Redis
 
-先启动 MySQL 与 Redis。在 MySQL 中创建数据库：
-
-```sql
-CREATE DATABASE sdd_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-```
+先启动带 pg_jieba 与 pgvector 的 PostgreSQL 18，以及 Redis。在 PostgreSQL 中创建一个空的 UTF-8 业务库，例如 `sdd_platform`。数据库迁移会创建扩展和业务表。运行迁移的账号需要在目标库安装扩展的权限，也可由数据库管理员预装两个扩展到 `public`。
 
 编辑从[配置模板](.env.example)复制得到的本地 `.env`，至少核对以下项目：
 
@@ -40,7 +36,7 @@ CREATE DATABASE sdd_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 可用 `python -c "import secrets; print(secrets.token_urlsafe(48))"` 生成 JWT 密钥。不要提交 `.env` 或凭据。
 
-基础搜索使用 SQLite 即可，在 `.env` 中设置 `SEARCH_BACKEND=sqlite`，不需要另装 Elasticsearch；搜索分页仍需要 Redis。完整配置见[历史搜索部署](../deploy/search/README.md)。
+全局搜索默认使用业务库内的 PostgreSQL 全文检索和向量索引。填写向量服务凭据后，任务、消息、案例和诊断规程均支持混合检索。搜索分页需要 Redis。配置见[全局搜索部署](../deploy/search/README.md)。
 
 ### 3. 迁移并启动
 

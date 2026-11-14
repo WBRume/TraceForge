@@ -7,7 +7,7 @@
 - 线程闭包内自行创建和关闭 Session（优先用 run_db_txn）；
 - 禁止把 request session 或 engine 持有的 session 带入线程；
 - DB、git、文件复制分属不同 executor，避免互相拖死；
-- MySQL connect/read/write timeout 由 app.database 统一配置，
+- PostgreSQL 连接和语句超时由 app.database 统一配置，
   防止 executor 线程被无超时查询永久占用；
 - 每个池有在飞任务上限（信号量背压）：提交方在事件循环上 await 等待，
   而不是让待执行队列无限堆积（ThreadPoolExecutor 内部队列无界）。

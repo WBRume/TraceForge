@@ -1,4 +1,4 @@
-"""Real MySQL embedding identity races and outbox transaction atomicity."""
+"""Real PostgreSQL embedding identity races and outbox transaction atomicity."""
 
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -15,19 +15,19 @@ from app.database import Base
 from app.domains.search import worker
 from app.domains.search.models import SearchEmbeddingJob, SearchEmbeddingProfile, SearchIndexTarget, SearchOutbox
 
-MYSQL_TEST_URL = os.environ.get("TRACEFORGE_TEST_MYSQL_URL", "").strip()
-pytestmark = pytest.mark.skipif(not MYSQL_TEST_URL, reason="TRACEFORGE_TEST_MYSQL_URL not set")
+POSTGRES_TEST_URL = os.environ.get("TRACEFORGE_TEST_POSTGRES_URL", "").strip()
+pytestmark = pytest.mark.skipif(not POSTGRES_TEST_URL, reason="TRACEFORGE_TEST_POSTGRES_URL not set")
 
 
 @pytest.fixture
-def mysql_factory():
-    server_url = make_url(MYSQL_TEST_URL).set(database="")
+def postgres_factory():
+    server_url = make_url(POSTGRES_TEST_URL).set(database="postgres")
     name = f"traceforge_embedding_test_{uuid4().hex}"
-    options = {"connect_timeout": 10, "read_timeout": 30, "write_timeout": 30}
+    options = {"connect_timeout": 10}
     server = create_engine(server_url, isolation_level="AUTOCOMMIT", connect_args=options)
     with server.connect() as conn:
-        conn.execute(text(f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4"))
-    engine = create_engine(server_url.set(database=name), isolation_level="REPEATABLE READ", connect_args=options)
+        conn.execute(text(f"CREATE DATABASE {name}"))
+    engine = create_engine(server_url.set(database=name), connect_args=options)
     try:
         Base.metadata.create_all(
             engine,
@@ -40,7 +40,7 @@ def mysql_factory():
     finally:
         engine.dispose()
         with server.connect() as conn:
-            conn.execute(text(f"DROP DATABASE `{name}`"))
+            conn.execute(text(f"DROP DATABASE {name}"))
         server.dispose()
 
 
@@ -57,9 +57,9 @@ def job_values():
 
 
 @pytest.mark.parametrize("status", ["pending", "leased", "done"])
-def test_duplicate_enqueue_preserves_existing_job(mysql_factory, status):
+def test_duplicate_enqueue_preserves_existing_job(postgres_factory, status):
     values = job_values()
-    with mysql_factory() as db:
+    with postgres_factory() as db:
         worker._enqueue_embedding_job(db, values)
         db.commit()
         row = db.get(SearchEmbeddingJob, values["id"])
@@ -78,13 +78,13 @@ def test_duplicate_enqueue_preserves_existing_job(mysql_factory, status):
         assert row.input_hash == values["input_hash"]
 
 
-def test_concurrent_enqueue_creates_one_durable_identity(mysql_factory):
+def test_concurrent_enqueue_creates_one_durable_identity(postgres_factory):
     values = job_values()
     ready = Barrier(2)
 
     def enqueue():
         candidate = {**values, "id": str(uuid4())}
-        with mysql_factory() as db:
+        with postgres_factory() as db:
             ready.wait(timeout=10)
             worker._enqueue_embedding_job(db, candidate)
             db.commit()
@@ -93,7 +93,7 @@ def test_concurrent_enqueue_creates_one_durable_identity(mysql_factory):
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(enqueue) for _ in range(2)]
         candidates = [future.result(timeout=15) for future in futures]
-    with mysql_factory() as db:
+    with postgres_factory() as db:
         row = db.query(SearchEmbeddingJob).one()
         assert row.id in candidates
         assert row.source_version == 1
@@ -101,9 +101,10 @@ def test_concurrent_enqueue_creates_one_durable_identity(mysql_factory):
 
 
 @pytest.mark.parametrize("commit", [False, True], ids=["rollback", "commit"])
-def test_embedding_enqueue_and_outbox_ack_are_atomic(mysql_factory, commit):
+def test_embedding_enqueue_and_outbox_ack_are_atomic(postgres_factory, commit, monkeypatch):
+    monkeypatch.setattr(worker.settings, "SEARCH_BACKEND", "elasticsearch")
     values = job_values()
-    with mysql_factory() as db:
+    with postgres_factory() as db:
         profile = SearchEmbeddingProfile(
             id=values["profile_id"], endpoint="https://example.invalid", model_id="test", fingerprint="space"
         )
@@ -126,13 +127,13 @@ def test_embedding_enqueue_and_outbox_ack_are_atomic(mysql_factory, commit):
         "kind": "case",
         "deleted": False,
     }
-    with mysql_factory() as db:
+    with postgres_factory() as db:
         worker.confirm_body(db, job, [document], [target_data], {profile_data["id"]: profile_data}, [])
         db.flush()
         if commit:
             db.commit()
         else:
             db.rollback()
-    with mysql_factory() as db:
+    with postgres_factory() as db:
         assert db.query(SearchEmbeddingJob).count() == int(commit)
         assert db.get(SearchOutbox, job["id"]).status == ("done" if commit else "leased")

@@ -69,7 +69,7 @@ def test_regenerate_forces_one_abstract_method_and_still_requires_review(db, mon
     from app.agents import selection
     from app.config import settings
 
-    monkeypatch.setattr(settings, "SEARCH_SQLITE_PATH", str(tmp_path / "index.sqlite3"))
+    monkeypatch.setattr(settings, "DIAGNOSIS_PLAYBOOK_PROMOTION_ROOT", str(tmp_path / "promotion"))
     monkeypatch.setattr(selection, "resolve_workspace_backend", lambda *args: "test")
     assert "必须只输出一个规程" in promotion.prepare(db, replacement.id, None, None)["prompt"]
     with pytest.raises(PlaybookError, match="PROMOTION_MERGE_REQUIRED"):

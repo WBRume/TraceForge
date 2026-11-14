@@ -10,7 +10,7 @@
   <img alt="Vue 3.5" src="https://img.shields.io/badge/Vue-3.5-4FC08D?logo=vuedotjs&amp;logoColor=white">
   <img alt="TypeScript 5.9" src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&amp;logoColor=white">
   <img alt="Node.js 22.12+" src="https://img.shields.io/badge/Node.js-22.12%2B-5FA04E?logo=nodedotjs&amp;logoColor=white">
-  <img alt="MySQL 8.0" src="https://img.shields.io/badge/MySQL-8.0-4479A1?logo=mysql&amp;logoColor=white">
+  <img alt="PostgreSQL 18" src="https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&amp;logoColor=white">
 </p>
 
 <p align="center">
@@ -62,7 +62,7 @@ TraceForge 把需求、代码仓库、Agent 会话、文档和执行记录放到
 | 管理多个仓库的开发任务 | 工作区关联多仓库；任务详情可查看各仓库的来源分支和创建时提交 |
 | 复用团队的执行方法 | Skills 导入、编辑、版本比较、评审，以及任务内临时调整 |
 | 让前后端提前联调 | 导入 OpenAPI，维护接口和 Mock 场景，用 AI 生成数据并预览响应 |
-| 找回以前的排查过程 | 搜索任务、消息、案例和规程；支持 SQLite 关键词检索，可选 ES + 向量检索 |
+| 找回以前的排查过程 | 用 PostgreSQL 全文与向量检索搜索任务、消息、案例和规程，可选 Elasticsearch |
 | 查看本次任务产出的文档 | 按工作区配置计划文档目录，显示相对任务初始快照新增或修改的 Markdown |
 | 和同事一起跟进 | 工作区成员权限、文档评审讨论、会话分享、站内通知、桌面提醒和 Webhook |
 | 用语音补充任务信息 | 语音转文字写入输入框；支持配置在线供应商，桌面构建可选离线识别 |
@@ -72,7 +72,7 @@ TraceForge 把需求、代码仓库、Agent 会话、文档和执行记录放到
 
 ### 本机开发
 
-准备 **Python 3.10+、Node.js 22.12+、MySQL 8.0、Redis 和 Git**。执行 AI 任务还需要配置至少一个真实 Agent。
+准备 **Python 3.10+、Node.js 22.12+、PostgreSQL 18（pg_jieba、pgvector）、Redis 和 Git**。执行 AI 任务还需要配置至少一个真实 Agent。
 
 1. 按[后端启动指南](backend/README.md#首次启动)创建虚拟环境、配置数据库与 Redis、执行迁移并启动 API。
 2. 在新的终端启动前端：
@@ -89,7 +89,7 @@ TraceForge 把需求、代码仓库、Agent 会话、文档和执行记录放到
 
 ### Docker 部署
 
-按 [Docker 部署指南](deploy/docker/README.md)配置并启动 MySQL、Redis、API 和 Web。默认访问 [本地 Web 服务](http://localhost:8080)；Agent 登录或远端连接需单独配置。
+按 [Docker 部署指南](deploy/docker/README.md)配置并启动 PostgreSQL、Redis、API 和 Web。默认访问 [本地 Web 服务](http://localhost:8080)；Agent 登录或远端连接需单独配置。
 
 ## 文档导航
 
@@ -98,7 +98,7 @@ TraceForge 把需求、代码仓库、Agent 会话、文档和执行记录放到
 | [后端启动与开发](backend/README.md) | 首次安装、Agent 配置、开发检查和排错 |
 | [前端与桌面客户端](frontend/README.md) | Web / Electron / Tauri 开发、打包、本地协同和语音输入 |
 | [Docker 部署](deploy/docker/README.md) | 启动整套服务、配置容器连接和持久化目录 |
-| [历史搜索部署](deploy/search/README.md) | 选择 SQLite 或 Elasticsearch，配置向量检索、回填和恢复 |
+| [全局搜索部署](deploy/search/README.md) | 配置 PostgreSQL 全文与向量检索、Elasticsearch、回填和恢复 |
 | [诊断规程](backend/app/domains/diagnosis_playbook/README.md) | 案例复用、分阶段排查、真实实验和执行边界 |
 | [DSH 诊断守卫插件](integrations/dsh-playbook/README.md) | 为专用诊断 Host 配置工具执行限制 |
 | [OpenCode 真实恢复验收](backend/tests/live_opencode/README.md) | 验证断流、进程重启和后端恢复；会调用真实服务 |
@@ -111,6 +111,6 @@ TraceForge 把需求、代码仓库、Agent 会话、文档和执行记录放到
 - **部分资产页面仍在建设**：资产中心的“追溯”和“知识库”分区是占位页面，不代表完整能力已交付；案例中心与诊断规程有独立入口。
 - **部署按单 API 进程运行**：当前仍有进程内会话状态，不应直接增加 API worker 或容器副本。
 
-技术栈：FastAPI / SQLAlchemy / Alembic、Vue 3 / TypeScript / Pinia、MySQL / Redis。
+技术栈：FastAPI / SQLAlchemy / Alembic、Vue 3 / TypeScript / Pinia、PostgreSQL / Redis。
 
 许可证：[Apache License 2.0](LICENSE)。

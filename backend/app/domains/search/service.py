@@ -4,6 +4,7 @@ import asyncio
 import html
 import json
 import time
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import or_
@@ -13,7 +14,7 @@ from app.core.feature_settings import feature_settings as settings
 from app.core.offload import run_db_txn
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember
 from app.domains.case_center.models.case import SddCase
-from app.domains.search import sessions
+from app.domains.search import postgres_index, sessions
 from app.domains.search.embedding import EmbeddingError, embed
 from app.domains.search.es import scope_filters
 from app.domains.search.models import (
@@ -34,6 +35,29 @@ from app.domains.task.services.avatar_service import resolve_avatar_svg
 # Search responses are size-capped (see _search), so oversized custom avatar SVGs
 # are omitted and the client falls back to the name-initial avatar.
 AVATAR_SVG_MAX_CHARS = 4096
+SEARCH_SESSION_VERSION = 2
+
+
+async def embed_query(http, profile, query):
+    from app.domains.search.budget import reserve
+
+    await reserve(profile["id"], query=True)
+    return (await embed(http, profile, [query], query=True))[0]
+
+
+def ranked_candidates(hits):
+    candidates = []
+    for hit in hits:
+        candidate = dict(hit["_source"])
+        highlights = hit.get("highlight", {})
+        fragments = highlights.get("content_text") or highlights.get("title")
+        if fragments:
+            candidate["highlight"] = fragments[0][:2048]
+        inner = next(iter(hit.get("inner_hits", {}).values()), {}).get("hits", {}).get("hits", [])
+        if inner:
+            candidate["start_char"] = inner[0].get("fields", {}).get("semantic_passages.start_char", [0])[0]
+        candidates.append(candidate)
+    return candidates
 
 
 def authorized_scope(db, user_id, workspace_id=None, task_id=None):
@@ -108,6 +132,19 @@ def snippet(text, query, offset=0):
         {"text": part[relative : relative + len(query)], "match": True},
         {"text": part[relative + len(query) :], "match": False},
     ], "keyword"
+
+
+def candidate_snippet(projection, query, candidate):
+    segments, basis = snippet(embedding_text(projection), query, candidate.get("start_char", 0))
+    return segments, "semantic" if basis == "plain" and "start_char" in candidate else basis
+
+
+def result_timestamp(projection):
+    stamp = projection["created_at"]
+    if stamp is None:
+        return None
+    value = datetime.fromisoformat(stamp)
+    return value.replace(tzinfo=timezone.utc).isoformat() if value.tzinfo is None else stamp
 
 
 def highlight_segments(fragment):
@@ -263,7 +300,7 @@ def hydrate(db, user, candidates, offset, limit, query, scope):
             projection = build_search_projection(spec, "playbook")
             if projection["projection_hash"] != c["projection_hash"]:
                 continue
-            segments, basis = snippet(embedding_text(projection), query)
+            segments, basis = candidate_snippet(projection, query, c)
             items.append(
                 {
                     "kind": "playbook",
@@ -272,7 +309,7 @@ def hydrate(db, user, candidates, offset, limit, query, scope):
                     "workspace_name": workspaces[spec.workspace_id],
                     "task_id": spec.id,
                     "task_name": projection["title"],
-                    "created_at": projection["created_at"],
+                    "created_at": result_timestamp(projection),
                     "snippet": segments,
                     "snippet_basis": basis,
                     "target": {
@@ -288,7 +325,7 @@ def hydrate(db, user, candidates, offset, limit, query, scope):
             projection = build_search_projection(case, "case")
             if not projection or projection["projection_hash"] != c["projection_hash"]:
                 continue
-            segments, basis = snippet(embedding_text(projection), query, c.get("start_char", 0))
+            segments, basis = candidate_snippet(projection, query, c)
             items.append(
                 {
                     "kind": "case",
@@ -297,7 +334,7 @@ def hydrate(db, user, candidates, offset, limit, query, scope):
                     "workspace_name": workspaces[case.workspace_id],
                     "task_id": case.source_task_id,
                     "task_name": case.title,
-                    "created_at": projection["created_at"],
+                    "created_at": result_timestamp(projection),
                     "snippet": segments,
                     "snippet_basis": basis,
                     "target": {
@@ -315,9 +352,7 @@ def hydrate(db, user, candidates, offset, limit, query, scope):
         if not projection or projection["projection_hash"] != c["projection_hash"]:
             continue
         task = tasks[c["task_id"]]
-        segments, basis = snippet(embedding_text(projection), query, c.get("start_char", 0))
-        if basis == "plain" and "start_char" in c:
-            basis = "semantic"
+        segments, basis = candidate_snippet(projection, query, c)
         if c.get("highlight"):
             segments, basis = highlight_segments(c["highlight"]), "keyword"
         item = {
@@ -330,7 +365,7 @@ def hydrate(db, user, candidates, offset, limit, query, scope):
             "message_id": c.get("message_id"),
             "role": projection.get("role"),
             "message_type": projection.get("message_type"),
-            "created_at": projection["created_at"],
+            "created_at": result_timestamp(projection),
             "snippet": segments,
             "snippet_basis": basis,
             "target": {
@@ -374,7 +409,7 @@ class SearchService:
             raise HTTPException(429, "SEARCH_BUSY")
         self.inflight += 1
         try:
-            async with asyncio.timeout(2):
+            async with asyncio.timeout(2 + settings.SEARCH_QUERY_EMBEDDING_TIMEOUT):
                 return await self._search(user, params)
         except TimeoutError:
             raise HTTPException(504, "SEARCH_TIMEOUT") from None
@@ -382,94 +417,80 @@ class SearchService:
             self.inflight -= 1
 
     async def _create_search_snapshot(self, user, binding, scope, params, target, profile, local):
-        from . import sqlite_index
-
         mode, degraded = params["retrieval"], None
-        if local:
-            mode, degraded = "lexical", "sqlite_bm25_only"
-        elif mode == "hybrid" and not semantic_enabled(target, params["type"]):
+        if mode == "hybrid" and not semantic_enabled(target, params["type"]):
             mode, degraded = "lexical", "history_lexical_only"
-        vector = None
-        if mode == "hybrid" and (not profile or not target["verified"]):
+        if mode == "hybrid" and (not profile or not (local or target["verified"])):
             mode, degraded = "lexical", "semantic_index_not_ready"
+        vector = None
         if mode == "hybrid":
             try:
-                from app.domains.search.budget import reserve
-
-                await reserve(profile["id"], query=True)
-                vector = (await embed(self.http, profile, [params["q"]], query=True))[0]
+                vector = await embed_query(self.http, profile, params["q"])
             except EmbeddingError as exc:
                 mode, degraded = "lexical", exc.code.lower()
-        candidates = []
+        hits = []
         if scope:
-            filters = scope_filters(
-                scope,
-                kind=params["type"],
-                task_id=params.get("task_id"),
-                role=params.get("role"),
-                date_from=params.get("from"),
-                date_to=params.get("to"),
-            )
+            filters = {
+                "kind": params["type"],
+                "task_id": params.get("task_id"),
+                "role": params.get("role"),
+                "date_from": params.get("from"),
+                "date_to": params.get("to"),
+            }
+
+            async def postgres_search(vector, profile_id):
+                return await run_db_txn(
+                    lambda db: postgres_index.search(
+                        db,
+                        params["q"],
+                        scope,
+                        vector=vector,
+                        profile_id=profile_id,
+                        **filters,
+                    )
+                )
+
             try:
-                async with asyncio.timeout(0.9):
-                    if local:
-                        hits = await asyncio.to_thread(
-                            sqlite_index.search,
-                            params["q"],
-                            scope,
-                            kind=params["type"],
-                            task_id=params.get("task_id"),
-                            role=params.get("role"),
-                            date_from=params.get("from"),
-                            date_to=params.get("to"),
-                        )
-                    else:
+                if local:
+                    hits = await postgres_search(vector, target["embedding_profile_id"])
+                else:
+                    async with asyncio.timeout(0.9):
                         hits = await search_target(
                             self.es,
                             target,
                             params["q"],
-                            filters,
+                            scope_filters(scope, **filters),
                             kind=params["type"],
                             vector=vector,
                             profile_id=target["embedding_profile_id"],
                         )
             except Exception:
-                if settings.SEARCH_BACKEND == "elasticsearch":
+                if local or settings.SEARCH_BACKEND == "elasticsearch":
                     raise HTTPException(503, "SEARCH_UNAVAILABLE") from None
-                hits = await asyncio.to_thread(
-                    sqlite_index.search,
-                    params["q"],
-                    scope,
-                    kind=params["type"],
-                    task_id=params.get("task_id"),
-                    role=params.get("role"),
-                    date_from=params.get("from"),
-                    date_to=params.get("to"),
-                )
-                mode, degraded = "lexical", "elasticsearch_unavailable_sqlite_bm25"
-                target = {
-                    **target,
-                    "verified": await asyncio.to_thread(sqlite_index.ready),
-                    "semantic_indexing_state": "unavailable",
-                }
-            for hit in hits:
-                candidate = dict(hit["_source"])
-                highlights = hit.get("highlight", {})
-                fragments = highlights.get("content_text") or highlights.get("title")
-                if fragments:
-                    candidate["highlight"] = fragments[0][:2048]
-                inner = next(iter(hit.get("inner_hits", {}).values()), {}).get("hits", {}).get("hits", [])
-                if inner:
-                    candidate["start_char"] = inner[0].get("fields", {}).get("semantic_passages.start_char", [0])[0]
-                candidates.append(candidate)
+                target, postgres_profile = await run_db_txn(postgres_index.configuration)
+                mode, degraded = "lexical", "elasticsearch_unavailable"
+                if params["retrieval"] == "hybrid" and postgres_profile:
+                    if not (
+                        profile and profile["fingerprint"] == postgres_profile["fingerprint"] and vector is not None
+                    ):
+                        try:
+                            vector = await embed_query(self.http, postgres_profile, params["q"])
+                        except EmbeddingError:
+                            vector = None
+                    if vector is not None:
+                        mode = "hybrid"
+                else:
+                    vector = None
+                hits = await postgres_search(vector, target["embedding_profile_id"])
         metadata = {
             "requested_retrieval": params["retrieval"],
             "executed_retrieval": mode,
+            "backend": "postgresql" if target["target_id"] == postgres_index.TARGET_ID else "elasticsearch",
             "degraded_reason": degraded,
             "indexing_state": "ready" if target["verified"] else "partial",
             "semantic_indexing_state": target["semantic_indexing_state"],
         }
-        sid, snapshot = await sessions.create(user, binding, candidates, metadata)
+        sid, snapshot = await sessions.create(user, binding, ranked_candidates(hits), metadata)
         offset = shown = 0
         return sid, snapshot, offset, shown
 
@@ -477,9 +498,14 @@ class SearchService:
         started = time.monotonic()
 
         def read_config(db):
-            return authorized_scope(db, user, params.get("workspace_id"), params.get("task_id")), configuration(db)
+            scope = authorized_scope(db, user, params.get("workspace_id"), params.get("task_id"))
+            target, profile = configuration(db) if postgres_index.es_enabled() else (None, None)
+            local = not target and settings.SEARCH_BACKEND != "elasticsearch"
+            if local:
+                target, profile = postgres_index.configuration(db)
+            return scope, target, profile, local
 
-        scope, (target, profile) = await run_db_txn(read_config)
+        scope, target, profile, local = await run_db_txn(read_config)
         if not scope:
             return {
                 "items": [],
@@ -495,20 +521,11 @@ class SearchService:
                 "incomplete": False,
                 "took_ms": round((time.monotonic() - started) * 1000),
             }
-        from . import sqlite_index
-
-        if not target and settings.SEARCH_BACKEND == "elasticsearch":
+        if not target:
             raise HTTPException(503, "SEARCH_NOT_READY")
-        local = sqlite_index.local_only() or not target
-        if local:
-            target = {
-                "target_id": "sqlite",
-                "embedding_profile_id": None,
-                "verified": await asyncio.to_thread(sqlite_index.ready),
-                "semantic_indexing_state": "unavailable",
-            }
         binding = digest(
             [
+                SEARCH_SESSION_VERSION,
                 user,
                 scope,
                 target["target_id"],

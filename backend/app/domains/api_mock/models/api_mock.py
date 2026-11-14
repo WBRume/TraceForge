@@ -71,7 +71,9 @@ class SddApiMockProject(Base):
     temp_workspace_path = Column(String(1000), nullable=False)
     active_source_version_id = Column(
         String(36),
-        ForeignKey("sdd_api_mock_source_versions.id", ondelete="SET NULL"),
+        ForeignKey(
+            "sdd_api_mock_source_versions.id", name="fk_mock_active_source_version", ondelete="SET NULL", use_alter=True
+        ),
         nullable=True,
         index=True,
     )

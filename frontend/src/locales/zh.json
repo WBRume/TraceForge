@@ -4254,7 +4254,7 @@
       "beijing": "北京",
       "singapore": "新加坡",
       "auto": "自动选择 / 本地降级",
-      "sqlite": "本地轻量检索",
+      "postgresql": "PostgreSQL 全文与向量检索",
       "elasticsearch": "Elasticsearch",
       "semantic": "语义 / 向量检索",
       "lexical": "远程关键词检索",

@@ -3,12 +3,30 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.domains.search.es import bulk_write, ensure_indices, index_mapping, scope_filters
+from app.domains.search.es import bulk_write, ensure_indices, index_mapping, scope_filters, search_body
+from app.domains.search.relevance import minimum_semantic_similarity
 from app.domains.search.rrf import search_target
 from app.domains.search.storage import physical_indices, semantic_enabled
 from app.domains.search.worker import prepare_document
 
 TARGET = {"physical_index": "traceforge-search-test", "schema_version": 2}
+
+
+@pytest.mark.parametrize(
+    ("query", "minimum"),
+    [
+        ("测试", 0.70),
+        ("Redis", 0.70),
+        ("连接池", 0.70),
+        ("连接池耗尽", 0.58),
+        ("数据库可用会话用光后业务请求积压", 0.58),
+        ("connection pool exhausted", 0.58),
+    ],
+)
+def test_vector_retrieval_has_a_stricter_cutoff_for_short_queries(query, minimum):
+    assert minimum_semantic_similarity(query) == minimum
+    assert search_body(query, [], [1, 0, 0], "p")["knn"]["similarity"] == minimum
+    assert "knn" not in search_body(query, [])
 
 
 @pytest.mark.asyncio

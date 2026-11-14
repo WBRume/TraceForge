@@ -10,10 +10,11 @@ from uuid import uuid4
 
 import httpx
 from sqlalchemy import and_, or_
-from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.postgresql import insert
 
 from app.core.feature_settings import feature_settings as settings
 from app.core.offload import run_db_txn
+from app.domains.search import postgres_index
 from app.domains.search.capture import mark_connection
 from app.domains.search.embedding import EmbeddingError, embed
 from app.domains.search.es import bulk_write, create_client
@@ -25,7 +26,7 @@ from app.domains.search.models import (
     SearchOutbox,
 )
 from app.domains.search.projection import build_embedding_chunks, build_search_projection, digest, embedding_text
-from app.domains.search.storage import semantic_enabled, write_index
+from app.domains.search.storage import SCHEMA_VERSION, semantic_enabled, write_index
 
 worker_heartbeats = {}
 _redis_heartbeat_at = {}
@@ -62,18 +63,21 @@ def dto(row):
 
 def claim(db, model):
     now = datetime.utcnow()
-    row = (
-        db.query(model)
-        .filter(
+    query = db.query(model).filter(
+        or_(
+            and_(model.status == "pending", model.available_at <= now),
+            and_(model.status == "leased", model.lease_until < now),
+        )
+    )
+    if model is SearchEmbeddingJob:
+        local = postgres_index.active_profile(db)
+        query = query.filter(
             or_(
-                and_(model.status == "pending", model.available_at <= now),
-                and_(model.status == "leased", model.lease_until < now),
+                and_(model.target_id == postgres_index.TARGET_ID, model.profile_id == (local.id if local else None)),
+                and_(model.target_id != postgres_index.TARGET_ID, postgres_index.es_enabled()),
             )
         )
-        .order_by(model.available_at, model.id)
-        .with_for_update(skip_locked=True)
-        .first()
-    )
+    row = query.order_by(model.available_at, model.id).with_for_update(skip_locked=True).first()
     if row is None:
         return None
     row.status, row.lease_token, row.lease_until = "leased", str(uuid4()), now + timedelta(seconds=300)
@@ -171,8 +175,6 @@ def current_document(db, key):
 
 
 def read_work(db, job):
-    if owns(db, SearchOutbox, job) is None:
-        return None
     if job["event_kind"] != "entity_changed":
         q = db.query(SearchDocumentState.entity_key)
         q = (
@@ -189,16 +191,22 @@ def read_work(db, job):
     else:
         keys = [job["entity_key"]]
     docs = [doc for key in keys if (doc := current_document(db, key)) is not None]
-    targets = [
-        dto(t)
-        for t in db.query(SearchIndexTarget).filter(
-            SearchIndexTarget.status.in_(["active", "building", "standby"]),
-            or_(
-                SearchIndexTarget.connection_fingerprint.is_(None),
-                SearchIndexTarget.connection_fingerprint == digest(settings.SEARCH_ES_URL),
-            ),
-        )
-    ]
+    if owns(db, SearchOutbox, job) is None:
+        return None
+    targets = (
+        [
+            dto(t)
+            for t in db.query(SearchIndexTarget).filter(
+                SearchIndexTarget.status.in_(["active", "building", "standby"]),
+                or_(
+                    SearchIndexTarget.connection_fingerprint.is_(None),
+                    SearchIndexTarget.connection_fingerprint == digest(settings.SEARCH_ES_URL),
+                ),
+            )
+        ]
+        if postgres_index.es_enabled()
+        else []
+    )
     profiles = {
         p.id: dto(p)
         for p in db.query(SearchEmbeddingProfile).filter(
@@ -218,9 +226,27 @@ def prepare_document(doc, target, profile):
 
 def _enqueue_embedding_job(db, values):
     """Preserve any existing job with the same durable embedding identity."""
-    table = SearchEmbeddingJob.__table__
-    statement = mysql_insert(table).values(**values).on_duplicate_key_update(id=table.c.id)
-    db.execute(statement)
+    statement = insert(SearchEmbeddingJob).values(**values)
+    db.execute(statement.on_conflict_do_nothing(constraint="uq_search_embedding_version"))
+
+
+def enqueue_embeddings(db, documents, target, profile):
+    if not profile:
+        return
+    for doc in documents:
+        if doc["deleted"] or not semantic_enabled(target, doc["kind"]):
+            continue
+        _enqueue_embedding_job(
+            db,
+            {
+                "target_id": target["target_id"],
+                "profile_id": profile["id"],
+                "entity_key": doc["entity_key"],
+                "source_version": doc["source_version"],
+                "projection_hash": doc["projection_hash"],
+                "input_hash": digest([doc["projection_hash"], profile["fingerprint"]]),
+            },
+        )
 
 
 def confirm_body(db, job, documents, targets, profiles, keys):
@@ -228,44 +254,25 @@ def confirm_body(db, job, documents, targets, profiles, keys):
     if row is None:
         return
     # A target created while ES requests were in flight must receive this event too.
-    current_targets = {
-        t[0]
-        for t in db.query(SearchIndexTarget.target_id).filter(
-            SearchIndexTarget.status.in_(["active", "building", "standby"])
-        )
-    }
-    if current_targets != {t["target_id"] for t in targets}:
+    current_targets = (
+        {
+            t[0]
+            for t in db.query(SearchIndexTarget.target_id).filter(
+                SearchIndexTarget.status.in_(["active", "building", "standby"]),
+                or_(
+                    SearchIndexTarget.connection_fingerprint.is_(None),
+                    SearchIndexTarget.connection_fingerprint == digest(settings.SEARCH_ES_URL),
+                ),
+            )
+        }
+        if postgres_index.es_enabled()
+        else set()
+    )
+    if {t["target_id"] for t in targets} != current_targets:
         finish(db, SearchOutbox, job, "pending")
         return
     for target in targets:
-        profile = profiles.get(target["embedding_profile_id"])
-        if not profile:
-            continue
-        for doc in documents:
-            if doc["deleted"] or not semantic_enabled(target, doc["kind"]):
-                continue
-            existing = (
-                db.query(SearchEmbeddingJob.id)
-                .filter_by(
-                    target_id=target["target_id"],
-                    entity_key=doc["entity_key"],
-                    source_version=doc["source_version"],
-                    profile_id=profile["id"],
-                )
-                .first()
-            )
-            if existing is None:
-                # Outbox row lease serializes this event; unique identity is the final backstop.
-                values = {
-                    "id": str(uuid4()),
-                    "target_id": target["target_id"],
-                    "profile_id": profile["id"],
-                    "entity_key": doc["entity_key"],
-                    "source_version": doc["source_version"],
-                    "projection_hash": doc["projection_hash"],
-                    "input_hash": digest([doc["projection_hash"], profile["fingerprint"]]),
-                }
-                _enqueue_embedding_job(db, values)
+        enqueue_embeddings(db, documents, target, profiles.get(target["embedding_profile_id"]))
     if job["event_kind"] != "entity_changed" and keys:
         row.scan_cursor = keys[-1]
         finish(db, SearchOutbox, job, "pending")
@@ -275,29 +282,32 @@ def confirm_body(db, job, documents, targets, profiles, keys):
 
 
 async def process_body(client, job):
-    work = await run_db_txn(lambda db: read_work(db, job))
+    def publish_local(db):
+        work = read_work(db, job)
+        if work is None:
+            return None
+        docs, targets, profiles, keys = work
+        postgres_index.write(db, docs)
+        profile = postgres_index.active_profile(db)
+        if profile:
+            enqueue_embeddings(
+                db,
+                docs,
+                {
+                    "target_id": postgres_index.TARGET_ID,
+                    "schema_version": SCHEMA_VERSION,
+                },
+                dto(profile),
+            )
+        if not targets and settings.SEARCH_BACKEND != "elasticsearch":
+            confirm_body(db, job, docs, targets, profiles, keys)
+            return None
+        return work
+
+    work = await run_db_txn(publish_local)
     if work is None:
         return
     docs, targets, profiles, keys = work
-    from . import sqlite_index
-
-    if settings.SEARCH_BACKEND != "elasticsearch":
-        await asyncio.to_thread(sqlite_index.write, docs)
-    else:
-        await asyncio.to_thread(sqlite_index.invalidate_checkpoints)
-    if sqlite_index.local_only() or (not targets and settings.SEARCH_BACKEND != "elasticsearch"):
-
-        def confirm_local(db):
-            row = owns(db, SearchOutbox, job)
-            if row and job["event_kind"] != "entity_changed" and keys:
-                row.scan_cursor = keys[-1]
-                finish(db, SearchOutbox, job, "pending")
-                row.available_at = datetime.utcnow()
-            else:
-                finish(db, SearchOutbox, job)
-
-        await run_db_txn(confirm_local)
-        return
     if not targets:
         await run_db_txn(lambda db: finish(db, SearchOutbox, job, "pending", "SEARCH_NO_TARGET"))
         return
@@ -324,20 +334,36 @@ async def process_body(client, job):
 
 
 def embedding_snapshot(db, job):
-    if owns(db, SearchEmbeddingJob, job) is None:
-        return None
-    target = db.get(SearchIndexTarget, job["target_id"])
+    local = job["target_id"] == postgres_index.TARGET_ID
+    if local:
+        active = postgres_index.active_profile(db)
+        target = (
+            {
+                "target_id": postgres_index.TARGET_ID,
+                "schema_version": SCHEMA_VERSION,
+                "embedding_profile_id": active.id,
+                "status": "active",
+                "connection_fingerprint": None,
+            }
+            if active
+            else None
+        )
+    else:
+        row = db.get(SearchIndexTarget, job["target_id"])
+        target = dto(row) if row else None
     profile = db.get(SearchEmbeddingProfile, job["profile_id"])
     doc = current_document(db, job["entity_key"])
+    if owns(db, SearchEmbeddingJob, job) is None:
+        return None
     if (
         not target
-        or target.status == "retired"
-        or target.connection_fingerprint not in (None, digest(settings.SEARCH_ES_URL))
-        or target.embedding_profile_id != job["profile_id"]
+        or target["status"] == "retired"
+        or target["connection_fingerprint"] not in (None, digest(settings.SEARCH_ES_URL))
+        or target["embedding_profile_id"] != job["profile_id"]
         or not profile
         or not doc
         or doc["deleted"]
-        or not semantic_enabled(dto(target), doc["kind"])
+        or not semantic_enabled(target, doc["kind"])
         or doc["source_version"] != job["source_version"]
         or doc.get("projection_hash") != job["projection_hash"]
         or digest([doc["projection_hash"], profile.fingerprint]) != job["input_hash"]
@@ -347,7 +373,7 @@ def embedding_snapshot(db, job):
     if profile.last_error_code == "EMBEDDING_AUTH_FAILED":
         finish(db, SearchEmbeddingJob, job, "pending", profile.last_error_code)
         return None
-    return doc, dto(target), dto(profile)
+    return doc, target, dto(profile)
 
 
 async def process_embedding(client, http, job):
@@ -355,14 +381,9 @@ async def process_embedding(client, http, job):
     if snapshot is None:
         return
     doc, target, profile = snapshot
-    from .sqlite_index import local_only
-
-    if local_only():
-        await run_db_txn(lambda db: finish(db, SearchEmbeddingJob, job, "pending", "SEARCH_SQLITE_MODE"))
-        return
+    local = job["target_id"] == postgres_index.TARGET_ID
     # Do not spend embedding requests while its destination index is unavailable.
-    index = write_index(target, doc["kind"])
-    if not await client.indices.exists(index=index):
+    if not local and not await client.indices.exists(index=write_index(target, doc["kind"])):
         raise RuntimeError("SEARCH_TRANSPORT_FAILED")
     chunks = build_embedding_chunks(embedding_text(doc), profile["chunk_chars"], profile["chunk_overlap"])
     vectors = []
@@ -371,6 +392,15 @@ async def process_embedding(client, http, job):
 
         await reserve(profile["id"])
         vectors.extend(await embed(http, profile, [c["text"] for c in chunks[start : start + 16]]))
+    if local:
+
+        def publish(db):
+            if embedding_snapshot(db, job) is not None:
+                stored = postgres_index.write_passages(db, doc, profile, chunks, vectors)
+                finish(db, SearchEmbeddingJob, job, "done" if stored else "obsolete")
+
+        await run_db_txn(publish)
+        return
     if await run_db_txn(lambda db: embedding_snapshot(db, job)) is None:
         return
     doc = prepare_document(doc, target, profile)
@@ -391,7 +421,10 @@ def _advance_search_backfill(db):
 
     pending = (
         db.query(SearchBackfillRun.id)
-        .filter(SearchBackfillRun.status == "pending")
+        .filter(
+            SearchBackfillRun.status == "pending",
+            or_(SearchBackfillRun.target_id == postgres_index.TARGET_ID, postgres_index.es_enabled()),
+        )
         .order_by(SearchBackfillRun.created_at)
         .with_for_update(skip_locked=True)
         .first()
@@ -405,11 +438,8 @@ async def run(kind, once=False, stop_event=None):
     from app.domains.search.registry import load_models
 
     load_models()
-    # Load the application's model registry without starting its runtime.
-    if kind == "search" and stop_event is None and settings.SEARCH_BACKEND != "elasticsearch":
-        from .sqlite_index import bootstrap
-
-        await bootstrap(asyncio.Event())
+    if kind == "search":
+        await run_db_txn(postgres_index.ensure_backfill)
     model = SearchEmbeddingJob if kind == "embedding" else SearchOutbox
     async with create_client() as client, httpx.AsyncClient(follow_redirects=False) as http:
         while stop_event is None or not stop_event.is_set():
@@ -443,12 +473,14 @@ async def run(kind, once=False, stop_event=None):
                         permanent = isinstance(exc, (ValueError, EmbeddingError)) and not getattr(
                             exc, "retryable", False
                         )
-                        retry_transport = settings.SEARCH_BACKEND == "auto" and code == "SEARCH_TRANSPORT_FAILED"
+                        retry_later = code == "EMBEDDING_PAYMENT_REQUIRED" or (
+                            settings.SEARCH_BACKEND == "auto" and code == "SEARCH_TRANSPORT_FAILED"
+                        )
                         finish(
                             db,
                             model,
                             job,
-                            "dead" if permanent or (job["attempts"] >= 8 and not retry_transport) else "pending",
+                            "dead" if permanent or (job["attempts"] >= 8 and not retry_later) else "pending",
                             code,
                         )
 

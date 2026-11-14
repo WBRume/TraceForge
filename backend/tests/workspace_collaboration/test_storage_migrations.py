@@ -13,7 +13,6 @@ import zstandard
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 
-from app.config import settings
 from app.domains.workspace_collaboration.content import digest
 
 
@@ -82,7 +81,10 @@ def migration_connection(request):
     if os.getenv("DB_MODEL_MYSQL_TESTS") != "1":
         pytest.skip("set DB_MODEL_MYSQL_TESTS=1 for a disposable MySQL schema")
     name = "traceforge_model_test_" + uuid4().hex[:12]
-    admin = sa.create_engine(settings.DATABASE_URL)
+    mysql_url = os.getenv("TRACEFORGE_TEST_MYSQL_URL")
+    if not mysql_url:
+        pytest.skip("set TRACEFORGE_TEST_MYSQL_URL for the historical MySQL migrations")
+    admin = sa.create_engine(mysql_url)
     with admin.begin() as connection:
         connection.exec_driver_sql(f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
     engine = sa.create_engine(admin.url.set(database=name))

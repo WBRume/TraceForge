@@ -2,7 +2,7 @@
 
 [项目首页](../../README.md) · [全部文档](../../README.md#文档导航) · [后端配置](../../backend/README.md) · [搜索部署](../search/README.md)
 
-本目录的 Compose 启动 MySQL、Redis、单进程 API 和 Nginx Web，并在 API 启动前执行数据库迁移。它不包含桌面客户端，适合内部试用部署。
+本目录的 Compose 启动 PostgreSQL 18（pg_jieba、pgvector）、Redis、单进程 API 和 Nginx Web，并在 API 启动前执行数据库迁移。它不包含桌面客户端，适合内部试用部署。
 
 ## 首次启动
 
@@ -15,8 +15,8 @@ Copy-Item .env.example .env
 
 编辑 [配置模板](.env.example) 对应的 `.env`：
 
-- 替换 `JWT_SECRET_KEY`；设置数据库密码，保持 `MYSQL_ROOT_PASSWORD` 与 `DB_PASSWORD` 一致。
-- 保持 `MYSQL_DATABASE` 与 `DB_NAME` 一致；按需配置 Redis 密码。
+- 替换 `JWT_SECRET_KEY` 和 `DB_PASSWORD`。Compose 使用 `DB_USER`、`DB_PASSWORD` 和 `DB_NAME` 初始化 PostgreSQL。
+- 按需配置 Redis 密码。
 - 本机默认 `WEB_PORT=8080`。远程部署时，把 `FRONTEND_BASE_URL` 和 `CORS_ORIGINS` 改为实际访问地址。
 - 配置准备使用的 [Agent](../../backend/README.md#配置-agent)。远端地址必须能从 API 容器访问；访问宿主机服务时使用部署环境可达的宿主机地址。
 
@@ -43,10 +43,10 @@ OpenCode 与 DSH 服务需另外准备；在系统配置或 `.env` 中填写地�
 ## 配置与数据
 
 - `.env` 保存部署环境配置；修改后用 `docker compose up -d --force-recreate api` 重新创建 API 容器，单纯 `restart` 不会更新环境变量。
-- `volumes/` 保存 MySQL、Redis、Skills、上传文件、任务与 CLI 状态、日志和已挂载的凭据。升级前备份数据库、运行数据及配置密钥。
+- `volumes/` 保存 PostgreSQL、Redis、Skills、上传文件、任务与 CLI 状态、日志和已挂载的凭据。升级前备份数据库、运行数据及配置密钥。
 - 结项证据附件默认保存在宿主机的 `volumes/storage/task-evidence-attachments`。如需指定项目之外的持久化目录，在 `.env` 设置 `TASK_EVIDENCE_ATTACHMENT_HOST_DIR`。`TASK_EVIDENCE_ATTACHMENT_ROOT` 是 API 容器内的绝对路径。切换宿主机目录时，先停止 API 并复制原目录内容，再重新创建 API 容器。
 - API 保持一个进程、一个副本；不要增加 `--workers` 或扩展 `api` 副本。
-- 默认使用轻量搜索，无需启动 Elasticsearch。语义检索、回填和可选的独立 worker 见[搜索部署](../search/README.md)。
+- PostgreSQL 默认提供全文和向量检索。向量服务凭据、Elasticsearch 和独立 worker 见[搜索部署](../search/README.md)。
 - Web 语音模式通过构建参数 `TRACEFORGE_SPEECH_MODE` 选择，运行服务的在线语音供应商另行配置，见[语音说明](../../frontend/README.md#语音输入构建时选择-api--离线--关闭)。
 
 ## 更新与排错
@@ -55,7 +55,7 @@ OpenCode 与 DSH 服务需另外准备；在系统配置或 `.env` 中填写地�
 
 ```powershell
 docker compose ps -a
-docker compose logs --tail=100 mysql redis migrate api web
+docker compose logs --tail=100 postgres redis migrate api web
 docker compose exec api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health/ready').read().decode())"
 ```
 

@@ -232,8 +232,7 @@ def test_live_http_acceptance_rejects_undecryptable_agent_config(db, monkeypatch
 
 
 @pytest.fixture
-def feature_api(db, monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "SEARCH_SQLITE_PATH", str(tmp_path / "search.sqlite3"))
+def feature_api(db, monkeypatch):
 
     async def transaction(fn):
         try:
@@ -396,9 +395,9 @@ def test_runtime_refresh_rebuilds_search_and_respects_disable(feature_api, db, m
 
     async def scenario():
         await runtime.refresh()
-        save(db, "search", {"backend": "sqlite", "es_password": "new-password"})
+        save(db, "search", {"backend": "postgresql", "es_password": "new-password"})
         await runtime.refresh()
-        assert feature_settings.SEARCH_BACKEND == "sqlite"
+        assert feature_settings.SEARCH_BACKEND == "postgresql"
         assert feature_settings.SEARCH_ES_PASSWORD == "new-password"
         replace.assert_awaited_once()
         await runtime.refresh()
@@ -516,6 +515,7 @@ def test_search_cluster_binding_keeps_old_targets_out_of_new_cluster_work(db, mo
     from app.domains.search.service import configuration
 
     monkeypatch.setattr(settings, "SEARCH_ES_URL", "http://cluster-a:9200")
+    monkeypatch.setattr(settings, "SEARCH_BACKEND", "elasticsearch")
     old = SearchIndexTarget(physical_index="old-index", status="active")
     db.add(old)
     db.commit()

@@ -57,6 +57,12 @@ class CasePlaybookLink(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     case_id = Column(String(36), ForeignKey("sdd_cases.id", ondelete="CASCADE"), nullable=False, index=True)
     spec_id = Column(String(36), ForeignKey("playbook_specs.id"), nullable=True)
-    source_run_id = Column(String(36), ForeignKey("playbook_runs.id"), nullable=True, unique=True)
+    # Historical provenance survives deletion of the execution that produced it.
+    source_run_id = Column(
+        String(36),
+        ForeignKey("playbook_runs.id", name="case_playbook_links_source_run_id_fkey"),
+        nullable=True,
+        unique=True,
+    )
     revision_json = Column(JSON, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
