@@ -50,6 +50,7 @@ class AgentAttemptContext:
     # 显式执行类别（doc 6.3/C4）：必须来自 durable job 行声明的
     # process_execution_kind，禁止通过“PID 是否为空”推断。
     execution_kind: ExecutionKind = EXECUTION_KIND_LOCAL_PROCESS
+    agent_service_binding: dict | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,7 @@ class AgentStopResult:
     failure_code: str | None = None
     error_message: str | None = None
     remaining_pids: tuple[int, ...] = ()
+    recovered_result: AgentRunResult | None = None
 
 
 @dataclass(frozen=True)

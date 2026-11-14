@@ -382,9 +382,10 @@ async def run_agent_backend_with_logging(
 
         try:
             from app.agents.domain_tools.invocation import bound_request
+            from app.domains.ai.services.jobs.agent_dispatch import guard_native_session
 
             async with bound_request(backend, request) as bound:
-                result = await backend.run(bound, _logged_event)
+                result = await backend.run(bound, guard_native_session(backend, bound, _logged_event))
             result_extra = {
                 "backend": backend.name,
                 "run_id": request.run_id,

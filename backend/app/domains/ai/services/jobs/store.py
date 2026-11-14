@@ -17,13 +17,14 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, object_session
 
 from app.agents import (
     EXECUTION_KIND_LOCAL_PROCESS,
     EXECUTION_KIND_REMOTE_SESSION,
 )
+from app.agents.service_binding import OLD_SERVICE_UNKNOWN, SERVER_AGENTS, configured_service
 from app.config import settings
 from app.core.logging import get_logger
 from app.core.offload import run_db
@@ -147,13 +148,12 @@ def resolve_execution_kind_for_backend(backend_name: str | None) -> str:
     return EXECUTION_KIND_LOCAL_PROCESS
 
 
-def resolve_execution_kind_for_claim(
+def resolve_agent_for_claim(
     db: Session,
     *,
     task_id: str | None,
     workspace_id: str | None,
-) -> str:
-    """Claim 时在同一事务内解析并写入 execution kind。"""
+) -> str | None:
     name: str | None = None
     if task_id:
         row = db.query(SddTask.agent_backend).filter(SddTask.id == task_id).first()
@@ -172,7 +172,68 @@ def resolve_execution_kind_for_claim(
             name = default_backend_name()
         except Exception:
             name = None
-    return resolve_execution_kind_for_backend(name)
+    return name
+
+
+def resolve_execution_kind_for_claim(db: Session, *, task_id: str | None, workspace_id: str | None) -> str:
+    return resolve_execution_kind_for_backend(resolve_agent_for_claim(db, task_id=task_id, workspace_id=workspace_id))
+
+
+def _job_agent_for_claim(db, job):
+    if (job.context_json or {}).get("job_kind") == JOB_KIND_TASK_BASELINE and job.resource_id:
+        bootstrap = db.get(SddTaskCliBootstrap, job.resource_id)
+        if bootstrap and bootstrap.agent_backend:
+            return bootstrap.agent_backend
+    return job.agent_backend or resolve_agent_for_claim(db, task_id=job.task_id, workspace_id=job.workspace_id)
+
+
+def dispatch_service(db, job, backend_name):
+    from app.domains.auth.models.user import Workspace
+    from app.domains.local_resource.service import is_local
+
+    task = db.get(SddTask, job.task_id) if job.task_id else None
+    if is_local(task):
+        backend_name = None
+    if job.workspace_id:
+        db.query(Workspace.id).filter(Workspace.id == job.workspace_id).with_for_update().first()
+    service = configured_service(db, backend_name, lock=True) if backend_name in SERVER_AGENTS else None
+    if not job.workspace_id:
+        return (service.persist() if service else None), False
+    active = (
+        db.query(SddAiJob.agent_service_binding, SddAiJob.failure_code, SddAiJob.agent_backend)
+        .filter(
+            SddAiJob.workspace_id == job.workspace_id,
+            SddAiJob.process_execution_kind == EXECUTION_KIND_REMOTE_SESSION,
+            SddAiJob.status.in_(
+                [AiJobStatus.RUNNING, AiJobStatus.WAITING_HITL, AiJobStatus.TERMINATING, AiJobStatus.ORPHANED]
+            ),
+            or_(
+                SddAiJob.agent_backend.in_(SERVER_AGENTS),
+                SddAiJob.agent_service_binding["backend"].as_string().in_(SERVER_AGENTS),
+            ),
+        )
+        .with_for_update(read=True)
+        .all()
+    )
+    for binding, code, name in active:
+        if code == OLD_SERVICE_UNKNOWN:
+            return None, True
+        if binding:
+            name = binding["backend"]
+        if name in SERVER_AGENTS:
+            current = service if service and name == backend_name else configured_service(db, name, lock=True)
+            if (binding or {}).get("generation", 0) != current.generation:
+                return None, True
+    if not service:
+        return None, False
+    if job.task_id and job.session_id and not (job.context_json or {}).get("job_kind"):
+        from app.domains.task.services.agent_session_switch import verified_for_dispatch
+
+        if task and not verified_for_dispatch(task, service, job.session_id):
+            # The address changed after this input was accepted. The executor
+            # verifies the pending turn against this exact dispatch snapshot.
+            return service.persist() | {"verify_session": True}, False
+    return service.persist(), False
 
 
 # ────────────────────────── 序列化 ──────────────────────────
@@ -853,6 +914,14 @@ def take_next_pending_job_id_sync(queue_key: str) -> str | None:
             context.get("job_kind") == "API_MOCK" and (context.get("inputs") or {}).get("job_type") == "IMPORT_SWAGGER"
         ):
             execution_kind = EXECUTION_KIND_LOCAL_PROCESS
+        backend_name = _job_agent_for_claim(db, claim_target)
+        if context.get("job_kind") == JOB_KIND_TASK_BASELINE and backend_name in SERVER_AGENTS:
+            execution_kind = resolve_execution_kind_for_backend(backend_name)
+        if execution_kind != EXECUTION_KIND_REMOTE_SESSION:
+            backend_name = None
+        service_binding, blocked = dispatch_service(db, claim_target, backend_name)
+        if blocked:
+            return None
         now = datetime.utcnow()
         run_token = str(uuid.uuid4())
         lease_expires_at = now + timedelta(seconds=lease_ttl_seconds())
@@ -889,6 +958,7 @@ def take_next_pending_job_id_sync(queue_key: str) -> str | None:
                     # containment id / run token (doc 7.1/7.3).
                     SddAiJob.process_containment_id: _containment_id_for_run_token(run_token),
                     SddAiJob.process_execution_kind: execution_kind,
+                    SddAiJob.agent_service_binding: service_binding,
                     SddAiJob.termination_attempts: 0,
                     SddAiJob.failure_code: None,
                     SddAiJob.terminal_reason: None,

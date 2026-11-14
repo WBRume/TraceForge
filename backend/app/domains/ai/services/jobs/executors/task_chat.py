@@ -66,6 +66,14 @@ def _sync_engine_session_sync(
         or int(task.session_revision if task.session_revision is not None else -1) == int(job.session_revision)
     ):
         task.session_id = session_id
+        if job.agent_service_binding and not (job.provider_execution_json or {}).get("phase"):
+            from app.domains.task.services.agent_session_switch import session_key
+
+            binding = job.agent_service_binding
+            task.agent_session_verification = {
+                "key": session_key(binding["backend"], binding["generation"], session_id, str(task.project_path)),
+                "status": "verified",
+            }
         return True
     return False
 
@@ -234,7 +242,7 @@ def _load_task_chat_turn_state_sync(db, job_id: str, run_token: str | None = Non
     if not task:
         raise ValueError("Task not found")
     # 任务粘性 backend：首次运行固化到 sdd_tasks，之后工作区切换不影响本任务
-    task_backend = resolve_task_backend(db, task.id)
+    task_backend = (job.agent_service_binding or {}).get("backend") or resolve_task_backend(db, task.id)
     additional_directories = []
     if (job.context_json or {}).get("job_kind") == "TASK_REPOSITORY_ADAPT":
         from app.domains.task.services.repository_updates.adaptation import prepare_job
@@ -246,33 +254,34 @@ def _load_task_chat_turn_state_sync(db, job_id: str, run_token: str | None = Non
         "creator_id": job.creator_id,
         "fresh_session": bool((job.context_json if isinstance(job.context_json, dict) else {}).get("fresh_session")),
         "task_backend": task_backend,
+        "project_path": str(task.project_path),
         "job_session_id": job.session_id,
         "session_turn_id": getattr(job, "session_turn_id", None),
         "session_revision": getattr(job, "session_revision", None),
         "recovery": dict(job.provider_execution_json or {}),
+        "agent_service_replacement": bool((job.context_json or {}).get("agent_service_replacement")),
+        "failed_session_check": (job.context_json or {}).get("_agent_session_check_failed"),
         "additional_workspace_directories": additional_directories,
     }
 
 
-async def _run_task_chat_turn(job_id: str, prompt: str) -> bool | None:
-    attempt = current_agent_attempt()
-    state_row = await run_db_txn(
-        lambda db: _load_task_chat_turn_state_sync(db, job_id, attempt.run_token if attempt else None)
-    )
-    if state_row is None:
-        return None
-    recovery = state_row.get("recovery")
-    fresh_session = state_row["fresh_session"] and not recovery
-    task_backend = state_row["task_backend"]
-    attempt = current_agent_attempt()
+async def _engine_for_turn(state_row, attempt, job_id, fresh_session):
     engine = get_engine(state_row["task_id"])
+    if engine and attempt and attempt.agent_service_binding and not engine.running:
+        from app.agents.contract import AgentBackend
+        from app.engine.session.registry import unregister_engine
+
+        if isinstance(engine.cli, AgentBackend):
+            await engine.cli.close()
+        unregister_engine(state_row["task_id"])
+        engine = None
     if not engine:
         engine = TaskAgentEngine(
             task_id=state_row["task_id"],
             ws_id=state_row["workspace_id"],
             user_id=state_row["creator_id"],
             job_id=job_id,
-            backend_name=task_backend,
+            backend_name=state_row["task_backend"],
             on_result=on_engine_result,
             on_hitl=on_engine_hitl,
             on_session=on_engine_session,
@@ -280,8 +289,6 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> bool | None:
             on_process_started=attempt_ops.persist_process_identity,
             attempt=attempt,
         )
-        if state_row["job_session_id"] and not fresh_session:
-            engine.session_id = state_row["job_session_id"]
     else:
         engine.set_job_callbacks(
             job_id=job_id,
@@ -292,15 +299,56 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> bool | None:
             on_process_started=attempt_ops.persist_process_identity,
             attempt=attempt,
         )
-        if fresh_session:
-            engine.session_id = None
-        elif state_row["job_session_id"]:
-            # 恢复上次中断（或继续）的会话：总是以 DB 持久化的 session_id
-            # 为准，保证下次启动使用 --resume 重新进入原会话，而不是新开会话。
-            engine.session_id = state_row["job_session_id"]
+    engine.session_id = None if fresh_session else state_row["job_session_id"]
     engine.session_turn_id = state_row["session_turn_id"]
     engine.session_revision = state_row["session_revision"]
     engine.additional_workspace_directories = state_row["additional_workspace_directories"]
+    engine.agent_service_replacement = state_row["agent_service_replacement"]
+    return engine
+
+
+async def _verify_recovery_target(engine, binding, session_id):
+    import asyncio
+
+    from app.agents.errors import AgentExecutionDetached
+    from app.domains.ai.services.jobs.reaper import matches_remote_session
+
+    try:
+        async with asyncio.timeout(8):
+            if not await matches_remote_session(engine.cli, binding, session_id):
+                raise ValueError("Original service identity could not be verified")
+    except Exception as exc:
+        await engine.cli.close()
+        raise AgentExecutionDetached("Original service identity could not be verified") from exc
+    engine.cli._dispatch_identity = binding["native_session"]
+
+
+async def _run_task_chat_turn(job_id: str, prompt: str) -> bool | None:
+    attempt = current_agent_attempt()
+    state_row = await run_db_txn(
+        lambda db: _load_task_chat_turn_state_sync(db, job_id, attempt.run_token if attempt else None)
+    )
+    if state_row is None:
+        return None
+    recovery = state_row["recovery"]
+    fresh_session = state_row["fresh_session"] and not recovery
+    binding = attempt.agent_service_binding if attempt else None
+    if binding and binding.get("verify_session") and not recovery:
+        from app.agents.service_binding import AgentService
+        from app.domains.task.services.agent_session_switch import (
+            session_key,
+            verify_pending_dispatch,
+        )
+
+        service = AgentService.restore(binding)
+        directory = str(state_row["project_path"] or "").strip() or "."
+        key = session_key(service.name, service.generation, state_row["job_session_id"], directory)
+        await verify_pending_dispatch(
+            service, state_row["task_id"], key, failed_check=state_row["failed_session_check"]
+        )
+    engine = await _engine_for_turn(state_row, attempt, job_id, fresh_session)
+    if recovery and attempt and attempt.agent_service_binding:
+        await _verify_recovery_target(engine, attempt.agent_service_binding, recovery["session_id"])
 
     with (
         bind_task_context(
@@ -315,7 +363,8 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> bool | None:
             event_type="run_task_chat_turn",
         ),
     ):
-        await state.update_job_state(job_id, status=AiJobStatus.RUNNING, progress=55, message="AI is processing")
+        if not recovery:
+            await state.update_job_state(job_id, status=AiJobStatus.RUNNING, progress=55, message="AI is processing")
 
         if recovery:
             engine.session_id = recovery["session_id"]
@@ -356,12 +405,13 @@ async def execute_task_chat_job(job_id: str, dispatch: dict[str, Any]) -> bool |
             if not prompt:
                 raise ValueError("Empty task chat prompt")
 
-            await state.update_job_state(
-                job_id,
-                progress=45,
-                message="Dispatching user prompt to AI engine",
-                context_patch={"source": "task_chat_user_input"},
-            )
+            if not dispatch.get("recovering"):
+                await state.update_job_state(
+                    job_id,
+                    progress=45,
+                    message="Dispatching user prompt to AI engine",
+                    context_patch={"source": "task_chat_user_input"},
+                )
 
             if dispatch.get("job_kind") == "TASK_REPOSITORY_ADAPT":
                 return await _run_task_chat_turn(job_id, prompt)
@@ -369,7 +419,10 @@ async def execute_task_chat_job(job_id: str, dispatch: dict[str, Any]) -> bool |
             from app.domains.workspace_collaboration.hooks import execution, minimal_context
 
             async with execution(job_id) as accepted_input:
-                return await _run_task_chat_turn(job_id, prompt + minimal_context(accepted_input))
+                return await _run_task_chat_turn(
+                    job_id,
+                    prompt + ("" if dispatch.get("agent_service_replacement") else minimal_context(accepted_input)),
+                )
     finally:
         # 取消事件在执行结束（含取消/异常/超时）后统一回收，避免泄漏；
         # 置位后不能立刻清除（见 mark_task_chat_jobs_cancelled）。

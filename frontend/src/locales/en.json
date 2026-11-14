@@ -693,6 +693,9 @@
     "delete_confirm": "Are you sure to delete session {name}? All history and process assets will be cleared, this action is irreversible."
   },
   "chat": {
+    "agent_session_unavailable": "The original session is unavailable. A new session on the current Agent service starts without that context. Provide it again.",
+    "agent_session_new_hint": "Your next message starts a new session on the current Agent service. The original context cannot carry over. Include the background it needs.",
+    "agent_session_new": "New session",
     "status": {
       "INITIALIZED": "Ready to start",
       "RUNNING": "Running",
@@ -1332,6 +1335,7 @@
       "source_api_mock": "API Mock",
       "source_bootstrap": "CLI Bootstrap",
       "source_skill_analysis": "Skill Analysis",
+      "source_agent": "Agent Jobs",
       "source_rag": "Case Knowledge Sync",
       "status_all": "All Status",
       "status": {
@@ -4167,6 +4171,8 @@
     "close": "Close"
   },
   "feature_config": {
+    "agent_switch_title": "Change Agent service address?",
+    "agent_switch_warning": "Changing the service address may prevent existing Agent sessions from continuing. Checking and stopping unfinished jobs still depends on the original service. Before saving, read the OpenCode / DSH Service Switch section of the backend README and follow the backup and verification instructions for your Agent.",
     "title": "Platform services",
     "eyebrow": "PLATFORM SERVICES",
     "ready": "ready",

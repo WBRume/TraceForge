@@ -589,7 +589,8 @@ def _finalize_interrupted_resume(db: Session, *, task_id, prepared, now, created
     if task is None:
         raise TaskSessionControlError("Task not found", status_code=404)
     _ensure_task_not_baselined(task)
-    task.session_id = prepared["session_id"]
+    if not prepared.get("replace_agent_session"):
+        task.session_id = prepared["session_id"]
     task.error_message = None
     task.interrupt_reason = None
     task.interrupted_by_id = None
@@ -639,6 +640,7 @@ async def resume_interrupted_task(
     confirm_continue: bool = False,
     metadata_json: dict[str, Any] | None = None,
     client_message_id: str | None = None,
+    new_agent_session: bool = False,
 ) -> dict[str, Any]:
     """恢复被打断的任务（上行/REST 共用入口）。
 
@@ -674,10 +676,21 @@ async def resume_interrupted_task(
     if engine and engine.running:
         raise TaskSessionControlError("Task is already running", status_code=409)
 
+    from app.domains.task.services.agent_session_switch import check_task_session
+
+    key, status = await check_task_session(task_id, new_session=new_agent_session)
+    failed_check = key if status is None else None
+    message_metadata = dict(metadata_json) if isinstance(metadata_json, dict) else {}
+    if new_agent_session:
+        prepared["replace_agent_session"] = True
+        prepared["agent_session_replacement_check"] = key
+
     from app.domains.workspace_collaboration.control import resume_submission, schedule_control
 
     receipt = await run_db_txn(
-        lambda db: resume_submission(db, task_id, actor_user_id, prepared, idempotency_key or None, metadata_json)
+        lambda db: resume_submission(
+            db, task_id, actor_user_id, prepared, idempotency_key or None, message_metadata, failed_check=failed_check
+        )
     )
     if receipt:
         await schedule_control(receipt)
@@ -694,7 +707,6 @@ async def resume_interrupted_task(
     )
     now = datetime.utcnow()
 
-    message_metadata = dict(metadata_json) if isinstance(metadata_json, dict) else {}
     created = await task_session_service.create_task_chat_turn(
         task_id=task_id,
         actor_user_id=actor_user_id,
@@ -709,6 +721,9 @@ async def resume_interrupted_task(
             **message_metadata,
         },
         session_id=prepared["session_id"],
+        replace_agent_session=new_agent_session,
+        agent_session_replacement_check=prepared.get("agent_session_replacement_check"),
+        failed_session_check=failed_check,
         client_message_id=idempotency_key or None,
     )
 

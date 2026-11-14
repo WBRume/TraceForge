@@ -21,7 +21,7 @@ export function useSessionState(options: {
     unconfirmedKeys: () => string[]
     current: () => any[]
     put: (receipt: any) => void
-    send: (taskId: string, clientMessageId: string, content: string, metadata?: Record<string, any>) => Promise<boolean>
+    send: (taskId: string, clientMessageId: string, content: string, metadata?: Record<string, any>, newAgentSession?: boolean) => Promise<boolean>
     clear: (taskId: string) => void
   }
   ingestJob: (job: ChatAiJob) => void
@@ -154,7 +154,11 @@ export function useSessionState(options: {
             if (row.task_id !== taskId || row.status !== 'UNKNOWN'
               || !queried.has(row.client_message_id) || present.has(row.client_message_id)) continue
             // 只有本次确实查询过且服务端缺席的键，才按原幂等键重投。
-            await options.submissions.send(taskId, row.client_message_id, row.content, row.metadata)
+            if (row.new_agent_session) {
+              await options.submissions.send(taskId, row.client_message_id, row.content, row.metadata, true)
+            } else {
+              await options.submissions.send(taskId, row.client_message_id, row.content, row.metadata)
+            }
           }
         }
         if (!stillCurrent()) return false

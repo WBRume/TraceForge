@@ -20,6 +20,7 @@ from app.agents import (
     EXECUTION_KIND_REMOTE_SESSION,
     AgentAttemptContext,
     AgentAttemptRuntimeState,
+    AgentRunResult,
     AgentStopResult,
     ProviderCallState,
     current_agent_attempt,
@@ -69,6 +70,7 @@ def load_attempt_context_sync(job_id: str) -> AgentAttemptContext | None:
             worker_id=str(job.worker_id or WORKER_ID),
             worker_boot_id=str(job.worker_boot_id),
             attempt_count=int(job.attempt_count or 0),
+            agent_service_binding=job.agent_service_binding,
             execution_kind=(
                 kind
                 if kind in (EXECUTION_KIND_LOCAL_PROCESS, EXECUTION_KIND_REMOTE_SESSION)
@@ -383,6 +385,7 @@ def converge_termination_sync(
     failure_code: str | None = None,
     intent: ConvergenceIntent = ConvergenceIntent.TERMINATION_FINALIZE,
     termination_mode: str | None = None,
+    recovered_result: AgentRunResult | None = None,
 ) -> dict[str, Any] | None:
     """TERMINATION/REAPER 收敛 DB 段（线程内执行，由 run_db 包装）。
 
@@ -402,12 +405,18 @@ def converge_termination_sync(
             job_id=job_id,
             run_token=str(run_token or ""),
             worker_boot_id=WORKER_BOOT_ID,
-            requested_status=None,
+            requested_status=(
+                (AiJobStatus.SUCCESS if recovered_result.success else AiJobStatus.FAILED) if recovered_result else None
+            ),
             reason=str(reason or ""),
             evidence=evidence,
             intent=intent,
             reap_bookkeeping=True,
             termination_mode=termination_mode,
+            result_patch={"result_preview": recovered_result.result_text[:1600]} if recovered_result else None,
+            message=("AI reply completed" if recovered_result.success else "AI execution failed")
+            if recovered_result
+            else None,
         )
         result = convergence.converge_job_attempt_sync(db, request)
         if not result.changed or not result.payload:
@@ -425,6 +434,7 @@ def finish_termination_sync(
     reason: str,
     failure_code: str,
     evidence: _FinalizerEvidence | None = None,
+    recovered_result: AgentRunResult | None = None,
 ) -> dict[str, Any] | None:
     """Compatibility wrapper: reaper/worker-shutdown terminal writes.
 
@@ -450,6 +460,7 @@ def finish_termination_sync(
         reason=str(reason or ""),
         failure_code=str(failure_code or "") or None,
         intent=ConvergenceIntent.REAPER_FINALIZE,
+        recovered_result=recovered_result,
     )
 
 

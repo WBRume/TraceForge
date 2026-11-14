@@ -108,10 +108,49 @@ export function useChatViewModel() {
   const canManageTaskStatus = computed(() => canCloseTask.value && !localResource.blocked.value)
   const canStartTask = computed(() => taskState.currentTask.value?.execution_location === 'LOCAL' ? localTaskActor.value && !localResource.blocked.value : workspaceContext.canStartTask.value)
   const historyContext = useChatMessageContext()
+  const agentSessionUnavailable = ref(false)
+  const replacingAgentSession = ref(false)
+  const agentSessionSendBlocked = computed(() => agentSessionUnavailable.value && !replacingAgentSession.value)
+  let sessionStatusRequest: AbortController | undefined
+  const cancelSessionStatusRequest = () => {
+    sessionStatusRequest?.abort()
+    sessionStatusRequest = undefined
+  }
+  const onAgentSessionUnavailable = (taskId: string) => {
+    if (taskId === taskState.getTaskId()) {
+      cancelSessionStatusRequest()
+      replacingAgentSession.value = false
+      agentSessionUnavailable.value = true
+    }
+  }
+  const clearAgentSessionNotice = () => {
+    cancelSessionStatusRequest()
+    agentSessionUnavailable.value = false
+    replacingAgentSession.value = false
+  }
+  watch([getWorkspaceId, taskState.getTaskId], ([workspaceId, taskId], _, onCleanup) => {
+    clearAgentSessionNotice()
+    const task = taskState.currentTask.value
+    const sessionId = task?.session_id
+    if (!workspaceId || !taskId || !sessionId || task.execution_location === 'LOCAL'
+      || taskState.isTerminalStatus.value) return
+    const request = new AbortController()
+    sessionStatusRequest = request
+    onCleanup(() => request.abort())
+    void api.get<{ unavailable: boolean }>(`/workspaces/${workspaceId}/tasks/${taskId}/agent-session-status`, {
+      signal: request.signal,
+    }).then(({ data }) => {
+      if (!request.signal.aborted && taskState.currentTask.value?.session_id === sessionId) {
+        agentSessionUnavailable.value = data.unavailable === true
+      }
+    }).catch(() => { /* Ordinary dispatch still verifies if the preview could not load. */ })
+  })
   const submissions = useChatSubmissions({
     workspaceId: getWorkspaceId,
     taskId: () => String(taskState.currentTask.value?.id || ''),
     userId: () => String(authStore.user?.id || ''),
+    onAgentSessionUnavailable,
+    onAgentSessionChanged: taskId => { if (taskId === taskState.getTaskId()) clearAgentSessionNotice() },
   })
   const taskSessionControls = useTaskSessionControls({ getWorkspaceId, getSubmissionMetadata: collaboration.submissionMetadata })
   const chatDecision = useChatDecision()
@@ -444,7 +483,7 @@ export function useChatViewModel() {
       unconfirmedKeys: submissions.unconfirmedKeys,
       current: () => submissions.current.value,
       put: submissions.put,
-      send: (taskId, clientId, content, metadata) => submissions.send(taskId, clientId, content, metadata),
+      send: submissions.send,
       clear: submissions.clear,
     },
     ingestJob,
@@ -616,6 +655,10 @@ export function useChatViewModel() {
 
   // ─── 发送 / 消息动作 / 任务动作 ───
   const send = useChatSend({
+    agentSessionSendBlocked: () => agentSessionSendBlocked.value,
+    replacingAgentSession: () => replacingAgentSession.value,
+    onAgentSessionUnavailable,
+    onAgentSessionAccepted: clearAgentSessionNotice,
     annotations,
     collaborationBlocked: () => collaboration.blocked.value,
     getSubmissionMetadata: collaboration.submissionMetadata,
@@ -1123,6 +1166,9 @@ export function useChatViewModel() {
     collaborationReview,
     collaborationLeave,
     sendChat: send.sendChat,
+    agentSessionUnavailable,
+    replacingAgentSession,
+    agentSessionSendBlocked,
     sendChatContent: send.sendChatContent,
     sendVerification: send.sendVerification,
 

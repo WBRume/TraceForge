@@ -11,6 +11,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -85,6 +86,7 @@ class OpenCodeAdapter(AgentBackend):
         self._running = False
         self._run_id: str | None = None
         self._session_id: str | None = None
+        self._native_created = None
         self._interrupted = False
         self._message_ids: set[str] = set()
         self._user_message_id: str | None = None
@@ -159,7 +161,33 @@ class OpenCodeAdapter(AgentBackend):
         session_id = data.get("id") if isinstance(data, dict) else None
         if not session_id:
             raise AgentError("OpenCode create session returned no session id")
+        self._native_created = (data.get("time") or {}).get("created")
         return session_id
+
+    async def native_session(self, session_id: str) -> dict | None:
+        client = await self._ensure_client()
+        response = await client.get(self._session_url(quote(session_id, safe="")))
+        if response.status_code == 404 and self._is_json_response(response):
+            error = response.json()
+            if isinstance(error, dict) and error.get("_tag") == "SessionNotFoundError":
+                return None
+        response.raise_for_status()
+        session = response.json()["data"]
+        if session.get("id") != session_id:
+            raise AgentError("OpenCode returned a different session")
+        location = session.get("location") or {}
+        return {
+            "directory": location.get("directory") or session.get("directory"),
+            "created": (session.get("time") or {}).get("created"),
+        }
+
+    async def session_running(self, session_id: str) -> bool:
+        client = await self._ensure_client()
+        active = await client.get(f"{self.server_url}/api/session/active")
+        inbox = await client.get(self._session_url(session_id, "/inbox"))
+        active.raise_for_status()
+        inbox.raise_for_status()
+        return session_id in active.json()["data"] or bool(inbox.json()["data"])
 
     async def _ensure_workspace_permissions(
         self, session_id: str, project_path: str, additional_directories=()
@@ -177,6 +205,7 @@ class OpenCodeAdapter(AgentBackend):
         directory = location.get("directory") if isinstance(location, dict) else None
         if not directory or not same_directory(directory, project_path):
             raise AgentError("OpenCode session directory does not match the task directory")
+        self._native_created = (session.get("time") or {}).get("created")
         # Append the boundary after existing rules so earlier broad approvals
         # cannot reopen other tasks. Retain unrelated per-session restrictions.
         permissions = session.get("permissions") or []
@@ -686,6 +715,7 @@ class OpenCodeAdapter(AgentBackend):
             await on_event(event)
 
         session_id = request.session_id or ""
+        self._native_created = None
         try:
             if request.session_id:
                 session_id = request.session_id
@@ -777,13 +807,17 @@ class OpenCodeAdapter(AgentBackend):
                 error_message="OpenCode client is closed; abort not sent",
             )
         try:
+            from app.domains.ai.services.jobs.agent_dispatch import verify_bound_stop
+
+            async with asyncio.timeout(8):
+                await verify_bound_stop(self, sid)
             client = await self._ensure_client() if connect else self._client
             response = await client.post(self._session_url(sid, "/interrupt"), params={"resume": "false"})
         except Exception as exc:
             return AgentStopResult(
                 execution_kind=EXECUTION_KIND_REMOTE_SESSION,
                 stop_acknowledged=False,
-                failure_code="OPENCODE_ABORT_NETWORK_ERROR",
+                failure_code=getattr(exc, "failure_code", None) or "OPENCODE_ABORT_NETWORK_ERROR",
                 error_message=str(exc) or type(exc).__name__,
             )
         if response.status_code == 200 and self._is_json_response(response):

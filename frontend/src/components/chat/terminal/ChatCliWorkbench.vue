@@ -121,6 +121,7 @@ onBeforeUnmount(() => {
       :model-value="controller.inputValue.value"
       :disabled="!vm.currentTask?.id || Boolean(vm.initializingTask)"
       :busy="controller.commandExecuting.value"
+      :submit-blocked="controller.submitBlocked.value"
       :has-context="Boolean(vm.annotations?.items.value.length)"
       :placeholder="inputPlaceholder"
       @update:model-value="(value) => { controller.inputValue.value = value }"
@@ -130,7 +131,7 @@ onBeforeUnmount(() => {
       @history-next="controller.browseHistoryNext"
     />
 
-    <p class="cli-hint">{{ vm.t('chat.cli_hint') }}</p>
+    <p class="cli-hint"><slot name="hint">{{ vm.t('chat.cli_hint') }}</slot></p>
   </section>
 </template>
 

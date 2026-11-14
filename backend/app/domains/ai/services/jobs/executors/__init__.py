@@ -94,6 +94,8 @@ def load_dispatch_context_sync(job_id: str) -> dict[str, Any] | None:
             "workspace_id": str(task.workspace_id) if task else "",
             "creator_id": job.creator_id,
             "session_id": job.session_id,
+            "recovering": bool((job.provider_execution_json or {}).get("phase")),
+            "agent_service_replacement": bool((job.context_json or {}).get("agent_service_replacement")),
             "prompt_text": job.prompt_text,
             "hitl_resume_prompt": str(job_context.get("hitl_resume_prompt") or "").strip() or None,
             "input_revision": str(job_context.get("input_revision") or ""),

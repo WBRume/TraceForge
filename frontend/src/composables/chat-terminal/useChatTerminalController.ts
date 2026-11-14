@@ -1,5 +1,5 @@
 import { taskStatusKey } from '@/utils/taskStatus'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { ContextAnnotations } from '@/composables/chat/annotations/useContextAnnotations'
 import { formatAnnotationMessage } from '@/composables/chat/annotations/contextAnnotations'
 
@@ -38,6 +38,8 @@ interface ClearHistoryResult {
 
 export interface ChatTerminalBridge {
   annotations?: ContextAnnotations
+  replacingAgentSession?: boolean
+  agentSessionSendBlocked?: boolean
   currentTask: { id?: string; name?: string; status?: string } | null
   messages: any[]
   terminalLogs: any[]
@@ -104,6 +106,7 @@ export const useChatTerminalController = (vm: ChatTerminalBridge) => {
   const historyDraft = ref('')
   const clearSinceMs = ref<number | null>(null)
   const commandExecuting = ref(false)
+  const submitBlocked = computed(() => vm.agentSessionSendBlocked && parseCommand(inputValue.value).command === 'send')
 
   const appendEcho = (kind: TerminalLocalEchoKind, content: string) => {
     localEchoes.value.push({
@@ -209,7 +212,7 @@ export const useChatTerminalController = (vm: ChatTerminalBridge) => {
   }
 
   const runSend = async (text: string) => {
-    const annotations = vm.annotations?.snapshot()
+    const annotations = vm.replacingAgentSession ? undefined : vm.annotations?.snapshot()
     if (!text.trim() && !annotations?.items.length) {
       appendEcho('warning', vm.t('chat.cli_error_send_empty'))
       return
@@ -308,6 +311,7 @@ export const useChatTerminalController = (vm: ChatTerminalBridge) => {
   }
 
   const submitInput = async () => {
+    if (submitBlocked.value) return
     const raw = inputValue.value.trim()
     if (!raw && !vm.annotations?.items.value.length) return
     if (commandExecuting.value) {
@@ -337,5 +341,6 @@ export const useChatTerminalController = (vm: ChatTerminalBridge) => {
     localEchoes,
     resetForTaskChange,
     submitInput,
+    submitBlocked,
   }
 }

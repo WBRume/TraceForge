@@ -118,7 +118,16 @@ def create_agent_backend_by_name(backend_name: str | None = None, *, task_id: st
         local = provider_for_task(task_id)
         if local is not None:
             return local
-    return create_runtime_backend(normalize_backend_name(backend_name) or default_backend_name())
+    name = normalize_backend_name(backend_name) or default_backend_name()
+    from app.agents.contract import current_agent_attempt
+
+    attempt = current_agent_attempt()
+    binding = attempt.agent_service_binding if attempt else None
+    if binding and binding["backend"] == name:
+        from app.agents.service_binding import AgentService
+
+        return AgentService.restore(binding).adapter()
+    return create_runtime_backend(name)
 
 
 def create_legacy_bridge(backend_name: str | None = None, *, task_id: str | None = None):

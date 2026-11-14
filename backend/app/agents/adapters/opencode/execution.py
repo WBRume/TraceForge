@@ -381,8 +381,9 @@ class ExecutionMonitor:
                     result = await self.reconcile()
                     if result:
                         return result, self.seen_types
-            except (httpx.HTTPError, OSError):
-                pass
+            except (httpx.HTTPError, OSError) as exc:
+                if self.request.on_execution_checkpoint:
+                    raise AgentExecutionDetached("OpenCode execution could not be observed") from exc
             if self.watchdog:
                 self.watchdog.pause_idle()
             failures += 1

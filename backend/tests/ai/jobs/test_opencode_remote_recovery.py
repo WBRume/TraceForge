@@ -59,6 +59,51 @@ def current(jobs):
         return db.get(SddAiJob, "reliability-job")
 
 
+@pytest.mark.asyncio
+async def test_old_service_stop_checks_identity_then_reads_terminal_turn(monkeypatch):
+    from app.agents.service_binding import AgentService
+
+    session_id = "ses_original"
+    service = AgentService("opencode", 1, {"server_url": "http://old.example"})
+    binding = {**service.persist(), "native_session": {"id": session_id, "directory": "G:/task", "created": 1}}
+    backend = SimpleNamespace(
+        name="opencode",
+        native_session=AsyncMock(return_value={"directory": "G:/task", "created": 2}),
+        session_running=AsyncMock(return_value=False),
+        list_messages=AsyncMock(
+            return_value=[
+                {"id": "msg_original", "type": "user"},
+                {"type": "assistant", "content": [{"type": "text", "text": "saved result"}]},
+                {"type": "idle", "outcome": "succeeded"},
+            ]
+        ),
+        cancel_persisted_session=AsyncMock(),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(AgentService, "adapter", lambda self: backend)
+    row = {
+        "agent_backend": "opencode",
+        "session_id": session_id,
+        "agent_service_binding": binding,
+        "cancel_requested": True,
+        "provider_execution": {
+            "version": 1,
+            "session_id": session_id,
+            "prompt_id": "msg_original",
+            "deadline": time.time() + 60,
+            "phase": "submitted",
+        },
+    }
+    assert not (await reaper.stop_remote_session(row)).stop_acknowledged
+    backend.session_running.assert_not_awaited()
+
+    backend.native_session.return_value["created"] = 1
+    result = await reaper.stop_remote_session(row)
+    assert result.stop_acknowledged and result.recovered_result.success
+    assert result.recovered_result.result_text == "saved result"
+    backend.cancel_persisted_session.assert_not_awaited()
+
+
 def previous_owner(jobs):
     row = current(jobs)
     return AgentAttemptContext(

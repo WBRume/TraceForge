@@ -142,6 +142,7 @@ class TaskInterruptRequest(BaseModel):
 
 
 class TaskResumeInterruptedRequest(BaseModel):
+    new_agent_session: bool = False
     agent_model: ModelSelection | None = None
     prompt: str | None = None
     confirm_continue: bool = False

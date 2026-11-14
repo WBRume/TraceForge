@@ -73,6 +73,87 @@ async def test_send_releases_terminal_receipt_and_keeps_session(task_db, recover
 
 
 @pytest.mark.asyncio
+async def test_missing_agent_session_can_be_restored_at_the_same_address(task_db, recovery_env, monkeypatch):
+    from app.agents.service_binding import AgentService
+    from app.domains.task.services import agent_session_switch
+
+    task = task_db.get(SddTask, "t")
+    task.agent_backend = "opencode"
+    task.session_id = "original-session"
+    key = agent_session_switch.session_key("opencode", 3, task.session_id, task.project_path)
+    task.agent_session_verification = {"key": key, "status": "unavailable"}
+    task_db.commit()
+    monkeypatch.setattr(agent_session_switch, "agent_address_generation", lambda *_: 3)
+    monkeypatch.setattr(agent_session_switch, "configured_service", lambda *_: AgentService("opencode", 3, {}))
+    probe = AsyncMock(side_effect=["unavailable", "verified"])
+    monkeypatch.setattr(agent_session_switch, "inspect_native_session", probe)
+
+    with pytest.raises(agent_session_switch.SessionSwitchError) as exc:
+        await service.accept(task_id="t", actor_id="u", client_message_id="first", content="continue")
+    assert exc.value.code == "AGENT_SESSION_UNAVAILABLE"
+    assert task_db.query(TaskChatSubmission).count() == 0
+
+    receipt = await service.accept(task_id="t", actor_id="u", client_message_id="second", content="continue")
+    assert receipt["status"] == "PREPARING"
+    assert await agent_session_switch.check_task_session("t") == (key, "verified")
+    assert probe.await_count == 2
+    task_db.refresh(task)
+    assert task.session_id == "original-session"
+    assert task.agent_session_verification == {"key": key, "status": "verified"}
+
+
+@pytest.mark.asyncio
+async def test_address_version_reuses_each_session_result_without_reusing_other_session_verdict(
+    task_db, recovery_env, monkeypatch
+):
+    from app.agents.service_binding import AgentService
+    from app.core.offload import run_db_txn
+    from app.domains.task.services import agent_session_switch as switch
+
+    current = task_db.get(SddTask, "t")
+    current.agent_backend = "opencode"
+    current.session_id = "session-a"
+    for task_id, sid in (("other-a", "second-session-a"), ("b", "session-b"), ("new", "new-session-a")):
+        task = SddTask(
+            id=task_id,
+            workspace_id="w",
+            creator_id="u",
+            name=task_id,
+            project_path=f"/tmp/{task_id}",
+            status=TaskStatus.ROUND_COMPLETED,
+            agent_backend="opencode",
+            session_id=sid,
+        )
+        if task_id == "new":
+            task.agent_session_verification = {
+                "key": switch.session_key("opencode", 5, sid, task.project_path),
+                "status": "verified",
+            }
+        task_db.add(task)
+    task_db.commit()
+    monkeypatch.setattr(switch, "agent_address_generation", lambda *_: 5)
+    monkeypatch.setattr(switch, "configured_service", lambda *_: AgentService("opencode", 5, {}))
+    monkeypatch.setattr(switch, "_primed_versions", {})
+    checked = []
+
+    async def inspect(_service, key):
+        checked.append(key["session_id"])
+        return "unavailable" if key["session_id"] == "session-b" else "verified"
+
+    monkeypatch.setattr(switch, "inspect_native_session", inspect)
+    key, result = await switch.preview_task_session("t", run_db_txn)
+    assert result == "verified"
+    await switch.prime_session_version(key, "t", run_db_txn)
+    assert sorted(checked) == ["second-session-a", "session-a", "session-b"]
+    assert (await switch.preview_task_session("other-a", run_db_txn))[1] == "verified"
+    assert (await switch.preview_task_session("new", run_db_txn))[1] == "verified"
+    assert (await switch.preview_task_session("b", run_db_txn))[1] == "unavailable"
+    assert checked.count("session-b") == 2
+    assert checked.count("second-session-a") == 1
+    assert "new-session-a" not in checked
+
+
+@pytest.mark.asyncio
 async def test_send_after_restart_reclaims_persisted_attempt(task_db, recovery_env, monkeypatch):
     from app.agents.supervision import TerminationResult
 

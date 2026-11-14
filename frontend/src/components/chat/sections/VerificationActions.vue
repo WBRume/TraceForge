@@ -30,7 +30,7 @@ const canShowStatusSummary = computed(() => (
 
 <template>
   <div
-    v-if="canShowActions || canShowStatusSummary"
+    v-if="canShowActions || canShowStatusSummary || $slots.notice"
     class="verification-actions"
   >
     <div v-if="canShowActions" class="actions-left">
@@ -61,11 +61,13 @@ const canShowStatusSummary = computed(() => (
       </template>
     </div>
 
-    <div v-if="canShowStatusSummary" class="actions-right">
+    <div v-if="canShowStatusSummary || $slots.notice" class="actions-right">
       <RunSummaryCard
+        v-if="canShowStatusSummary"
         :status-cards="props.vm.statusCards"
         :results-summary="props.vm.resultsSummary"
       />
+      <slot name="notice" />
     </div>
   </div>
 </template>
@@ -88,14 +90,18 @@ const canShowStatusSummary = computed(() => (
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
 }
 
 .actions-right {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-left: auto;
-  flex: 0 0 auto;
+  min-width: 0;
+  color: var(--color-text-muted);
 }
 
 .verify-label {

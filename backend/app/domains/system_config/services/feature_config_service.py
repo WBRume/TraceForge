@@ -184,6 +184,11 @@ def public(db, feature):
                 "label": field.label,
                 "kind": field.kind,
                 "value": public_value(field, values[field.key]),
+                **(
+                    {"environment_value": public_value(field, field.default())}
+                    if feature == "agent" and field.key in {"opencode_url", "dsh_url"}
+                    else {}
+                ),
                 "has_value": bool(values[field.key]),
                 "source": "database"
                 if (
@@ -227,21 +232,49 @@ def draft(db, feature, values, revision, reset=False):
     return resolved, overrides
 
 
+def _agent_address_generations(db, resolved, next_revision, reset):
+    row = db.get(FeatureConfig, "agent")
+    generations = dict(row.agent_address_generations or {}) if row else {}
+    try:
+        previous = effective("agent", decrypt(row))
+    except SystemConfigError:
+        if not reset:
+            raise
+        # A reset can recover unreadable saved credentials and addresses.
+        previous = {"opencode_url": "", "dsh_url": ""}
+    for name in ("opencode", "dsh"):
+        key = f"{name}_url"
+        if previous[key].rstrip("/") != resolved[key].rstrip("/"):
+            generations[name] = next_revision
+    return generations
+
+
+def agent_address_probe_draft(db, values, revision, reset):
+    resolved, _ = draft(db, "agent", values, revision, reset)
+    generations = _agent_address_generations(db, resolved, revision + 1, reset)
+    return [
+        {**resolved, "backend": backend} for backend, generation in generations.items() if generation == revision + 1
+    ]
+
+
 def save(db, feature, values, revision, actor, reset=False):
-    _, overrides = draft(db, feature, values, revision, reset)
+    resolved, overrides = draft(db, feature, values, revision, reset)
     if not values and not reset:
         return public(db, feature)
     encrypted = cipher().encrypt(json.dumps(overrides, ensure_ascii=False).encode()).decode()
+    changes = {"encrypted_values": encrypted, "revision": revision + 1, "updated_by": actor}
+    if feature == "agent":
+        changes["agent_address_generations"] = _agent_address_generations(db, resolved, revision + 1, reset)
     if revision:
         changed = db.execute(
             update(FeatureConfig)
             .where(FeatureConfig.feature == feature, FeatureConfig.revision == revision)
-            .values(encrypted_values=encrypted, revision=revision + 1, updated_by=actor)
+            .values(**changes)
         )
         if changed.rowcount != 1:
             raise SystemConfigError("配置已被其他管理员修改，请刷新后重试", 409)
     else:
-        db.add(FeatureConfig(feature=feature, encrypted_values=encrypted, revision=1, updated_by=actor))
+        db.add(FeatureConfig(feature=feature, **changes))
         try:
             db.flush()
         except IntegrityError:

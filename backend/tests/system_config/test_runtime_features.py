@@ -42,6 +42,45 @@ def publish(db):
     feature_settings.replace(configs.environment_snapshot(configs.snapshot(db)))
 
 
+def test_agent_address_generations_change_only_for_effective_address_updates(db, monkeypatch):
+    from app.agents.service_binding import configured_service
+
+    monkeypatch.setattr(settings, "OPENCODE_SERVER_URL", "http://127.0.0.1:4097")
+    monkeypatch.setattr(settings, "DSH_SERVER_URL", "http://127.0.0.1:3080")
+    save(db, "agent", {"opencode_password": "new-secret"})
+    assert configured_service(db, "opencode").generation == 0
+    assert configured_service(db, "dsh").generation == 0
+
+    save(db, "agent", {"opencode_url": "http://127.0.0.1:4098"}, 1)
+    bound = configured_service(db, "opencode").persist()
+    save(db, "agent", {"dsh_url": "http://127.0.0.1:3081"}, 2)
+    save(db, "agent", {"opencode_url": "http://127.0.0.1:4098/"}, 3)
+    assert configured_service(db, "opencode").generation == 2
+    assert configured_service(db, "dsh").generation == 3
+
+    save(db, "agent", {}, 4, reset=True)
+    service = configured_service(db, "opencode")
+    assert service.generation == configured_service(db, "dsh").generation == 5
+    assert service.restore(bound).kwargs["server_url"] == "http://127.0.0.1:4098"
+    assert "new-secret" not in json.dumps(bound)
+
+
+def test_agent_address_save_requires_successful_probe(feature_api, db, monkeypatch):
+    from app.agents.service_binding import configured_service
+
+    client, _, _, _ = feature_api
+    path = "/api/system-configs/features/agent"
+    probe = AsyncMock(side_effect=[{"status": "DEGRADED"}, {"status": "READY"}])
+    monkeypatch.setattr(probes, "probe", probe)
+    current = client.get(path).json()
+    data = {"revision": current["revision"], "values": {"opencode_url": "http://127.0.0.1:48371"}}
+    assert client.put(path, json=data).status_code == 422
+    assert client.get(path).json()["revision"] == current["revision"]
+    assert client.put(path, json=data).status_code == 200
+    assert configured_service(db, "opencode").generation == current["revision"] + 1
+    assert all(call.args[1]["backend"] == "opencode" for call in probe.await_args_list)
+
+
 def test_environment_fallback_and_encrypted_db_precedence(db, monkeypatch):
     monkeypatch.setattr(settings, "SPEECH_API_ENABLED", True)
     monkeypatch.setattr(settings, "SPEECH_API_KEY", SecretStr("env-private-key"))

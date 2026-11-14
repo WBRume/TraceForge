@@ -2,7 +2,7 @@ import type { JobCompletion } from '../../shared/contracts/generated/jobCompleti
 import type { QueueJobActionResponse } from '../../shared/contracts/generated/queueJobActionResponse'
 export type { QueueJobActionResponse }
 
-export type QueueSource = 'provision' | 'api_mock' | 'bootstrap' | 'skill_analysis'
+export type QueueSource = 'provision' | 'api_mock' | 'bootstrap' | 'skill_analysis' | 'agent'
 export type QueueStatus = 'PENDING' | 'RUNNING' | 'WAITING_HITL' | 'INTERRUPTED' | 'TERMINATING' | 'ORPHANED' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'REVERTED'
 export type QueueView = 'mine' | 'workspace_all'
 

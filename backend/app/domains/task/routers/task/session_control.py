@@ -38,6 +38,11 @@ from app.domains.task.services import (
     task_session_service,
     task_session_undo_finalization,
 )
+from app.domains.task.services.agent_session_switch import (
+    SessionSwitchError,
+    preview_task_session,
+    prime_session_version,
+)
 from app.domains.task.services.task_records import queries as task_task_records_queries
 from app.domains.workspace_collaboration.service import CollaborationError
 
@@ -155,8 +160,11 @@ async def resume_interrupted_task(
                 prompt=body.prompt,
                 confirm_continue=body.confirm_continue,
                 client_message_id=body.client_message_id,
+                new_agent_session=body.new_agent_session,
                 metadata_json={"agent_model": body.agent_model.model_dump()} if body.agent_model else None,
             )
+    except SessionSwitchError as exc:
+        raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
     except (chat_submission_service.SubmissionError, CollaborationError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except task_session_service.TaskSessionUndoError as exc:
@@ -241,7 +249,10 @@ async def submit_chat(
             client_message_id=payload.get("client_message_id"),
             content=payload.get("content"),
             metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+            new_agent_session=payload.get("new_agent_session") is True,
         )
+    except SessionSwitchError as exc:
+        raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
     except chat_submission_service.SubmissionError as exc:
         raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
 
@@ -266,6 +277,29 @@ def get_task_session_state(
     if state is None:
         raise HTTPException(404, "Task not found")
     return state
+
+
+@router.get("/{task_id}/agent-session-status")
+async def get_agent_session_status(
+    ws_id: str,
+    task_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    run_txn = partial(run_db_txn_with_bind, get_db_bind(db))
+    actor_id = str(current_user.id)
+
+    def authorize(session):
+        verify_workspace_access(ws_id, actor_id, session)
+        get_task_or_404(session, task_id, ws_id)
+
+    db.close()
+    await run_txn(authorize)
+    key, status = await preview_task_session(task_id, run_txn)
+    if key and status:
+        background_tasks.add_task(prime_session_version, key, task_id, run_txn)
+    return {"unavailable": status == "unavailable"}
 
 
 @router.get("/{task_id}/status-events")

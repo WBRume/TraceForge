@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -29,7 +30,32 @@ QUEUE_SOURCE_PROVISION = "provision"
 QUEUE_SOURCE_API_MOCK = "api_mock"
 QUEUE_SOURCE_BOOTSTRAP = "bootstrap"
 QUEUE_SOURCE_SKILL_ANALYSIS = "skill_analysis"
-QUEUE_SOURCES = {QUEUE_SOURCE_PROVISION, QUEUE_SOURCE_API_MOCK, QUEUE_SOURCE_BOOTSTRAP, QUEUE_SOURCE_SKILL_ANALYSIS}
+QUEUE_SOURCE_AGENT = "agent"
+QUEUE_SOURCES = {
+    QUEUE_SOURCE_PROVISION,
+    QUEUE_SOURCE_API_MOCK,
+    QUEUE_SOURCE_BOOTSTRAP,
+    QUEUE_SOURCE_SKILL_ANALYSIS,
+    QUEUE_SOURCE_AGENT,
+}
+
+
+def _server_agent_jobs():
+    from app.agents.service_binding import SERVER_AGENTS
+
+    return and_(
+        SddAiJob.queue_source.is_(None),
+        SddAiJob.process_execution_kind == "REMOTE_SESSION",
+        or_(
+            SddAiJob.agent_backend.in_(SERVER_AGENTS),
+            SddAiJob.agent_service_binding["backend"].as_string().in_(SERVER_AGENTS),
+        ),
+    )
+
+
+def _source_filter(source):
+    return _server_agent_jobs() if source == QUEUE_SOURCE_AGENT else SddAiJob.queue_source == source
+
 
 API_MOCK_JOB_SYNC = "SYNC_TASK_SOURCE"
 API_MOCK_JOB_IMPORT = "IMPORT_SWAGGER"
@@ -149,6 +175,7 @@ def _adopt_orphaned_job_for_manual_action(
     if job.status != AiJobStatus.ORPHANED:
         raise ValueError(f"Queue job is no longer ORPHANED (current status: {_enum_text(job.status)})")
 
+    from app.domains.ai.services.jobs.reaper import remote_locator
     from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID
 
     previous_run_token = str(job.run_token or "") or None
@@ -186,9 +213,7 @@ def _adopt_orphaned_job_for_manual_action(
         "process_pid": job.process_pid,
         "process_started_at": job.process_started_at,
         "process_group_id": job.process_group_id,
-        "execution_kind": job.process_execution_kind,
-        "agent_backend": job.agent_backend,
-        "session_id": job.session_id,
+        **remote_locator(db, job),
         "queue_key": str(job.queue_key or ""),
         "reason": normalized_reason,
         "action": action,
@@ -317,7 +342,7 @@ def _build_target_path(
         return None
     if source == QUEUE_SOURCE_API_MOCK and ws_id:
         return f"/workspaces/{ws_id}/api-mock"
-    if source == QUEUE_SOURCE_BOOTSTRAP and ws_id and tk_id:
+    if source in {QUEUE_SOURCE_BOOTSTRAP, QUEUE_SOURCE_AGENT} and ws_id and tk_id:
         return f"/workspaces/{ws_id}/chat/{tk_id}"
     if source == QUEUE_SOURCE_SKILL_ANALYSIS and ws_id and sk_id:
         return f"/skills/{sk_id}/edit?wsId={ws_id}"
@@ -338,8 +363,12 @@ def _visible_query(db: Session, user_id: str):
     ]
     # A historical creator does not retain access after workspace membership is revoked.
     return db.query(SddAiJob).filter(
-        SddAiJob.queue_source.in_(QUEUE_SOURCES),
-        or_(SddAiJob.queue_source != QUEUE_SOURCE_API_MOCK, SddAiJob.workspace_id.in_(mock_workspaces)),
+        or_(SddAiJob.queue_source.in_(QUEUE_SOURCES), _server_agent_jobs()),
+        or_(
+            SddAiJob.queue_source.is_(None),
+            SddAiJob.queue_source != QUEUE_SOURCE_API_MOCK,
+            SddAiJob.workspace_id.in_(mock_workspaces),
+        ),
         or_(
             and_(SddAiJob.workspace_id.is_(None), SddAiJob.creator_id == user_id),
             and_(SddAiJob.visibility == "workspace", member),
@@ -349,8 +378,8 @@ def _visible_query(db: Session, user_id: str):
 
 
 def _present_job(db: Session, job: SddAiJob, user_id: str) -> QueueJobItem:  # noqa: PLR0912
-    source = job.queue_source
-    job_type = job.job_type or "UNKNOWN"
+    source = job.queue_source or QUEUE_SOURCE_AGENT
+    job_type = job.job_type or _enum_text(job.channel)
     status = _enum_text(job.status)
     target = None
     exists = False
@@ -378,7 +407,7 @@ def _present_job(db: Session, job: SddAiJob, user_id: str) -> QueueJobItem:  # n
         analysis = db.get(SddSkillAnalysis, job.id)
         skill_id = analysis.skill_id if analysis else None
         exists = bool(skill_id and db.get(SddSkill, skill_id))
-    elif source == QUEUE_SOURCE_BOOTSTRAP:
+    elif source in {QUEUE_SOURCE_BOOTSTRAP, QUEUE_SOURCE_AGENT}:
         exists = bool(task_id and db.get(SddTask, task_id))
     # Results and names are only exposed after the common authorization query.
     if exists:
@@ -436,13 +465,24 @@ def _present_job(db: Session, job: SddAiJob, user_id: str) -> QueueJobItem:  # n
         can_retry = (
             terminal_retry and exists and _can_manage_skill_jobs(db, workspace_id=job.workspace_id, user_id=user_id)
         )
-    elif source == QUEUE_SOURCE_BOOTSTRAP:
+    elif source in {QUEUE_SOURCE_BOOTSTRAP, QUEUE_SOURCE_AGENT}:
         can_retry = (
-            terminal_retry
+            source == QUEUE_SOURCE_BOOTSTRAP
+            and terminal_retry
             and exists
             and db.query(SddTaskCliBootstrap.id).filter_by(task_id=job.task_id, workspace_id=job.workspace_id).first()
             is not None
             and _can_manage_task_jobs(db, workspace_id=job.workspace_id, user_id=user_id)
+        )
+        can_stop = (
+            source == QUEUE_SOURCE_AGENT
+            and (
+                _is_mine(job.creator_id, user_id)
+                or _can_manage_task_jobs(db, workspace_id=job.workspace_id, user_id=user_id)
+            )
+            and status in {"RUNNING", "WAITING_HITL", "ORPHANED"}
+            and not job.cancel_requested_at
+            and not job.completion_json
         )
     return QueueJobItem(
         source=source,
@@ -469,7 +509,11 @@ def _present_job(db: Session, job: SddAiJob, user_id: str) -> QueueJobItem:  # n
             can_retry=bool(can_retry and durable),
             can_stop=bool(can_stop and durable),
             can_open=bool(
-                target and (status == "SUCCESS" or source in {QUEUE_SOURCE_API_MOCK, QUEUE_SOURCE_SKILL_ANALYSIS})
+                target
+                and (
+                    status == "SUCCESS"
+                    or source in {QUEUE_SOURCE_API_MOCK, QUEUE_SOURCE_SKILL_ANALYSIS, QUEUE_SOURCE_AGENT}
+                )
             ),
         ),
     )
@@ -496,7 +540,7 @@ def list_queue_jobs(
     if workspace_id:
         query = query.filter(SddAiJob.workspace_id == workspace_id)
     if source:
-        query = query.filter(SddAiJob.queue_source == source)
+        query = query.filter(_source_filter(source))
     if status:
         query = query.filter(SddAiJob.status == status.upper())
     if job_type:
@@ -527,7 +571,7 @@ def list_queue_jobs(
 def get_queue_job(db: Session, *, source: str, job_id: str, user_id: str) -> QueueJobItem:
     if source not in QUEUE_SOURCES:
         raise ValueError("Unsupported queue source")
-    job = _visible_query(db, user_id).filter(SddAiJob.id == job_id, SddAiJob.queue_source == source).first()
+    job = _visible_query(db, user_id).filter(SddAiJob.id == job_id, _source_filter(source)).first()
     if job is None:
         raise LookupError("Queue job not found")
     return _present_job(db, job, user_id)
@@ -557,6 +601,10 @@ def stop_queue_job(
         raise ValueError("Stopping this job is not available")
     if source == QUEUE_SOURCE_PROVISION:
         provision_job_service.request_cancel(db, db.get(SddProvisionJob, job_id))
+    elif source == QUEUE_SOURCE_AGENT:
+        from app.domains.ai.services.jobs.attempts import cancel_job
+
+        cancel_job(db, workspace_id=execution.workspace_id, job_id=job_id)
     else:
         job = db.get(SddApiMockJob, job_id)
         api_mock_service.request_job_cancel(db, job.project_id, job_id)

@@ -449,6 +449,7 @@ def _seed_preview_job(db, *, token="run-1", cancel_requested=False):
         workspace_id="ws-1",
         channel=AiJobChannel.ASSET_THREAD,
         queue_key="REQUIREMENT_PREVIEW:ws-1",
+        context_json={"job_kind": "REQUIREMENT_IMPORT_PREVIEW"},
         status=AiJobStatus.RUNNING,
         creator_id="user-1",
         run_token=token,

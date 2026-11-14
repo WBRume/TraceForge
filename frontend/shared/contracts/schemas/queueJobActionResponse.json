@@ -37,7 +37,8 @@
         "provision",
         "api_mock",
         "bootstrap",
-        "skill_analysis"
+        "skill_analysis",
+        "agent"
       ],
       "title": "Source",
       "type": "string"

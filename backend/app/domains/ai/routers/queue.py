@@ -200,6 +200,7 @@ async def _recover_orphaned_job(
             else ("MANUAL_CLEANUP_UNVERIFIED" if confirm_cleanup else "MANUAL_TERMINATION_UNCONFIRMED")
         ),
         evidence=stop_evidence,
+        recovered_result=result.recovered_result if remote and result else None,
     )
     if payload:
         # final 判定由 payload 状态决定。

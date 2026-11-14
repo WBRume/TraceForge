@@ -77,6 +77,7 @@ class SddTask(Base):
     current_phase = Column(String(50), nullable=True)
     error_message = Column(Text, nullable=True)
     session_id = Column(String(120), nullable=True)
+    agent_session_verification = Column(JSON, nullable=True)
     # generation 隔离初始化前历史；revision 用来拒绝迟到 provider 事件。
     session_generation = Column(Integer, nullable=False, default=0, server_default="0", index=True)
     session_revision = Column(Integer, nullable=False, default=0, server_default="0", index=True)

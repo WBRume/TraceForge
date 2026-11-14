@@ -9,14 +9,23 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, func, or_
 
 from app.agents import (
     EXECUTION_KIND_REMOTE_SESSION,
+    AgentRunResult,
     AgentStopResult,
+)
+from app.agents.service_binding import (
+    OLD_SERVICE_MESSAGE,
+    OLD_SERVICE_UNKNOWN,
+    SERVER_AGENTS,
+    AgentService,
+    agent_address_generation,
+    matches_native_session,
 )
 from app.agents.supervision import process_supervisor
 from app.core.logging import get_logger
@@ -35,6 +44,22 @@ from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID
 from app.domains.ai.services.jobs.store import row_has_leaked_interrupted_ownership
 
 logger = get_logger(__name__, category="ai_session")
+
+
+def remote_locator(db, job):
+    binding = job.agent_service_binding
+    backend = (binding or {}).get("backend") or job.agent_backend
+    generation = agent_address_generation(db, backend) if backend in SERVER_AGENTS else 0
+    return {
+        "execution_kind": job.process_execution_kind,
+        "agent_backend": backend,
+        "session_id": job.session_id,
+        "agent_service_binding": binding,
+        "provider_execution": job.provider_execution_json,
+        "cancel_requested": bool(job.cancel_requested_at),
+        "legacy_unbound_after_switch": remote_recovery.legacy_binding_unknown(db, job),
+        "old_service": bool(binding and binding["generation"] != generation),
+    }
 
 
 def _dirty_interrupted_ownership_predicate():
@@ -116,9 +141,7 @@ def list_reclaimable_jobs_sync(task_id: str | None = None) -> list[dict[str, Any
                     # durable remote stop locator：reaper 在
                     # worker 重启后必须能凭持久化行定位并停止远程 provider
                     # session，而不是只做本地进程检查。
-                    "execution_kind": str(job.process_execution_kind or "").strip() or None,
-                    "agent_backend": str(job.agent_backend or "").strip() or None,
-                    "session_id": str(job.session_id or "").strip() or None,
+                    **remote_locator(db, job),
                     "recoverable_remote": remote_recovery.recoverable(job) and remote_recovery.current_task(db, job),
                 }
             )
@@ -171,6 +194,7 @@ def adopt_reclaimable_job_sync(
                 SddAiJob.terminal_reason: reason,
                 SddAiJob.failure_code: reason,
                 SddAiJob.last_reap_attempt_at: datetime.utcnow(),
+                SddAiJob.lease_expires_at: datetime.utcnow() + timedelta(seconds=60),
             },
             synchronize_session=False,
         )
@@ -214,6 +238,10 @@ async def stop_remote_session(row: dict[str, Any]) -> AgentStopResult:
     str(row.get("reason") or "REAP")
     backend_name = str(row.get("agent_backend") or "").strip()
     session_id = str(row.get("session_id") or "").strip()
+    binding = row.get("agent_service_binding")
+    if binding and not binding.get("native_session") and not row.get("provider_execution"):
+        # The fenced adapter has not submitted a native prompt.
+        return AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)
     if not backend_name or not session_id:
         return AgentStopResult(
             execution_kind=EXECUTION_KIND_REMOTE_SESSION,
@@ -226,8 +254,14 @@ async def stop_remote_session(row: dict[str, Any]) -> AgentStopResult:
         )
     from app.agents.selection import create_agent_backend_by_name
 
+    if row.get("legacy_unbound_after_switch"):
+        return unknown_remote_service()
     try:
-        backend = create_agent_backend_by_name(backend_name, task_id=row.get("task_id"))
+        backend = (
+            AgentService.restore(binding).adapter()
+            if binding
+            else create_agent_backend_by_name(backend_name, task_id=row.get("task_id"))
+        )
     except Exception as exc:
         return AgentStopResult(
             execution_kind=EXECUTION_KIND_REMOTE_SESSION,
@@ -236,6 +270,8 @@ async def stop_remote_session(row: dict[str, Any]) -> AgentStopResult:
             error_message=str(exc) or type(exc).__name__,
         )
     try:
+        if binding:
+            return await stop_bound_session(backend, binding, row)
         result = await backend.cancel_persisted_session(session_id)
         if not isinstance(result, AgentStopResult):
             return AgentStopResult(
@@ -248,11 +284,15 @@ async def stop_remote_session(row: dict[str, Any]) -> AgentStopResult:
     except Exception as exc:
         if isinstance(exc, asyncio.CancelledError):
             raise
-        return AgentStopResult(
-            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
-            stop_acknowledged=False,
-            failure_code="REMOTE_CANCEL_FAILED",
-            error_message=str(exc) or type(exc).__name__,
+        return (
+            unknown_remote_service()
+            if binding
+            else AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code="REMOTE_CANCEL_FAILED",
+                error_message=str(exc) or type(exc).__name__,
+            )
         )
     finally:
         try:
@@ -265,6 +305,83 @@ async def stop_remote_session(row: dict[str, Any]) -> AgentStopResult:
                 backend_name,
                 close_exc,
             )
+
+
+def unknown_remote_service() -> AgentStopResult:
+    return AgentStopResult(
+        EXECUTION_KIND_REMOTE_SESSION, False, failure_code=OLD_SERVICE_UNKNOWN, error_message=OLD_SERVICE_MESSAGE
+    )
+
+
+async def matches_remote_session(backend, binding, session_id):
+    return await matches_native_session(backend, binding.get("native_session") or {}, session_id)
+
+
+async def completed_remote_session(backend, row):
+    # A stopped/idle session alone does not prove what happened to the submitted input.
+    checkpoint = row.get("provider_execution") or {}
+    if backend.name == "opencode" and remote_recovery.valid_checkpoint(checkpoint):
+        from app.agents.adapters.opencode.execution import aborted_tool_turn, turn_messages
+
+        messages = await backend.list_messages(row["session_id"])
+        turn = turn_messages(messages, checkpoint["prompt_id"])
+        idle = next((item for item in turn if item.get("type") == "idle"), {})
+        outcome = idle.get("outcome")
+        if outcome in {"succeeded", "failed", "interrupted"} or aborted_tool_turn(turn):
+            text = "\n".join(
+                part["text"]
+                for message in turn
+                if message.get("type") == "assistant"
+                for part in message.get("content", [])
+                if part.get("type") == "text" and isinstance(part.get("text"), str)
+            )
+            return recovered_remote_result(row["session_id"], outcome == "succeeded", text)
+    if backend.name == "dsh" and checkpoint.get("request_id"):
+        result = await backend.execution_result(row["session_id"], checkpoint["request_id"])
+        if result:
+            kind, text = result
+            return recovered_remote_result(row["session_id"], kind in {"completed", "max-tokens"}, text)
+    return None
+
+
+def recovered_remote_result(session_id, success, text):
+    return AgentStopResult(
+        EXECUTION_KIND_REMOTE_SESSION,
+        True,
+        recovered_result=AgentRunResult(session_id=session_id, success=success, result_text=text),
+    )
+
+
+async def stop_bound_session(backend, binding, row):
+    session_id = row["session_id"]
+    async with asyncio.timeout(8):
+        if not await matches_remote_session(backend, binding, session_id):
+            return unknown_remote_service()
+        completed = await completed_remote_session(backend, row)
+        if completed:
+            return completed
+        checkpoint = row.get("provider_execution") or {}
+        if checkpoint.get("phase") == "prepared":
+            return AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)
+        if not await backend.session_running(session_id):
+            # An idle auxiliary session without a durable input ID can be
+            # released. A tracked input needs its own terminal evidence.
+            return unknown_remote_service() if checkpoint else AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)
+        if row.get("old_service") and not row.get("cancel_requested") and row.get("action") is None:
+            return AgentStopResult(
+                EXECUTION_KIND_REMOTE_SESSION,
+                False,
+                failure_code="REMOTE_EXECUTION_ACTIVE",
+                error_message="正在等待原 Agent 服务上的作业结束",
+            )
+    result = await backend.cancel_persisted_session(session_id)
+    if not isinstance(result, AgentStopResult) or not result.stop_acknowledged:
+        return unknown_remote_service()
+    if backend.name == "dsh":
+        async with asyncio.timeout(15):
+            while await backend.session_running(session_id):
+                await asyncio.sleep(0.5)
+    return result
 
 
 async def stop_attempt_processes(row: dict[str, Any], token: str) -> Any:
@@ -288,10 +405,7 @@ async def stop_attempt_processes(row: dict[str, Any], token: str) -> Any:
         local = await process_supervisor.stop_attempt(token, str(row.get("reason") or "REAP"))
         if local is not None and not local.confirmed_dead:
             return local
-        return AgentStopResult(
-            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
-            stop_acknowledged=True,
-        )
+        return remote_result
     result = await process_supervisor.stop_attempt(token, str(row.get("reason") or "REAP"))
     if result is None and row.get("process_pid"):
         # root PID 已消失不代表进程组已消失：stop_persisted 会对 PGID 继续
@@ -352,6 +466,7 @@ async def reap_stale_jobs(*, task_id: str | None = None) -> int:
                 confirmed_dead=bool(result.stop_acknowledged),
                 reason=_reap_stop_reason(row, result),
                 failure_code=_reap_failure_code(row, result),
+                recovered_result=result.recovered_result,
                 evidence=evidence_from_stop_result(
                     result,
                     remote_session_started=True,
@@ -410,6 +525,9 @@ def mark_worker_jobs_terminating_sync(reason: str) -> list[dict[str, Any]]:
         for job_id in sorted(candidate_ids):
             candidate = db.get(SddAiJob, job_id)
             if remote_recovery.recoverable(candidate) and remote_recovery.current_task(db, candidate):
+                continue
+            if candidate.agent_service_binding:
+                # Another worker will reconcile the original service after this lease.
                 continue
             termination = request_attempt_termination_in_txn(
                 db,

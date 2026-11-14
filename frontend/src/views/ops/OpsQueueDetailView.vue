@@ -43,7 +43,7 @@ let disposed = false
 const source = computed(() => String(route.params.source || '').trim() as QueueSource)
 const jobId = computed(() => String(route.params.jobId || '').trim())
 
-const isSupportedSource = computed(() => ['provision', 'api_mock', 'bootstrap', 'skill_analysis'].includes(source.value))
+const isSupportedSource = computed(() => ['provision', 'api_mock', 'bootstrap', 'skill_analysis', 'agent'].includes(source.value))
 
 const workspaceNameMap = computed<Record<string, string>>(() => {
   const pairs = workspaceStore.workspaces.map((ws) => [String(ws.id || ''), String(ws.name || ws.id || '')] as const)

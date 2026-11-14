@@ -15,6 +15,7 @@ export interface ChatSubmission {
   error_message?: string | null
   created_at?: string
   metadata?: Record<string, any>
+  new_agent_session?: boolean
 }
 
 const rank: Record<string, number> = { SENDING: 0, UNKNOWN: 0, PREPARING: 1, EXECUTING: 2, FAILED: 3, SUCCEEDED: 4 }
@@ -24,6 +25,8 @@ export function useChatSubmissions(options: {
   workspaceId: () => string
   taskId: () => string
   userId: () => string
+  onAgentSessionUnavailable?: (taskId: string) => void
+  onAgentSessionChanged?: (taskId: string) => void
 }) {
   const receipts = ref<Record<string, ChatSubmission>>({})
   const storageKey = `traceforge.chat-submissions:${options.userId()}`
@@ -71,14 +74,15 @@ export function useChatSubmissions(options: {
     if (['SENDING', 'UNKNOWN', 'PREPARING', 'EXECUTING'].includes(row.status)) provisional.add(identity)
     persistUnconfirmed()
   }
-  const send = async (taskId: string, clientId: string, content: string, metadata?: Record<string, any>) => {
+  const send = async (taskId: string, clientId: string, content: string, metadata?: Record<string, any>, newAgentSession?: boolean) => {
     const workspace = options.workspaceId()
     noteTaskRunInitiated(taskId, clientId)
-    put({ task_id: taskId, client_message_id: clientId, content, metadata, status: 'SENDING',
+    put({ task_id: taskId, client_message_id: clientId, content, metadata, new_agent_session: newAgentSession, status: 'SENDING',
       creator_id: options.userId(), created_at: new Date().toISOString() })
     try {
       const { data } = await api.post(`/workspaces/${workspace}/tasks/${taskId}/chat-submissions`, {
         client_message_id: clientId, content, metadata,
+        ...(newAgentSession ? { new_agent_session: true } : {}),
       })
       if (options.workspaceId() === workspace) put(data)
       if (data.ai_job_id) noteTaskRunInitiated(taskId, clientId, data.ai_job_id)
@@ -88,6 +92,16 @@ export function useChatSubmissions(options: {
       const row = receipts.value[key(taskId, clientId)]
       if (row?.id) return true // A server receipt received over WS takes precedence.
       const status = error.response?.status
+      const code = error.response?.data?.detail?.code
+      if (code === 'AGENT_SESSION_CHANGED') options.onAgentSessionChanged?.(taskId)
+      if (code === 'AGENT_SESSION_UNAVAILABLE') {
+        forgetTaskRunIntent(taskId, clientId)
+        delete receipts.value[key(taskId, clientId)]
+        provisional.delete(key(taskId, clientId))
+        persistUnconfirmed()
+        options.onAgentSessionUnavailable?.(taskId)
+        return false
+      }
       const definitive = status >= 400 && status < 500 && ![408, 429].includes(status)
       if (definitive) forgetTaskRunIntent(taskId, clientId)
       put({ ...row!, status: definitive ? 'FAILED' : 'UNKNOWN',

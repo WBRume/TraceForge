@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseSelect from '@/components/BaseSelect.vue'
+import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
 import { CircleHelp } from '@/components/icons'
 import { useFeatureConfig } from '@/composables/useFeatureConfig'
@@ -56,15 +57,34 @@ const formId = computed(() => `feature-config-form-${props.config.feature}`)
 const isDiagnosisEnforcement = (field: FeatureField) => props.config.feature === 'diagnosis' && field.key === 'enforcement'
 const secretInput = (key: string, event: Event) => updateSecret(key, (event.target as HTMLInputElement).value)
 const optionLabel = (value: string) => t('feature_config.options.' + value, value)
+const pendingSave = shallowRef<{ config: FeatureConfig; reset: boolean } | null>(null)
+const normalizeAddress = (value: unknown) => String(value ?? '').trim().replace(/\/+$/, '')
+watch(() => props.config, () => { pendingSave.value = null })
 
 const runTest = async () => {
   try { await test() } catch (err) { error.value = formatApiError(err, t('feature_config.failed'), t) }
 }
 const runSave = async (reset = false) => {
+  if (pendingSave.value || busy.value) return
+  const addressChanged = props.config.feature === 'agent' && props.config.fields.some(field =>
+    ['opencode_url', 'dsh_url'].includes(field.key)
+    && normalizeAddress(reset ? field.environment_value ?? field.value : values[field.key]) !== normalizeAddress(field.value))
+  if (addressChanged) {
+    pendingSave.value = { config: props.config, reset }
+    return
+  }
+  await saveConfig(reset)
+}
+const saveConfig = async (reset: boolean) => {
   try {
     const response = await save(reset)
     if (response) emit('saved', response.config, response.applied)
   } catch (err) { error.value = formatApiError(err, t('feature_config.failed'), t) }
+}
+const confirmSave = async () => {
+  const pending = pendingSave.value
+  pendingSave.value = null
+  if (pending?.config === props.config) await saveConfig(pending.reset)
 }
 </script>
 
@@ -169,6 +189,16 @@ const runSave = async (reset = false) => {
         {{ t(busy === 'reset' ? 'feature_config.saving' : 'feature_config.reset') }}
       </button>
     </details>
+    <ConfirmActionModal
+      :show="!!pendingSave"
+      :title="t('feature_config.agent_switch_title')"
+      :message="t('feature_config.agent_switch_warning')"
+      :cancel-text="t('common.cancel')"
+      :confirm-text="t(pendingSave?.reset ? 'feature_config.reset' : 'feature_config.save')"
+      tone="warning"
+      @cancel="pendingSave = null"
+      @confirm="confirmSave"
+    />
   </div>
 </template>
 

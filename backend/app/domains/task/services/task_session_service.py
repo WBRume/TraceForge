@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,6 +39,12 @@ from app.domains.task.services import task_confirmation_service, task_session_sn
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.reading_capture_service import load_message_reading_info
 from app.domains.task.services.status_policy import is_terminal
+from app.domains.task.services.task_session_helpers import (
+    _enum_text,
+    _next_turn_index,
+    _repo_rel_paths,
+    _secret_fingerprint,
+)
 from app.domains.websocket.ws.manager import manager
 from app.domains.workspace_asset.models.workspace_asset import SddAiOutput, SddDecision, SddEvidence
 from app.engine.session import get_engine
@@ -52,35 +57,6 @@ class TaskSessionUndoError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
-
-
-def _enum_text(value: Any) -> str:
-    return value.value if hasattr(value, "value") else str(value or "")
-
-
-def _secret_fingerprint(value: str) -> str:
-    return hashlib.sha256(str(value or "").encode("utf-8", errors="replace")).hexdigest()[:12]
-
-
-def _repo_rel_paths(task: SddTask) -> list[str]:
-    paths: list[str] = []
-    for repo in list(getattr(task, "repo_bindings", None) or []):
-        value = str(getattr(repo, "rel_path", "") or "").strip()
-        if value and value not in paths:
-            paths.append(value)
-    return paths
-
-
-def _next_turn_index(db: Session, task_id: str, generation: int) -> int:
-    rows = (
-        db.query(TaskSessionTurn.turn_index)
-        .filter(
-            TaskSessionTurn.task_id == task_id,
-            TaskSessionTurn.session_generation == generation,
-        )
-        .all()
-    )
-    return max((int(row[0] or 0) for row in rows), default=0) + 1
 
 
 def _new_chat_message(
@@ -195,6 +171,7 @@ def _prepare_chat_turn_sync(
     prompt: str,
     session_id: str | None,
     fresh_session: bool,
+    replace_agent_session: bool = False,
     submission_id: str | None = None,
     initialization_id: str | None = None,
 ) -> dict[str, Any]:
@@ -268,7 +245,11 @@ def _prepare_chat_turn_sync(
 
     provider = resolve_task_backend(db, task.id)
     provider_session_id = (
-        str(session_id if session_id is not None else (None if fresh_session else task.session_id) or "").strip()
+        str(
+            session_id
+            if session_id is not None
+            else (None if fresh_session or replace_agent_session else task.session_id) or ""
+        ).strip()
         or None
     )
     from app.domains.task.services.task_snapshot_anchor import current_anchor
@@ -295,6 +276,27 @@ def _accept_turn_input(db, task, turn, actor_id):
     # Direct turns can still enter through legacy session control paths.
     if task.status in {TaskStatus.ROUND_COMPLETED, TaskStatus.AWAITING_INPUT}:
         sm.dispatch(db, task, sm.Trigger.INPUT_SUBMITTED, event_key=f"input-turn:{turn.id}", actor_id=actor_id)
+
+
+def _chat_turn_metadata(db, task, context_json, client_message_id, generation, revision, replacing):
+    from app.agents.model_selection import apply_task_selection
+
+    metadata = dict(context_json or {})
+    metadata.pop("_new_agent_session", None)
+    metadata.pop("_agent_session_check_failed", None)
+    metadata.pop("_agent_session_replacement_check", None)
+    if replacing:
+        metadata.update(fresh_session=True, agent_service_replacement=True)
+    try:
+        selected = apply_task_selection(db, task, metadata.get("agent_model"))
+    except ValueError as exc:
+        raise TaskSessionUndoError(str(exc), code="MODEL_SELECTION_INVALID", status_code=422) from exc
+    if selected:
+        metadata["agent_model"] = selected
+    if client_message_id:
+        metadata["client_message_id"] = client_message_id
+    metadata.update(session_turn_generation=generation, session_revision=revision)
+    return metadata
 
 
 def _persist_chat_turn_sync(
@@ -342,24 +344,20 @@ def _persist_chat_turn_sync(
         raise TaskSessionUndoError("Message has already been processed", code="MESSAGE_ALREADY_PROCESSED")
     provider = prepared["provider"]
     provider_session_id = prepared["provider_session_id"]
+    if prepared.get("replace_agent_session"):
+        from app.domains.task.services.agent_session_switch import replace_session_in_txn
+
+        generation = replace_session_in_txn(db, task, prepared["agent_session_check"], submission)
     checkpoint_root = str(prepared.get("checkpoint_root") or "").strip() or None
 
-    metadata = dict(context_json or {})
-    from app.agents.model_selection import apply_task_selection
-
-    try:
-        selected = apply_task_selection(db, task, metadata.get("agent_model"))
-    except ValueError as exc:
-        raise TaskSessionUndoError(str(exc), code="MODEL_SELECTION_INVALID", status_code=422) from exc
-    if selected:
-        metadata["agent_model"] = selected
-    if client_message_id:
-        metadata["client_message_id"] = client_message_id
-    metadata.update(
-        {
-            "session_turn_generation": generation,
-            "session_revision": revision,
-        }
+    metadata = _chat_turn_metadata(
+        db,
+        task,
+        context_json,
+        client_message_id,
+        generation,
+        revision,
+        prepared.get("replace_agent_session"),
     )
     message = _new_chat_message(
         db,
@@ -393,13 +391,16 @@ def _persist_chat_turn_sync(
     message.session_turn_id = turn.id
     metadata.update({"session_turn_id": turn.id, "chat_message_id": message.id})
     _accept_turn_input(db, task, turn, prepared["actor_user_id"])
+    job_context = metadata
+    if failed_check := prepared.get("failed_session_check"):
+        job_context = {**metadata, "_agent_session_check_failed": failed_check}
     job = ai_job_store.create_task_chat_job(
         db,
         workspace_id=workspace_id,
         task_id=task_id,
         creator_id=str(prepared["actor_user_id"]),
         prompt_text=prompt,
-        context_json=metadata,
+        context_json=job_context,
         session_id=provider_session_id,
         chat_message_id=message.id,
         session_turn_id=turn.id,
@@ -492,6 +493,9 @@ async def create_task_chat_turn(
     context_json: dict[str, Any] | None = None,
     session_id: str | None = None,
     fresh_session: bool = False,
+    replace_agent_session: bool = False,
+    agent_session_replacement_check: dict[str, Any] | None = None,
+    failed_session_check: dict[str, Any] | None = None,
     client_message_id: str | None = None,
     skip_checkpoint: bool = False,
     initialization_id: str | None = None,
@@ -508,6 +512,13 @@ async def create_task_chat_turn(
     同步 DB 全部经 DB executor 执行（准备段/持久化段各自单事务、线程内自建
     session），checkpoint 走 git executor；事件循环不执行任何 DB/文件 IO。
     """
+    if replace_agent_session:
+        if agent_session_replacement_check is None:
+            from app.domains.task.services.agent_session_switch import check_task_session
+
+            agent_session_replacement_check, _ = await check_task_session(task_id, new_session=True)
+        prompt_text = None
+        session_id = None
     prompt = str(prompt_text if prompt_text is not None else content or "")
     if not str(content or "").strip() or not prompt.strip():
         raise TaskSessionUndoError("Message content is empty", code="MESSAGE_EMPTY", status_code=400)
@@ -520,11 +531,15 @@ async def create_task_chat_turn(
             prompt=prompt,
             session_id=session_id,
             fresh_session=fresh_session,
+            replace_agent_session=replace_agent_session,
             submission_id=(context_json or {}).get("submission_id"),
             initialization_id=initialization_id,
         )
     )
     prepared["actor_user_id"] = str(actor_user_id)
+    prepared["failed_session_check"] = failed_session_check
+    if replace_agent_session:
+        prepared.update(replace_agent_session=True, agent_session_check=agent_session_replacement_check)
 
     checkpoint_root: str | None = None
     if not skip_checkpoint:

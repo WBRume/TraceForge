@@ -15,6 +15,7 @@ interface ResumeInterruptedOptions {
   prompt?: string
   confirmContinue?: boolean
   clientMessageId?: string
+  newAgentSession?: boolean
 }
 
 interface UndoMessageOptions {
@@ -56,6 +57,7 @@ export function useTaskSessionControls(options: UseTaskSessionControlsOptions) {
         confirm_continue: Boolean(resumeOptions.confirmContinue),
         client_message_id: String(resumeOptions.clientMessageId || '').trim() || undefined,
         agent_model: resumeOptions.agentModel,
+        ...(resumeOptions.newAgentSession ? { new_agent_session: true } : {}),
         metadata: options.getSubmissionMetadata?.(),
       })
       return res.data

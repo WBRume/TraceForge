@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import BaseSelect from '@/components/BaseSelect.vue'
 import FeatureConfigForm from '../FeatureConfigForm.vue'
+import { featureConfigApi } from '@/services/featureConfigApi'
 import type { FeatureConfig, FeatureField } from '@/services/featureConfigApi'
 import zh from '@/locales/zh.json'
 
@@ -78,4 +79,39 @@ it('renders plugin fields and only the selected provider recognition methods', a
   expect(selects[1]!.props('options').map(option => option.value)).toEqual(['auto', 'http'])
   expect(selects[1]!.props('modelValue')).toBe('auto')
   wrapper.unmount()
+})
+
+it('saves a changed Agent address only after confirmation in the shared dialog', async () => {
+  const config: FeatureConfig = {
+    ...configuration,
+    feature: 'agent',
+    fields: [field('opencode_url', 'OpenCode 服务地址', '', 'http://localhost:4096')],
+  }
+  const response = { data: { config, applied: true } } as Awaited<ReturnType<typeof featureConfigApi.save>>
+  const save = vi.spyOn(featureConfigApi, 'save').mockResolvedValue(response)
+  const wrapper = mount(FeatureConfigForm, {
+    props: { config },
+    global: { plugins: [i18n], stubs: { teleport: true, 'el-tooltip': true } },
+  })
+  try {
+    await wrapper.get('#feature-agent-opencode_url').setValue('http://localhost:4097')
+    await wrapper.get('form').trigger('submit')
+    const dialog = wrapper.get('[role="dialog"]')
+    expect(dialog.get('.modal-message').text()).toContain('OpenCode / DSH 服务切换')
+    expect(save).not.toHaveBeenCalled()
+    await dialog.get('.btn-secondary').trigger('click')
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(save).not.toHaveBeenCalled()
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('[role="dialog"] .confirm-btn').trigger('click')
+    await flushPromises()
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(save).toHaveBeenCalledWith('agent', {
+      revision: config.revision,
+      values: { opencode_url: 'http://localhost:4097' },
+    })
+  } finally {
+    wrapper.unmount()
+    save.mockRestore()
+  }
 })

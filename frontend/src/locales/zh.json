@@ -693,6 +693,9 @@
     "delete_confirm": "确定删除会话 {name}？所有历史记录和过程资产将被清除，此操作不可逆。"
   },
   "chat": {
+    "agent_session_unavailable": "原会话不可用。当前 Agent 服务上的新会话无法沿用原上下文，请重新提供背景。",
+    "agent_session_new_hint": "下一条消息将在当前 Agent 服务上开启新会话。原会话上下文无法沿用，请重新提供所需背景。",
+    "agent_session_new": "新建会话",
     "status": {
       "INITIALIZED": "待启动",
       "RUNNING": "执行中",
@@ -1332,6 +1335,7 @@
       "source_api_mock": "API Mock",
       "source_bootstrap": "CLI 基座",
       "source_skill_analysis": "Skill 分析",
+      "source_agent": "Agent 作业",
       "source_rag": "案例知识同步",
       "status_all": "全部状态",
       "status": {
@@ -4172,6 +4176,8 @@
     "close": "关闭"
   },
   "feature_config": {
+    "agent_switch_title": "确认更换 Agent 服务地址",
+    "agent_switch_warning": "更换服务地址后，原 Agent 会话可能无法继续，未结束作业的查询和停止仍依赖旧服务。保存前，请查阅项目后端 README 的「OpenCode / DSH 服务切换」章节，按对应 Agent 的说明备份并验证。",
     "title": "平台服务能力",
     "eyebrow": "PLATFORM SERVICES",
     "ready": "已就绪",

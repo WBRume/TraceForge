@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 from datetime import datetime
+from functools import partial
 from uuid import uuid4
 
 from sqlalchemy import or_
@@ -28,6 +29,7 @@ from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_event_outbox import TaskEventOutbox
+from app.domains.task.services import agent_session_switch
 from app.domains.task.services import status_machine as sm
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.task_attempt_recovery_service import BLOCKING, recover_task_attempts
@@ -177,7 +179,18 @@ def _existing_submission_sync(db, task_id, actor_id, client_id, content, metadat
     return None
 
 
-def _accept_sync(db, task_id, actor_id, client_id, content, metadata, *, after_recovery=False):
+def _accept_sync(
+    db,
+    task_id,
+    actor_id,
+    client_id,
+    content,
+    metadata,
+    *,
+    after_recovery=False,
+    failed_check=None,
+    replacement_check=None,
+):
     previous = _existing_submission_sync(
         db, task_id, actor_id, client_id, content, metadata, allow_recovered_interrupt=after_recovery
     )
@@ -238,13 +251,18 @@ def _accept_sync(db, task_id, actor_id, client_id, content, metadata, *, after_r
         task.interrupt_reason = None
         task.interrupted_by_id = None
         task.interrupted_at = None
+    stored_metadata = dict(metadata)
+    if failed_check:
+        stored_metadata["_agent_session_check_failed"] = failed_check
+    if replacement_check:
+        stored_metadata["_agent_session_replacement_check"] = replacement_check
     row = TaskChatSubmission(
         task_id=task_id,
         workspace_id=task.workspace_id,
         creator_id=actor_id,
         client_message_id=client_id,
         content=content,
-        metadata_json=metadata,
+        metadata_json=stored_metadata,
         payload_hash=fingerprint,
         active_task_id=task_id,
         status="PREPARING",
@@ -263,7 +281,7 @@ def _accept_sync(db, task_id, actor_id, client_id, content, metadata, *, after_r
     return serialize(row)
 
 
-async def accept(*, task_id, actor_id, client_message_id, content, metadata=None):
+async def accept(*, task_id, actor_id, client_message_id, content, metadata=None, new_agent_session=False):
     client_id, text = str(client_message_id or "").strip(), str(content or "").strip()
     if not client_id or len(client_id) > 128 or not text:
         raise SubmissionError("消息内容和消息标识不能为空", "MESSAGE_INVALID", 400)
@@ -271,8 +289,20 @@ async def accept(*, task_id, actor_id, client_message_id, content, metadata=None
         raise SubmissionError("该消息标识由协作预输入保留", "MESSAGE_INVALID", 400)
     clean = dict(metadata or {})
     # These fields are exclusively server-owned.
-    for key in ("submission_id", "knowledge_state", "client_message_id", "_collaboration_control"):
+    for key in (
+        "submission_id",
+        "knowledge_state",
+        "client_message_id",
+        "_collaboration_control",
+        "_new_agent_session",
+        "_agent_session_check_failed",
+        "_agent_session_replacement_check",
+        "fresh_session",
+        "agent_service_replacement",
+    ):
         clean.pop(key, None)
+    if new_agent_session:
+        clean["_new_agent_session"] = True
     try:
         # Return a durable duplicate even when its runner holds the task lock.
         receipt = await run_db_txn(lambda db: _existing_submission_sync(db, task_id, actor_id, client_id, text, clean))
@@ -286,17 +316,23 @@ async def accept(*, task_id, actor_id, client_message_id, content, metadata=None
                     # Commit receipt cleanup even if a separate blocker still
                     # prevents accepting this message in the next transaction.
                     await run_db_txn(lambda db: _reconcile_sync(db, task_id=task_id))
+                    key, status = await agent_session_switch.check_task_session(task_id, new_session=new_agent_session)
+                    accept_sync = partial(
+                        _accept_sync,
+                        task_id=task_id,
+                        actor_id=actor_id,
+                        client_id=client_id,
+                        content=text,
+                        metadata=clean,
+                        after_recovery=True,
+                        failed_check=key if status is None else None,
+                        replacement_check=key if new_agent_session else None,
+                    )
                     try:
-                        receipt = await run_db_txn(
-                            lambda db: _accept_sync(db, task_id, actor_id, client_id, text, clean, after_recovery=True)
-                        )
+                        receipt = await run_db_txn(accept_sync)
                     except IntegrityError as exc:
                         try:
-                            receipt = await run_db_txn(
-                                lambda db: _accept_sync(
-                                    db, task_id, actor_id, client_id, text, clean, after_recovery=True
-                                )
-                            )
+                            receipt = await run_db_txn(accept_sync)
                         except IntegrityError:
                             raise SubmissionError("当前消息正在准备或执行，请稍后重试") from exc
     except LockAcquireTimeout as exc:
@@ -330,6 +366,9 @@ def _load_preparation(db, submission_id):
         "content": row.content,
         "prompt_text": control.get("prompt"),
         "fresh_session": bool(control.get("fresh_session")),
+        "replace_agent_session": bool((row.metadata_json or {}).get("_new_agent_session")),
+        "agent_session_replacement_check": (row.metadata_json or {}).get("_agent_session_replacement_check"),
+        "failed_session_check": (row.metadata_json or {}).get("_agent_session_check_failed"),
         "client_message_id": row.client_message_id,
         "context_json": {**(row.metadata_json or {}), "submission_id": row.id, "knowledge_state": "pending"},
     }
@@ -388,6 +427,10 @@ async def _run(submission_id):
     except asyncio.CancelledError:
         # Durable receipt remains recoverable after shutdown/worker loss.
         raise
+    except agent_session_switch.SessionSwitchError as exc:
+        message = str(exc)
+        await run_db_txn(lambda db: _fail_sync(db, submission_id, message))
+        await wake_event_publisher()
     except Exception:
         logger.exception("Chat preparation failed: submission_id={}", submission_id)
         await run_db_txn(lambda db: _fail_sync(db, submission_id, "消息准备失败，请重试"))

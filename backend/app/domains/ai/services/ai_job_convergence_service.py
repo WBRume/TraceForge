@@ -670,6 +670,7 @@ def _apply_business_status_in_txn(
         job.message = request.message or "Agent interrupted; preview queued for retry"
         job.error_message = request.error_message or reason or None
         job.finished_at = None
+        job.provider_execution_json = None
         _clear_ownership_fields(job)
     elif final_status == AiJobStatus.INTERRUPTED and request.mark_task_interrupted:
         task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
@@ -782,8 +783,13 @@ def _apply_orphaned_in_txn(
     """ORPHANED：ownership 必须完整保留。"""
     reason = str(request.reason or default_failure_code)
     job.status = AiJobStatus.ORPHANED
-    job.message = request.message or "Agent process could not be confirmed dead"
-    job.error_message = request.error_message if request.error_message is not None else reason
+    from app.agents.service_binding import OLD_SERVICE_MESSAGE, OLD_SERVICE_UNKNOWN
+
+    if request.evidence.failure_code == OLD_SERVICE_UNKNOWN:
+        job.message = job.error_message = OLD_SERVICE_MESSAGE
+    else:
+        job.message = request.message or "Agent process could not be confirmed dead"
+        job.error_message = request.error_message if request.error_message is not None else reason
     job.failure_code = request.evidence.failure_code or default_failure_code
     job.terminal_reason = reason
     job.lease_expires_at = now

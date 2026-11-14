@@ -8,6 +8,7 @@ export interface FeatureField {
   label: string
   kind: 'text' | 'secret' | 'boolean' | 'number' | 'select' | 'url' | 'https'
   value: ConfigValue
+  environment_value?: ConfigValue
   has_value: boolean
   source: 'database' | 'environment'
   options: string[]

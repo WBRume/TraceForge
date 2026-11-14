@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from app.agents.errors import AgentExecutionDetached
+from app.agents.service_binding import OLD_SERVICE_MESSAGE, OLD_SERVICE_UNKNOWN, SERVER_AGENTS, agent_address_generation
 from app.core.offload import run_db
 from app.database import SessionLocal
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
@@ -54,6 +55,17 @@ def current_task(db, job) -> bool:
     )
 
 
+def legacy_binding_unknown(db, job) -> bool:
+    from app.domains.local_resource.service import is_local
+
+    return bool(
+        not job.agent_service_binding
+        and not is_local(db.get(SddTask, job.task_id) if job.task_id else None)
+        and job.agent_backend in SERVER_AGENTS
+        and agent_address_generation(db, job.agent_backend)
+    )
+
+
 def save_checkpoint_sync(attempt, checkpoint):
     if not valid_checkpoint(checkpoint):
         raise ValueError("Invalid remote execution checkpoint")
@@ -91,8 +103,10 @@ def claim_existing_sync(job_id, expected_token):
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).with_for_update().first()
         if not recoverable(job) or job.run_token != expected_token or not current_task(db, job):
             return None
+        if legacy_binding_unknown(db, job):
+            return None
         now = datetime.utcnow()
-        if job.worker_boot_id == WORKER_BOOT_ID and job.lease_expires_at and job.lease_expires_at > now:
+        if job.lease_expires_at and job.lease_expires_at > now:
             return None
         job.run_token = str(uuid.uuid4())
         job.worker_id, job.worker_boot_id = WORKER_ID, WORKER_BOOT_ID
@@ -100,8 +114,9 @@ def claim_existing_sync(job_id, expected_token):
         job.heartbeat_at = now
         job.lease_expires_at = now + timedelta(seconds=lease_ttl_seconds())
         job.next_reap_at = job.lease_expires_at
-        job.message = "Reconnecting to existing OpenCode execution"
-        job.failure_code = None
+        if job.failure_code != OLD_SERVICE_UNKNOWN:
+            job.message = "Reconnecting to existing OpenCode execution"
+            job.failure_code = None
         queue_key = str(job.queue_key)
         db.commit()
         return queue_key
@@ -118,7 +133,7 @@ async def attach_reclaimable(row) -> bool:
     claimed_queue = await run_db(claim_existing_sync, row["job_id"], row.get("expected_run_token"))
     if claimed_queue:
         runtime.schedule_queue(claimed_queue, recovered_job_id=row["job_id"])
-    return True
+    return bool(claimed_queue) or not row.get("legacy_unbound_after_switch")
 
 
 def defer_observation_sync(attempt):
@@ -131,8 +146,14 @@ def defer_observation_sync(attempt):
             recoverable(job) and job.run_token == attempt.run_token and job.worker_boot_id == attempt.worker_boot_id
         ):
             return None
-        job.message = "OpenCode 状态暂不可确认，正在重新接管原任务"
-        job.failure_code = "REMOTE_OBSERVER_DETACHED"
+        message, code = (
+            (OLD_SERVICE_MESSAGE, OLD_SERVICE_UNKNOWN)
+            if job.agent_service_binding
+            else ("OpenCode 状态暂不可确认，正在重新接管原任务", "REMOTE_OBSERVER_DETACHED")
+        )
+        if job.failure_code != code or job.message != message:
+            job.message, job.failure_code = message, code
+            job.version = int(job.version or 1) + 1
         job.lease_expires_at = datetime.utcnow() + timedelta(seconds=10)
         job.next_reap_at = job.lease_expires_at
         db.commit()

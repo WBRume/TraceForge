@@ -62,6 +62,15 @@ async def get_feature(feature: str, response: Response):
 @router.put("/features/{feature}")
 async def save_feature(feature: str, request: Request, response: Response, user=Depends(require_admin)):
     values, revision, reset = await parse_patch(request)
+    if feature == "agent":
+        targets = await transaction(lambda db: configs.agent_address_probe_draft(db, values, revision, reset))
+        statuses = await asyncio.gather(*(probes.probe("agent", target, request.app, draft=True) for target in targets))
+        failed = [
+            target["backend"] for target, status in zip(targets, statuses, strict=True) if status["status"] != "READY"
+        ]
+        if failed:
+            names = " / ".join("OpenCode" if name == "opencode" else "DSH" for name in failed)
+            raise HTTPException(422, f"{names} 服务连接或协议校验失败，地址未保存")
     saved = await transaction(lambda db: configs.save(db, feature, values, revision, user.id, reset))
     audit_log(
         action="update_feature_config",

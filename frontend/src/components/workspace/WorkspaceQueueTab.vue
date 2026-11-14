@@ -74,6 +74,7 @@ const queueSourceOptions = computed(() => [
   { value: 'api_mock', label: t('workspaces.queue.source_api_mock') },
   { value: 'bootstrap', label: t('workspaces.queue.source_bootstrap') },
   { value: 'skill_analysis', label: t('workspaces.queue.source_skill_analysis') },
+  { value: 'agent', label: t('workspaces.queue.source_agent') },
 ])
 
 const queueStatusOptions = computed(() => [

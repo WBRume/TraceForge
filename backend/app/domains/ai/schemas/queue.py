@@ -13,7 +13,7 @@ from app.protocols.base import Contract
 
 from .job_result import JobCompletion
 
-QueueSourceValue = Literal["provision", "api_mock", "bootstrap", "skill_analysis"]
+QueueSourceValue = Literal["provision", "api_mock", "bootstrap", "skill_analysis", "agent"]
 QueueStatusValue = Literal[
     "PENDING",
     "RUNNING",

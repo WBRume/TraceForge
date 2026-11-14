@@ -307,11 +307,12 @@ class DshServerAdapter(AgentBackend):
         if self._gateway_protocol is not False:
             gateway_method = method.replace(".", "/")
             parameter_name = "_request" if method == "session.list" else "request"
+            args = {} if method == "session.modelCatalog" else {parameter_name: payload}
             attempts.append(
                 (
                     f"{self.server_url}/api/{gateway_method}",
                     gateway_method,
-                    {"args": {parameter_name: payload}},
+                    {"args": args},
                     True,
                 )
             )
@@ -359,6 +360,62 @@ class DshServerAdapter(AgentBackend):
     async def probe(self) -> str:
         await self._rpc("session.list", {})
         return f"DSH JSON-RPC server is reachable at {self.server_url}"
+
+    async def native_session(self, session_id: str) -> dict | None:
+        result = await self._rpc("session.list", {})
+        items = result.get("items")
+        if not isinstance(items, list) or any(not isinstance(row, dict) or not row.get("sessionId") for row in items):
+            raise AgentError("DSH returned an invalid session list")
+        session = next((row for row in items if row["sessionId"] == session_id), None)
+        if session is None:
+            return None
+        if session.get("formatStatus") == "migration-required":
+            return {"directory": session.get("cwd"), "readable": False}
+        if self._gateway_protocol:
+            page = await self._rpc(
+                "session.events",
+                {
+                    "address": {"kind": "session", "sessionId": session_id},
+                    "maxMessages": 1,
+                },
+            )
+            if not isinstance(page.get("records"), list):
+                raise AgentError("DSH did not return readable session history")
+        return {"directory": session.get("cwd"), "created": session.get("createdAt")}
+
+    async def session_running(self, session_id: str) -> bool:
+        state = await self._rpc("session.state", {"sessionId": session_id})
+        if not isinstance(state.get("running"), bool) or "queue" not in state:
+            raise AgentError("DSH returned an invalid session state")
+        return state["running"] or bool(state["queue"])
+
+    async def execution_result(self, session_id: str, request_id: str) -> tuple[str, str] | None:
+        page = await self._rpc(
+            "session.events",
+            {
+                "address": {"kind": "session", "sessionId": session_id},
+                "maxMessages": 50,
+            },
+        )
+        owned = False
+        text = []
+        for record in page.get("records", []):
+            event = record.get("event") or {}
+            data = event.get("data") or {}
+            if event.get("type") == "turn/start":
+                owned = False
+                text.clear()
+            elif event.get("type") == "user/message" and (data.get("source") or {}).get("rpcId") == request_id:
+                owned = True
+            elif owned and event.get("type") == "assistant/message":
+                text.extend(
+                    part["text"]
+                    for part in (data.get("message") or {}).get("content", [])
+                    if part.get("type") == "text" and isinstance(part.get("text"), str)
+                )
+            elif owned and event.get("type") == "turn/end":
+                return (data.get("reason") or {}).get("kind", "error"), "\n".join(text)
+        return None
 
     async def model_catalog(self, *, project_path: str = "", session_id: str | None = None) -> dict:
         from app.agents.model_selection import model_option
@@ -656,7 +713,7 @@ class DshServerAdapter(AgentBackend):
                         f"DSH session follow failed: {error.get('code', 'unknown')} {error.get('message', '')}"
                     )
                 if frame_type == "end":
-                    return _finalize()
+                    raise AgentError("DSH session stream ended before a terminal turn event")
                 if frame_type != "item":
                     continue
                 value = frame.get("value") if isinstance(frame.get("value"), dict) else {}
@@ -675,12 +732,12 @@ class DshServerAdapter(AgentBackend):
                 etype = str(event.get("type") or "")
                 if etype == "turn/end":
                     return await self._finalize_gateway_turn(event, outcome, text_parts, _finalize, on_event)
-        return _finalize()
+        raise AgentError("DSH session stream disconnected before a terminal turn event")
 
     async def _emit_run_result(self, consumed, session_id, request, started_at, _tracked_event):
         finish_reason = consumed.get("finish_reason") or "completed"
         final_text = str(consumed.get("text") or "")
-        success = finish_reason not in ("error", "aborted")
+        success = finish_reason not in ("error", "aborted", "interrupted", "blocked")
         await _tracked_event(
             AgentEvent(
                 type="result",
@@ -704,6 +761,21 @@ class DshServerAdapter(AgentBackend):
             raw_trace=json.dumps(consumed, ensure_ascii=False, default=str),
         )
 
+    async def _send_prompt(self, session_id, prompt_text):
+        from app.domains.ai.services.jobs.agent_dispatch import record_dsh_prompt
+
+        request_id = f"tf-{uuid.uuid4().hex}"
+        await record_dsh_prompt(session_id, request_id)
+        return await self._rpc(
+            "session.prompt",
+            {
+                "requestId": request_id,
+                "sessionId": session_id,
+                "mode": "queue",
+                "content": [{"type": "text", "text": prompt_text}],
+            },
+        )
+
     async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
         await self._ensure_client()
         self._running = True
@@ -723,7 +795,6 @@ class DshServerAdapter(AgentBackend):
         try:
             if not session_id:
                 session_id = await self._create_session(request)
-            await self._ensure_event_protocol()
             self._session_id = session_id
 
             if request.model:
@@ -732,6 +803,7 @@ class DshServerAdapter(AgentBackend):
                     raise AgentError("DSH model must be provider/model")
                 await self._rpc("session.selectModel", {"sessionId": session_id, "provider": provider, "model": model})
 
+            await self._ensure_event_protocol()
             policy = request.provider_options.get("execution_policy")
             if policy is not None and policy.get("enforcement") != "ADVISORY_GUARD":
                 from app.agents.playbook_guard import apply_dsh_policy
@@ -763,17 +835,7 @@ class DshServerAdapter(AgentBackend):
                     "[只读会话约束] 只能分析、读取和总结；禁止创建、修改、删除文件，"
                     "禁止执行会改变项目或外部系统状态的命令。\n\n" + prompt_text
                 )
-            prompt_task = asyncio.create_task(
-                self._rpc(
-                    "session.prompt",
-                    {
-                        "requestId": f"tf-{uuid.uuid4().hex}",
-                        "sessionId": session_id,
-                        "mode": "queue",
-                        "content": [{"type": "text", "text": prompt_text}],
-                    },
-                )
-            )
+            prompt_task = asyncio.create_task(self._send_prompt(session_id, prompt_text))
 
             def _abort_on_prompt_failure(task: asyncio.Task) -> None:
                 if not task.cancelled() and task.exception() is not None:
@@ -813,36 +875,16 @@ class DshServerAdapter(AgentBackend):
         """Remote interrupt: only a successful ``session.cancel`` RPC response
         counts as acknowledged; errors/timeouts/disconnects are
         returned as structured failures, never swallowed."""
-        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
-
-        if not self._session_id:
-            return AgentStopResult(
-                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
-                stop_acknowledged=False,
-                failure_code="REMOTE_STOP_UNCONFIRMED",
-                error_message="no active DSH session to cancel",
-            )
-        try:
-            await self._rpc("session.cancel", {"sessionId": self._session_id})
-        except Exception as exc:
-            if isinstance(exc, asyncio.CancelledError):
-                raise
-            return AgentStopResult(
-                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
-                stop_acknowledged=False,
-                failure_code="DSH_CANCEL_RPC_FAILED",
-                error_message=str(exc) or type(exc).__name__,
-            )
-        return AgentStopResult(
-            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
-            stop_acknowledged=True,
-        )
+        return await self._stop_session(self._session_id)
 
     async def cancel(self, run_id: str | None = None, *, session_id: str | None = None) -> AgentStopResult:
-        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
-
-        sid = session_id or self._session_id
         self._running = False
+        return await self._stop_session(session_id or self._session_id)
+
+    async def _stop_session(self, sid: str | None) -> AgentStopResult:
+        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
+        from app.domains.ai.services.jobs.agent_dispatch import verify_bound_stop
+
         if not sid:
             return AgentStopResult(
                 execution_kind=EXECUTION_KIND_REMOTE_SESSION,
@@ -851,14 +893,19 @@ class DshServerAdapter(AgentBackend):
                 error_message="no active DSH session to cancel",
             )
         try:
-            await self._rpc("session.cancel", {"sessionId": sid})
+            async with asyncio.timeout(15):
+                await verify_bound_stop(self, sid)
+                await self._rpc("session.cancel", {"sessionId": sid})
+                if getattr(self, "_dispatch_identity", None):
+                    while await self.session_running(sid):
+                        await asyncio.sleep(0.5)
         except Exception as exc:
             if isinstance(exc, asyncio.CancelledError):
                 raise
             return AgentStopResult(
                 execution_kind=EXECUTION_KIND_REMOTE_SESSION,
                 stop_acknowledged=False,
-                failure_code="DSH_CANCEL_RPC_FAILED",
+                failure_code=getattr(exc, "failure_code", None) or "DSH_CANCEL_RPC_FAILED",
                 error_message=str(exc) or type(exc).__name__,
             )
         return AgentStopResult(
@@ -882,21 +929,7 @@ class DshServerAdapter(AgentBackend):
                 failure_code="REMOTE_STOP_LOCATOR_MISSING",
                 error_message="persisted DSH session id is required",
             )
-        try:
-            await self._rpc("session.cancel", {"sessionId": sid})
-        except Exception as exc:
-            if isinstance(exc, asyncio.CancelledError):
-                raise
-            return AgentStopResult(
-                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
-                stop_acknowledged=False,
-                failure_code="DSH_CANCEL_RPC_FAILED",
-                error_message=str(exc) or type(exc).__name__,
-            )
-        return AgentStopResult(
-            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
-            stop_acknowledged=True,
-        )
+        return await self._stop_session(sid)
 
     async def unload_session(self, session_id: str | None = None) -> None:
         """Dispose the DSH Web Host's in-memory Agent for a cold disk restore.

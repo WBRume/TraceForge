@@ -5,6 +5,7 @@ const props = defineProps<{
   modelValue: string
   disabled: boolean
   busy: boolean
+  submitBlocked?: boolean
   placeholder: string
   hasContext?: boolean
 }>()
@@ -22,6 +23,10 @@ const inputEl = ref<HTMLInputElement | null>(null)
 const onInput = (event: Event) => {
   const target = event.target as HTMLInputElement
   emit('update:modelValue', target.value)
+}
+
+const submit = () => {
+  if (!props.disabled && !props.busy && !props.submitBlocked) emit('submit')
 }
 
 const focusInput = async () => {
@@ -46,15 +51,15 @@ defineExpose({
       :disabled="props.disabled || props.busy"
       :placeholder="props.placeholder"
       @input="onInput"
-      @keydown.enter="event => { if (!event.isComposing) { event.preventDefault(); emit('submit') } }"
+      @keydown.enter="event => { if (!event.isComposing) { event.preventDefault(); submit() } }"
       @keydown.tab.prevent="emit('tab-complete')"
       @keydown.up.prevent="emit('history-prev')"
       @keydown.down.prevent="emit('history-next')"
     >
     <button
       class="cli-send-btn"
-      :disabled="props.disabled || props.busy || (!props.modelValue.trim() && !props.hasContext)"
-      @click="emit('submit')"
+      :disabled="props.disabled || props.busy || props.submitBlocked || (!props.modelValue.trim() && !props.hasContext)"
+      @click="submit"
     >
       Run
     </button>

@@ -20,6 +20,7 @@ const JOB_TYPE_KEY_MAP: Record<QueueSource, Record<string, string>> = {
   skill_analysis: {
     SKILL_ANALYSIS: 'workspaces.queue.job_type.skill_analysis',
   },
+  agent: { TASK_CHAT: 'workspaces.queue.source_agent' },
 }
 
 const JOB_DESC_KEY_MAP: Record<QueueSource, Record<string, string>> = {
@@ -40,6 +41,7 @@ const JOB_DESC_KEY_MAP: Record<QueueSource, Record<string, string>> = {
   skill_analysis: {
     SKILL_ANALYSIS: 'workspaces.queue.job_desc.skill_analysis',
   },
+  agent: {},
 }
 
 const STAGE_KEY_MAP: Record<string, string> = {
@@ -73,6 +75,7 @@ export const queueSourceLabel = (source: string, t: TranslateFn): string => {
   if (source === 'api_mock') return t('workspaces.queue.source_api_mock')
   if (source === 'bootstrap') return t('workspaces.queue.source_bootstrap')
   if (source === 'skill_analysis') return t('workspaces.queue.source_skill_analysis')
+  if (source === 'agent') return t('workspaces.queue.source_agent')
   return source || '-'
 }
 
@@ -150,7 +153,7 @@ export const queueOpenActionLabel = (item: QueueJobItem, t: TranslateFn): string
   }
   if (
     (item.source === 'provision' && typeCode === 'CREATE_TASK') ||
-    item.source === 'bootstrap'
+    item.source === 'bootstrap' || item.source === 'agent'
   ) {
     return t('workspaces.queue.actions.open_task')
   }

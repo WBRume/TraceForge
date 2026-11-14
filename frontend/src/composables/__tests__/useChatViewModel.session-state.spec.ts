@@ -280,6 +280,39 @@ describe('useChatViewModel session state single flight', () => {
     expect(countCalls('/pre-input/active')).toBe(1)
   })
 
+  it('shows an unavailable Agent session on entry without sending a message', async () => {
+    apiMock.get.mockImplementation((url: string) => String(url).endsWith('/agent-session-status')
+      ? Promise.resolve({ data: { unavailable: true } })
+      : resolveByUrl(String(url)))
+    await mountViewModel()
+    await vm.selectTask({ ...task('t1'), session_id: 'previous-session' })
+    await flushPromises()
+    expect(vm.agentSessionUnavailable.value).toBe(true)
+    expect(vm.agentSessionSendBlocked.value).toBe(true)
+    expect(countCalls('/agent-session-status')).toBe(1)
+    vm.chatInput.value = 'draft'
+    await vm.sendChat()
+    expect(vm.chatInput.value).toBe('draft')
+    expect(apiMock.post.mock.calls.some(([url]) => String(url).endsWith('/chat-submissions'))).toBe(false)
+    vm.replacingAgentSession.value = true
+    expect(vm.agentSessionSendBlocked.value).toBe(false)
+    vm.replacingAgentSession.value = false
+    expect(vm.agentSessionSendBlocked.value).toBe(true)
+    vm.replacingAgentSession.value = true
+    apiMock.post.mockResolvedValueOnce({ data: {
+      id: 'replacement-receipt', task_id: 't1', client_message_id: 'replacement', content: 'draft',
+      status: 'SUCCEEDED', version: 1,
+    } })
+    await vm.sendChat()
+    expect(apiMock.post).toHaveBeenCalledWith(expect.stringMatching(/\/chat-submissions$/), expect.objectContaining({
+      content: 'draft', new_agent_session: true,
+    }))
+    await vm.selectTask(task('t2'))
+    await flushPromises()
+    expect(vm.agentSessionUnavailable.value).toBe(false)
+    expect(countCalls('/agent-session-status')).toBe(1)
+  })
+
   it('restores the snapshot through the resync barrier without a second history request', async () => {
     await mountViewModel()
     await vm.selectTask(task('t1'))

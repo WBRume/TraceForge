@@ -12,7 +12,18 @@ def enabled(db, task_id: str) -> bool:
 
 
 def accept_control(
-    db, task, actor_id, *, content, prompt=None, fresh_session=False, source, client_id=None, metadata=None
+    db,
+    task,
+    actor_id,
+    *,
+    content,
+    prompt=None,
+    fresh_session=False,
+    source,
+    client_id=None,
+    metadata=None,
+    failed_check=None,
+    replacement_check=None,
 ):
     from app.domains.task.services import chat_submission_service
     from app.domains.workspace_collaboration.session import uses_local_input
@@ -33,7 +44,16 @@ def accept_control(
             "binding_id": state.binding_id,
             "lease_epoch": state.lease_epoch,
         }
-    return chat_submission_service._accept_sync(db, task.id, actor_id, client_id or str(uuid4()), content, metadata)
+    return chat_submission_service._accept_sync(
+        db,
+        task.id,
+        actor_id,
+        client_id or str(uuid4()),
+        content,
+        metadata,
+        failed_check=failed_check,
+        replacement_check=replacement_check,
+    )
 
 
 async def schedule_control(receipt):
@@ -93,7 +113,7 @@ def require_ready(db, task_id, *, actor_id=None):
         raise TaskSessionControlError("请先完成当前本地代码交付及冲突恢复", status_code=409)
 
 
-def resume_submission(db, task_id, actor_id, prepared, client_id, metadata=None):
+def resume_submission(db, task_id, actor_id, prepared, client_id, metadata=None, *, failed_check=None):
     from app.domains.task.models.task import SddTask
 
     if not enabled(db, task_id):
@@ -107,10 +127,11 @@ def resume_submission(db, task_id, actor_id, prepared, client_id, metadata=None)
         metadata,
         content=prepared["prompt_text"],
         source="task_resume",
+        failed_check=failed_check,
     )
 
 
-def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *, content, source):
+def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *, content, source, failed_check=None):
     from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 
     require_ready(db, task.id, actor_id=actor_id)
@@ -122,6 +143,8 @@ def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *
     task.interrupt_reason = None
     task.interrupted_by_id = None
     task.interrupted_at = None
+    if prepared.get("replace_agent_session"):
+        metadata = {**(metadata or {}), "_new_agent_session": True}
     receipt = accept_control(
         db,
         task,
@@ -131,6 +154,8 @@ def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *
         source=source,
         client_id=client_id,
         metadata=metadata,
+        failed_check=failed_check,
+        replacement_check=prepared.get("agent_session_replacement_check"),
     )
     old_job_id = prepared["old_job_id"]
     old_job = db.get(SddAiJob, old_job_id) if old_job_id else None

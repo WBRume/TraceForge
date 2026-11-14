@@ -109,9 +109,10 @@ async def shutdown_active_engines() -> None:
         async def shutdown_engine(engine):
             from app.domains.ai.services.jobs.remote_recovery import valid_checkpoint
 
-            if valid_checkpoint(getattr(engine, "remote_execution_checkpoint", None)) and not getattr(
-                engine, "_interrupt_requested", False
-            ):
+            attempt = getattr(engine, "attempt", None)
+            bound = getattr(attempt, "agent_service_binding", None)
+            recoverable = bound or valid_checkpoint(getattr(engine, "remote_execution_checkpoint", None))
+            if recoverable and not getattr(engine, "_interrupt_requested", False):
                 await engine.cli.close()
             else:
                 await engine.stop()

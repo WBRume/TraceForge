@@ -26,6 +26,7 @@ import SpecBootstrapTip from '@/components/chat/sections/SpecBootstrapTip.vue'
 import PinnedCardsArea from '@/components/chat/sections/PinnedCardsArea.vue'
 import HitlInteractionCard from '@/components/chat/sections/HitlInteractionCard.vue'
 import ChatHistoryPanel from '@/components/chat/sections/ChatHistoryPanel.vue'
+import AgentSessionNotice from '@/components/chat/sections/AgentSessionNotice.vue'
 import VerificationActions from '@/components/chat/sections/VerificationActions.vue'
 import InitializeTaskModal from '@/components/chat/sections/InitializeTaskModal.vue'
 import StartTaskModal from '@/components/chat/sections/StartTaskModal.vue'
@@ -270,7 +271,15 @@ watch(
         />
 
         <!-- 快捷操作行 -->
-        <VerificationActions :vm="vm" />
+        <VerificationActions :vm="vm">
+          <template v-if="vm.agentSessionUnavailable" #notice>
+            <AgentSessionNotice
+              v-model:replacing="vm.replacingAgentSession"
+              :busy="vm.sendingChat"
+              :can-replace="!vm.isChatLocked && !vm.collaboration?.blocked.value"
+            />
+          </template>
+        </VerificationActions>
       </div>
 
       <!-- 协作预输入：收集窗口进行中时显示在输入框上方 -->
@@ -333,7 +342,7 @@ watch(
         :models-loading="vm.agentModelsLoading" :models-error="vm.agentModelsError"
         @update:selected-model="vm.selectAgentModel" @reload-models="vm.reloadAgentModels"
         :disabled="vm.initializingTask || vm.sendingChat || (!vm.suggestionOnly && (vm.isChatLocked || Boolean(playbook.run && !['COMPLETED', 'CANCELLED'].includes(playbook.run.state))))"
-        :send-blocked="vm.collaboration?.blocked.value"
+        :send-blocked="vm.collaboration?.blocked.value || vm.agentSessionSendBlocked"
         :running="!vm.suggestionOnly && vm.engineRunning && vm.currentTask?.status !== 'AWAITING_INPUT'"
         :can-interrupt="vm.canTemporarilyInterrupt"
         :interrupting="vm.interruptingTask"
@@ -354,7 +363,11 @@ watch(
       </template>
       <template v-else>
         <div class="cli-shell-wrapper">
-          <ChatCliWorkbench :vm="vm" />
+          <ChatCliWorkbench :vm="vm">
+            <template v-if="vm.agentSessionUnavailable" #hint>
+              <AgentSessionNotice v-model:replacing="vm.replacingAgentSession" :busy="vm.sendingChat" :can-replace="!vm.isChatLocked" />
+            </template>
+          </ChatCliWorkbench>
         </div>
       </template>
     </section>

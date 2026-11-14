@@ -150,6 +150,7 @@ class TaskAgentEngine:
         self._gate: SessionGate | None = None
         self._session_generation: int | None = None
         self.additional_workspace_directories: list[str] = []
+        self.agent_service_replacement = False
         # HITL 确认登记：interaction_id -> provider_request_id
         self._pending_confirmations: dict[str, str] = {}
 
@@ -384,7 +385,8 @@ class TaskAgentEngine:
 
                 guide_turn = await run_db(turn_setup.playbook_turn_sync, self.task_id)
                 self._guide_turn = guide_turn["fence"]
-                prompt += guide_turn["prompt"]
+                if not self.agent_service_replacement:
+                    prompt += guide_turn["prompt"]
                 # 统一 AgentBackend 路径；旧 CliBridgeBase（mock/legacy）走 dict 事件兼容路径
                 if isinstance(self.cli, AgentBackend):
                     request = turn_setup.build_agent_run_request(
@@ -516,6 +518,10 @@ class TaskAgentEngine:
             return
         kind = str(getattr(getattr(cli, "capabilities", None), "execution_kind", "") or "").strip()
         if kind != "REMOTE_SESSION":
+            return
+        from app.domains.ai.services.jobs.agent_dispatch import has_bound_dispatch
+
+        if has_bound_dispatch(cli) and not getattr(cli, "_dispatch_identity", None):
             return
 
         runtime = current_agent_attempt_runtime()
