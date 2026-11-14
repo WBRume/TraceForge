@@ -2,7 +2,6 @@ import asyncio
 import sys
 import uuid
 from dataclasses import asdict
-from pathlib import Path
 
 import pytest
 
@@ -373,35 +372,6 @@ def test_api_scope_etag_and_no_receipt_write(db, spec, monkeypatch):
         events = client.get(base + "/events", params={"after_seq": 1}).json()
         assert len(events["events"]) == 1 and events["snapshot"]["state"] == "CANCELLED"
         assert client.post(base + "/commands", json=request).status_code == 200
-
-
-def test_incremental_migration_upgrade_and_downgrade_preserve_old_case():
-    import importlib.util
-
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
-    from sqlalchemy import create_engine, inspect, text
-
-    filename = Path(__file__).parents[2] / "alembic" / "versions" / "b7d91a36c204_diagnosis_playbooks.py"
-    module_spec = importlib.util.spec_from_file_location("playbook_migration", filename)
-    migration = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(migration)
-    engine = create_engine("sqlite://")
-    try:
-        with engine.begin() as conn:
-            conn.execute(text("CREATE TABLE sdd_cases (id VARCHAR(36) PRIMARY KEY, title TEXT)"))
-            conn.execute(text("INSERT INTO sdd_cases VALUES ('existing', 'preserved')"))
-            with Operations.context(MigrationContext.configure(conn)):
-                migration.upgrade()
-                assert (
-                    conn.execute(text("SELECT archive_origin FROM sdd_cases WHERE id='existing'")).scalar() == "MANUAL"
-                )
-                assert "playbook_runs" in inspect(conn).get_table_names()
-                migration.downgrade()
-            assert conn.execute(text("SELECT title FROM sdd_cases WHERE id='existing'")).scalar() == "preserved"
-            assert "playbook_runs" not in inspect(conn).get_table_names()
-    finally:
-        engine.dispose()
 
 
 def test_playbook_route_precedence_over_case_detail():

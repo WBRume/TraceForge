@@ -1043,29 +1043,6 @@ def test_windows_cmd_capture_accepts_extension_mode_but_keeps_git_mode(environme
     assert content.ObjectStore("t").read(entry["sha256"]) == path.read_bytes()
 
 
-def test_migration_roundtrip_matches_registered_models(db, monkeypatch):
-    import importlib.util
-
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
-    from sqlalchemy import inspect
-
-    from app.database import Base
-
-    path = Path(__file__).resolve().parents[2] / "alembic/versions/d0b6a2e94f31_workspace_collaboration.py"
-    spec = importlib.util.spec_from_file_location("collaboration_migration", path)
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
-    with db.get_bind().begin() as connection:
-        monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(connection)))
-        migration.downgrade()
-        migration.upgrade()
-        inspector = inspect(connection)
-        for name, table in Base.metadata.tables.items():
-            if name.startswith("task_collaboration_"):
-                assert {column["name"] for column in inspector.get_columns(name)} == set(table.columns.keys())
-
-
 def test_browser_driver_request_waits_for_native_handoff(environment):
     db, task, _ = environment
     state = acknowledge(environment, enabled(environment))

@@ -1,8 +1,33 @@
-"""Autogeneration must see all domain tables in a fresh Python interpreter."""
+"""Check the Alembic registry and offline PostgreSQL migration chain."""
 
+import io
 import subprocess
 import sys
 from pathlib import Path
+
+from alembic.config import Config
+
+from alembic import command
+
+
+def test_postgres_migrations_run_from_default_versions_directory(monkeypatch):
+    monkeypatch.chdir(Path(__file__).parents[1])
+    output = io.StringIO()
+    config = Config("alembic.ini", output_buffer=output)
+    assert config.get_main_option("version_locations") is None
+
+    command.upgrade(config, "head", sql=True)
+    upgrade = output.getvalue()
+    assert "CREATE EXTENSION IF NOT EXISTS pg_jieba" in upgrade
+    assert "CREATE TABLE search_pg_passages" in upgrade
+    assert "ALTER CONSTRAINT case_playbook_links_source_run_id_fkey NOT ENFORCED" in upgrade
+
+    output.seek(0)
+    output.truncate()
+    command.downgrade(config, "head:base", sql=True)
+    downgrade = output.getvalue()
+    assert "ALTER CONSTRAINT case_playbook_links_source_run_id_fkey ENFORCED" in downgrade
+    assert "DROP TABLE search_pg_passages" in downgrade
 
 
 def test_alembic_registers_every_declared_domain_table():

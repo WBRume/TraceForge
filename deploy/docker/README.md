@@ -4,6 +4,8 @@
 
 本目录的 Compose 启动 PostgreSQL 18（pg_jieba、pgvector）、Redis、单进程 API 和 Nginx Web，并在 API 启动前执行数据库迁移。它不包含桌面客户端，适合内部试用部署。
 
+`postgres` 服务使用随仓库提供的 Dockerfile 构建镜像，`migrate` 服务在业务库启用 `pg_jieba` 和 `vector`。[PostgreSQL Dockerfile](postgres-18-jieba-vector/Dockerfile)
+
 ## 首次启动
 
 安装并启动 Docker Engine / Docker Desktop 与 Compose 插件。从仓库根目录执行：

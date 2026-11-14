@@ -265,33 +265,6 @@ async def test_engine_shutdown_closes_observer_but_honors_explicit_interrupt(mon
     cancelled.stop.assert_awaited_once()
 
 
-def test_checkpoint_migration_preserves_existing_rows_and_downgrades():
-    import runpy
-    from pathlib import Path
-
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
-    from sqlalchemy import create_engine, inspect, text
-
-    migration = runpy.run_path(
-        str(Path(__file__).resolve().parents[3] / "alembic/versions/f294bd81a0e3_provider_execution_checkpoint.py")
-    )
-    with create_engine("sqlite://").begin() as connection:
-        connection.execute(text("CREATE TABLE sdd_ai_jobs (id TEXT PRIMARY KEY)"))
-        connection.execute(text("INSERT INTO sdd_ai_jobs VALUES ('existing')"))
-        with Operations.context(MigrationContext.configure(connection)):
-            migration["upgrade"]()
-            assert "provider_execution_json" in {
-                column["name"] for column in inspect(connection).get_columns("sdd_ai_jobs")
-            }
-            assert connection.execute(text("SELECT id, provider_execution_json FROM sdd_ai_jobs")).one() == (
-                "existing",
-                None,
-            )
-            migration["downgrade"]()
-        assert connection.execute(text("SELECT id FROM sdd_ai_jobs")).scalar() == "existing"
-
-
 @pytest.mark.asyncio
 async def test_recovered_provider_terminal_reaches_durable_job_finalizer(jobs, monkeypatch):
     import httpx

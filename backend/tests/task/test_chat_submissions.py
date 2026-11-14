@@ -899,33 +899,6 @@ async def test_cancelled_snapshot_drains_worker_and_cleans_unpublished_checkpoin
     cleanup.assert_awaited_once_with("/fake/unpublished")
 
 
-def test_incremental_migration_round_trip_preserves_existing_data(monkeypatch):
-    import importlib.util
-    from pathlib import Path
-
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
-    from sqlalchemy import create_engine, inspect, text
-
-    path = Path(__file__).parents[2] / "alembic/versions/e6a718293b4c_chat_submissions.py"
-    spec = importlib.util.spec_from_file_location("submission_migration", path)
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
-    engine = create_engine("sqlite://")
-    with engine.begin() as connection:
-        for table in ("sdd_tasks", "workspaces", "users", "sdd_ai_jobs", "chat_messages"):
-            connection.execute(text(f"CREATE TABLE {table} (id VARCHAR(36) PRIMARY KEY)"))
-        connection.execute(text("INSERT INTO chat_messages (id) VALUES ('existing')"))
-        monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(connection)))
-        migration.upgrade()
-        constraints = inspect(connection).get_unique_constraints("sdd_task_chat_submissions")
-        assert {item["name"] for item in constraints} == {"uq_chat_submission_client", "uq_chat_submission_active_task"}
-        migration.downgrade()
-        assert "sdd_task_chat_submissions" not in inspect(connection).get_table_names()
-        assert connection.execute(text("SELECT id FROM chat_messages")).scalar_one() == "existing"
-    engine.dispose()
-
-
 def test_failed_turn_cannot_leak_into_summary_through_provider_fork(task_db, monkeypatch):
     row = accepted(task_db)
     execution(task_db, row, AiJobStatus.FAILED)

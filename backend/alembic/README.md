@@ -4,7 +4,7 @@
 
 Alembic 从后端配置读取数据库连接；先按[后端指南](../README.md#首次启动)创建数据库和配置 `.env`。以下命令在 `backend/` 目录与项目虚拟环境中执行。
 
-`alembic/postgresql/` 是当前迁移链，以空 PostgreSQL 业务库为起点。基线版本的建表与回退 SQL 和版本脚本放在同一目录。后续结构变更通过新增版本交付。`alembic/versions/` 保留原 MySQL 迁移历史。
+`alembic/versions/` 使用 Alembic 默认的版本目录，以空 PostgreSQL 业务库为起点。基线版本的建表与回退 SQL 和版本脚本放在同一目录。后续结构变更通过新增版本交付。
 
 ## 升级数据库
 

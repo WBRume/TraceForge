@@ -714,34 +714,3 @@ def test_vector_secret_inherit_explicitly_uses_environment_over_legacy_db(db, mo
     public = configs.public(db, "search")
     field = next(field for field in public["fields"] if field["key"] == "embedding_api_key")
     assert field["source"] == "environment" and field["value"] == "********"
-
-
-def test_additive_migration_preserves_existing_search_targets():
-    import importlib.util
-    from pathlib import Path
-
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
-    from sqlalchemy import Column, MetaData, String, Table, create_engine, inspect, select
-
-    engine = create_engine("sqlite://")
-    metadata = MetaData()
-    existing = Table("search_index_targets", metadata, Column("target_id", String(36), primary_key=True))
-    metadata.create_all(engine)
-    path = Path(__file__).resolve().parents[2] / "alembic/versions/a7c81d39e602_runtime_feature_configs.py"
-    spec = importlib.util.spec_from_file_location("feature_migration", path)
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
-    with engine.begin() as connection:
-        connection.execute(existing.insert().values(target_id="keep-existing"))
-        with Operations.context(MigrationContext.configure(connection)):
-            migration.upgrade()
-        assert "feature_configs" in inspect(connection).get_table_names()
-        assert "connection_fingerprint" in {
-            column["name"] for column in inspect(connection).get_columns("search_index_targets")
-        }
-        assert connection.execute(select(existing.c.target_id)).scalar() == "keep-existing"
-        with Operations.context(MigrationContext.configure(connection)):
-            migration.downgrade()
-        assert connection.execute(select(existing.c.target_id)).scalar() == "keep-existing"
-    engine.dispose()

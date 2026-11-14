@@ -159,48 +159,6 @@ def test_local_preinput_has_no_deadline_or_auto_submit(monkeypatch):
     engine.dispose()
 
 
-def test_incremental_migration_preserves_server_task():
-    import importlib.util
-    from pathlib import Path
-
-    import sqlalchemy as sa
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
-
-    path = Path(__file__).parents[2] / "alembic/versions/c924a10b37ef_local_resource_execution.py"
-    spec = importlib.util.spec_from_file_location("local_migration", path)
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
-    engine = sa.create_engine("sqlite://")
-    metadata = sa.MetaData()
-    for name in ("users", "workspaces", "sdd_task_share_suggestions"):
-        sa.Table(name, metadata, sa.Column("id", sa.String(36), primary_key=True))
-    sa.Table(
-        "sdd_tasks",
-        metadata,
-        sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column("project_path", sa.String(500), nullable=False),
-    )
-    sa.Table(
-        "sdd_task_pre_inputs",
-        metadata,
-        sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column("deadline_at", sa.DateTime(), nullable=False),
-    )
-    with engine.begin() as connection:
-        metadata.create_all(connection)
-        connection.execute(sa.text("INSERT INTO sdd_tasks VALUES ('existing', '/keep')"))
-        migration.op = Operations(MigrationContext.configure(connection))
-        migration.upgrade()
-        assert connection.execute(sa.text("SELECT execution_location,project_path FROM sdd_tasks")).one() == (
-            "SERVER",
-            "/keep",
-        )
-        migration.downgrade()
-        assert connection.execute(sa.text("SELECT id,project_path FROM sdd_tasks")).one() == ("existing", "/keep")
-    engine.dispose()
-
-
 def test_task_binding_does_not_wait_for_remote_git_or_provider(monkeypatch):
     from unittest.mock import Mock
 

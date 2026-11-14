@@ -1,13 +1,8 @@
 import asyncio
-import importlib.util
 import json
-from pathlib import Path
 
 import httpx
 import pytest
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
-from sqlalchemy import create_engine, text
 
 from app.domains.search.embedding import EmbeddingError, embed, encrypt_key
 from app.domains.search.embedding_protocols import PROTOCOLS, profile_fingerprint, validate_vectors
@@ -107,21 +102,3 @@ def test_protocol_appears_in_settings_and_unknown_values_are_rejected(db):
     field = next(f for f in public["fields"] if f["key"] == "embedding_protocol")
     assert field["value"] == "openai_compatible"
     assert field["option_labels"]["openai_compatible"] == "OpenAI 兼容"
-
-
-def test_migration_preserves_existing_profiles_and_supplies_legacy_protocol():
-    path = Path(__file__).parents[2] / "alembic/versions/c9a13f75d802_embedding_protocol.py"
-    spec = importlib.util.spec_from_file_location("protocol_migration", path)
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
-    engine = create_engine("sqlite://")
-    with engine.begin() as connection:
-        connection.execute(text("CREATE TABLE search_embedding_profiles (id VARCHAR(36) PRIMARY KEY)"))
-        connection.execute(text("INSERT INTO search_embedding_profiles (id) VALUES ('existing')"))
-        with Operations.context(MigrationContext.configure(connection)):
-            migration.upgrade()
-        assert connection.execute(text("SELECT id, protocol FROM search_embedding_profiles")).one() == (
-            "existing",
-            "openai_compatible",
-        )
-    engine.dispose()
