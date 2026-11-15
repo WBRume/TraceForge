@@ -18,10 +18,9 @@ class SearchRuntime:
         if self.tasks or not settings.SEARCH_ENABLED or not settings.SEARCH_WORKERS_ENABLED:
             return
         self.stop_event.clear()
-        self.tasks = [
-            asyncio.create_task(self._supervise(kind), name=f"search-{kind}-worker") for kind in ("search", "embedding")
-        ]
-        logger.info("Search and embedding workers started inside backend")
+        kinds = ("search",) if settings.SEARCH_BACKEND == "postgresql_lexical" else ("search", "embedding")
+        self.tasks = [asyncio.create_task(self._supervise(kind), name=f"search-{kind}-worker") for kind in kinds]
+        logger.info("Search workers started inside backend: %s", ", ".join(kinds))
 
     async def _supervise(self, kind):
         while not self.stop_event.is_set():

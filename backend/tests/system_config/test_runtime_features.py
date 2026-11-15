@@ -411,6 +411,45 @@ def test_runtime_refresh_rebuilds_search_and_respects_disable(feature_api, db, m
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("key,model", [("", ""), ("inherited-vector-key", "inherited-model")])
+def test_postgres_lexical_probe_and_save_do_not_require_vector_settings(feature_api, db, monkeypatch, key, model):
+    from app.domains.search.models import SearchBackfillRun
+    from app.domains.search.postgres_index import TARGET_ID
+    from app.domains.search.worker import worker_heartbeats
+
+    client, app, _, upstream_requests = feature_api
+    monkeypatch.setattr(settings, "SEARCH_ENABLED", True)
+    monkeypatch.setattr(settings, "SEARCH_EMBEDDING_API_KEY", key)
+    monkeypatch.setattr(settings, "SEARCH_EMBEDDING_MODEL", model)
+    monkeypatch.setitem(worker_heartbeats, "search", time.monotonic())
+    monkeypatch.delitem(worker_heartbeats, "embedding", raising=False)
+    app.state.search_runtime = SimpleNamespace(tasks=[SimpleNamespace(done=lambda: False)])
+    db.add(SearchBackfillRun(target_id=TARGET_ID, status="done"))
+    db.commit()
+
+    path = "/api/system-configs/features/search"
+    body = {"revision": 0, "values": {"backend": "postgresql_lexical", "workers_enabled": True}}
+    tested = client.post(path + "/test", json=body).json()
+    assert tested["status"] == "READY"
+    assert tested["mode"] == "postgresql_lexical"
+    assert tested["facts"]["worker_online"] is True
+    assert tested["facts"]["semantic_ready"] is False
+
+    saved = client.put(path, json=body)
+    assert saved.status_code == 200 and saved.json()["applied"]
+    fields = {field["key"]: field for field in client.get(path).json()["fields"]}
+    assert fields["backend"]["value"] == "postgresql_lexical"
+    assert "postgresql_lexical" not in fields["embedding_model"]["visible_when"]["backend"]
+    effective, _, _ = configs.read(db, "search")
+    assert effective["embedding_api_key"] == key
+    assert effective["embedding_model"] == model
+
+    live_status = asyncio.run(probes.probe_search(effective, app, draft=False))
+    assert live_status["status"] == "READY"
+    assert live_status["facts"]["semantic_indexing_state"] == "unavailable"
+    assert not upstream_requests
+
+
 def test_vector_space_change_creates_new_profile_and_index(feature_api, db, monkeypatch):
     _, app, _, _ = feature_api
     from app.domains.search.embedding import decrypt_key

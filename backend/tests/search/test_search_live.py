@@ -6,6 +6,7 @@ The application database, indexes and aliases are never modified.
 
 import asyncio
 import os
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
@@ -14,9 +15,11 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
+from app.core.offload import run_db_txn
 from app.core.redis_client import close_redis_client
 from app.database import Base
-from app.domains.search import sessions
+from app.domains.auth.models.user import WorkspaceMember
+from app.domains.search import postgres_index, service, sessions
 from app.domains.search.embedding import embed, encrypt_key
 from app.domains.search.es import bulk_write, create_client, index_mapping, scope_filters, search_body
 from app.domains.search.models import (
@@ -27,7 +30,7 @@ from app.domains.search.models import (
 )
 from app.domains.search.postgres_schema import metadata as search_metadata
 from app.domains.search.rrf import hybrid_search
-from app.domains.search.worker import claim, process_body, process_embedding
+from app.domains.search.worker import _advance_search_backfill, claim, process_body, process_embedding
 from app.domains.task.services.conversation import messages as task_conversation_messages
 from tests.task.test_task_chat_history_ordering import _seed_task
 
@@ -60,6 +63,55 @@ def postgres_db(monkeypatch):
         original.dispose()
 
 
+def test_postgres_full_text_indexes_and_searches_with_vector_profile_disabled(postgres_db, monkeypatch):
+    _, factory = postgres_db
+    monkeypatch.setattr(settings, "SEARCH_ENABLED", True)
+    monkeypatch.setattr(settings, "SEARCH_BACKEND", "postgresql_lexical")
+    monkeypatch.setattr(settings, "SEARCH_EMBEDDING_API_KEY", "unused-key")
+    monkeypatch.setattr(settings, "SEARCH_SESSION_NAMESPACE", "traceforge:search:test:" + uuid4().hex)
+    embed_query = AsyncMock(side_effect=AssertionError("full-text mode called the vector model"))
+    monkeypatch.setattr(service, "embed_query", embed_query)
+
+    with factory() as db:
+        task = _seed_task(db)
+        task.name = "数据库连接池耗尽"
+        db.add(WorkspaceMember(workspace_id=task.workspace_id, user_id=task.creator_id, role="OWNER"))
+        stored_profile = postgres_index.embedding_settings()
+        db.add(SearchEmbeddingProfile(**stored_profile, encrypted_api_key=encrypt_key("unused-key")))
+        db.commit()
+
+    def advance(db):
+        _advance_search_backfill(db)
+        return claim(db, SearchOutbox)
+
+    async def check():
+        try:
+            await run_db_txn(postgres_index.ensure_backfill)
+            for _ in range(8):
+                job = await run_db_txn(advance)
+                if job:
+                    await process_body(None, job)
+            assert await run_db_txn(lambda db: db.query(SearchEmbeddingJob).count()) == 0
+
+            response = await service.SearchService(None, None).search(
+                task.creator_id, {"q": "连接池", "retrieval": "hybrid", "type": "all", "limit": 20}
+            )
+            assert response["backend"] == "postgresql"
+            assert response["indexing_state"] == "ready"
+            assert response["executed_retrieval"] == "lexical"
+            assert response["semantic_indexing_state"] == "unavailable"
+            assert [item["entity_key"] for item in response["items"]] == [f"task:{task.id}"]
+            embed_query.assert_not_awaited()
+            await sessions.close(task.creator_id, response["session_cursor"])
+        finally:
+            await close_redis_client()
+
+    asyncio.run(check())
+    monkeypatch.setattr(settings, "SEARCH_BACKEND", "postgresql")
+    with factory() as db:
+        assert postgres_index.active_profile(db).id == stored_profile["id"]
+
+
 def test_postgres_es_embedding_pipeline_and_tombstone(postgres_db, monkeypatch):
     engine, factory = postgres_db
     monkeypatch.setattr(settings, "SEARCH_BACKEND", "elasticsearch")
@@ -84,8 +136,6 @@ def test_postgres_es_embedding_pipeline_and_tombstone(postgres_db, monkeypatch):
         db.add(SearchEmbeddingProfile(**profile, status="tested"))
         target = SearchIndexTarget(physical_index=name, embedding_profile_id=profile_id, dimension=1024)
         db.add(target)
-        from app.domains.auth.models.user import WorkspaceMember
-
         db.add(WorkspaceMember(workspace_id=task.workspace_id, user_id=task.creator_id, role="OWNER"))
         db.commit()
         msg = task_conversation_messages.save_chat_message(

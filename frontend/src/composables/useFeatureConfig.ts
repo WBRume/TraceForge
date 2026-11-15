@@ -20,9 +20,13 @@ export function useFeatureConfig(config: () => FeatureConfig) {
     error.value = ''
   }, { immediate: true })
 
+  const inactiveVectorField = (key: string) =>
+    config().feature === 'search' && values.backend === 'postgresql_lexical' && key.startsWith('embedding_')
+
   const patch = computed<FeaturePatch>(() => {
     const changed: FeaturePatch['values'] = {}
     config().fields.forEach(field => {
+      if (inactiveVectorField(field.key)) return
       if (field.kind !== 'secret') {
         if (values[field.key] !== field.value) changed[field.key] = values[field.key]!
         return
@@ -37,7 +41,7 @@ export function useFeatureConfig(config: () => FeatureConfig) {
   const signature = computed(() => JSON.stringify(patch.value))
   const testStale = computed(() => !!testResult.value && testedSignature.value !== signature.value)
   const invalidSecret = computed(() => Object.keys(secretActions).some(key =>
-    secretActions[key] === 'replace' && !String(values[key] || '').trim()))
+    !inactiveVectorField(key) && secretActions[key] === 'replace' && !String(values[key] || '').trim()))
   const updateSecret = (key: string, value: string) => {
     values[key] = value
     secretActions[key] = value ? 'replace' : 'keep'

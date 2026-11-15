@@ -17,9 +17,14 @@ def test_disabled_runtime_does_not_start(monkeypatch, enabled, workers):
     assert owner.tasks == []
 
 
-def test_runtime_starts_once_and_drains_on_shutdown(monkeypatch):
+@pytest.mark.parametrize(
+    "backend,expected_kinds",
+    [("postgresql", ["embedding", "search"]), ("postgresql_lexical", ["search"])],
+)
+def test_runtime_starts_once_and_drains_on_shutdown(monkeypatch, backend, expected_kinds):
     monkeypatch.setattr(runtime.settings, "SEARCH_ENABLED", True)
     monkeypatch.setattr(runtime.settings, "SEARCH_WORKERS_ENABLED", True)
+    monkeypatch.setattr(runtime.settings, "SEARCH_BACKEND", backend)
     started, finished = [], []
 
     async def consumer(kind, stop_event):
@@ -36,7 +41,7 @@ def test_runtime_starts_once_and_drains_on_shutdown(monkeypatch):
         await asyncio.sleep(0)
         await owner.stop()
         await owner.stop()
-        assert sorted(started) == ["embedding", "search"]
+        assert sorted(started) == expected_kinds
         assert sorted(finished) == sorted(started)
         assert owner.tasks == []
 

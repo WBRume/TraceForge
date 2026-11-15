@@ -220,11 +220,9 @@ watch(() => route.params.feature, () => {
           <!-- 1. Platform feature forms (Speech, Search, Diagnosis, OAuth, Agent) -->
           <div v-if="currentService" class="service-form-wrapper">
             <FeatureConfigForm v-if="currentService.config" :config="currentService.config" :action-target="configActionsEl" @saved="onConfigSaved">
-              <SearchIndexManagement
-                v-if="currentService.feature === 'search'"
-                :revision="currentService.config.revision"
-                @changed="refresh()"
-              />
+              <template v-if="currentService.feature === 'search'" #search-index-management>
+                <SearchIndexManagement :revision="currentService.config.revision" @changed="refresh()" />
+              </template>
             </FeatureConfigForm>
             <div v-else class="empty-state">
               <p>{{ $t(serviceLoading ? 'feature_config.probing' : 'feature_config.config_unavailable') }}</p>

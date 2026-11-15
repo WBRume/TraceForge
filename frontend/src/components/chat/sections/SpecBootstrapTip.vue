@@ -126,6 +126,9 @@ const bootstrapText = computed(() => {
   display: flex;
   justify-content: center;
   width: 100%;
+  /* 让出悬浮工具栏的真实底边（顶距 + 实测高度），padding 再留出与工具栏的间距；
+     只让出高度会让胶囊压到工具栏下缘并被毛玻璃遮住 */
+  margin-top: var(--chat-header-bottom, 0px);
   padding: 8px var(--space-6) 0;
   box-sizing: border-box;
 }

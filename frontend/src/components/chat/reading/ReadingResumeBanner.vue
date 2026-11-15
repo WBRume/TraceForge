@@ -84,6 +84,8 @@ const needsReturnLatest = computed(() => props.syncState === 'stale' || props.sy
 <style scoped>
 .reading-resume-banner-wrapper {
   position: absolute;
+  /* 让出悬浮工具栏（--chat-overlay-inset 已含工具栏顶距与实测高度），再留 10px 呼吸位，
+     避免未读胶囊压到工具栏下缘被毛玻璃遮住 */
   top: calc(var(--chat-overlay-inset, 0px) + 10px);
   left: 0;
   right: 0;

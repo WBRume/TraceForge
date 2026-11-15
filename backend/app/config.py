@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     # PostgreSQL provides lexical search and optional semantic retrieval.
     SEARCH_ENABLED: bool = True
     SEARCH_WORKERS_ENABLED: bool = True
-    SEARCH_BACKEND: Literal["auto", "elasticsearch", "postgresql"] = "postgresql"
+    SEARCH_BACKEND: Literal["auto", "elasticsearch", "postgresql", "postgresql_lexical"] = "postgresql"
     SEARCH_ES_URL: str = ""
     SEARCH_READ_ALIAS: str = "traceforge-search-read"
     SEARCH_ES_USERNAME: str = "elastic"

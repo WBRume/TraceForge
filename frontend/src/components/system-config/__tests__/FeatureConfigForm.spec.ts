@@ -81,6 +81,51 @@ it('renders plugin fields and only the selected provider recognition methods', a
   wrapper.unmount()
 })
 
+it('tests and saves PostgreSQL full-text mode with a hidden vector draft', async () => {
+  const config: FeatureConfig = {
+    ...configuration,
+    feature: 'search',
+    fields: [
+      { ...field('backend', '搜索引擎', '', 'postgresql'), kind: 'select', options: ['postgresql', 'postgresql_lexical'] },
+      { ...field('embedding_api_key', '向量服务 API Key', '', 'masked'), kind: 'secret',
+        visible_when: { backend: ['postgresql'] } },
+    ],
+  }
+  const save = vi.spyOn(featureConfigApi, 'save').mockResolvedValue({
+    data: { config, applied: true, message: '' },
+  } as Awaited<ReturnType<typeof featureConfigApi.save>>)
+  const test = vi.spyOn(featureConfigApi, 'test').mockResolvedValue({
+    data: { status: 'READY', explanation: '', guidance: '' },
+  } as Awaited<ReturnType<typeof featureConfigApi.test>>)
+  const wrapper = mount(FeatureConfigForm, {
+    props: { config },
+    slots: { 'search-index-management': '<div>向量索引管理</div>' },
+    global: { plugins: [i18n], stubs: { teleport: true, 'el-tooltip': true } },
+  })
+  try {
+    await wrapper.get('#feature-search-embedding_api_key').setValue(' ')
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+    const backend = wrapper.getComponent(BaseSelect)
+    expect(backend.props('options')).toContainEqual({ value: 'postgresql_lexical', label: 'PostgreSQL 全文检索' })
+    backend.vm.$emit('update:modelValue', 'postgresql_lexical')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('#feature-search-embedding_api_key').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('向量索引管理')
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('.action-buttons button[type="button"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const patch = { revision: config.revision, values: { backend: 'postgresql_lexical' } }
+    expect(test).toHaveBeenCalledWith('search', patch)
+    expect(save).toHaveBeenCalledWith('search', patch)
+  } finally {
+    wrapper.unmount()
+    save.mockRestore()
+    test.mockRestore()
+  }
+})
+
 it('saves a changed Agent address only after confirmation in the shared dialog', async () => {
   const config: FeatureConfig = {
     ...configuration,

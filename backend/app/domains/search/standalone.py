@@ -37,7 +37,9 @@ async def load():
 async def main(kind, once=False):
     while True:
         generation = await load()
-        enabled = feature_settings.SEARCH_ENABLED
+        enabled = feature_settings.SEARCH_ENABLED and (
+            kind != "embedding" or feature_settings.SEARCH_BACKEND != "postgresql_lexical"
+        )
         if not enabled:
             if once:
                 return False

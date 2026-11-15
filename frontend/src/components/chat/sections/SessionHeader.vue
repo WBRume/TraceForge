@@ -218,7 +218,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .chat-header {
   position: absolute;
-  top: 10px;
+  /* 顶距由聊天区变量统一提供，内容让位据此计算工具栏真实底边 */
+  top: var(--chat-header-top, 10px);
   left: 14px;
   right: 14px;
   min-height: 54px;

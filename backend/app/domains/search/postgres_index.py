@@ -33,6 +33,10 @@ def es_enabled(url=None, backend=None):
     return backend == "elasticsearch" or backend == "auto" and bool(url.strip())
 
 
+def embedding_enabled(backend, key):
+    return backend != "postgresql_lexical" and bool(key.strip())
+
+
 def embedding_settings():
     data = {
         "endpoint": settings.SEARCH_EMBEDDING_ENDPOINT.rstrip("/"),
@@ -47,7 +51,7 @@ def embedding_settings():
 def ensure_backfill(db):
     """Register a restartable backfill when the lexical index or vector space is new."""
     key = settings.SEARCH_EMBEDDING_API_KEY.strip()
-    data = embedding_settings() if key else None
+    data = embedding_settings() if embedding_enabled(settings.SEARCH_BACKEND, key) else None
     if data:
         profile = db.query(SearchEmbeddingProfile).filter_by(id=data["id"]).with_for_update().first()
         if not profile:
@@ -66,6 +70,9 @@ def ensure_backfill(db):
                 db.query(SearchEmbeddingJob).filter_by(
                     target_id=TARGET_ID, profile_id=profile.id, status="dead"
                 ).update({"status": "pending", "attempts": 0, "available_at": datetime.utcnow()})
+    elif db.query(SearchBackfillRun.id).filter_by(target_id=TARGET_ID, status="done").first():
+        # A prior vector backfill has already populated the same lexical projection.
+        return
     backfill_id = data["id"] if data else str(uuid5(NAMESPACE_URL, "traceforge:postgres:lexical"))
     backfill = db.query(SearchBackfillRun).filter_by(id=backfill_id).with_for_update().first()
     if backfill and data and backfill.status == "done":
@@ -98,7 +105,7 @@ def ensure_backfill(db):
 
 
 def active_profile(db):
-    if not settings.SEARCH_EMBEDDING_API_KEY.strip():
+    if not embedding_enabled(settings.SEARCH_BACKEND, settings.SEARCH_EMBEDDING_API_KEY):
         return None
     return db.get(SearchEmbeddingProfile, embedding_settings()["id"])
 

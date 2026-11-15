@@ -4250,6 +4250,7 @@
       "singapore": "Singapore",
       "auto": "Automatic / local fallback",
       "postgresql": "PostgreSQL full-text and vector search",
+      "postgresql_lexical": "PostgreSQL full-text search",
       "elasticsearch": "Elasticsearch",
       "semantic": "Semantic / vector search",
       "lexical": "Remote keyword search",

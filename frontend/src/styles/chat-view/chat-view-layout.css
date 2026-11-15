@@ -22,8 +22,11 @@
   position: relative;
   container-name: chat-main;
   container-type: inline-size;
+  --chat-header-top: 10px;
   --chat-header-height: 60px;
-  --chat-overlay-inset: var(--chat-header-height);
+  /* 工具栏真实底边 = 顶距 + 实测高度；内容/提示条让位必须包含顶距 */
+  --chat-header-bottom: calc(var(--chat-header-height) + var(--chat-header-top));
+  --chat-overlay-inset: var(--chat-header-bottom);
 }
 .chat-main.is-sop {
   --chat-overlay-inset: 0px;

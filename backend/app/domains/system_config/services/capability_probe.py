@@ -87,10 +87,10 @@ def make_search_client(values):
     )
 
 
-async def search_worker_health(values, app):
+async def search_worker_health(values, app, *, requires_embedding=True):
     from app.domains.search.worker import heartbeat_binding, worker_heartbeats
 
-    kinds = ("search", "embedding")
+    kinds = ("search", "embedding") if requires_embedding else ("search",)
     workers = getattr(app.state, "search_runtime", None)
     if values["workers_enabled"]:
         return bool(
@@ -121,7 +121,8 @@ async def probe_search(values, app, draft):
         local_target, local_profile = await run_db_txn(postgres_index.configuration)
         local_ready = local_target["verified"]
     if not postgres_index.es_enabled(values["es_url"], values["backend"]):
-        if draft and values["embedding_api_key"]:
+        vector_requested = postgres_index.embedding_enabled(values["backend"], values["embedding_api_key"])
+        if draft and vector_requested:
             async with httpx.AsyncClient(timeout=4, follow_redirects=False) as client:
                 await embed(
                     client,
@@ -135,18 +136,16 @@ async def probe_search(values, app, draft):
                     ["连接测试"],
                     runtime_credentials=False,
                 )
-        online = await search_worker_health(values, app)
-        semantic = bool(local_profile and local_target["semantic_indexing_state"] == "ready")
+        online = await search_worker_health(values, app, requires_embedding=vector_requested)
+        semantic = bool(vector_requested and local_profile and local_target["semantic_indexing_state"] == "ready")
         return result(
             "search",
-            "READY"
-            if draft or local_ready and online and (semantic or not values["embedding_api_key"])
-            else "DEGRADED",
-            "postgresql",
+            "READY" if draft or local_ready and online and (semantic or not vector_requested) else "DEGRADED",
+            "postgresql" if vector_requested else "postgresql_lexical",
             "PostgreSQL 搜索索引已就绪" if local_ready else "PostgreSQL 搜索索引正在构建",
             index_ready=local_ready,
             semantic_ready=semantic,
-            semantic_indexing_state=local_target["semantic_indexing_state"],
+            semantic_indexing_state=local_target["semantic_indexing_state"] if vector_requested else "unavailable",
             worker_online=online,
         )
     if not values["es_url"]:

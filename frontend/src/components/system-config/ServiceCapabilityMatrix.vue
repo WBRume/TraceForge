@@ -82,7 +82,9 @@ const moveTab = (event: KeyboardEvent) => {
       <div v-for="item in services" v-show="active === item.feature" :id="'config-panel-' + item.feature" :key="item.feature"
         role="tabpanel" :aria-labelledby="'config-tab-' + item.feature">
         <FeatureConfigForm v-if="item.config" :config="item.config" @saved="saved">
-          <SearchIndexManagement v-if="item.feature === 'search' && active === 'search'" :revision="item.config.revision" @changed="refresh()" />
+          <template v-if="item.feature === 'search' && active === 'search'" #search-index-management>
+            <SearchIndexManagement :revision="item.config.revision" @changed="refresh()" />
+          </template>
         </FeatureConfigForm>
         <p v-else class="matrix-empty">{{ t(loading ? 'feature_config.probing' : 'feature_config.config_unavailable') }}</p>
       </div>

@@ -181,6 +181,7 @@ const confirmSave = async () => {
         </div>
       </fieldset>
     </form>
+    <slot v-if="values.backend !== 'postgresql_lexical'" name="search-index-management" />
     <slot />
     <details class="reset-config">
       <summary>{{ t('feature_config.reset') }}</summary>

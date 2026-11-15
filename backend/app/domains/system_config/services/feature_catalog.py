@@ -4,6 +4,8 @@ from app.domains.ai.speech.registry import PROVIDERS, provider_fields
 from app.domains.search.embedding_protocols import PROTOCOLS
 from app.domains.system_config.services.config_fields import ConfigField
 
+_EMBEDDING_FIELDS_VISIBLE_WHEN = (("backend", ("postgresql", "auto", "elasticsearch")),)
+
 CATALOG = {
     "speech": (
         "语音输入",
@@ -76,10 +78,10 @@ CATALOG = {
                 "搜索引擎",
                 "SEARCH_BACKEND",
                 "select",
-                ("postgresql", "auto", "elasticsearch"),
+                ("postgresql", "postgresql_lexical", "auto", "elasticsearch"),
                 hint=(
-                    "PostgreSQL 提供中文全文检索和向量检索。自动模式优先使用已配置的 Elasticsearch，"
-                    "连接失败时回退到 PostgreSQL。选择 Elasticsearch 时需填写可访问的地址和凭据。"
+                    "只需要关键词搜索时，选择 PostgreSQL 全文检索即可，无需配置向量模型。"
+                    "自动模式优先使用已配置的 Elasticsearch，连接失败时回退到 PostgreSQL。"
                 ),
             ),
             ConfigField(
@@ -114,6 +116,7 @@ CATALOG = {
                 tuple(PROTOCOLS),
                 option_labels=tuple((key, protocol.label) for key, protocol in PROTOCOLS.items()),
                 hint="按接口协议选择适配器；OpenAI 兼容接口可使用不同供应商的地址和模型。",
+                visible_when=_EMBEDDING_FIELDS_VISIBLE_WHEN,
             ),
             ConfigField(
                 "embedding_endpoint",
@@ -126,6 +129,7 @@ CATALOG = {
                     "前提：需为 HTTPS 且可从后端访问；"
                     "需与向量模型、向量服务 API Key 一同配置后语义检索才会生效。"
                 ),
+                visible_when=_EMBEDDING_FIELDS_VISIBLE_WHEN,
             ),
             ConfigField(
                 "embedding_model",
@@ -137,8 +141,15 @@ CATALOG = {
                     "前提：需与向量服务端点提供的模型名称完全一致；"
                     "更换模型后需重建索引，否则检索结果不可用。"
                 ),
+                visible_when=_EMBEDDING_FIELDS_VISIBLE_WHEN,
             ),
-            ConfigField("embedding_api_key", "向量服务 API Key", "SEARCH_EMBEDDING_API_KEY", "secret"),
+            ConfigField(
+                "embedding_api_key",
+                "向量服务 API Key",
+                "SEARCH_EMBEDDING_API_KEY",
+                "secret",
+                visible_when=_EMBEDDING_FIELDS_VISIBLE_WHEN,
+            ),
         ),
     ),
     "diagnosis": (

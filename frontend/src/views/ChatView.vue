@@ -621,10 +621,14 @@ watch(
   border: 1px solid rgba(0, 0, 0, 0.06);
   box-shadow: 0 8px 26px -4px rgba(15, 23, 42, 0.05);
   overflow: hidden;
-  /* 工具栏悬浮层高度（由 SessionHeader 的 ResizeObserver 写入），
+  /* 工具栏悬浮层的顶距与高度（高度由 SessionHeader 的 ResizeObserver 写入），
      用于内容首屏让位与滚动场景下的可视区内边距 */
+  --chat-header-top: 10px;
   --chat-header-height: 60px;
-  --chat-overlay-inset: var(--chat-header-height);
+  /* 工具栏真实底边：悬浮层顶距 + 实测高度。
+     提示条/内容若只让出高度会压到工具栏下缘，必须包含顶距 */
+  --chat-header-bottom: calc(var(--chat-header-height) + var(--chat-header-top));
+  --chat-overlay-inset: var(--chat-header-bottom);
 }
 /* SOP 三栏会自行让出工具栏高度，避免二次偏移 */
 .chat-main.is-sop {
@@ -773,11 +777,6 @@ watch(
   flex: 1;
   min-height: 0;
   padding: calc(var(--chat-header-height, 60px) + 10px) var(--space-6) var(--space-6);
-}
-
-/* 预启动提示位于悬浮工具栏下方，避免被毛玻璃遮住 */
-.spec-bootstrap-wrapper {
-  margin-top: var(--chat-overlay-inset, 0px);
 }
 
 /* ConfirmActionModal 的 content slot 渲染在本组件作用域内，动作行样式由本组件提供 */
