@@ -265,12 +265,11 @@ def diff(db, task, user_id, scope: str = "cumulative"):
                 "right": right,
             }
         )
-    if scope == "cumulative":
-        root_files, root_running = workspace_review.diff(
-            db, task, [repo["rel_path"] for repo in cloud["repositories"]], scope
-        )
-        files.extend(root_files)
-        running = running or root_running
+    root_files, root_running = workspace_review.diff(
+        db, task, [repo["rel_path"] for repo in cloud["repositories"]], scope
+    )
+    files.extend(root_files)
+    running = running or root_running
     return {
         "scope": scope,
         "baseline_snapshot_id": baseline["snapshot_id"],

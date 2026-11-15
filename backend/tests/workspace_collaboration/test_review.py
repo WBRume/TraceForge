@@ -129,6 +129,7 @@ def test_remote_update_without_a_new_turn_is_not_reported_as_round_edits(environ
     task.task_meta_json = {**task.task_meta_json, "repository_baselines": baselines}
     task.session_generation = 2
     task.session_revision = 1
+    (root / "previous-generation.txt").write_text("preserved task output")
     db.commit()
     monkeypatch.setattr(review, "_checkpoint_inventory", lambda *args: pytest.fail("No round in this generation"))
     round_diff = review.diff(db, task, "viewer", "round")
@@ -138,7 +139,9 @@ def test_remote_update_without_a_new_turn_is_not_reported_as_round_edits(environ
     assert round_diff["baseline_snapshot_id"] == round_diff["cloud_snapshot_id"]
     assert db.get(CollaborationState, task.id) is None
     baseline = review.committed_baseline(db, task, "viewer")
-    entry = next(file for file in review.diff(db, task, "viewer")["files"] if file["path"] == "same.txt")
+    cumulative = review.diff(db, task, "viewer")["files"]
+    assert any(file["path"] == "previous-generation.txt" for file in cumulative)
+    entry = next(file for file in cumulative if file["path"] == "same.txt")
     committed = next(
         file
         for repo in baseline["repositories"]
@@ -159,6 +162,8 @@ def test_readonly_latest_turn_multi_repo_uses_recorded_input_without_connecting(
     (root / "api/.gitignore").write_text("private.log\n")
     (root / "api/private.log").write_text("private")
     (root / "api/.env").write_text("secret")
+    (root / "previous-turn.txt").write_text("unchanged this round")
+    (root / "report.txt").write_bytes(b"before this round\n")
     checkpoint = snapshots._create_checkpoint_sync(
         task.project_path,
         ["api", "web"],
@@ -189,6 +194,7 @@ def test_readonly_latest_turn_multi_repo_uses_recorded_input_without_connecting(
     (root / "api/same.txt").write_bytes(b"agent result\n")
     (root / "api/new.txt").write_text("created\n")
     (root / "web/same.txt").unlink()
+    (root / "report.txt").write_bytes(b"after this round\n")
     before = {repo: git(root / repo, "status", "--porcelain") for repo in ["api", "web"]}
     result = review.diff(db, task, "viewer", "round")
     db.commit()
@@ -201,12 +207,15 @@ def test_readonly_latest_turn_multi_repo_uses_recorded_input_without_connecting(
         ("api", "same.txt"),
         ("api", "new.txt"),
         ("web", "same.txt"),
+        ("", "report.txt"),
     }
     store = content.ObjectStore(task)
     assert store.read(entries["api", "same.txt"]["left"]["sha256"]) == b"human input\n"
     assert store.read(entries["api", "same.txt"]["right"]["sha256"]) == b"agent result\n"
     assert entries["api", "new.txt"]["change"] == "A" and entries["api", "new.txt"]["left"] is None
     assert entries["web", "same.txt"]["change"] == "D" and entries["web", "same.txt"]["right"] is None
+    assert store.read(entries["", "report.txt"]["left"]["sha256"]) == b"before this round\n"
+    assert store.read(entries["", "report.txt"]["right"]["sha256"]) == b"after this round\n"
     assert db.get(CollaborationState, task.id) is None
     assert before == {repo: git(root / repo, "status", "--porcelain") for repo in before}
     monkeypatch.setattr(review, "_checkpoint_inventory", lambda *args: pytest.fail("Baseline must be reused"))
@@ -302,10 +311,12 @@ def test_initial_engine_output_is_reviewable_before_a_session_turn_is_recorded(e
     db.commit()
     (root / "api" / "same.txt").write_bytes(b"bootstrap agent edit\n")
     (root / "web" / "created.txt").write_bytes(b"bootstrap agent addition\n")
+    (root / "report.txt").write_bytes(b"bootstrap workspace report\n")
     result = review.diff(db, task, "viewer", "round")
     assert {(file["repo_slug"], file["path"], file["change"]) for file in result["files"]} == {
         ("api", "same.txt", "M"),
         ("web", "created.txt", "A"),
+        ("", "report.txt", "A"),
     }
     assert result["running"] is False
     assert db.query(TaskSessionTurn).filter_by(task_id=task.id).count() == 0

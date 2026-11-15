@@ -67,7 +67,7 @@ def _files(store: content.ObjectStore, entries: dict) -> dict:
     }
 
 
-def _baseline(db, task, root, store, policy, repository_paths, scope) -> dict:
+def _baseline(db, task, root, store, policy, repository_paths, scope) -> dict | None:
     checkpoint = (task.task_meta_json or {}).get("initial_workspace_checkpoint")
     path = Path(checkpoint, "worktree.json") if checkpoint else None
     if scope == "round":
@@ -79,6 +79,9 @@ def _baseline(db, task, root, store, policy, repository_paths, scope) -> dict:
         )
         if turn and turn.worktree_snapshot_path:
             path = Path(turn.worktree_snapshot_path)
+        elif turn is None and (task.session_generation or 0) > 1:
+            # A new generation has no round edits until its first turn starts.
+            return None
     if not path or not path.is_file():
         return {}
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -133,6 +136,8 @@ def diff(db, task, repository_paths: list[str], scope: str) -> tuple[list[dict],
     if part is None:
         return [], running
     old = _baseline(db, task, root, store, policy, excluded_roots, scope)
+    if old is None:
+        return [], running
     new = _files(store, git_store.tree_entries(part, str(root), snapshot_files.validate_relative_path))
     return [
         {
