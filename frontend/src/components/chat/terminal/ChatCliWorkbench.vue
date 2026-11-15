@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { taskStatusKey } from '@/utils/taskStatus'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { useChatTerminalController, type ChatTerminalBridge } from '@/composables/chat-terminal/useChatTerminalController'
@@ -64,11 +63,6 @@ const submitHitl = (cardId: string, response: string) => {
   props.vm.submitHitl(cardId, response)
 }
 
-const useQuickCommand = (command: string) => {
-  controller.inputValue.value = command
-  void refocusInput()
-}
-
 const submitCommand = async () => {
   await controller.submitInput()
   await refocusInput()
@@ -93,20 +87,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="cli-workbench glass-panel">
-    <header class="cli-toolbar">
-      <div class="cli-toolbar-left">
-        <h3 class="cli-title">{{ vm.t('chat.cli_title') }}</h3>
-        <span class="cli-status">{{ $t(taskStatusKey(vm.currentTask?.status)) }}</span>
-      </div>
-      <div class="cli-shortcuts">
-        <button class="chip-btn chip-query" @click="useQuickCommand('/help')">/help</button>
-        <button class="chip-btn chip-query" @click="useQuickCommand('/status')">/status</button>
-        <button class="chip-btn chip-danger" @click="useQuickCommand('/interrupt')">/interrupt</button>
-        <button class="chip-btn chip-local" @click="useQuickCommand('/clear')">/clear</button>
-      </div>
-    </header>
-
+  <section class="cli-workbench">
     <div ref="timelineContainer" class="cli-timeline-shell" @scroll="handleTimelineScroll">
       <TerminalTimeline
         :entries="timelineEntries"
@@ -145,90 +126,26 @@ onBeforeUnmount(() => {
 .cli-workbench {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-width: 0;
   min-height: 0;
-  padding: 12px;
+  padding: 0 var(--space-4) var(--space-4);
   gap: 10px;
-  background: linear-gradient(180deg, #0b1423 0%, #060b15 100%);
-  border: 1px solid #1f2c42;
-}
-
-.cli-toolbar {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.cli-toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-
-.cli-title {
-  margin: 0;
-  font-size: 14px;
-  color: #d4deea;
-}
-
-.cli-status {
-  font-size: 12px;
-  color: #8ba0bc;
-}
-
-.cli-shortcuts {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.chip-btn {
-  border: 1px solid #2a3a53;
-  border-radius: 999px;
-  background: #0d1728;
-  color: #a9b8cc;
-  font-size: 11px;
-  padding: 4px 8px;
-  cursor: pointer;
-}
-
-.chip-btn.chip-query {
-  border-color: #244f82;
-  color: #8fc5ff;
-}
-
-.chip-btn.chip-danger {
-  border-color: #6d3046;
-  color: #f39eb5;
-}
-
-.chip-btn.chip-local {
-  border-color: #7a6022;
-  color: #f2c36c;
 }
 
 .cli-timeline-shell {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  border-radius: 10px;
-  border: 1px solid #1f2c42;
-  background: rgba(5, 10, 18, 0.8);
-  padding: 10px;
+  --timeline-top: var(--cli-timeline-inset, calc(var(--chat-header-bottom, 0px) + var(--space-2)));
+  padding-block-start: var(--timeline-top);
+  scroll-padding-block-start: var(--timeline-top);
+  scrollbar-color: #33445f transparent;
 }
 
 .cli-hint {
   margin: 0;
   font-size: 12px;
   color: #7f92ac;
-}
-
-@media (max-width: 900px) {
-  .cli-workbench {
-    padding: 10px;
-  }
 }
 </style>

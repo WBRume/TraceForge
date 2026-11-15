@@ -207,7 +207,7 @@ onBeforeUnmount(() => {
       <ChatMoreActionsMenu
         :can-export="props.vm.canExportTask"
         :can-share="props.vm.canShareTaskSession"
-        :show-attribution="props.vm.chatWorkbenchMode === 'platform'"
+        show-attribution
         :attribution-active="props.vm.contextWindowDrawerOpen"
         @export="props.vm.handleExport"
         @open-attribution="props.vm.openContextWindowDrawer"
@@ -236,7 +236,7 @@ onBeforeUnmount(() => {
   border-radius: 14px;
   border: 1px solid rgba(203, 213, 225, 0.5);
   /* 磨玻璃：更透的冷白底 + 轻渐变高光，滚动内容透出时保留模糊与饱和度 */
-  background-color: rgba(241, 245, 249, 0.38);
+  background-color: var(--chat-header-glass, rgba(241, 245, 249, 0.38));
   background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.04));
   backdrop-filter: blur(22px) saturate(1.8);
   -webkit-backdrop-filter: blur(22px) saturate(1.8);
@@ -255,7 +255,7 @@ onBeforeUnmount(() => {
   will-change: transform, opacity;
 }
 .chat-header:hover {
-  background-color: rgba(248, 250, 252, 0.52);
+  background-color: var(--chat-header-glass-hover, rgba(248, 250, 252, 0.52));
   box-shadow:
     0 16px 36px -24px rgba(15, 23, 42, 0.45),
     0 1px 2px rgba(15, 23, 42, 0.05),

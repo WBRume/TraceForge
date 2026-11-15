@@ -55,7 +55,7 @@ const cleanupBody = () => {
 }
 
 describe('ChatMoreActionsMenu', () => {
-  it('opens task details after pointerdown inside the teleported menu, also in CLI mode', async () => {
+  it('opens task details after pointerdown inside the teleported menu', async () => {
     const wrapper = mountMenu({ showAttribution: false })
     const panel = await openMenu(wrapper)
     const item = findItem(panel, '查看任务详情')
@@ -83,7 +83,7 @@ describe('ChatMoreActionsMenu', () => {
     cleanupBody()
   })
 
-  it('hides attribution entry when showAttribution is false (CLI mode)', async () => {
+  it('hides attribution entry when showAttribution is false', async () => {
     const wrapper = mountMenu({ showAttribution: false })
     const panel = await openMenu(wrapper)
     const labels = itemLabels(panel)

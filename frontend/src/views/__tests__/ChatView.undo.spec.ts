@@ -12,6 +12,8 @@ vi.mock('@/composables/chat/useChatViewModel', () => ({
     activePreInput: ref(null),
     activeHitlCards: [],
     taskListContainer: ref(null),
+    chatContainer: ref(null),
+    terminalContainer: ref(null),
     chatWorkbenchMode: 'platform',
     engineRunning: false,
     isChatLocked: false,

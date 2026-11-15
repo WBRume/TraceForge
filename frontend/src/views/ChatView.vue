@@ -50,8 +50,10 @@ provide(contextAnnotationsKey, rawVm.annotations)
 const vm = proxyRefs(rawVm)
 // 向上回看历史时自动收起工具栏，滚动回到底部再展开
 const { hidden: headerHidden, reveal: revealHeader } = useAutoHideHeader({
-  container: rawVm.chatContainer,
-  resetKey: () => rawVm.currentTask.value?.id ?? '',
+  container: computed(() => vm.chatWorkbenchMode === 'cli'
+    ? rawVm.terminalContainer.value
+    : rawVm.chatContainer.value),
+  resetKey: () => [rawVm.currentTask.value?.id, rawVm.chatWorkbenchMode.value],
 })
 const playbook = proxyRefs(useDiagnosisPlaybook({
   workspaceId: () => String(rawVm.route.params.wsId || ''),
@@ -213,7 +215,7 @@ watch(
     <!-- Center: Chat + Pinned Cards -->
     <section
       class="chat-main"
-      :class="{ 'is-session-busy': vm.isUndoing || vm.initializingTask, 'is-sop': sopEnabled }"
+      :class="{ 'is-session-busy': vm.isUndoing || vm.initializingTask, 'is-sop': sopEnabled, 'is-cli': vm.chatWorkbenchMode === 'cli' }"
       :aria-busy="vm.isUndoing || vm.initializingTask"
       v-if="vm.currentTask"
     >
@@ -376,15 +378,11 @@ watch(
       </ChatExecutionInput>
       </DiagnosisSopLayout>
       </template>
-      <template v-else>
-        <div class="cli-shell-wrapper">
-          <ChatCliWorkbench :vm="vm">
-            <template v-if="vm.agentSessionUnavailable" #hint>
-              <AgentSessionNotice v-model:replacing="vm.replacingAgentSession" :busy="vm.sendingChat" :can-replace="!vm.isChatLocked" />
-            </template>
-          </ChatCliWorkbench>
-        </div>
-      </template>
+      <ChatCliWorkbench v-else :vm="vm">
+        <template v-if="vm.agentSessionUnavailable" #hint>
+          <AgentSessionNotice v-model:replacing="vm.replacingAgentSession" :busy="vm.sendingChat" :can-replace="!vm.isChatLocked" />
+        </template>
+      </ChatCliWorkbench>
     </section>
 
     <!-- Empty State -->
@@ -634,6 +632,15 @@ watch(
 .chat-main.is-sop {
   --chat-overlay-inset: 0px;
 }
+.chat-main.is-cli {
+  background: linear-gradient(180deg, #0e1828, #080f1b);
+  /* 深色轨迹滚过共享工具栏下方时，保持浅色工具栏的对比度。 */
+  --chat-header-glass: rgba(250, 251, 253, 0.98);
+  --chat-header-glass-hover: rgba(251, 252, 254, 0.99);
+}
+.chat-main.is-cli > .spec-bootstrap-wrapper + .cli-workbench {
+  --cli-timeline-inset: var(--space-2);
+}
 /* 工具栏自动收起后的顶部召回感应带：不占布局，也不遮挡工具栏按钮 */
 .chat-header-recall {
   position: absolute;
@@ -771,12 +778,6 @@ watch(
     stroke-dasharray: 2 98;
     stroke-dashoffset: -100;
   }
-}
-
-.cli-shell-wrapper {
-  flex: 1;
-  min-height: 0;
-  padding: calc(var(--chat-header-height, 60px) + 10px) var(--space-6) var(--space-6);
 }
 
 /* ConfirmActionModal 的 content slot 渲染在本组件作用域内，动作行样式由本组件提供 */
