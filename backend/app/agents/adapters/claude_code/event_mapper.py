@@ -16,6 +16,10 @@ PROVIDER = "claude-code"
 
 _SILENT_SYSTEM_SUBTYPES = {"thinking_tokens"}
 _DEBUG_SYSTEM_SUBTYPES = {"hook_started", "hook_response"}
+_SERVER_TOOL_RESULTS = {
+    "web_search_tool_result": "web_search",
+    "web_fetch_tool_result": "web_fetch",
+}
 
 
 def _text(value: Any) -> str:
@@ -36,6 +40,55 @@ def _json_text(value: Any, max_len: int = 5000) -> str:
     if len(text) > max_len:
         return f"{text[:max_len]}..."
     return text
+
+
+def _map_server_tool_result(block: dict[str, Any], kind: str) -> AgentEvent | None:
+    call_id = _text(block.get("tool_use_id"))
+    if not call_id:
+        return None
+    content = block.get("content")
+    items = content if isinstance(content, list) else [content]
+    output = []
+    is_error = bool(block.get("is_error"))
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        error_code = _text(item.get("error_code"))
+        is_error |= bool(error_code) or _text(item.get("type")).endswith("_error")
+        summary = " · ".join(filter(None, [_text(item.get("title")), _text(item.get("url")), error_code]))
+        if summary:
+            output.append(summary)
+    return AgentEvent(
+        type="tool_result",
+        payload={"tool_use_id": call_id, "tool_kind": kind, "output": "\n".join(output), "is_error": is_error},
+        provider=PROVIDER,
+        raw=block,
+        time=_iso_time(),
+    )
+
+
+def _map_tool_result_block(block: dict[str, Any], block_type: str) -> AgentEvent | None:
+    call_id = _text(block.get("tool_use_id"))
+    if not call_id:
+        return None
+    output = block.get("output", block.get("content"))
+    if isinstance(output, list):
+        parts = [
+            _text(item.get("text") or item.get("output")) if isinstance(item, dict) else _text(item) for item in output
+        ]
+        output = "\n".join(filter(None, parts))
+    return AgentEvent(
+        type="tool_result",
+        payload={
+            "tool_use_id": call_id,
+            "output": _text(output),
+            "is_error": bool(block.get("is_error")),
+            **({"tool_kind": "mcp"} if block_type == "mcp_tool_result" else {}),
+        },
+        provider=PROVIDER,
+        raw=block,
+        time=_iso_time(),
+    )
 
 
 def _map_assistant_block(block: dict[str, Any]) -> list[AgentEvent]:
@@ -65,47 +118,31 @@ def _map_assistant_block(block: dict[str, Any]) -> list[AgentEvent]:
                     time=_iso_time(),
                 )
             )
-    elif block_type == "tool_use":
+    elif block_type in {"tool_use", "server_tool_use", "mcp_tool_use"}:
         tool_name = _text(block.get("name"))
         tool_use_id = _text(block.get("id"))
+        if not tool_name or not tool_use_id:
+            return events
+        payload = {"tool_use_id": tool_use_id, "tool_name": tool_name, "tool_input": block.get("input", {})}
+        if block_type == "mcp_tool_use":
+            payload.update(tool_kind="mcp", mcp_server=_text(block.get("server_name"))[:200] or None)
         events.append(
             AgentEvent(
                 type="tool_use",
-                payload={
-                    "tool_use_id": tool_use_id,
-                    "tool_name": tool_name,
-                    "tool_input": block.get("input", {}),
-                },
+                payload=payload,
                 provider=PROVIDER,
                 raw=block,
                 time=_iso_time(),
             )
         )
-    elif block_type == "tool_result":
-        output = block.get("output", block.get("content"))
-        if isinstance(output, list):
-            parts: list[str] = []
-            for item in output:
-                if isinstance(item, dict):
-                    parts.append(_text(item.get("text") or item.get("output")))
-                else:
-                    parts.append(_text(item))
-            output_text = "\n".join(p for p in parts if p)
-        else:
-            output_text = _text(output)
-        events.append(
-            AgentEvent(
-                type="tool_result",
-                payload={
-                    "tool_use_id": _text(block.get("tool_use_id")),
-                    "output": output_text,
-                    "is_error": bool(block.get("is_error")),
-                },
-                provider=PROVIDER,
-                raw=block,
-                time=_iso_time(),
-            )
-        )
+    elif block_type in {"tool_result", "mcp_tool_result"}:
+        event = _map_tool_result_block(block, block_type)
+        if event is not None:
+            events.append(event)
+    elif block_type in _SERVER_TOOL_RESULTS:
+        event = _map_server_tool_result(block, _SERVER_TOOL_RESULTS[block_type])
+        if event is not None:
+            events.append(event)
     return events
 
 
@@ -169,13 +206,15 @@ def map_claude_event(event: dict[str, Any]) -> list[AgentEvent]:
         )
         return events
 
-    if event_type == "assistant":
+    if event_type in {"assistant", "user"}:
         message = event.get("message") if isinstance(event.get("message"), dict) else {}
         blocks = message.get("content") if isinstance(message.get("content"), list) else []
         for block in blocks:
-            if isinstance(block, dict):
+            if isinstance(block, dict) and (
+                event_type == "assistant" or block.get("type") in {"tool_result", "mcp_tool_result"}
+            ):
                 events.extend(_map_assistant_block(block))
-        usage = extract_claude_usage(event)
+        usage = extract_claude_usage(event) if event_type == "assistant" else None
         if usage:
             events.append(
                 AgentEvent(

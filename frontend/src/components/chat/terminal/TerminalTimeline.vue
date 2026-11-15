@@ -59,8 +59,14 @@ const isHighlightedLog = (entry: TerminalTimelineEntry): boolean => (
     <div v-else-if="props.hasMore" class="timeline-tip">{{ props.t('common.load_more') }}</div>
 
     <template v-for="entry in props.entries" :key="entry.id">
+      <div v-if="entry.kind === 'turn_separator'" class="turn-separator" role="separator"
+        :data-session-turn-id="entry.sessionTurnId"
+        :aria-label="entry.turnIndex ? props.t('chat.cli_turn_number', { number: entry.turnIndex }) : props.t('chat.cli_turn_boundary')">
+        <span>{{ entry.turnIndex ? props.t('chat.cli_turn_number', { number: entry.turnIndex }) : props.t('chat.cli_turn_boundary') }}</span>
+      </div>
+
       <TerminalStatusBlock
-        v-if="entry.kind === 'status' || entry.kind === 'hitl' || entry.kind === 'result'"
+        v-else-if="entry.kind === 'status' || entry.kind === 'hitl' || entry.kind === 'result'"
         :entry="entry"
         :format-time="props.formatTime"
         :t="props.t"
@@ -80,6 +86,8 @@ const isHighlightedLog = (entry: TerminalTimelineEntry): boolean => (
         v-else-if="entry.kind === 'tool_use'"
         :entry="entry"
         :data-log-id="entry.sourceLogId || undefined"
+        :data-tool-call-id="entry.toolUseId"
+        :data-session-turn-id="entry.activity?.session_turn_id || undefined"
         :class="{ 'highlighted-log': isHighlightedLog(entry) }"
         :format-time="props.formatTime"
         :format-tool-input="props.formatToolInput"
@@ -91,10 +99,19 @@ const isHighlightedLog = (entry: TerminalTimelineEntry): boolean => (
         class="line-block"
         :class="[entry.isError ? 'tool-result-error' : 'tool-result-success', { 'highlighted-log': isHighlightedLog(entry) }]"
         :data-log-id="entry.sourceLogId || undefined"
+        :data-tool-call-id="entry.toolUseId"
+        :data-session-turn-id="entry.activity?.session_turn_id || undefined"
       >
         <div class="line-meta">
-          <span class="meta-title">tool_result</span>
-          <span class="meta-time">{{ props.formatTime(entry.createdAt) }}</span>
+          <span class="meta-title">
+            tool_result
+            <template v-if="entry.activity?.tool_name"> · {{ entry.activity.tool_name }}</template>
+            <template v-if="entry.activity"> · {{ entry.activity.agent }} · {{ entry.activity.kind }}</template>
+            <template v-if="entry.activity?.mcp_server"> · {{ entry.activity.mcp_server }}</template>
+          </span>
+          <time class="meta-time" :datetime="entry.createdAt" :title="entry.activity?.occurred_at || entry.createdAt">
+            {{ props.formatTime(entry.createdAt) }}
+          </time>
         </div>
         <pre class="line-content">{{ entry.output }}</pre>
       </div>
@@ -125,6 +142,22 @@ const isHighlightedLog = (entry: TerminalTimelineEntry): boolean => (
 </template>
 
 <style scoped>
+.turn-separator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 4px;
+  color: #a8bdd9;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.turn-separator::before,
+.turn-separator::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid #334866;
+}
 .terminal-timeline {
   display: flex;
   flex-direction: column;

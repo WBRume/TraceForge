@@ -546,6 +546,21 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.payload["usage"]["input_tokens"], 10)
         self.assertEqual(event.payload["model"], "deepseek-official/deepseek-v4-flash")
 
+        usage_only = map_dsh_event(
+            {
+                "type": "assistant/message",
+                "data": {
+                    "content": [{"type": "tool-call", "callId": "call-read"}],
+                    "source": {"kind": "model", "provider": "deepseek-official", "model": "deepseek-v4-flash"},
+                    "usage": {"inputTokens": 10, "outputTokens": 5, "cacheReadTokens": 2, "reasoningTokens": 3},
+                },
+            }
+        )
+        self.assertEqual(usage_only.type, "usage")
+        self.assertEqual(usage_only.payload["input_tokens"], 10)
+        self.assertEqual(usage_only.payload["thinking_tokens"], 3)
+        self.assertNotIn("text", usage_only.payload)
+
         request_model = map_dsh_event(
             {
                 "type": "request/header",
@@ -568,6 +583,24 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(tool.type, "tool_use")
         self.assertEqual(tool.payload["tool_name"], "read_file")
+
+        result = map_dsh_event(
+            {
+                "type": "tool/result",
+                "time": 1_787_228_103_002,
+                "data": {
+                    "message": {
+                        "toolCallId": "call-read",
+                        "source": {"kind": "tool", "callId": "call-read"},
+                        "content": [{"type": "text", "text": "file contents"}],
+                        "isError": False,
+                    }
+                },
+            }
+        )
+        self.assertEqual(result.type, "tool_result")
+        self.assertEqual(result.payload["tool_use_id"], "call-read")
+        self.assertEqual(result.payload["output"], "file contents")
 
         text_delta = map_dsh_event(
             {

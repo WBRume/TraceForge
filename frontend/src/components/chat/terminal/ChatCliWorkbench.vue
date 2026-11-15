@@ -45,14 +45,19 @@ const handleTimelineScroll = async () => {
   const container = timelineContainer.value
   if (!container) return
   if (container.scrollTop > 48) return
-  if (!props.vm.hasMore || props.vm.loadingMore || loadingOlderFromScroll.value) return
+  if (!(props.vm.hasMore || props.vm.hasMoreTerminalLogs) || props.vm.loadingMore || loadingOlderFromScroll.value) return
+  const taskId = props.vm.currentTask?.id
   loadingOlderFromScroll.value = true
   const previousHeight = container.scrollHeight
-  await props.vm.loadOlderMessages()
-  await nextTick()
-  const delta = container.scrollHeight - previousHeight
-  container.scrollTop = delta + container.scrollTop
-  loadingOlderFromScroll.value = false
+  try {
+    if (props.vm.hasMore) await props.vm.loadOlderMessages()
+    if (props.vm.currentTask?.id !== taskId) return
+    if (props.vm.hasMoreTerminalLogs) await props.vm.loadOlderTerminalLogs()
+    await nextTick()
+    if (props.vm.currentTask?.id === taskId) container.scrollTop += container.scrollHeight - previousHeight
+  } finally {
+    loadingOlderFromScroll.value = false
+  }
 }
 
 const submitHitl = (cardId: string, response: string) => {
@@ -105,8 +110,8 @@ onBeforeUnmount(() => {
     <div ref="timelineContainer" class="cli-timeline-shell" @scroll="handleTimelineScroll">
       <TerminalTimeline
         :entries="timelineEntries"
-        :loading-more="vm.loadingMore"
-        :has-more="vm.hasMore"
+        :loading-more="vm.loadingMore || loadingOlderFromScroll"
+        :has-more="vm.hasMore || vm.hasMoreTerminalLogs"
         :highlighted-log-id="vm.highlightedTerminalLogId"
         :format-time="vm.formatTime"
         :format-tool-input="vm.formatToolInput"
@@ -161,6 +166,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
 }
+
 
 .cli-title {
   margin: 0;

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from datetime import datetime
 from unittest.mock import AsyncMock
 
 import httpx
@@ -271,6 +272,38 @@ async def test_snapshot_does_not_duplicate_text_already_delivered_by_sse():
         assert len([e for e in events if e.type == "text"]) == 1
     finally:
         await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_preserves_original_tool_call_and_result_times():
+    adapter = OpenCodeAdapter("http://agent")
+    events = []
+
+    async def collect(event):
+        events.append(event)
+
+    ran, completed = 1_794_756_195_804, 1_794_756_195_812
+    monitor = ExecutionMonitor(adapter, "ses_test", AgentRunRequest(), collect)
+    await monitor.restore_messages(
+        [
+            {
+                "id": "msg_tool",
+                "type": "assistant",
+                "content": [
+                    {
+                        "type": "tool",
+                        "name": "skill",
+                        "callID": "call-1",
+                        "time": {"created": ran - 50, "ran": ran, "completed": completed},
+                        "state": {"status": "completed", "input": {"id": "test"}, "content": []},
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert [event.type for event in events] == ["tool_use", "tool_result"]
+    assert [datetime.fromisoformat(event.time).timestamp() for event in events] == [ran / 1000, completed / 1000]
 
 
 def test_previous_idle_and_next_user_do_not_complete_our_input():

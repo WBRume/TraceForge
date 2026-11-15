@@ -390,6 +390,7 @@ def _persist_chat_turn_sync(
     # before the message is committed/broadcast; history and live UI both
     # rely on this column to expose the undo action.
     message.session_turn_id = turn.id
+    message.metadata_json = {**(message.metadata_json or {}), "session_turn_index": turn.turn_index}
     metadata.update({"session_turn_id": turn.id, "chat_message_id": message.id})
     _accept_turn_input(db, task, turn, prepared["actor_user_id"])
     job_context = metadata

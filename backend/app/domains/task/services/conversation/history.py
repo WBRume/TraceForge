@@ -90,6 +90,9 @@ def get_task_history(
     page: int = 1,
     page_size: int = 50,
     log_limit: int = TERMINAL_LOG_HISTORY_LIMIT,
+    *,
+    log_session_turn_id: str | None = None,
+    log_page: int = 1,
 ) -> dict:
     task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
 
@@ -140,18 +143,20 @@ def get_task_history(
     # 终端历史只返回可回放的结构化事件。provider debug、assistant 文本副本等
     # 已在文件日志/聊天消息中有权威来源，不应放大 CLI 历史响应。
     log_limit = max(1, int(log_limit or TERMINAL_LOG_HISTORY_LIMIT))
+    log_query = db.query(SddExecutionLog).filter(
+        SddExecutionLog.task_id == task_id,
+        SddExecutionLog.workspace_id == workspace_id,
+        _terminal_execution_log_filter(),
+    )
+    if log_session_turn_id is not None:
+        log_query = log_query.filter(SddExecutionLog.session_turn_id == log_session_turn_id)
     log_rows_desc = (
-        db.query(SddExecutionLog)
-        .filter(
-            SddExecutionLog.task_id == task_id,
-            SddExecutionLog.workspace_id == workspace_id,
-            _terminal_execution_log_filter(),
-        )
-        .order_by(
-            SddExecutionLog.event_order.desc(),
+        log_query.order_by(
+            SddExecutionLog.event_order.desc().nulls_last(),
             SddExecutionLog.created_at.desc(),
             SddExecutionLog.id.desc(),
         )
+        .offset((max(1, log_page) - 1) * log_limit)
         .limit(log_limit + 1)
         .all()
     )
@@ -162,7 +167,8 @@ def get_task_history(
             "id": log.id,
             "type": log.log_type.value if hasattr(log.log_type, "value") else log.log_type,
             "content": log.content,
-            "created_at": log.created_at.isoformat(),
+            "created_at": utc_isoformat(log.created_at),
+            "session_turn_id": log.session_turn_id,
         }
         for log in log_rows
     ]
@@ -273,22 +279,20 @@ def serialize_history_messages(db, task, msg_query, workspace_id, task_id):
         else {}
     )
     turn_ids = {str(msg.session_turn_id) for msg in msg_query if msg.session_turn_id}
-    active_turn_ids = (
-        {
-            str(turn_id)
-            for (turn_id,) in db.query(TaskSessionTurn.id)
-            .filter(
-                TaskSessionTurn.id.in_(turn_ids),
-                TaskSessionTurn.status == TaskSessionTurnStatus.ACTIVE,
-                TaskSessionTurn.checkpoint_path.isnot(None),
-                TaskSessionTurn.session_revision
-                > int((task.task_meta_json or {}).get("repository_update_revision", -1)),
-            )
-            .all()
-        }
+    turns = (
+        db.query(TaskSessionTurn).filter(TaskSessionTurn.task_id == task_id, TaskSessionTurn.id.in_(turn_ids)).all()
         if turn_ids
-        else set()
+        else []
     )
+    turn_index_by_message_id = {turn.user_message_id: turn.turn_index for turn in turns if turn.user_message_id}
+    repository_update_revision = int((task.task_meta_json or {}).get("repository_update_revision", -1))
+    active_turn_ids = {
+        str(turn.id)
+        for turn in turns
+        if turn.status == TaskSessionTurnStatus.ACTIVE
+        and turn.checkpoint_path is not None
+        and turn.session_revision > repository_update_revision
+    }
     pending_undo = (
         db.query(TaskSessionOperation)
         .filter(
@@ -329,6 +333,8 @@ def serialize_history_messages(db, task, msg_query, workspace_id, task_id):
     messages = []
     for msg in msg_query:
         metadata = msg.metadata_json if isinstance(msg.metadata_json, dict) else {}
+        if msg.id in turn_index_by_message_id:
+            metadata = {**metadata, "session_turn_index": turn_index_by_message_id[msg.id]}
         reading_item = reading_by_message_id.get(str(msg.id))
         messages.append(
             {

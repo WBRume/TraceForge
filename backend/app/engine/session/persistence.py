@@ -7,9 +7,15 @@ fence 复核（job 未撤销/revision 未变），过期批次直接丢弃。
 """
 
 import asyncio
+import json
 import time
+import uuid
 from collections.abc import Callable
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, NamedTuple
+
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.config import settings
 from app.core.logging import get_logger
@@ -18,6 +24,8 @@ from app.database import SessionLocal
 from app.domains.task.models.log import LogType, SddExecutionLog
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import context_token_service
+from app.engine.session.gate import SessionGate
+from app.protocols.messages import terminal_record
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -155,6 +163,16 @@ class BatchFlusher:
             self._draining = False
 
 
+class ExecutionLogEntry(NamedTuple):
+    content: str
+    log_type: LogType
+    event_order: int
+    event_id: str
+    session_turn_id: str | None
+    created_at: datetime
+    gate: SessionGate | None
+
+
 class ExecutionLogBatcher(BatchFlusher):
     """业务相关终端事件（工具调用/结果、压缩标记等）的短窗口批量执行日志。"""
 
@@ -165,16 +183,45 @@ class ExecutionLogBatcher(BatchFlusher):
             drain_max_rounds=EXECUTION_LOG_DRAIN_MAX_ROUNDS,
         )
         self._owner = owner
-        self._buffer: list[tuple[str, LogType, int]] = []
+        self._buffer: list[ExecutionLogEntry] = []
         self._order = time.time_ns()
 
     def queue(self, content: str, log_type: LogType = LogType.STDOUT) -> None:
         """Queue a business-relevant terminal event for short-window batching."""
         if not content:
             return
+        self._enqueue(content[:EXECUTION_LOG_CONTENT_LIMIT], log_type, str(uuid.uuid4()), self._owner.session_turn_id)
 
+    def queue_tool_event(self, kind: str, payload: dict[str, Any]) -> None:
+        """Keep tool metadata replayable even when arguments or output exceed the preview budget."""
+        activity = payload["activity"]
+        event_id = activity["event_id"]
+        record = terminal_record(kind, payload, event_id)
+        content = json.dumps(record, ensure_ascii=False)
+        if len(content) > EXECUTION_LOG_CONTENT_LIMIT:
+            details = dict(record["payload"], activity={**activity, "truncated": True})
+            record["payload"] = details
+            if kind == "tool_use":
+                preview = json.dumps(payload.get("tool_input"), ensure_ascii=False)
+                details["tool_input"] = {"preview": preview[:1000]}
+            else:
+                details.update(output=payload["output"][:1000], content=[], structured_content=None)
+            content = json.dumps(record, ensure_ascii=False)
+            if len(content) > EXECUTION_LOG_CONTENT_LIMIT:
+                if kind == "tool_use":
+                    details["tool_input"] = None
+                else:
+                    details["output"] = ""
+                content = json.dumps(record, ensure_ascii=False)
+        self._enqueue(content, LogType.STDOUT, event_id, activity["session_turn_id"])
+
+    def _enqueue(self, content: str, log_type: LogType, event_id: str, session_turn_id: str | None) -> None:
         self._order = max(time.time_ns(), self._order + 1)
-        self._buffer.append((content, log_type, self._order))
+        self._buffer.append(
+            ExecutionLogEntry(
+                content, log_type, self._order, event_id, session_turn_id, datetime.now(timezone.utc), self._owner.gate
+            )
+        )
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -193,14 +240,14 @@ class ExecutionLogBatcher(BatchFlusher):
     def _pending_count(self) -> int:
         return len(self._buffer)
 
-    def _collect(self) -> list[tuple[str, LogType, int]]:
+    def _collect(self) -> list[ExecutionLogEntry]:
         batch, self._buffer = self._buffer, []
         return batch
 
-    async def _persist(self, batch: list[tuple[str, LogType, int]]) -> None:
+    async def _persist(self, batch: list[ExecutionLogEntry]) -> None:
         await run_db(self._persist_sync, batch)
 
-    def _persist_sync(self, entries: list[tuple[str, LogType, int]]) -> None:
+    def _persist_sync(self, entries: list[ExecutionLogEntry]) -> None:
         """Persist one execution-log batch in a single transaction (线程内执行).
 
         失败抛出由骨架负责回填重试（见 _requeue）。
@@ -211,22 +258,29 @@ class ExecutionLogBatcher(BatchFlusher):
         db = SessionLocal()
         try:
             # 关键写入兜底：复用同一 session 做门禁复核（job 未撤销/revision 未变）
-            gate = self._owner.gate
-            if gate is not None and not gate.fence_sync(db):
+            gate_current = {gate: gate.fence_sync(db) for gate in {entry.gate for entry in entries} if gate is not None}
+            current_entries = [entry for entry in entries if entry.gate is None or gate_current[entry.gate]]
+            if not current_entries:
                 return
-            db.add_all(
+            table = SddExecutionLog.__table__
+            insert = sqlite_insert if db.get_bind().dialect.name == "sqlite" else postgres_insert
+            statement = insert(table).on_conflict_do_nothing(index_elements=[table.c.id])
+            db.execute(
+                statement,
                 [
-                    SddExecutionLog(
-                        task_id=self._owner.task_id,
-                        workspace_id=self._owner.ws_id,
-                        creator_id=self._owner.user_id,
-                        log_type=log_type,
-                        content=content[:EXECUTION_LOG_CONTENT_LIMIT],
-                        event_order=event_order,
-                        session_turn_id=self._owner.session_turn_id,
-                    )
-                    for content, log_type, event_order in entries
-                ]
+                    {
+                        "id": entry.event_id,
+                        "task_id": self._owner.task_id,
+                        "workspace_id": self._owner.ws_id,
+                        "creator_id": self._owner.user_id,
+                        "log_type": entry.log_type,
+                        "content": entry.content,
+                        "event_order": entry.event_order,
+                        "session_turn_id": entry.session_turn_id,
+                        "created_at": entry.created_at.replace(tzinfo=None),
+                    }
+                    for entry in current_entries
+                ],
             )
             db.commit()
         except Exception:
@@ -235,7 +289,7 @@ class ExecutionLogBatcher(BatchFlusher):
         finally:
             db.close()
 
-    def _requeue(self, batch: list[tuple[str, LogType, int]]) -> None:
+    def _requeue(self, batch: list[ExecutionLogEntry]) -> None:
         """落库失败：回填缓冲保持顺序；连续失败达上限则丢弃最旧批次（防缓冲无限增长）。"""
         if self.register_failure(len(batch)):
             return
@@ -247,8 +301,7 @@ class ContextSegmentBatcher(BatchFlusher):
 
     - record(recorder, **kwargs)：入队 segment；
     - update_snapshot(...)：瞬态 snapshot 合并（last-write-wins），随批落库；
-    - thinking 不逐 delta 提交：仅 mark_thinking_dirty() 打脏标记，flush 时
-      以 ThinkingStream 的合并累积内容落一条（revision 对比判定脏）。
+    - thinking 不逐 delta 提交：flush 时用 ThinkingStream 的累积内容更新当前 job 的归因。
     """
 
     def __init__(self, owner):
@@ -262,6 +315,7 @@ class ContextSegmentBatcher(BatchFlusher):
         self._pending_snapshot: dict[str, Any] = {}
         self._thinking: Any | None = None  # ThinkingStream，由引擎装配
         self._last_thinking_revision = -1
+        self._flush_lock = asyncio.Lock()
 
     def attach_thinking(self, thinking: Any) -> None:
         self._thinking = thinking
@@ -326,8 +380,14 @@ class ContextSegmentBatcher(BatchFlusher):
     def _pending_count(self) -> int:
         return len(self._buffer) + (1 if self._thinking_pending() else 0) + (1 if self._pending_snapshot else 0)
 
+    async def flush(self) -> None:
+        """Keep timer and explicit flushes in order when replacing cumulative thinking."""
+        async with self._flush_lock:
+            await super().flush()
+
     def _collect(self) -> tuple[list[tuple[str, dict[str, Any]]], dict[str, Any] | None]:
-        entries: list[tuple[str, dict[str, Any]]] = []
+        # Retry buffered entries first so a newer cumulative thinking snapshot wins.
+        entries, self._buffer = self._buffer, []
         if self._thinking_pending():
             self._last_thinking_revision = self._thinking.revision
             content = self._thinking.content
@@ -344,9 +404,6 @@ class ContextSegmentBatcher(BatchFlusher):
                         },
                     )
                 )
-        if self._buffer:
-            buffered, self._buffer = self._buffer, []
-            entries.extend(buffered)
         snapshot_update: dict[str, Any] | None = None
         if self._pending_snapshot:
             pending, self._pending_snapshot = self._pending_snapshot, {}

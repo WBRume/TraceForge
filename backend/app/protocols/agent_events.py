@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from pydantic import Field, JsonValue, TypeAdapter, create_model
 
 from .base import Contract
+from .tool_activity import ToolKind
 
 Identifier = Annotated[str, Field(min_length=1, max_length=200)]
 
@@ -33,15 +34,21 @@ class TextDiscardedPayload(Contract):
     segment_ids: list[str]
 
 
-class ToolUsePayload(Contract):
+class ToolIdentity(Contract):
+    tool_kind: ToolKind | None = None
+    mcp_server: Identifier | None = None
+
+
+class ToolUsePayload(ToolIdentity):
     tool_use_id: Identifier
     tool_name: Identifier
     tool_input: JsonValue
     provider: str | None = None
 
 
-class ToolResultPayload(Contract):
+class ToolResultPayload(ToolIdentity):
     tool_use_id: Identifier
+    tool_name: Identifier | None = None
     output: str
     is_error: bool
     content: list[dict[str, JsonValue]] = Field(default_factory=list)

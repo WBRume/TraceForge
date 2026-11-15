@@ -39,13 +39,18 @@ export type Type4 = "thinking"
 export type Provider8 = string
 export type ContractVersion4 = 2
 export type Type5 = "tool_use"
+export type ToolKind = (("tool" | "mcp" | "skill" | "web_search" | "web_fetch") | null)
+export type McpServer = (string | null)
 export type ToolUseId = string
 export type ToolName = string
 export type Provider9 = (string | null)
 export type Provider10 = string
 export type ContractVersion5 = 2
 export type Type6 = "tool_result"
+export type ToolKind1 = (("tool" | "mcp" | "skill" | "web_search" | "web_fetch") | null)
+export type McpServer1 = (string | null)
 export type ToolUseId1 = string
+export type ToolName1 = (string | null)
 export type Output = string
 export type IsError = boolean
 export type Content = {
@@ -180,6 +185,8 @@ provider: Provider10
 contract_version: ContractVersion5
 }
 export interface ToolUsePayload {
+tool_kind?: ToolKind
+mcp_server?: McpServer
 tool_use_id: ToolUseId
 tool_name: ToolName
 tool_input: JsonValue
@@ -192,7 +199,10 @@ provider: Provider12
 contract_version: ContractVersion6
 }
 export interface ToolResultPayload {
+tool_kind?: ToolKind1
+mcp_server?: McpServer1
 tool_use_id: ToolUseId1
+tool_name?: ToolName1
 output: Output
 is_error: IsError
 content?: Content

@@ -5,6 +5,18 @@ export type EventType = "tool_use"
 export type TaskId = string
 export type ToolName = string
 export type ToolUseId = string
+export type EventId = string
+export type Agent = string
+export type Kind = ("tool" | "mcp" | "skill" | "web_search" | "web_fetch")
+export type ToolName1 = (string | null)
+export type McpServer = (string | null)
+export type AiJobId = (string | null)
+export type SessionTurnId = (string | null)
+export type Attempt = (number | null)
+export type OccurredAt = string
+export type ReceivedAt = string
+export type TimeSource = ("agent_event" | "server")
+export type Truncated = boolean
 export type ContractVersion = 2
 export type EventType1 = "tool_result"
 export type TaskId1 = string
@@ -60,7 +72,7 @@ export type CreatorIsWorkspaceExpert = (boolean | null)
 export type CreatorAvatarUrl = (string | null)
 export type CreatorAvatarSvg = (string | null)
 export type CreatedAt = (string | null)
-export type SessionTurnId = (string | null)
+export type SessionTurnId1 = (string | null)
 export type SessionGeneration2 = (number | null)
 export type CanUndo = (boolean | null)
 export type ReadingItemKey = (string | null)
@@ -78,14 +90,14 @@ export type ProjectId = string
 export type Version = number
 export type AttemptCount = number
 export type SchemaVersion = 2
-export type Kind = string
+export type Kind1 = string
 export type Outcome = ("SUCCESS" | "FAILED" | "CANCELLED")
 export type Summary = string
-export type Kind1 = string
+export type Kind2 = string
 export type Id1 = string
 export type Version1 = (string | null)
 export type Artifacts = JobArtifact[]
-export type Attempt = number
+export type Attempt1 = number
 export type CommittedAt = string
 export type Id2 = string
 export type ProjectId1 = string
@@ -131,9 +143,24 @@ task_id: TaskId
 tool_name: ToolName
 tool_input?: ToolInput
 tool_use_id: ToolUseId
+activity?: (ToolActivity | null)
 }
 export interface ToolInput {
 [k: string]: unknown
+}
+export interface ToolActivity {
+event_id: EventId
+agent: Agent
+kind: Kind
+tool_name?: ToolName1
+mcp_server?: McpServer
+ai_job_id?: AiJobId
+session_turn_id?: SessionTurnId
+attempt?: Attempt
+occurred_at: OccurredAt
+received_at: ReceivedAt
+time_source: TimeSource
+truncated?: Truncated
 }
 export interface ToolResultMessage {
 event_type: EventType1
@@ -147,6 +174,7 @@ output?: Output
 is_error?: IsError
 structured_content?: StructuredContent
 content?: Content
+activity?: (ToolActivity | null)
 }
 export interface StructuredContent {
 [k: string]: unknown
@@ -214,7 +242,7 @@ creator_is_workspace_expert?: CreatorIsWorkspaceExpert
 creator_avatar_url?: CreatorAvatarUrl
 creator_avatar_svg?: CreatorAvatarSvg
 created_at?: CreatedAt
-session_turn_id?: SessionTurnId
+session_turn_id?: SessionTurnId1
 session_generation?: SessionGeneration2
 can_undo?: CanUndo
 reading_item_key?: ReadingItemKey
@@ -261,15 +289,15 @@ finished_at?: FinishedAt
 }
 export interface JobCompletion {
 schema_version: SchemaVersion
-kind: Kind
+kind: Kind1
 outcome: Outcome
 summary: Summary
 artifacts?: Artifacts
-attempt: Attempt
+attempt: Attempt1
 committed_at: CommittedAt
 }
 export interface JobArtifact {
-kind: Kind1
+kind: Kind2
 id: Id1
 version?: Version1
 }

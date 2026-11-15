@@ -30,4 +30,24 @@ describe('useTerminalLogs', () => {
     store.clear()
     expect(store.logs.value).toHaveLength(0)
   })
+
+  it('uses the same agent event time and correlation in live and restored tools', () => {
+    const store = useTerminalLogs()
+    const activity = {
+      event_id: 'event-1', agent: 'opencode', kind: 'mcp', tool_name: 'read_item',
+      mcp_server: 'example', ai_job_id: 'job-1', session_turn_id: 'turn-1', attempt: 1,
+      occurred_at: '2026-05-01T03:00:00.321Z', received_at: '2026-05-01T03:00:01Z',
+      time_source: 'agent_event', truncated: false,
+    }
+    const payload = { task_id: 'task', tool_use_id: 'call-1', output: 'result', is_error: false, activity }
+    store.appendToolResult(payload)
+    const live = store.logs.value[0]
+    store.restoreFromHistory([{
+      id: activity.event_id, type: 'STDOUT', created_at: '2026-05-01T03:00:02Z',
+      content: JSON.stringify({ contract_version: 2, event_type: 'tool_result', event_id: activity.event_id, payload }),
+    }])
+    expect(store.logs.value[0]).toEqual(live)
+    expect(store.logs.value[0]?.created_at).toBe(activity.occurred_at)
+    expect(store.logs.value[0]?.activity?.session_turn_id).toBe('turn-1')
+  })
 })

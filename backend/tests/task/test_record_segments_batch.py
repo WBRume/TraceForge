@@ -107,6 +107,36 @@ def test_repeated_batches_dedupe_tool_input(db):
     assert _count(db, ContextTokenCategory.TOOL_INPUT) == 1
 
 
+def test_thinking_replaces_cumulative_content_and_keeps_jobs_separate(db):
+    common = {
+        "workspace_id": "ws-batch",
+        "task_id": "task-batch",
+        "ai_job_id": "job-batch",
+        "session_id": "session-batch",
+    }
+    initial = ("thinking", {**common, "content": "旧"})
+    latest = ("thinking", {**common, "content": "新的思考"})
+    another_job = ("thinking", {**common, "ai_job_id": "next-job", "content": "下一轮"})
+
+    assert context_token_service.record_segments_batch(db, [initial]) == 1
+    original_id = db.query(SddContextTokenSegment.id).scalar()
+    assert context_token_service.record_segments_batch(db, [initial, latest, another_job]) == 1
+    assert context_token_service.record_segments_batch(db, [latest]) == 0
+
+    segment = db.query(SddContextTokenSegment).filter_by(ai_job_id="job-batch").one()
+    assert segment.id == original_id
+    assert segment.preview == "新的思考"
+    assert segment.char_count == segment.attribution_units == 4
+    assert segment.byte_count == 12
+    assert _count(db, ContextTokenCategory.THINKING) == 2
+
+    result = context_token_service.get_context_window(
+        db, workspace_id="ws-batch", task_id="task-batch", ai_job_id="job-batch", category="THINKING"
+    )
+    assert result["categories"][0]["segment_count"] == 1
+    assert result["categories"][0]["attribution_units"] == 4
+
+
 def test_unknown_recorder_rejected(db):
     import pytest
 

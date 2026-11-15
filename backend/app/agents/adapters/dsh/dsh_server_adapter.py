@@ -29,6 +29,7 @@ import httpx
 import websockets
 
 from app.agents.activity_watchdog import AgentActivityWatchdog
+from app.agents.adapters.dsh.event_mapper import map_dsh_tool_result
 from app.agents.adapters.dsh.text_events import DshTextEvents
 from app.agents.contract import (
     AgentBackend,
@@ -42,6 +43,7 @@ from app.agents.contract import (
 from app.agents.errors import AgentError, AgentTimeoutError, SessionForkError
 from app.agents.events import AgentEvent
 from app.agents.http_transport import agent_ssl_context
+from app.agents.tool_activity import mcp_tool_fields, wire_event_time
 from app.config import settings
 
 
@@ -78,7 +80,7 @@ def _map_assistant_message(raw_event: dict[str, Any], data: dict[str, Any]) -> A
             total_tokens=None,
             raw=usage_raw,
         )
-    if text or usage:
+    if text:
         payload: dict[str, Any] = {
             "text": text,
             "usage": usage.__dict__ if usage else {},
@@ -87,8 +89,24 @@ def _map_assistant_message(raw_event: dict[str, Any], data: dict[str, Any]) -> A
         if model:
             payload["model"] = model
         return AgentEvent(
-            type="text" if text else "usage",
+            type="text",
             payload=payload,
+            provider="dsh",
+            raw=raw_event,
+        )
+    if usage is not None:
+        return AgentEvent(
+            type="usage",
+            payload={
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cache_read_tokens": usage.cache_read_tokens,
+                "cache_creation_tokens": usage.cache_creation_tokens,
+                "thinking_tokens": usage.raw.get("reasoningTokens"),
+                "total_tokens": usage.raw.get("totalTokens"),
+                "raw_usage": usage.raw,
+                "provider": "dsh",
+            },
             provider="dsh",
             raw=raw_event,
         )
@@ -184,27 +202,14 @@ def map_dsh_event(raw_event: dict[str, Any]) -> AgentEvent | None:
                 "tool_input": tool_input,
                 "tool_use_id": tool_use_id,
                 "provider": "dsh",
+                **mcp_tool_fields(data.get("mcpServer") or data.get("mcp_server")),
             },
             provider="dsh",
             raw=raw_event,
+            time=wire_event_time(raw_event.get("timestamp") or raw_event.get("time")),
         )
     if etype == "tool/result":
-        tool_use_id = str(data.get("callId") or data.get("toolUseId") or data.get("id") or "")
-        if not tool_use_id:
-            return None
-        output = data.get("result") or data.get("output") or data.get("content") or ""
-        return AgentEvent(
-            type="tool_result",
-            payload={
-                "tool_use_id": tool_use_id,
-                "output": output if isinstance(output, str) else json.dumps(output, ensure_ascii=False),
-                "structured_content": data.get("structuredContent"),
-                "is_error": bool(data.get("isError") or data.get("is_error")),
-                "provider": "dsh",
-            },
-            provider="dsh",
-            raw=raw_event,
-        )
+        return map_dsh_tool_result(raw_event, data)
     return None
 
 

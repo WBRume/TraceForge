@@ -429,7 +429,8 @@ def enqueue_tool_use_trace(
     tool_name: str,
     tool_input: Any,
     tool_use_id: str,
-) -> None:
+) -> bool:
+    """Queue matched runtime Skill evidence and report whether there was a match."""
     try:
         events = detect_tool_use_events(
             workspace_id=workspace_id,
@@ -441,11 +442,12 @@ def enqueue_tool_use_trace(
             tool_use_id=tool_use_id,
         )
         if not events:
-            return
+            return False
         _enqueue_or_thread({"kind": "tool_use", "task_id": task_id, "events": events})
+        return True
     except Exception as exc:
         logger.warning(f"Runtime skill trace tool_use detection failed: {exc}")
-        return
+        return False
 
 
 def enqueue_tool_result_trace(

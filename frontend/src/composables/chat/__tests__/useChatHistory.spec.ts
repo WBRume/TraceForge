@@ -12,18 +12,19 @@ const setup = () => {
   Object.defineProperty(container, 'scrollHeight', { configurable: true, value: 1000 })
   const restore = vi.fn().mockResolvedValue(true)
   const applyHistoryPage = vi.fn()
+  const prependFromHistory = vi.fn()
   const history = scope.run(() => useChatHistory({
     getWorkspaceId: () => 'w', getCurrentTask: () => ({ id: 'task' }),
     route: reactive({ params: { taskId: 'task' }, query: {} }), router: { replace: vi.fn() },
     historyContext: useChatMessageContext(),
     messages: { reset: vi.fn(), replaceAll: vi.fn(), captureIdentitySnapshot: () => new Map(), applyHistoryPage, appendPage: vi.fn() },
-    terminalLogs: { clear: vi.fn(), restoreFromHistory: vi.fn() },
+    terminalLogs: { clear: vi.fn(), restoreFromHistory: vi.fn(), prependFromHistory },
     cards: { syncConfirmationCards: vi.fn() },
     highlight: { highlightedMessageId: { value: '' }, scheduleClear: vi.fn(), clear: vi.fn() },
     getChatContainer: () => container, restoreWorkbenchScroll: restore, scrollToChatBottom: vi.fn(),
   }))!
   api.get.mockResolvedValue({ data: { messages: [], logs: [], has_more: true } })
-  return { scope, container, restore, history, applyHistoryPage }
+  return { scope, container, restore, history, applyHistoryPage, prependFromHistory }
 }
 
 describe('chat history scroll continuity', () => {
@@ -52,6 +53,23 @@ describe('chat history scroll continuity', () => {
       })
       await runtime.history.loadOlderMessages()
       expect(runtime.container.scrollTop).toBe(632)
+    } finally { runtime.scope.stop() }
+  })
+
+  it('loads older terminal events after the message history has reached its first page', async () => {
+    const runtime = setup()
+    const older = [{ id: 'older-log', type: 'STATUS', content: 'ready' }]
+    try {
+      api.get.mockResolvedValueOnce({ data: { messages: [], logs: [], has_more: false, logs_has_more: true } })
+      api.get.mockResolvedValueOnce({ data: { logs: older, logs_has_more: false } })
+      await runtime.history.loadHistory('task')
+      expect(runtime.history.hasMore.value).toBe(false)
+      await runtime.history.loadOlderTerminalLogs()
+      expect(api.get).toHaveBeenLastCalledWith('/workspaces/w/tasks/task/history', {
+        params: { page_size: 1, log_page: 2 },
+      })
+      expect(runtime.prependFromHistory).toHaveBeenCalledWith(older)
+      expect(runtime.history.hasMoreTerminalLogs.value).toBe(false)
     } finally { runtime.scope.stop() }
   })
 })

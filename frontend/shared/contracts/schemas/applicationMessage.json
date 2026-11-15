@@ -591,6 +591,121 @@
       "title": "ThinkingMessage",
       "type": "object"
     },
+    "ToolActivity": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "agent": {
+          "title": "Agent",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "tool",
+            "mcp",
+            "skill",
+            "web_search",
+            "web_fetch"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "tool_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Name"
+        },
+        "mcp_server": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mcp Server"
+        },
+        "ai_job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ai Job Id"
+        },
+        "session_turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Turn Id"
+        },
+        "attempt": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attempt"
+        },
+        "occurred_at": {
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "received_at": {
+          "title": "Received At",
+          "type": "string"
+        },
+        "time_source": {
+          "enum": [
+            "agent_event",
+            "server"
+          ],
+          "title": "Time Source",
+          "type": "string"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "event_id",
+        "agent",
+        "kind",
+        "occurred_at",
+        "received_at",
+        "time_source"
+      ],
+      "title": "ToolActivity",
+      "type": "object"
+    },
     "ToolResultMessage": {
       "additionalProperties": false,
       "properties": {
@@ -1202,6 +1317,17 @@
           },
           "title": "Content",
           "type": "array"
+        },
+        "activity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolActivity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -1230,6 +1356,17 @@
           "minLength": 1,
           "title": "Tool Use Id",
           "type": "string"
+        },
+        "activity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolActivity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [

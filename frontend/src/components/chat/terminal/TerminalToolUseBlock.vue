@@ -12,10 +12,13 @@ const props = defineProps<{
 }>()
 
 const readable = computed(() => formatToolUsePayload(props.entry.toolInput, props.formatToolInput))
+const activity = computed(() => props.entry.activity)
 
 type ToolTone =
+  | 'mcp'
   | 'skill'
-  | 'script'
+  | 'web-search'
+  | 'web-fetch'
   | 'read'
   | 'search'
   | 'write'
@@ -29,29 +32,17 @@ const hasAny = (source: string, tokens: string[]): boolean => {
   return tokens.some((token) => source.includes(token))
 }
 
-const isScriptCommand = (commandText: string): boolean => {
-  return hasAny(commandText, [
-    'python ',
-    'python3 ',
-    'python.exe',
-    '\\python',
-    '/python',
-    'node ',
-    'node.exe',
-    'ruby ',
-    'perl ',
-    'php ',
-    'pwsh ',
-    'powershell ',
-    '.venv\\scripts\\python',
-    '.venv/scripts/python',
-  ])
-}
+const toolTone = computed<ToolTone>(() => {
+  if (activity.value?.kind === 'mcp') return 'mcp'
+  if (activity.value?.kind === 'skill') return 'skill'
+  if (activity.value?.kind === 'web_search') return 'web-search'
+  if (activity.value?.kind === 'web_fetch') return 'web-fetch'
 
-const resolveToolTone = (): ToolTone => {
-  const toolName = String(props.entry.toolName || '').toLowerCase()
-  const commandField = readable.value.fields.find((field) => field.key === 'command')
-  const commandText = String(commandField?.value || '').toLowerCase()
+  const toolName = props.entry.toolName.toLowerCase()
+  if (toolName.startsWith('mcp__')) return 'mcp'
+  if (toolName === 'websearch' || toolName === 'web_search') return 'web-search'
+  if (toolName === 'webfetch' || toolName === 'web_fetch') return 'web-fetch'
+  if (hasAny(toolName, ['bash', 'shell', 'terminal', 'command'])) return 'execute'
 
   if (hasAny(toolName, ['skill'])) {
     return 'skill'
@@ -81,49 +72,25 @@ const resolveToolTone = (): ToolTone => {
     return 'danger'
   }
 
-  if (hasAny(toolName, ['bash', 'shell', 'terminal', 'command'])) {
-    if (hasAny(commandText, [' rm ', 'remove-item', 'del ', 'delete ', 'rmdir ', 'drop '])) {
-      return 'danger'
-    }
-
-    if (hasAny(commandText, ['curl ', 'wget ', 'invoke-webrequest', 'requests.', 'axios', 'fetch('])) {
-      return 'network'
-    }
-
-    if (hasAny(commandText, ['pytest', 'vitest', 'jest', 'npm test', 'pnpm test', 'ruff', 'mypy', 'eslint', 'compileall', 'build'])) {
-      return 'validate'
-    }
-
-    if (hasAny(commandText, ['cat ', 'type ', 'rg ', 'grep ', 'select-string', 'get-content', 'ls ', 'dir '])) {
-      return 'read'
-    }
-
-    if (hasAny(commandText, ['echo ', 'set-content', 'out-file', '>>', '> ', 'apply_patch'])) {
-      return 'write'
-    }
-
-    if (isScriptCommand(commandText)) {
-      return 'script'
-    }
-
-    return 'execute'
-  }
-
   if (hasAny(toolName, ['run', 'exec'])) {
     return 'execute'
   }
 
   return 'state'
-}
-
-const toolTone = computed(() => resolveToolTone())
+})
 </script>
 
 <template>
   <div class="line-block kind-tool" :class="`tone-${toolTone}`">
     <div class="line-meta">
-      <span class="meta-title">tool_use · {{ props.entry.toolName }}</span>
-      <span class="meta-time">{{ props.formatTime(props.entry.createdAt) }}</span>
+      <span class="meta-title">
+        tool_use · {{ props.entry.toolName }}
+        <template v-if="activity"> · {{ activity.agent }} · {{ activity.kind }}</template>
+        <template v-if="activity?.mcp_server"> · {{ activity.mcp_server }}</template>
+      </span>
+      <time class="meta-time" :datetime="props.entry.createdAt" :title="activity?.occurred_at || props.entry.createdAt">
+        {{ props.formatTime(props.entry.createdAt) }}
+      </time>
     </div>
 
     <div v-if="readable.fields.length > 0" class="tool-fields">
@@ -141,8 +108,9 @@ const toolTone = computed(() => resolveToolTone())
 </template>
 
 <style scoped>
-.line-block {
+.line-block.kind-tool {
   border: 1px solid #243044;
+  border-inline-start: 3px solid var(--tool-accent);
   border-radius: 10px;
   background: #0d1523;
   padding: 8px;
@@ -158,7 +126,7 @@ const toolTone = computed(() => resolveToolTone())
 }
 
 .meta-title {
-  color: #d4deea;
+  color: var(--tool-accent);
 }
 
 .meta-time {
@@ -181,7 +149,7 @@ const toolTone = computed(() => resolveToolTone())
 .field-label {
   display: inline-block;
   font-size: 11px;
-  color: #8ba0bc;
+  color: var(--tool-accent);
   margin-bottom: 4px;
 }
 
@@ -222,53 +190,51 @@ const toolTone = computed(() => resolveToolTone())
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
-.line-block.kind-tool.tone-skill .meta-title,
-.line-block.kind-tool.tone-skill .field-label {
-  color: #ffb86b;
+.tone-mcp {
+  --tool-accent: #c7adff;
 }
 
-.line-block.kind-tool.tone-script .meta-title,
-.line-block.kind-tool.tone-script .field-label {
-  color: #6af2d4;
+.tone-skill {
+  --tool-accent: #ffb86b;
 }
 
-.line-block.kind-tool.tone-read .meta-title,
-.line-block.kind-tool.tone-read .field-label {
-  color: #7fb6ff;
+.tone-web-search {
+  --tool-accent: #5fd7ff;
 }
 
-.line-block.kind-tool.tone-search .meta-title,
-.line-block.kind-tool.tone-search .field-label {
-  color: #5fd7ff;
+.tone-web-fetch {
+  --tool-accent: #6af2d4;
 }
 
-.line-block.kind-tool.tone-write .meta-title,
-.line-block.kind-tool.tone-write .field-label {
-  color: #79e2b0;
+.tone-read {
+  --tool-accent: #7fb6ff;
 }
 
-.line-block.kind-tool.tone-execute .meta-title,
-.line-block.kind-tool.tone-execute .field-label {
-  color: #c8d4e8;
+.tone-search {
+  --tool-accent: #e6c875;
 }
 
-.line-block.kind-tool.tone-network .meta-title,
-.line-block.kind-tool.tone-network .field-label {
-  color: #7fb6ff;
+.tone-write {
+  --tool-accent: #e9a9e8;
 }
 
-.line-block.kind-tool.tone-validate .meta-title,
-.line-block.kind-tool.tone-validate .field-label {
-  color: #b8e986;
+.tone-execute {
+  --tool-accent: #c8d4e8;
 }
 
-.line-block.kind-tool.tone-danger .meta-title,
-.line-block.kind-tool.tone-danger .field-label {
-  color: #f39eb5;
+.tone-network {
+  --tool-accent: #a5c6c8;
 }
 
-.line-block.kind-tool.tone-state .meta-title,
-.line-block.kind-tool.tone-state .field-label {
-  color: #f2c36c;
+.tone-validate {
+  --tool-accent: #d9e582;
+}
+
+.tone-danger {
+  --tool-accent: #ffada0;
+}
+
+.tone-state {
+  --tool-accent: #a7b4c8;
 }
 </style>

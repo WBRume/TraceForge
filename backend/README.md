@@ -83,6 +83,8 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 `tools` 遵循 [AgentToolContext](app/agents/tools.py)：`definitions` 提供工具名、说明和 JSON Schema，`await tools.invoke(name, arguments, call_id)` 返回 `AgentToolResult(data, is_error)`。Adapter 将定义交给 Agent，并把每次调用结果送回同一模型回合；校验失败允许模型修正参数。MCP Adapter 可复用 [serve_tools](app/agents/tool_transports/mcp.py)，原生工具 Adapter 直接绑定回调，无需启动 HTTP 服务。
 
+聊天工具事件由 Adapter 归一化为 `tool_use` / `tool_result`，两者使用相同的 `tool_use_id`。可选的 `tool_kind` 和 `mcp_server` 用于分类，`AgentEvent.time` 可提供带时区的事件时间。缺少扩展字段时仍按通用工具记录，时间回退为服务端接收时间。任务历史接口可用 `log_session_turn_id`、`log_page` 和 `log_limit` 查询一轮内的终端事件。
+
 ```python
 register_backend(
     "my-agent",

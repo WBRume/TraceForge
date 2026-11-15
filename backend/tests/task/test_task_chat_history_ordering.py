@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import create_engine
@@ -12,6 +13,8 @@ import app.domains.task.models.test_result
 import app.domains.workflow.models.provision_job
 import app.domains.workflow.models.task_change
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
+from app.agents.adapters.claude_code.event_mapper import map_claude_event
+from app.agents.events import AgentEvent
 from app.database import Base
 from app.domains.auth.models.user import User, Workspace
 from app.domains.task.models.chat import ChatMessage, MessageType
@@ -21,6 +24,8 @@ from app.domains.task.schemas.diagnosis import DiagnosisResultPayload
 from app.domains.task.services import diagnosis_result_service
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.conversation import messages as task_conversation_messages
+from app.engine.session import TaskAgentEngine
+from app.engine.session import persistence as session_persistence
 
 
 @pytest.fixture()
@@ -132,9 +137,10 @@ def test_task_history_limits_terminal_logs_and_excludes_provider_noise(db_sessio
                 log_type=LogType.STDOUT,
                 content=json.dumps(
                     {
-                        "tool_name": "read_file",
-                        "tool_input": {"path": f"file-{index}.py"},
-                        "tool_use_id": f"call-{index}",
+                        "contract_version": 2,
+                        "event_type": "tool_use",
+                        "event_id": f"log-{index}",
+                        "payload": {"task_id": task.id, "tool_name": "read_file", "tool_use_id": f"call-{index}"},
                     }
                 ),
                 event_order=index + 1,
@@ -176,13 +182,83 @@ def test_task_history_limits_terminal_logs_and_excludes_provider_noise(db_sessio
 
     assert history["logs_has_more"] is True
     assert len(history["logs"]) == 5
-    assert [json.loads(log["content"])["tool_use_id"] for log in history["logs"]] == [
+    assert [json.loads(log["content"])["payload"]["tool_use_id"] for log in history["logs"]] == [
         "call-3",
         "call-4",
         "call-5",
         "call-6",
         "call-7",
     ]
+
+
+@pytest.mark.asyncio
+async def test_tool_activity_is_replayable_even_when_output_is_truncated(db_session, monkeypatch):
+    task = _seed_task(db_session)
+    monkeypatch.setattr(TaskAgentEngine, "_create_engine_backend", MagicMock())
+    engine = TaskAgentEngine(task.id, task.workspace_id, task.creator_id, job_id="job-1")
+    engine.session_turn_id = "turn-1"
+    engine.frontend.push = AsyncMock()
+    monkeypatch.setattr(engine.logs, "flush_soon", MagicMock())
+    monkeypatch.setattr(engine.segments, "record", MagicMock())
+    monkeypatch.setattr("app.engine.session.engine.skill_runtime_trace_service.enqueue_tool_result_trace", MagicMock())
+    monkeypatch.setattr(session_persistence, "SessionLocal", sessionmaker(bind=db_session.get_bind()))
+
+    blocks = [
+        {"type": "mcp_tool_use", "id": "mcp-1", "name": "get_item", "server_name": "example", "input": {}},
+        {"type": "mcp_tool_result", "tool_use_id": "mcp-1", "content": [{"text": '\n\\"' * 5000}]},
+        {"type": "server_tool_use", "id": "web-1", "name": "web_search", "input": {"query": "example"}},
+        {
+            "type": "web_search_tool_result",
+            "tool_use_id": "web-1",
+            "content": {"type": "web_search_tool_result_error", "error_code": "unavailable"},
+        },
+    ]
+    for event in map_claude_event({"type": "assistant", "message": {"content": blocks}}):
+        event.time = "2026-05-01T08:00:00.123456+08:00"
+        await engine.handle_agent_event(event)
+
+    engine.session_turn_id = "turn-2"
+    engine.current_job_id = "job-2"
+    engine.tool_activity.reset()
+    for provider, name in [("dsh", "skill"), ("new-agent", "web_search")]:
+        await engine.handle_agent_event(
+            AgentEvent(
+                type="tool_use",
+                provider=provider,
+                payload={"tool_use_id": "same-id", "tool_name": name, "tool_input": {}},
+            )
+        )
+
+    entries = engine.logs._collect()
+    engine.logs._persist_sync(entries)
+    engine.logs._persist_sync(entries)
+    assert db_session.query(SddExecutionLog).count() == 6
+
+    first_turn = {
+        "task_id": task.id,
+        "workspace_id": task.workspace_id,
+        "log_session_turn_id": "turn-1",
+        "log_limit": 2,
+    }
+    latest_page = task_conversation_history.get_task_history(db_session, **first_turn)
+    earlier_page = task_conversation_history.get_task_history(db_session, **first_turn, log_page=2)
+    assert latest_page["logs_has_more"] is True
+    assert earlier_page["logs_has_more"] is False
+    payloads = [json.loads(log["content"])["payload"] for log in earlier_page["logs"] + latest_page["logs"]]
+    assert [p["activity"]["kind"] for p in payloads] == ["mcp", "mcp", "web_search", "web_search"]
+    assert [p["tool_use_id"] for p in payloads] == ["mcp-1", "mcp-1", "web-1", "web-1"]
+    assert payloads[1]["activity"]["mcp_server"] == "example"
+    assert payloads[1]["activity"]["occurred_at"] == "2026-05-01T00:00:00.123456+00:00"
+    assert payloads[1]["activity"]["truncated"] is True
+    assert payloads[3]["is_error"] is True
+    assert {p["activity"]["ai_job_id"] for p in payloads} == {"job-1"}
+
+    later_logs = task_conversation_history.get_task_history(
+        db_session, task.id, task.workspace_id, log_session_turn_id="turn-2"
+    )["logs"]
+    later_payloads = [json.loads(log["content"])["payload"] for log in later_logs]
+    assert [p["activity"]["kind"] for p in later_payloads] == ["skill", "tool"]
+    assert {p["activity"]["time_source"] for p in later_payloads} == {"server"}
 
 
 def test_diagnosis_result_card_comes_after_last_assistant_bubble(db_session):

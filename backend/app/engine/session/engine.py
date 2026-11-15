@@ -16,6 +16,7 @@ import os
 import time
 import uuid
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from app.agents import (
@@ -32,6 +33,7 @@ from app.agents import (
 )
 from app.agents.errors import AgentExecutionDetached
 from app.agents.run_logging import run_agent_backend_with_logging
+from app.agents.tool_activity import ToolActivityTracker
 from app.config import settings
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
 from app.core.offload import run_db, run_git_job
@@ -52,6 +54,7 @@ from app.engine.session.persistence import (
 )
 from app.engine.session.registry import register_engine, unregister_engine
 from app.engine.session.text_stream import AssistantTextStream
+from app.protocols.tool_activity import ToolActivity
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -160,6 +163,7 @@ class TaskAgentEngine:
         self.text_stream = AssistantTextStream(self)
         self.thinking = ThinkingStream(self, self.frontend)
         self.logs = ExecutionLogBatcher(self)
+        self.tool_activity = ToolActivityTracker()
         self.segments = ContextSegmentBatcher(self)
         self.segments.attach_thinking(self.thinking)
 
@@ -289,6 +293,7 @@ class TaskAgentEngine:
         self._hitl_requested_in_turn = False
         self._pending_confirmations.clear()
         self.thinking.reset()
+        self.tool_activity.reset()
 
     async def _handle_run_error(self, e, recovery):
         if recovery and not self._interrupt_requested:
@@ -728,9 +733,9 @@ class TaskAgentEngine:
             elif event_type == "thinking":
                 await self._on_thinking(payload)
             elif event_type == "tool_use":
-                await self._on_tool_use(payload)
+                await self._on_tool_use(event)
             elif event_type == "tool_result":
-                await self._on_tool_result(payload)
+                await self._on_tool_result(event)
             elif event_type == "ask_user":
                 await self._on_ask_user(payload)
             elif event_type == "ask_user_resolved":
@@ -783,23 +788,35 @@ class TaskAgentEngine:
         suffix = f" (model: {model})" if model else ""
         await self.frontend.push_status("RUNNING", f"Agent 会话已启动{suffix}", model=model)
 
-    async def _on_tool_use(self, payload: dict) -> None:
+    def _record_tool_activity(
+        self, event: AgentEvent, received_at: datetime, *, skill_match: bool = False
+    ) -> ToolActivity:
+        attempt = self.attempt
+        return self.tool_activity.record(
+            event,
+            received_at=received_at,
+            ai_job_id=self.current_job_id,
+            session_turn_id=self.session_turn_id,
+            attempt=attempt.attempt_count if attempt is not None else None,
+            skill_match=skill_match,
+        )
+
+    async def _on_tool_use(self, event: AgentEvent) -> None:
+        received_at = datetime.now(timezone.utc)
+        payload = event.payload
         tool_name = str(payload.get("tool_name") or "unknown")
         tool_input = payload.get("tool_input", {})
         tool_id = str(payload.get("tool_use_id") or "")
-        from app.protocols.messages import terminal_record
-
-        self.logs.queue(
-            json.dumps(
-                terminal_record(
-                    "tool_use",
-                    {"task_id": self.task_id, "tool_name": tool_name, "tool_input": tool_input, "tool_use_id": tool_id},
-                    uuid.uuid4().hex,
-                ),
-                ensure_ascii=False,
-            ),
-            LogType.STDOUT,
+        skill_match = skill_runtime_trace_service.enqueue_tool_use_trace(
+            workspace_id=self.ws_id,
+            task_id=self.task_id,
+            ai_job_id=self.current_job_id,
+            runtime_index=self._runtime_skill_index,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            tool_use_id=tool_id,
         )
+        activity = self._record_tool_activity(event, received_at, skill_match=skill_match)
         self.segments.record(
             "tool_input",
             workspace_id=self.ws_id,
@@ -810,16 +827,7 @@ class TaskAgentEngine:
             tool_input=tool_input,
             tool_use_id=tool_id,
         )
-        await self.frontend.push_tool_use(tool_name, tool_input, tool_id)
-        skill_runtime_trace_service.enqueue_tool_use_trace(
-            workspace_id=self.ws_id,
-            task_id=self.task_id,
-            ai_job_id=self.current_job_id,
-            runtime_index=self._runtime_skill_index,
-            tool_name=tool_name,
-            tool_input=tool_input,
-            tool_use_id=tool_id,
-        )
+        await self.frontend.push_tool_use(tool_name, tool_input, tool_id, activity=activity)
         # 检测 HITL：AskUserQuestion 工具
         if tool_name == "AskUserQuestion":
             question = str(payload.get("question") or tool_input.get("question") or str(tool_input))
@@ -830,30 +838,12 @@ class TaskAgentEngine:
                 provider_request_id=tool_id,
             )
 
-    async def _on_tool_result(self, payload: dict) -> None:
+    async def _on_tool_result(self, event: AgentEvent) -> None:
+        activity = self._record_tool_activity(event, datetime.now(timezone.utc))
+        payload = event.payload
         tool_use_id = str(payload.get("tool_use_id") or "")
         output = str(payload.get("output") or "")
         is_error = bool(payload.get("is_error"))
-        from app.protocols.messages import terminal_record
-
-        self.logs.queue(
-            json.dumps(
-                terminal_record(
-                    "tool_result",
-                    {
-                        "task_id": self.task_id,
-                        "tool_use_id": tool_use_id,
-                        "output": output,
-                        "is_error": is_error,
-                        "structured_content": payload.get("structured_content"),
-                        "content": payload.get("content", []),
-                    },
-                    uuid.uuid4().hex,
-                ),
-                ensure_ascii=False,
-            ),
-            LogType.STDOUT,
-        )
         self.segments.record(
             "tool_result",
             workspace_id=self.ws_id,
@@ -868,6 +858,7 @@ class TaskAgentEngine:
         await self.frontend.push_tool_result(
             tool_use_id,
             output,
+            activity=activity,
             is_error=is_error,
             structured_content=payload.get("structured_content"),
             content=payload.get("content", []),

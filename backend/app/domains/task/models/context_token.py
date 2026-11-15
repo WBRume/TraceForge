@@ -13,6 +13,7 @@ from sqlalchemy import (
     Index,
     String,
     func,
+    text,
 )
 from sqlalchemy.orm import relationship
 
@@ -30,6 +31,9 @@ class ContextTokenCategory(str, PyEnum):
     THINKING = "THINKING"
     HISTORY = "HISTORY"
     HITL = "HITL"
+
+
+THINKING_JOB_INDEX_PREDICATE = text("category = 'THINKING' AND ai_job_id IS NOT NULL")
 
 
 class SddContextTokenSnapshot(Base):
@@ -77,6 +81,13 @@ class SddContextTokenSegment(Base):
         Index("ix_sdd_context_token_segments_snapshot_category", "snapshot_id", "category"),
         Index("ix_sdd_context_token_segments_snapshot_category_created", "snapshot_id", "category", "created_at"),
         Index("ix_sdd_context_token_segments_task_job", "task_id", "ai_job_id"),
+        Index(
+            "uq_sdd_context_token_segments_thinking_job",
+            "ai_job_id",
+            unique=True,
+            postgresql_where=THINKING_JOB_INDEX_PREDICATE,
+            sqlite_where=THINKING_JOB_INDEX_PREDICATE,
+        ),
     )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)

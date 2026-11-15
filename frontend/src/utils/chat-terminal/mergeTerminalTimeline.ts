@@ -43,6 +43,8 @@ export const mergeTerminalTimeline = (input: MergeTerminalTimelineInput): Termin
       role: String(message?.role || 'system'),
       content: String(message?.content || ''),
       messageType: String(message?.message_type || 'text'),
+      sessionTurnId: message?.session_turn_id,
+      turnIndex: typeof message?.metadata?.session_turn_index === 'number' ? message.metadata.session_turn_index : undefined,
       confirmation,
       createdAt: time.createdAt,
       createdMs: time.createdMs,
@@ -59,6 +61,7 @@ export const mergeTerminalTimeline = (input: MergeTerminalTimelineInput): Termin
         toolName: String(log?.tool_name || 'unknown'),
         toolInput: log?.tool_input,
         toolUseId: String(log?.tool_use_id || ''),
+        activity: log?.activity,
         sourceLogId: log?.id ? String(log.id) : null,
         createdAt: time.createdAt,
         createdMs: time.createdMs,
@@ -71,6 +74,7 @@ export const mergeTerminalTimeline = (input: MergeTerminalTimelineInput): Termin
         id: `tool-result-${log?.id || log?.tool_use_id || index}`,
         kind: 'tool_result',
         toolUseId: String(log?.tool_use_id || ''),
+        activity: log?.activity,
         output: String(log?.output || ''),
         isError: Boolean(log?.is_error),
         sourceLogId: log?.id ? String(log.id) : null,
@@ -158,10 +162,20 @@ export const mergeTerminalTimeline = (input: MergeTerminalTimelineInput): Termin
     })
   }
 
+  const seenTurns = new Set<string>()
   return entries
     .sort((a, b) => {
       if (a.createdMs !== b.createdMs) return a.createdMs - b.createdMs
       return a.seq - b.seq
     })
-    .map(({ seq: _, ...rest }) => rest)
+    .flatMap<TerminalTimelineEntry>(({ seq: _, ...entry }) => {
+      if (entry.kind !== 'message' || entry.role !== 'user' || !entry.sessionTurnId || seenTurns.has(entry.sessionTurnId)) {
+        return [entry]
+      }
+      seenTurns.add(entry.sessionTurnId)
+      return [{
+        id: `turn-${entry.sessionTurnId}`, kind: 'turn_separator', sessionTurnId: entry.sessionTurnId,
+        turnIndex: entry.turnIndex, createdAt: entry.createdAt, createdMs: entry.createdMs,
+      }, entry]
+    })
 }

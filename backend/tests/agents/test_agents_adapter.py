@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -174,6 +175,20 @@ class ClaudeStartupLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ClaudeEventMapperTest(unittest.TestCase):
+    def test_user_event_keeps_tool_returns_without_echoing_user_text(self):
+        events = map_claude_event(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "prompt"},
+                        {"type": "tool_result", "tool_use_id": "call-1", "content": "tool output"},
+                    ]
+                },
+            }
+        )
+        self.assertEqual([(e.type, e.payload["output"]) for e in events], [("tool_result", "tool output")])
+
     def test_maps_system_init_to_session_started(self):
         events = map_claude_event({"type": "system", "subtype": "init", "session_id": "s-1", "model": "claude-x"})
         self.assertEqual(len(events), 1)
@@ -401,6 +416,9 @@ class OpenCodeEventMapperFixtureTest(unittest.TestCase):
         for raw in raw_events:
             for event in map_opencode_event(raw):
                 mapped_types.add(event.type)
+                if raw["type"] in {"session.tool.called", "session.tool.success"}:
+                    self.assertIsNotNone(event.time)
+                    self.assertEqual(datetime.fromisoformat(event.time).timestamp(), raw["data"]["timestamp"] / 1000)
         self.assertIn("tool_use", mapped_types)
         self.assertIn("tool_result", mapped_types)
         self.assertIn("text", mapped_types)

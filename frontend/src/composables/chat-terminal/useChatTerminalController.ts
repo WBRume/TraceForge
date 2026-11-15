@@ -55,6 +55,8 @@ export interface ChatTerminalBridge {
   isTerminalStatus: boolean
   canManageTaskStatus: boolean
   loadOlderMessages: () => Promise<void>
+  loadOlderTerminalLogs: () => Promise<void>
+  hasMoreTerminalLogs: boolean
   submitHitl: (cardId: string, response: string) => void
   formatTime: (value: string) => string
   formatToolInput: (value: unknown) => string

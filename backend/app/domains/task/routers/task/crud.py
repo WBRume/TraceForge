@@ -389,11 +389,23 @@ def get_task_history(
     task_id: str,
     page: int = 1,
     page_size: int = 50,
+    log_session_turn_id: str | None = Query(default=None, max_length=36),
+    log_page: int = Query(default=1, ge=1),
+    log_limit: int = Query(default=task_conversation_history.TERMINAL_LOG_HISTORY_LIMIT, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     verify_workspace_access(ws_id, current_user.id, db)
-    return task_conversation_history.get_task_history(db, task_id, ws_id, page=page, page_size=page_size)
+    return task_conversation_history.get_task_history(
+        db,
+        task_id,
+        ws_id,
+        page=page,
+        page_size=page_size,
+        log_limit=log_limit,
+        log_session_turn_id=log_session_turn_id,
+        log_page=log_page,
+    )
 
 
 @router.delete("/{task_id}/history")

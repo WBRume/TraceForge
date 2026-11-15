@@ -12,6 +12,7 @@ import json
 from typing import Any
 
 from app.agents.events import AgentEvent
+from app.agents.tool_activity import mcp_tool_fields, wire_event_time
 
 PROVIDER = "opencode"
 
@@ -208,6 +209,8 @@ def _map_tool_event(event: dict[str, Any], data: dict[str, Any], event_type: str
             )
         ]
     events: list[AgentEvent] = []
+    mcp = mcp_tool_fields(data.get("mcpServer") or data.get("mcp_server"))
+    occurred_at = wire_event_time(data.get("timestamp") or event.get("timestamp"))
     if event_type == "session.tool.called":
         events.append(
             AgentEvent(
@@ -216,10 +219,11 @@ def _map_tool_event(event: dict[str, Any], data: dict[str, Any], event_type: str
                     "tool_use_id": tool_id,
                     "tool_name": tool_name,
                     "tool_input": data.get("input", {}),
+                    **mcp,
                 },
                 provider=PROVIDER,
                 raw=event,
-                time=_iso_time(),
+                time=occurred_at,
             )
         )
     elif event_type == "session.tool.progress":
@@ -244,10 +248,11 @@ def _map_tool_event(event: dict[str, Any], data: dict[str, Any], event_type: str
                     "is_error": False,
                     "structured_content": data.get("structured"),
                     "content": data.get("content") or [],
+                    **mcp,
                 },
                 provider=PROVIDER,
                 raw=event,
-                time=_iso_time(),
+                time=occurred_at,
             )
         )
     elif event_type == "session.tool.failed":
@@ -263,10 +268,11 @@ def _map_tool_event(event: dict[str, Any], data: dict[str, Any], event_type: str
                     "tool_use_id": tool_id,
                     "output": error_message or _json_text(error or {}, 4000),
                     "is_error": True,
+                    **mcp,
                 },
                 provider=PROVIDER,
                 raw=event,
-                time=_iso_time(),
+                time=occurred_at,
             )
         )
 
@@ -377,8 +383,11 @@ def _map_tool_part(event: dict[str, Any], part: dict[str, Any]) -> list[AgentEve
     state = part.get("state") if isinstance(part.get("state"), dict) else {}
     status = _text(state.get("status"))
     tool_use_id = _text(part.get("callID") or part.get("id"))
+    if not tool_use_id:
+        return events
     tool_name = _text(part.get("tool") or part.get("name")) or "unknown"
-    tool_input = state.get("input", {}) if isinstance(state, dict) else {}
+    mcp = mcp_tool_fields(part.get("mcpServer") or part.get("mcp_server"))
+    occurred_at = wire_event_time(event.get("timestamp"))
     if status in ("pending", "running", ""):
         events.append(
             AgentEvent(
@@ -386,11 +395,12 @@ def _map_tool_part(event: dict[str, Any], part: dict[str, Any]) -> list[AgentEve
                 payload={
                     "tool_use_id": tool_use_id,
                     "tool_name": tool_name,
-                    "tool_input": tool_input,
+                    "tool_input": state.get("input", {}),
+                    **mcp,
                 },
                 provider=PROVIDER,
                 raw=event,
-                time=_iso_time(),
+                time=occurred_at,
             )
         )
     if status in ("completed", "error"):
@@ -407,12 +417,14 @@ def _map_tool_part(event: dict[str, Any], part: dict[str, Any]) -> list[AgentEve
                 type="tool_result",
                 payload={
                     "tool_use_id": tool_use_id,
+                    "tool_name": tool_name,
                     "output": output,
                     "is_error": status == "error",
+                    **mcp,
                 },
                 provider=PROVIDER,
                 raw=event,
-                time=_iso_time(),
+                time=occurred_at,
             )
         )
     return events

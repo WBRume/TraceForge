@@ -337,6 +337,7 @@ export function useChatViewModel() {
     terminalLogs: {
       clear: terminalLogs.clear,
       restoreFromHistory: terminalLogs.restoreFromHistory,
+      prependFromHistory: terminalLogs.prependFromHistory,
     },
     cards: {
       syncConfirmationCards: cards.syncConfirmationCards,
@@ -1341,6 +1342,8 @@ export function useChatViewModel() {
     setChatWorkbenchMode,
     chatContainer,
     terminalContainer,
+    loadOlderTerminalLogs: history.loadOlderTerminalLogs,
+    hasMoreTerminalLogs: history.hasMoreTerminalLogs,
     setTerminalContainer,
 
     // 阅读进度与续读

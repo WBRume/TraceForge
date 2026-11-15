@@ -816,6 +816,8 @@
     "cli_hint": "Enter 执行命令，Tab 补全命令，↑/↓ 浏览输入历史",
     "cli_input_placeholder": "输入命令（非 / 开头将按 /send 处理）",
     "cli_timeline_empty": "暂无终端时间线内容",
+    "cli_turn_number": "第 {number} 轮",
+    "cli_turn_boundary": "新一轮",
     "cli_help_title": "可用命令",
     "cli_running_blocked": "引擎运行中，仅允许 /help /status /interrupt /clear",
     "cli_error_unknown_command": "未知命令，请使用 /help 查看可用命令",

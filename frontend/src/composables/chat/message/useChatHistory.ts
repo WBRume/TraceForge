@@ -3,6 +3,7 @@ import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import type { useChatMessageContext } from '@/composables/useChatMessageContext'
 import { mapHistoryMessages } from '../shared/messageIdentity'
+import type { TerminalHistoryRow } from './useTerminalLogs'
 
 type HistoryContext = ReturnType<typeof useChatMessageContext>
 
@@ -27,6 +28,7 @@ export function useChatHistory(options: {
   terminalLogs: {
     clear: () => void
     restoreFromHistory: (logs: any[]) => void
+    prependFromHistory: (logs: TerminalHistoryRow[]) => void
   }
   cards: {
     syncConfirmationCards: () => void
@@ -45,6 +47,9 @@ export function useChatHistory(options: {
   const currentPage = ref(1)
   const hasMore = ref(false)
   const loadingMore = ref(false)
+  const hasMoreTerminalLogs = ref(false)
+  let terminalLogPage = 1
+  let loadingOlderTerminalLogs = false
   let historyGeneration = 0
   let restoredTaskId = ''
 
@@ -55,6 +60,28 @@ export function useChatHistory(options: {
   const isCurrentTaskId = (taskId: string) => (
     String(options.getCurrentTask()?.id || '') === String(taskId)
   )
+
+  const loadOlderTerminalLogs = async () => {
+    const taskId = String(options.getCurrentTask()?.id || '')
+    if (!taskId || !hasMoreTerminalLogs.value || loadingOlderTerminalLogs) return
+    const requestGeneration = historyGeneration
+    const nextPage = terminalLogPage + 1
+    loadingOlderTerminalLogs = true
+    try {
+      const { data } = await api.get<{ logs: TerminalHistoryRow[]; logs_has_more: boolean }>(
+        `/workspaces/${options.getWorkspaceId()}/tasks/${taskId}/history`,
+        { params: { page_size: 1, log_page: nextPage } },
+      )
+      if (requestGeneration !== historyGeneration || !isCurrentTaskId(taskId)) return
+      options.terminalLogs.prependFromHistory(data.logs)
+      terminalLogPage = nextPage
+      hasMoreTerminalLogs.value = data.logs_has_more
+    } catch (error) {
+      console.error('Failed to load terminal history', error)
+    } finally {
+      loadingOlderTerminalLogs = false
+    }
+  }
 
   const highlightMessageFromRouteQuery = async (): Promise<boolean> => {
     const messageId = String(options.route.query.messageId || '').trim()
@@ -87,7 +114,7 @@ export function useChatHistory(options: {
         params: { page: currentPage.value, page_size: 50 }
       })
       if (requestGeneration !== historyGeneration || !isCurrentTaskId(taskId)) return false
-      const { messages: hMessages, logs: hLogs, has_more } = res.data
+      const { messages: hMessages, logs: hLogs, has_more, logs_has_more } = res.data
       hasMore.value = has_more
 
       const mapped = mapHistoryMessages(hMessages)
@@ -97,6 +124,8 @@ export function useChatHistory(options: {
         options.cards.syncConfirmationCards()
         // 还原终端日志（仅首次加载）
         options.terminalLogs.restoreFromHistory(hLogs)
+        terminalLogPage = 1
+        hasMoreTerminalLogs.value = Boolean(logs_has_more)
 
         await nextTick()
         if (options.route.query.messageId) {
@@ -202,6 +231,8 @@ export function useChatHistory(options: {
     restoredTaskId = ''
     currentPage.value = 1
     hasMore.value = false
+    terminalLogPage = 1
+    hasMoreTerminalLogs.value = false
   }
 
   // 路由 messageId 联动：定位/回到最新
@@ -220,6 +251,8 @@ export function useChatHistory(options: {
     loadingMore,
     bumpGeneration,
     loadHistory,
+    loadOlderTerminalLogs,
+    hasMoreTerminalLogs,
     loadAnchorContext,
     loadContextDirection,
     returnToLatest,

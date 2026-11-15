@@ -93,6 +93,29 @@ class WorkflowSegmentBufferTest(unittest.IsolatedAsyncioTestCase):
 
         await engine._drain_buffers()
 
+    async def test_thinking_retry_precedes_newer_content(self):
+        engine = _engine()
+
+        async def fail_after_next_update(*_args):
+            await engine.thinking.handle_update("new thinking", is_delta=False)
+            engine.segments.mark_thinking_dirty()
+            raise RuntimeError("write failed")
+
+        run_db_mock = AsyncMock(side_effect=fail_after_next_update)
+        with patch("app.engine.session.persistence.run_db", run_db_mock):
+            await engine.thinking.handle_update("old thinking", is_delta=False)
+            engine.segments.mark_thinking_dirty()
+            await engine.segments.flush()
+            run_db_mock.side_effect = None
+            await engine.segments.flush()
+
+        _, entries, _ = run_db_mock.await_args.args
+        self.assertEqual(
+            [kwargs["content"] for recorder, kwargs in entries if recorder == "thinking"],
+            ["old thinking", "new thinking"],
+        )
+        await engine._drain_buffers()
+
     async def test_push_hitl_forces_flush_before_broadcast(self):
         engine = _engine()
         events = []

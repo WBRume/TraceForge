@@ -1,5 +1,6 @@
 import type { ConfirmationField } from '@/composables/chat/types'
 import type { ConfirmationHistoryRecord } from '@/composables/chat/message/confirmationHistory'
+import type { ToolActivity } from '../../../shared/contracts/generated/applicationMessage'
 
 export type TerminalLocalEchoKind = 'command' | 'info' | 'success' | 'warning' | 'error'
 export type TerminalCommandTone = 'query' | 'operate' | 'state' | 'danger' | 'local'
@@ -14,6 +15,7 @@ export interface TerminalLocalEcho {
 
 type TerminalTimelineKind =
   | 'message'
+  | 'turn_separator'
   | 'tool_use'
   | 'tool_result'
   | 'log'
@@ -35,7 +37,15 @@ export interface TerminalMessageEntry extends TerminalTimelineBase {
   role: string
   content: string
   messageType: string
+  sessionTurnId?: string | null
+  turnIndex?: number
   confirmation?: ConfirmationHistoryRecord | null
+}
+
+export interface TerminalTurnSeparator extends TerminalTimelineBase {
+  kind: 'turn_separator'
+  sessionTurnId: string
+  turnIndex?: number
 }
 
 export interface TerminalToolUseEntry extends TerminalTimelineBase {
@@ -43,11 +53,13 @@ export interface TerminalToolUseEntry extends TerminalTimelineBase {
   toolName: string
   toolInput: unknown
   toolUseId: string
+  activity?: ToolActivity | null
 }
 
 export interface TerminalToolResultEntry extends TerminalTimelineBase {
   kind: 'tool_result'
   toolUseId: string
+  activity?: ToolActivity | null
   output: string
   isError: boolean
 }
@@ -92,6 +104,7 @@ export interface TerminalLocalEchoEntry extends TerminalTimelineBase {
 
 export type TerminalTimelineEntry =
   | TerminalMessageEntry
+  | TerminalTurnSeparator
   | TerminalToolUseEntry
   | TerminalToolResultEntry
   | TerminalLogEntry

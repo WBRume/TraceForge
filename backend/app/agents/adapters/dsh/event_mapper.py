@@ -11,6 +11,7 @@ import json
 from typing import Any
 
 from app.agents.events import AgentEvent
+from app.agents.tool_activity import mcp_tool_fields, wire_event_time
 
 PROVIDER = "dsh"
 
@@ -67,6 +68,8 @@ def _tool_output_text(data: dict[str, Any]) -> str:
     for block in content:
         if not isinstance(block, dict):
             continue
+        if block.get("type") == "text":
+            parts.append(_text(block.get("text")))
         if block.get("type") != "tool-result":
             continue
         inner = block.get("content")
@@ -167,30 +170,37 @@ def _map_assistant_chunk(event: dict[str, Any], data: dict[str, Any]) -> list[Ag
     return events
 
 
-def _map_tool_result(event: dict[str, Any], data: dict[str, Any]) -> list[AgentEvent]:
-    events: list[AgentEvent] = []
+def map_dsh_tool_result(event: dict[str, Any], data: dict[str, Any]) -> AgentEvent | None:
+    """Read tool output from both flat and message-wrapped DSH events."""
     message = data.get("message") if isinstance(data.get("message"), dict) else {}
-    is_error = False
-    content = message.get("content") if isinstance(message.get("content"), list) else []
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "tool-result":
-            is_error = bool(block.get("isError"))
-    events.append(
-        AgentEvent(
-            type="tool_result",
-            payload={
-                "tool_use_id": _text(
-                    (message.get("source") or {}).get("callId") if isinstance(message.get("source"), dict) else ""
-                ),
-                "output": _tool_output_text(data),
-                "is_error": is_error,
-            },
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        )
+    source = message.get("source") if isinstance(message.get("source"), dict) else {}
+    call_id = _text(
+        data.get("callId")
+        or data.get("toolUseId")
+        or data.get("id")
+        or message.get("toolCallId")
+        or source.get("callId")
     )
-    return events
+    if not call_id:
+        return None
+    content = message.get("content") if isinstance(message.get("content"), list) else []
+    is_error = bool(data.get("isError") or data.get("is_error") or message.get("isError")) or any(
+        isinstance(block, dict) and block.get("type") == "tool-result" and block.get("isError") for block in content
+    )
+    output = data.get("result") or data.get("output") or data.get("content") or _tool_output_text(data)
+    return AgentEvent(
+        type="tool_result",
+        payload={
+            "tool_use_id": call_id,
+            "output": output if isinstance(output, str) else json.dumps(output, ensure_ascii=False),
+            "structured_content": data.get("structuredContent"),
+            "is_error": is_error,
+            **mcp_tool_fields(data.get("mcpServer") or data.get("mcp_server")),
+        },
+        provider=PROVIDER,
+        raw=event,
+        time=wire_event_time(event.get("timestamp") or event.get("time")),
+    )
 
 
 def map_dsh_event(event: dict[str, Any]) -> list[AgentEvent]:
@@ -221,7 +231,9 @@ def map_dsh_event(event: dict[str, Any]) -> list[AgentEvent]:
             )
         )
     elif event_type == "tool/result":
-        events.extend(_map_tool_result(event, data))
+        result = map_dsh_tool_result(event, data)
+        if result is not None:
+            events.append(result)
     elif event_type == "turn/end":
         reason = data.get("reason") if isinstance(data.get("reason"), dict) else {}
         kind = _text(reason.get("kind"))

@@ -1030,11 +1030,58 @@
     "ToolResultPayload": {
       "additionalProperties": false,
       "properties": {
+        "tool_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "tool",
+                "mcp",
+                "skill",
+                "web_search",
+                "web_fetch"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Kind"
+        },
+        "mcp_server": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mcp Server"
+        },
         "tool_use_id": {
           "maxLength": 200,
           "minLength": 1,
           "title": "Tool Use Id",
           "type": "string"
+        },
+        "tool_name": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Name"
         },
         "output": {
           "title": "Output",
@@ -1119,6 +1166,39 @@
     "ToolUsePayload": {
       "additionalProperties": false,
       "properties": {
+        "tool_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "tool",
+                "mcp",
+                "skill",
+                "web_search",
+                "web_fetch"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Kind"
+        },
+        "mcp_server": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mcp Server"
+        },
         "tool_use_id": {
           "maxLength": 200,
           "minLength": 1,

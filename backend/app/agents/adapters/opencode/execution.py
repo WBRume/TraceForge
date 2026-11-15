@@ -20,6 +20,7 @@ import httpx
 from app.agents.adapters.opencode.event_mapper import map_opencode_event, opencode_event_session_id, text_segment_fields
 from app.agents.errors import AgentExecutionDetached, AgentTimeoutError
 from app.agents.events import AgentEvent
+from app.agents.tool_activity import mcp_tool_fields, wire_event_time
 from app.config import settings
 from app.core.logging import get_logger
 
@@ -180,19 +181,25 @@ class ExecutionMonitor:
                     )
                     text_occurrences[text] += 1
                 elif kind == "tool":
-                    tid = str(part.get("id") or "")
-                    name = part.get("name")
+                    tid = str(part.get("callID") or part.get("id") or "")
+                    name = part.get("tool") or part.get("name")
                     state = part.get("state") or {}
                     if not tid or not isinstance(name, str) or not name or state.get("status") == "streaming":
                         continue
+                    timing = part.get("time")
+                    if not isinstance(timing, dict):
+                        timing = {}
+                    mcp = mcp_tool_fields(part.get("mcpServer") or part.get("mcp_server"))
                     await self.emit(
                         AgentEvent(
                             type="tool_use",
                             provider="opencode",
+                            time=wire_event_time(timing.get("ran") or timing.get("created")),
                             payload={
                                 "tool_use_id": tid,
                                 "tool_name": name,
                                 "tool_input": state.get("input", {}),
+                                **mcp,
                             },
                         ),
                         f"tool_use:{tid}",
@@ -202,13 +209,16 @@ class ExecutionMonitor:
                             AgentEvent(
                                 type="tool_result",
                                 provider="opencode",
+                                time=wire_event_time(timing.get("completed")),
                                 payload={
                                     "tool_use_id": tid,
+                                    "tool_name": name,
                                     "output": self.adapter._tool_state_output_text(state),
                                     "is_error": state.get("status") == "error",
                                     "structured_content": state.get("structured"),
                                     "content": state.get("content") or [],
                                     "provider_replay": True,
+                                    **mcp,
                                 },
                             ),
                             f"tool_result:{tid}",

@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.protocols.tool_activity import ToolActivity
+
 
 class WSMessage(BaseModel):
     """WebSocket 下行消息基类"""
@@ -105,6 +107,7 @@ class WSToolUsePayload(BaseModel):
     tool_name: str
     tool_input: Any = None
     tool_use_id: str = Field(min_length=1)
+    activity: ToolActivity | None = None
 
 
 # ── 工具结果 ──
@@ -115,6 +118,7 @@ class WSToolResultPayload(BaseModel):
     is_error: bool = False
     structured_content: Any = None
     content: list[dict] = Field(default_factory=list)
+    activity: ToolActivity | None = None
 
 
 # ── 执行结果 ──

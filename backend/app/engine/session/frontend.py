@@ -29,6 +29,7 @@ from app.domains.task.models.task import SddTask
 from app.domains.task.services import context_token_service
 from app.domains.task.services.conversation import messages as task_conversation_messages
 from app.domains.websocket.ws.manager import manager as ws_manager
+from app.protocols.tool_activity import ToolActivity
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -222,33 +223,40 @@ class FrontendFeed:
             ).model_dump(),
         )
 
-    async def push_tool_use(self, tool_name: str, tool_input: Any, tool_use_id: str = "") -> None:
-        """推送工具调用到前端（终端/日志面板；不进入对话气泡）"""
-        await self.push(
-            "tool_use",
-            WSToolUsePayload(
-                task_id=self._owner.task_id,
-                tool_name=tool_name,
-                tool_input=tool_input,
-                tool_use_id=tool_use_id,
-            ).model_dump(),
-        )
+    async def push_tool_use(self, tool_name: str, tool_input: Any, tool_use_id: str, *, activity: ToolActivity) -> None:
+        """Queue a tool invocation and publish its live terminal event."""
+        payload = WSToolUsePayload(
+            task_id=self._owner.task_id,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            tool_use_id=tool_use_id,
+            activity=activity,
+        ).model_dump()
+        self._owner.logs.queue_tool_event("tool_use", payload)
+        await self.push("tool_use", payload)
 
     async def push_tool_result(
-        self, tool_use_id: str, output: str, *, is_error: bool = False, structured_content=None, content=None
+        self,
+        tool_use_id: str,
+        output: str,
+        *,
+        activity: ToolActivity,
+        is_error: bool = False,
+        structured_content=None,
+        content=None,
     ) -> None:
-        """推送工具执行结果到前端"""
-        await self.push(
-            "tool_result",
-            WSToolResultPayload(
-                task_id=self._owner.task_id,
-                tool_use_id=tool_use_id,
-                output=output,
-                is_error=is_error,
-                structured_content=structured_content,
-                content=content or [],
-            ).model_dump(),
-        )
+        """Queue a tool result and publish its live terminal event."""
+        payload = WSToolResultPayload(
+            task_id=self._owner.task_id,
+            tool_use_id=tool_use_id,
+            output=output,
+            is_error=is_error,
+            structured_content=structured_content,
+            content=content or [],
+            activity=activity,
+        ).model_dump()
+        self._owner.logs.queue_tool_event("tool_result", payload)
+        await self.push("tool_result", payload)
 
     async def push_chat(
         self,

@@ -816,6 +816,8 @@
     "cli_hint": "Press Enter to run, Tab to complete, and Up/Down for command history",
     "cli_input_placeholder": "Type commands (non-slash input will be treated as /send)",
     "cli_timeline_empty": "No terminal timeline entries yet",
+    "cli_turn_number": "Turn {number}",
+    "cli_turn_boundary": "New turn",
     "cli_help_title": "Available commands",
     "cli_running_blocked": "Engine is running. Only /help /status /interrupt /clear are allowed",
     "cli_error_unknown_command": "Unknown command. Use /help to view available commands",

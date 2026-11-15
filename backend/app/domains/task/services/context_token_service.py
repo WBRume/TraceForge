@@ -163,18 +163,22 @@ def ensure_snapshot(
     snapshot = None
     if normalized_job_id:
         snapshot = (
-            db.query(SddContextTokenSnapshot).filter(SddContextTokenSnapshot.ai_job_id == normalized_job_id).first()
-        )
-    if snapshot is None and session_id:
-        snapshot = (
             db.query(SddContextTokenSnapshot)
-            .filter(
-                SddContextTokenSnapshot.task_id == task_id,
-                SddContextTokenSnapshot.session_id == str(session_id).strip(),
-            )
+            .filter(SddContextTokenSnapshot.ai_job_id == normalized_job_id)
             .order_by(SddContextTokenSnapshot.created_at.desc(), SddContextTokenSnapshot.id.desc())
             .first()
         )
+    if snapshot is None and session_id:
+        session_snapshots = db.query(SddContextTokenSnapshot).filter(
+            SddContextTokenSnapshot.workspace_id == workspace_id,
+            SddContextTokenSnapshot.task_id == task_id,
+            SddContextTokenSnapshot.session_id == str(session_id).strip(),
+        )
+        if normalized_job_id:
+            session_snapshots = session_snapshots.filter(SddContextTokenSnapshot.ai_job_id.is_(None))
+        snapshot = session_snapshots.order_by(
+            SddContextTokenSnapshot.created_at.desc(), SddContextTokenSnapshot.id.desc()
+        ).first()
     if snapshot is None:
         snapshot = SddContextTokenSnapshot(
             workspace_id=workspace_id,
@@ -438,7 +442,7 @@ def update_snapshot_usage(
     return snapshot
 
 
-def _ensure_batch_snapshots(db, entries, _snapshot_key):
+def _ensure_batch_snapshots(db, entries, snapshot_update, _snapshot_key):
     # 先集中 ensure 全部 snapshot（此时无 pending segment 行，内部 commit 不破坏原子性）
     status_by_key: dict[tuple[str, str, str, str], str] = {}
     for recorder, kwargs in entries:
@@ -447,6 +451,8 @@ def _ensure_batch_snapshots(db, entries, _snapshot_key):
             status_by_key[key] = "WAITING_HITL"
         else:
             status_by_key.setdefault(key, "RUNNING")
+    if snapshot_update:
+        status_by_key.setdefault(_snapshot_key(snapshot_update), snapshot_update.get("status") or "RUNNING")
 
     snapshots: dict[tuple[str, str, str, str], SddContextTokenSnapshot] = {}
     for key, snapshot_status in status_by_key.items():
@@ -460,6 +466,36 @@ def _ensure_batch_snapshots(db, entries, _snapshot_key):
             status=snapshot_status,
         )
     return snapshots
+
+
+def _upsert_job_thinking(db: Session, snapshot: SddContextTokenSnapshot, content: Any) -> SddContextTokenSegment:
+    """Serialize writers for a job, including databases with historical snapshots."""
+    db.query(SddAiJob.id).filter_by(id=snapshot.ai_job_id).with_for_update(key_share=True).one_or_none()
+    row = (
+        db.query(SddContextTokenSegment)
+        .filter_by(ai_job_id=snapshot.ai_job_id, category=ContextTokenCategory.THINKING)
+        .order_by(SddContextTokenSegment.created_at.desc(), SddContextTokenSegment.id.desc())
+        .first()
+    )
+    if row is None:
+        return record_segment(
+            db,
+            snapshot=snapshot,
+            category=ContextTokenCategory.THINKING,
+            source_kind="assistant_thinking",
+            source_ref_id=snapshot.ai_job_id,
+            content=content,
+            title="Thinking",
+            commit=False,
+        )
+    _, char_count, byte_count, content_hash, preview = _text_stats(content)
+    if row.content_hash != content_hash or row.snapshot_id != snapshot.id:
+        row.snapshot_id = snapshot.id
+        row.attribution_units = row.char_count = char_count
+        row.byte_count = byte_count
+        row.content_hash = content_hash
+        row.preview = preview or "Thinking"
+    return row
 
 
 def record_segments_batch(
@@ -496,10 +532,11 @@ def record_segments_batch(
             str(kwargs.get("session_id") or ""),
         )
 
-    snapshots = _ensure_batch_snapshots(db, entries, _snapshot_key)
+    snapshots = _ensure_batch_snapshots(db, entries, snapshot_update, _snapshot_key)
 
     # 批内去重（autoflush=False 下 _existing_segment 看不到同批未 flush 的行）
     seen_dedupe_keys: set = set()
+    thinking_by_job: dict[str, tuple[SddContextTokenSnapshot, Any]] = {}
     try:
         for recorder, kwargs in entries:
             kwargs = dict(kwargs)
@@ -561,13 +598,16 @@ def record_segments_batch(
                     commit=False,
                 )
             elif recorder == "thinking":
+                content = kwargs.get("content")
+                if snapshot.ai_job_id:
+                    thinking_by_job[snapshot.ai_job_id] = (snapshot, content)
+                    continue
                 record_segment(
                     db,
                     snapshot=snapshot,
                     category=ContextTokenCategory.THINKING,
                     source_kind="assistant_thinking",
-                    source_ref_id=snapshot.ai_job_id,
-                    content=kwargs.get("content"),
+                    content=content,
                     title="Thinking",
                     dedupe=False,
                     commit=False,
@@ -596,28 +636,12 @@ def record_segments_batch(
                     commit=False,
                 )
 
+        for snapshot, content in thinking_by_job.values():
+            _upsert_job_thinking(db, snapshot, content)
         if snapshot_update:
-            target_kwargs = {
-                "workspace_id": snapshot_update.get("workspace_id"),
-                "task_id": snapshot_update.get("task_id"),
-                "ai_job_id": snapshot_update.get("ai_job_id"),
-                "session_id": snapshot_update.get("session_id"),
-            }
-            key = _snapshot_key(target_kwargs)
-            target = snapshots.get(key)
-            if target is None:
-                target = ensure_snapshot(
-                    db,
-                    workspace_id=str(target_kwargs["workspace_id"] or ""),
-                    task_id=str(target_kwargs["task_id"] or ""),
-                    ai_job_id=target_kwargs["ai_job_id"],
-                    session_id=target_kwargs["session_id"],
-                    status=snapshot_update.get("status") or "RUNNING",
-                )
-                snapshots[key] = target
             _apply_snapshot_usage(
                 db,
-                target,
+                snapshots[_snapshot_key(snapshot_update)],
                 usage=snapshot_update.get("usage"),
                 model=snapshot_update.get("model"),
                 status=snapshot_update.get("status"),
@@ -626,8 +650,6 @@ def record_segments_batch(
                 raw_usage_json=snapshot_update.get("raw_usage_json"),
             )
 
-        # 只统计真正新增的 segment 行（ensure 阶段的 pending 已提交/不存在；
-        # 批内去重命中不会进入 db.new；须在 commit 前读取）
         written = len(db.new)
         db.commit()
         return written
@@ -915,6 +937,11 @@ def record_thinking(
         session_id=session_id,
         status="RUNNING",
     )
+    if snapshot.ai_job_id:
+        row = _upsert_job_thinking(db, snapshot, content)
+        db.commit()
+        db.refresh(row)
+        return row
     return record_segment(
         db,
         snapshot=snapshot,
