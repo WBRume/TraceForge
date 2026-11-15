@@ -27,7 +27,7 @@ export function useCurrentTask() {
   const getTaskId = () => String(currentTask.value?.id || '')
 
   const isTaskPreStart = computed(() => currentTask.value?.status === 'INITIALIZED')
-  // 任务创建后处于 PROVISIONING 时也保留启动引擎按钮（禁用态），避免按钮凭空消失；
+  // 任务创建后处于 PROVISIONING 时也保留启动任务按钮（禁用态），避免按钮凭空消失；
   // 只有资源准备完成回到 INITIALIZED 后才允许真正启动。
   const isTaskProvisioning = computed(() => String(currentTask.value?.status || '') === 'PROVISIONING')
   const isTaskInterrupted = computed(() => currentTask.value?.status === 'INTERRUPTED')

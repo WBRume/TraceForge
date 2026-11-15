@@ -195,3 +195,82 @@ describe('SessionHeader local resource badge', () => {
     expect(wrapper.get('button.success').attributes('disabled')).toBeUndefined()
   })
 })
+
+describe('SessionHeader start task action button', () => {
+  it('does not render start task button when isStartActionVisible is false', () => {
+    const wrapper = mount(SessionHeader, {
+      props: { vm: createMockVm({ isStartActionVisible: false }) },
+      global: { plugins: [i18n, createPinia()] },
+    })
+    expect(wrapper.find('[data-testid="start-task-btn"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('renders styled start task pill button with localized label and play icon when visible', () => {
+    const handleStartClick = vi.fn()
+    const wrapper = mount(SessionHeader, {
+      props: {
+        vm: createMockVm({
+          isStartActionVisible: true,
+          canClickStartAction: true,
+          handleStartClick,
+        }),
+      },
+      global: { plugins: [i18n, createPinia()] },
+    })
+
+    const btn = wrapper.get('[data-testid="start-task-btn"]')
+    expect(btn.classes()).toContain('start-task-btn')
+    expect(btn.classes()).toContain('start-btn')
+    expect(btn.classes()).toContain('is-ready')
+    expect(btn.text()).toContain('启动任务')
+    expect(btn.find('.btn-play-icon').exists()).toBe(true)
+    expect(btn.attributes('disabled')).toBeUndefined()
+
+    btn.trigger('click')
+    expect(handleStartClick).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('reflects disabled provisioning state with hint title', () => {
+    const wrapper = mount(SessionHeader, {
+      props: {
+        vm: createMockVm({
+          isStartActionVisible: true,
+          canClickStartAction: false,
+          isTaskProvisioning: true,
+        }),
+      },
+      global: { plugins: [i18n, createPinia()] },
+    })
+
+    const btn = wrapper.get('[data-testid="start-task-btn"]')
+    expect(btn.classes()).toContain('is-disabled')
+    expect(btn.classes()).not.toContain('is-ready')
+    expect(btn.attributes('disabled')).toBeDefined()
+    expect(btn.attributes('title')).toBe(zh.chat.task_provisioning_hint)
+    wrapper.unmount()
+  })
+
+  it('localizes start task button label in English correctly', () => {
+    const englishI18n = createI18n({
+      legacy: false,
+      locale: 'en',
+      fallbackLocale: 'en',
+      messages: { zh, en },
+    })
+    const wrapper = mount(SessionHeader, {
+      props: {
+        vm: createMockVm({
+          isStartActionVisible: true,
+          canClickStartAction: true,
+        }),
+      },
+      global: { plugins: [englishI18n, createPinia()] },
+    })
+
+    const btn = wrapper.get('[data-testid="start-task-btn"]')
+    expect(btn.text()).toContain('Start Task')
+    wrapper.unmount()
+  })
+})

@@ -7,7 +7,7 @@ import type { RuntimeSkillItem } from '../types'
 import { generateClientMessageId } from '../shared/messageIdentity'
 
 /**
- * 引擎启动 / 会话初始化：启动确认弹窗、初始化弹窗（理由 + 初始提示词 + 技能选择）、
+ * 任务启动 / 会话初始化：启动确认弹窗、初始化弹窗（理由 + 初始提示词 + 技能选择）、
  * 已删除 runtime 技能的二次确认，以及初始化执行（遮罩 → 复位旧会话 → POST → 重载快照）。
  */
 export function useTaskStartActions(options: {
@@ -41,7 +41,7 @@ export function useTaskStartActions(options: {
 }) {
   const { t } = useI18n()
 
-  // ─── 启动引擎 ───
+  // ─── 启动任务 ───
   const startPrompt = ref('')
   const showStartConfirm = ref(false)
   const startingTask = ref(false)

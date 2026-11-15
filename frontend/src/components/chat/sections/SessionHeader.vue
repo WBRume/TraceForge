@@ -119,12 +119,15 @@ onBeforeUnmount(() => {
     <div class="header-actions">
       <button
         v-if="props.vm.isStartActionVisible"
-        class="btn-primary start-btn"
+        class="start-task-btn start-btn"
+        :class="{ 'is-disabled': !props.vm.canClickStartAction, 'is-ready': props.vm.canClickStartAction }"
         :disabled="!props.vm.canClickStartAction"
         :title="props.vm.isTaskProvisioning ? t('chat.task_provisioning_hint') : ''"
+        data-testid="start-task-btn"
         @click="props.vm.handleStartClick"
       >
-        <Play class="w-4 h-4" /> {{ t('chat.engine_start') }}
+        <Play class="btn-play-icon" aria-hidden="true" />
+        <span class="btn-label">{{ t('chat.engine_start') }}</span>
       </button>
 
       <div class="action-divider"></div>
@@ -444,12 +447,140 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-.start-btn {
-  display: flex;
+/* ─── 启动任务主动作按钮（与顶栏胶囊完全对齐的白底天蓝微质感设计） ─── */
+.start-task-btn {
+  position: relative;
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 6px 16px;
-  font-size: 0.875rem;
+  padding: 4px 14px 4px 12px;
+  border-radius: 9999px;
+  background: #ffffff;
+  color: #0284c7;
+  border: 1px solid #7dd3fc;
+  box-shadow: 0 1px 2px rgba(14, 165, 233, 0.08), 0 1px 2px rgba(0, 0, 0, 0.03);
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 1;
+}
+
+/* 就绪待启动：边缘环绕流光动效（Border Beam），提示用户点击此处开始任务 */
+.start-task-btn.is-ready:not(:disabled) {
+  overflow: hidden;
+  border-color: transparent;
+  box-shadow:
+    0 1px 3px rgba(14, 165, 233, 0.18),
+    0 0 0 1px rgba(14, 165, 233, 0.25);
+}
+
+.start-task-btn.is-ready:not(:disabled)::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 320%;
+  height: 700%;
+  background: conic-gradient(
+    transparent 0deg,
+    rgba(14, 165, 233, 0.12) 60deg,
+    #38bdf8 120deg,
+    #ffffff 150deg,
+    #0284c7 170deg,
+    transparent 230deg
+  );
+  transform: translate(-50%, -50%) rotate(0deg);
+  animation: start-beam-rotate 3.2s linear infinite;
+  z-index: -2;
+}
+
+.start-task-btn.is-ready:not(:disabled)::after {
+  content: '';
+  position: absolute;
+  inset: 1.5px;
+  border-radius: 9999px;
+  background: #ffffff;
+  z-index: -1;
+  transition: background 0.2s ease;
+}
+
+@keyframes start-beam-rotate {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+.start-task-btn .btn-play-icon {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 1;
+  flex-shrink: 0;
+  margin-left: 1px;
+  transition: transform 0.2s ease;
+  z-index: 1;
+}
+
+.start-task-btn .btn-label {
+  display: inline-block;
+  line-height: 1.5;
+  z-index: 1;
+}
+
+.start-task-btn:hover:not(:disabled) {
+  color: #0369a1;
+  box-shadow: 0 2px 6px rgba(14, 165, 233, 0.25), 0 0 0 1px #0284c7;
+  transform: translateY(-0.5px);
+}
+
+.start-task-btn.is-ready:hover:not(:disabled)::after {
+  background: #f0f9ff;
+}
+
+.start-task-btn:hover:not(:disabled) .btn-play-icon {
+  transform: scale(1.08);
+}
+
+.start-task-btn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: inset 0 1px 2px rgba(14, 165, 233, 0.12);
+}
+
+.start-task-btn.is-ready:active:not(:disabled)::after {
+  background: #e0f2fe;
+}
+
+/* 禁用态（环境准备中或无权限） */
+.start-task-btn:disabled,
+.start-task-btn.is-disabled {
+  background: rgba(248, 250, 252, 0.8);
+  color: #94a3b8;
+  border-color: #e2e8f0;
+  box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
+  pointer-events: auto;
+  overflow: visible;
+}
+
+.start-task-btn:disabled::before,
+.start-task-btn:disabled::after,
+.start-task-btn.is-disabled::before,
+.start-task-btn.is-disabled::after {
+  display: none;
+}
+
+.start-task-btn:disabled .btn-play-icon,
+.start-task-btn.is-disabled .btn-play-icon {
+  fill: #94a3b8;
+  stroke: #94a3b8;
+  transform: none;
 }
 
 @container chat-main (max-width: 900px) {

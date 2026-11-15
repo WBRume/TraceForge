@@ -6,7 +6,7 @@ import ToggleSwitch from '@/components/ToggleSwitch.vue'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
 
 /**
- * 启动引擎确认弹窗：确认前允许编辑随首条消息发出的初始 Prompt；
+ * 启动任务确认弹窗：确认前允许编辑随首条消息发出的初始 Prompt；
  * 问题定位且绑定规程的任务提供“自动执行全流程”主开关。
  */
 const props = defineProps<{
