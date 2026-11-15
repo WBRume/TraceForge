@@ -74,6 +74,38 @@ describe('collaboration status badges', () => {
   }
 })
 
+describe('SessionHeader scroll auto-hide', () => {
+  it('marks the toolbar collapsed and inert without adding a toggle button', () => {
+    const wrapper = mount(SessionHeader, {
+      props: { vm: createMockVm(), collapsed: true },
+      global: { plugins: [i18n, createPinia()] },
+    })
+
+    const header = wrapper.get('[data-testid="chat-header"]')
+    expect(header.classes()).toContain('glass-panel')
+    expect(header.classes()).toContain('is-collapsed')
+    expect(header.attributes('inert')).toBeDefined()
+    expect(header.attributes('aria-hidden')).toBe('true')
+    expect(wrapper.findAll('[data-testid="chat-header-toggle"]')).toHaveLength(0)
+
+    wrapper.unmount()
+  })
+
+  it('keeps the toolbar interactive when expanded', () => {
+    const wrapper = mount(SessionHeader, {
+      props: { vm: createMockVm(), collapsed: false },
+      global: { plugins: [i18n, createPinia()] },
+    })
+
+    const header = wrapper.get('[data-testid="chat-header"]')
+    expect(header.classes()).not.toContain('is-collapsed')
+    expect(header.attributes('inert')).toBeUndefined()
+    expect(header.attributes('aria-hidden')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+})
+
 describe('SessionHeader local resource badge', () => {
   it('has no local collaboration or patch entry for diagnosis tasks', () => {
     const wrapper = mount(SessionHeader, {

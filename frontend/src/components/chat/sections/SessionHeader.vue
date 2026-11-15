@@ -32,6 +32,8 @@ const props = defineProps<{
   vm: ChatViewVm
   showTasklistToggle?: boolean
   tasklistVisible?: boolean
+  /** 工具栏是否已随滚动自动收起（状态由视图装配层持有） */
+  collapsed?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -47,6 +49,7 @@ const workspaceStore = useWorkspaceStore()
 
 // 工具栏悬浮在会话区之上，其高度决定内容首屏的让位距离。
 // 窄容器下工具栏会折行，因此用 ResizeObserver 同步真实高度，避免写死像素。
+// 自动收起只切换工具栏显隐，不改让位距离，保证回看历史时滚动位置稳定。
 const headerEl = ref<HTMLElement | null>(null)
 let headerObserver: ResizeObserver | null = null
 let headerHost: HTMLElement | null = null
@@ -73,7 +76,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <header ref="headerEl" class="chat-header glass-panel">
+  <header
+    ref="headerEl"
+    class="chat-header glass-panel"
+    :class="{ 'is-collapsed': props.collapsed }"
+    :inert="props.collapsed || undefined"
+    :aria-hidden="props.collapsed ? 'true' : undefined"
+    data-testid="chat-header"
+  >
     <div class="header-left">
       <button
         v-if="props.showTasklistToggle"
@@ -220,23 +230,49 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-3);
   border-radius: 14px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background-color: rgba(248, 250, 252, 0.88);
-  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0.3));
-  backdrop-filter: blur(14px) saturate(1.4);
-  -webkit-backdrop-filter: blur(14px) saturate(1.4);
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04), 0 1px 2px rgba(15, 23, 42, 0.02);
+  border: 1px solid rgba(203, 213, 225, 0.5);
+  /* 磨玻璃：更透的冷白底 + 轻渐变高光，滚动内容透出时保留模糊与饱和度 */
+  background-color: rgba(241, 245, 249, 0.38);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.04));
+  backdrop-filter: blur(22px) saturate(1.8);
+  -webkit-backdrop-filter: blur(22px) saturate(1.8);
+  box-shadow:
+    0 12px 32px -22px rgba(15, 23, 42, 0.42),
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45);
   z-index: 30;
   flex-shrink: 0;
+  transform-origin: top center;
+  transition:
+    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.22s ease,
+    background-color 0.2s ease,
+    box-shadow 0.24s ease;
+  will-change: transform, opacity;
 }
 .chat-header:hover {
   background-color: rgba(248, 250, 252, 0.52);
+  box-shadow:
+    0 16px 36px -24px rgba(15, 23, 42, 0.45),
+    0 1px 2px rgba(15, 23, 42, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+/* 自动收起：向上回看历史时整条工具栏滑出圆角工作区 */
+.chat-header.is-collapsed {
+  transform: translateY(calc(-100% - 18px));
+  opacity: 0;
+  pointer-events: none;
 }
 /* 不支持背景滤镜时退化为高不透明度底色，保证工具栏文字可读 */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .chat-header {
     background-color: rgba(248, 250, 252, 0.96);
     background-image: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-header {
+    transition: none;
   }
 }
 .header-left {

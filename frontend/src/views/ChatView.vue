@@ -32,6 +32,7 @@ import InitializeTaskModal from '@/components/chat/sections/InitializeTaskModal.
 import StartTaskModal from '@/components/chat/sections/StartTaskModal.vue'
 import SpecSidebar from '@/components/chat/sections/spec/SpecSidebar.vue'
 import { useChatViewModel } from '@/composables/chat/useChatViewModel'
+import { useAutoHideHeader } from '@/composables/chat/useAutoHideHeader'
 import { useShareFlows } from '@/composables/chat/share/useShareFlows'
 import { useDiagnosisPlaybook } from '@/composables/chat/diagnosis/useDiagnosisPlaybook'
 import DiagnosisSopLayout from '@/components/chat/diagnosis-playbook/DiagnosisSopLayout.vue'
@@ -47,6 +48,11 @@ import { consumeCollaborationIntent } from '@/components/task-create/lib/localCo
 const rawVm = useChatViewModel()
 provide(contextAnnotationsKey, rawVm.annotations)
 const vm = proxyRefs(rawVm)
+// 向上回看历史时自动收起工具栏，滚动回到底部再展开
+const { hidden: headerHidden, reveal: revealHeader } = useAutoHideHeader({
+  container: rawVm.chatContainer,
+  resetKey: () => rawVm.currentTask.value?.id ?? '',
+})
 const playbook = proxyRefs(useDiagnosisPlaybook({
   workspaceId: () => String(rawVm.route.params.wsId || ''),
   taskId: () => String(rawVm.currentTask.value?.id || ''),
@@ -211,10 +217,19 @@ watch(
       :aria-busy="vm.isUndoing || vm.initializingTask"
       v-if="vm.currentTask"
     >
+      <!-- 工具栏随滚动收起后，鼠标靠近顶部即可召回（不占按钮位） -->
+      <div
+        v-if="headerHidden"
+        class="chat-header-recall"
+        data-testid="chat-header-recall"
+        aria-hidden="true"
+        @mouseenter="revealHeader"
+      />
       <SessionHeader
         :vm="vm"
         :show-tasklist-toggle="sopEnabled"
         :tasklist-visible="showSopTasks"
+        :collapsed="headerHidden"
         @toggle-tasklist="toggleSopTasks"
         @share="openShareDialog"
         @task-details="showTaskDetails = true"
@@ -614,6 +629,13 @@ watch(
 /* SOP 三栏会自行让出工具栏高度，避免二次偏移 */
 .chat-main.is-sop {
   --chat-overlay-inset: 0px;
+}
+/* 工具栏自动收起后的顶部召回感应带：不占布局，也不遮挡工具栏按钮 */
+.chat-header-recall {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 12px;
+  z-index: 35;
 }
 .chat-main.empty-state {
   justify-content: center;
