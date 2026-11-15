@@ -206,6 +206,30 @@
           ],
           "default": null,
           "title": "Provider"
+        },
+        "segment_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Segment Id"
+        },
+        "provider_message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Message Id"
         }
       },
       "required": [
@@ -716,6 +740,55 @@
       "title": "TextDeltaEvent",
       "type": "object"
     },
+    "TextDiscardedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "text_discarded",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/TextDiscardedPayload"
+        },
+        "provider": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "payload",
+        "provider",
+        "contract_version"
+      ],
+      "title": "TextDiscardedEvent",
+      "type": "object"
+    },
+    "TextDiscardedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "segment_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Segment Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "segment_ids"
+      ],
+      "title": "TextDiscardedPayload",
+      "type": "object"
+    },
     "TextEvent": {
       "additionalProperties": false,
       "properties": {
@@ -805,6 +878,30 @@
           ],
           "default": null,
           "title": "Usage"
+        },
+        "segment_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Segment Id"
+        },
+        "provider_message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Message Id"
         }
       },
       "required": [
@@ -1230,6 +1327,7 @@
       "session_started": "#/$defs/SessionStartedEvent",
       "text": "#/$defs/TextEvent",
       "text_delta": "#/$defs/TextDeltaEvent",
+      "text_discarded": "#/$defs/TextDiscardedEvent",
       "thinking": "#/$defs/ThinkingEvent",
       "tool_progress": "#/$defs/ToolProgressEvent",
       "tool_result": "#/$defs/ToolResultEvent",
@@ -1283,6 +1381,9 @@
     },
     {
       "$ref": "#/$defs/ContextCompactedEvent"
+    },
+    {
+      "$ref": "#/$defs/TextDiscardedEvent"
     }
   ]
 }

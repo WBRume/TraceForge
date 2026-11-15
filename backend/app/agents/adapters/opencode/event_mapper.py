@@ -123,15 +123,26 @@ def _tool_output_text(data: dict[str, Any]) -> str:
     return "\n".join(p for p in parts if p) or _json_text(data.get("result") or {}, 4000)
 
 
+def text_segment_fields(message_id: Any, text_id: Any) -> dict[str, str]:
+    message_id, text_id = _text(message_id), _text(text_id)
+    if not message_id:
+        return {"segment_id": text_id} if text_id else {}
+    fields = {"provider_message_id": message_id}
+    if text_id:
+        fields["segment_id"] = f"{message_id}:{text_id}"
+    return fields
+
+
 def _map_text_event(event: dict[str, Any], data: dict[str, Any], event_type: str) -> list[AgentEvent]:
     events: list[AgentEvent] = []
+    segment = text_segment_fields(data.get("assistantMessageID") or data.get("messageID"), data.get("textID"))
     if event_type == "session.text.ended":
         text = _text(data.get("text"))
         if text:
             events.append(
                 AgentEvent(
                     type="text",
-                    payload={"text": text},
+                    payload={"text": text, **segment},
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),
@@ -143,7 +154,7 @@ def _map_text_event(event: dict[str, Any], data: dict[str, Any], event_type: str
             events.append(
                 AgentEvent(
                     type="text_delta",
-                    payload={"delta": delta, "text": delta},
+                    payload={"delta": delta, "text": delta, **segment},
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),
@@ -417,7 +428,7 @@ def _map_message_part(event: dict[str, Any], data: dict[str, Any], session_id: s
             events.append(
                 AgentEvent(
                     type="text",
-                    payload={"text": text},
+                    payload={"text": text, **text_segment_fields(part.get("messageID"), part.get("id"))},
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),
@@ -492,7 +503,11 @@ def _map_part_delta(event: dict[str, Any], data: dict[str, Any]) -> list[AgentEv
             events.append(
                 AgentEvent(
                     type="text_delta",
-                    payload={"delta": delta, "text": delta},
+                    payload={
+                        "delta": delta,
+                        "text": delta,
+                        **text_segment_fields(data.get("messageID"), data.get("partID")),
+                    },
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),

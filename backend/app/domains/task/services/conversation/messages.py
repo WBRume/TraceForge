@@ -20,6 +20,8 @@ def save_chat_message(
     metadata_json: dict | None = None,
     session_turn_id: str | None = None,
     session_generation: int | None = None,
+    *,
+    message_id: str | None = None,
 ) -> ChatMessage:
     # 落库序号：同一秒内多条消息的稳定顺序依据（解决历史重载时气泡乱序）。
     # followers 与 task_name 合并为一条 join 查询，减少每条消息的 DB 往返。
@@ -42,6 +44,7 @@ def save_chat_message(
             merged_metadata["knowledge_state"] = "published" if submission.status == "SUCCEEDED" else "pending"
     merged_metadata["order_index"] = order_index
     msg = ChatMessage(
+        id=message_id,
         task_id=task_id,
         workspace_id=workspace_id,
         creator_id=creator_id,

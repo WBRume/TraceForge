@@ -365,5 +365,7 @@ button.nav-item {
 .is-collapsed .sidebar-header {
   justify-content: center;
   padding: 0;
+  /* 折叠时标题被隐藏，仍有 8px gap 会把返回按钮挤偏，需一并收起 */
+  gap: 0;
 }
 </style>

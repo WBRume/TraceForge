@@ -17,12 +17,20 @@ class TextPayload(Contract):
     provider: str | None = None
     model: str | None = None
     usage: dict[str, JsonValue] | None = None
+    segment_id: str | None = None
+    provider_message_id: str | None = None
 
 
 class DeltaPayload(Contract):
     delta: str
     text: str | None = None
     provider: str | None = None
+    segment_id: str | None = None
+    provider_message_id: str | None = None
+
+
+class TextDiscardedPayload(Contract):
+    segment_ids: list[str]
 
 
 class ToolUsePayload(Contract):
@@ -132,6 +140,7 @@ PAYLOADS = {
     "ask_user": QuestionPayload,
     "ask_user_resolved": ResolutionPayload,
     "context_compacted": CompactionPayload,
+    "text_discarded": TextDiscardedPayload,
 }
 EVENT_MODELS = {
     kind: create_model(

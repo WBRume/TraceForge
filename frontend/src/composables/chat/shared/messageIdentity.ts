@@ -32,6 +32,7 @@ export const dedupeMessages = (items: any[]): any[] => {
       result.push(item)
       continue
     }
+    if (item.streaming && !result[existingIndex].streaming) continue
     result[existingIndex] = {
       ...result[existingIndex],
       ...item,
@@ -60,6 +61,7 @@ export type ChatMessageFields = {
   undo_operation_id: string | null
   delivery_status?: string
   delivery_error?: string | null
+  streaming?: boolean
   /** 共享内容版本（阅读条目身份）；旧帧/临时气泡缺失时先不确认已读 */
   reading_item_key?: string | null
   reading_change_seq?: string | null
@@ -83,6 +85,7 @@ export const mapHistoryMessages = (hMessages: any[]): ChatMessageFields[] => hMe
   session_turn_id: m.session_turn_id || null,
   session_generation: m.session_generation ?? null,
   can_undo: Boolean(m.can_undo),
+  streaming: false,
   undo_operation_id: m.undo_operation_id ? String(m.undo_operation_id) : null,
   reading_item_key: m.reading_item_key ?? null,
   reading_change_seq: m.reading_change_seq ?? null,

@@ -28,7 +28,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const annotations = injectContextAnnotations()
 function selectForAnnotation(event: MouseEvent | KeyboardEvent) {
-  if (!annotations || msgRole.value !== 'assistant') return
+  if (!annotations || msgRole.value !== 'assistant' || props.msg.streaming) return
   if (event instanceof KeyboardEvent && event.key === 'Escape') return
   const selection = readMessageSelection(event.currentTarget as HTMLElement, String(props.msg.id || ''))
   if (selection) annotations.select(selection, selection)
@@ -195,7 +195,7 @@ function openDiagnosisCase(caseId: string) {
     </template>
     <template #actions>
       <!-- Bubble Actions (Under the bubble): Mark Decision / Undo / Copy -->
-      <div v-if="vm.canMarkMessageAsDecision(msg) || msg.decision_id || canCopyMessage || showUndoAction" class="message-actions-row">
+      <div v-if="!msg.streaming && (vm.canMarkMessageAsDecision(msg) || msg.decision_id || canCopyMessage || showUndoAction)" class="message-actions-row">
         <div class="decision-action-wrapper" v-if="vm.canMarkMessageAsDecision(msg)">
           <button
             type="button"

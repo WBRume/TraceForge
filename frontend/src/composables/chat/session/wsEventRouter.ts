@@ -3,6 +3,7 @@ import { useI18n } from 'vue-i18n'
 import type { ChatAiJob } from '../types'
 import { notifyRepositoryUpdate } from '@/services/repositoryUpdates'
 import { isTerminalTaskStatus } from '@/utils/taskStatus'
+import type { WSChatStreamPayloadContract } from '../../../../shared/contracts/generated/applicationMessage'
 
 /**
  * WS 事件路由：把任务频道的传输事件映射到各领域操作。
@@ -22,6 +23,8 @@ export function createTaskWsEventRouter(deps: {
     upsert: (message: any) => void
     findByIdentity: (identity: string) => any
     removeByIds: (ids: Set<string>) => void
+    applyStream: (payload: WSChatStreamPayloadContract) => void
+    clearStreams: () => void
     invalidateUndoBeforeRevision?: (revision: number) => void
   }
   terminalLogs: {
@@ -92,6 +95,7 @@ export function createTaskWsEventRouter(deps: {
     reading_change_seq: payload.reading_change_seq ?? null,
     can_undo: payload.can_undo,
     delivery_status: deliveryStatus,
+    streaming: false,
   })
 
   const syncSessionGeneration = (payload: any) => {
@@ -113,9 +117,9 @@ export function createTaskWsEventRouter(deps: {
     if (eventTaskId && eventTaskId !== deps.task.getTaskId()) return
     if (payload?.session_revision != null && deps.task.getCurrentSessionRevision
       && Number(payload.session_revision) < deps.task.getCurrentSessionRevision()
-      && ['status', 'result', 'ask_question', 'request_approval', 'confirmation'].includes(type)) return
+      && ['status', 'result', 'ask_question', 'request_approval', 'confirmation', 'chat_message_stream'].includes(type)) return
     if (generation != null && Number(generation) < deps.task.getCurrentSessionGeneration()
-      && ['status', 'result', 'ask_question', 'request_approval', 'confirmation', 'task_interrupted', 'task_resumed', 'chat_job_update', 'chat_job_done', 'chat_job_failed'].includes(type)) return
+      && ['status', 'result', 'ask_question', 'request_approval', 'confirmation', 'task_interrupted', 'task_resumed', 'chat_job_update', 'chat_job_done', 'chat_job_failed', 'chat_message_stream'].includes(type)) return
 
     if (typeof type === 'string' && (type.startsWith('playbook.') || type.startsWith('runner.'))) {
       deps.playbookEvent?.(type, payload)
@@ -135,6 +139,13 @@ export function createTaskWsEventRouter(deps: {
         deps.cards.syncConfirmationCards()
         if (!deps.isHistoryAnchored()) deps.scrollTo('chat')
         deps.contextWindowScheduleRefresh()
+        break
+      }
+
+      case 'chat_message_stream': {
+        syncSessionGeneration(payload)
+        deps.messages.applyStream(payload)
+        if (payload.content !== null && !deps.isHistoryAnchored()) deps.scrollTo('chat')
         break
       }
 
@@ -281,6 +292,7 @@ export function createTaskWsEventRouter(deps: {
 
       case 'task_interrupted': {
         if (deps.applyTaskSessionPayload(payload) === false) break
+        deps.messages.clearStreams()
         deps.engine.engineRunning.value = false
         deps.cards.dropStatusCards()
         deps.contextWindowScheduleRefresh()

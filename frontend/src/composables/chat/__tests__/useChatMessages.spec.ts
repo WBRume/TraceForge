@@ -20,6 +20,26 @@ const createMessages = (anchored = false) => {
 }
 
 describe('useChatMessages', () => {
+  it('grows each draft in place and preserves completed messages through replay and history', () => {
+    const { store } = createMessages()
+    const created_at = '2026-11-15T00:00:00Z'
+    store.applyStream({ id: 'first', content: '第一', created_at })
+    store.applyStream({ id: 'first', content: '第一段', created_at })
+    store.applyStream({ id: 'second', content: '第二', created_at })
+    expect(store.messages.value.map(message => [message.id, message.content])).toEqual([
+      ['first', '第一段'], ['second', '第二'],
+    ])
+
+    const snapshot = store.captureIdentitySnapshot()
+    store.applyStream({ id: 'second', content: '第二段', created_at })
+    store.mergeSessionSnapshot([{ id: 'second', content: '第二段完成', streaming: false }], snapshot)
+    store.upsert({ id: 'first', content: '第一段完成', streaming: false })
+    store.applyStream({ id: 'first', content: '第一', created_at })
+    store.applyStream({ id: 'second', content: null, created_at })
+    expect(store.messages.value.map(message => message.content)).toEqual(['第一段完成', '第二段完成'])
+    expect(store.messages.value.every(message => !message.streaming)).toBe(true)
+  })
+
   it('merges upserts by client_message_id identity and moves refreshed result cards to the end', () => {
     const { store } = createMessages()
     store.upsert({ id: 'a', client_message_id: 'c1', content: 'v1' })

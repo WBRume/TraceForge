@@ -10,6 +10,7 @@ AgentEventType = Literal[
     "model",
     "text",
     "text_delta",
+    "text_discarded",
     "thinking",
     "tool_use",
     "tool_result",

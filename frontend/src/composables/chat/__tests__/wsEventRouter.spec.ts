@@ -42,6 +42,8 @@ const createDeps = () => {
     },
     messages: {
       upsert: (message: any) => calls.upserts.push(message),
+      applyStream: vi.fn(),
+      clearStreams: vi.fn(),
       findByIdentity: () => undefined,
       removeByIds: (ids: Set<string>) => calls.removedByIds.push(ids),
     },
@@ -93,6 +95,25 @@ const createDeps = () => {
 }
 
 describe('createTaskWsEventRouter', () => {
+  it('routes current text frames and drops frames from a previous revision or task', () => {
+    const { deps, calls } = createDeps()
+    const { handleWsMessage } = createTaskWsEventRouter({
+      ...deps,
+      task: { ...deps.task, getCurrentSessionRevision: () => 4 },
+    })
+    const payload = {
+      task_id: 't1', id: 'text-1', content: '正在生成', created_at: '2026-11-15T00:00:00Z',
+      session_generation: 2, session_revision: 4,
+    }
+    for (const stale of [{ session_revision: 3 }, { session_generation: 1 }, { task_id: 'other' }]) {
+      handleWsMessage({ type: 'chat_message_stream', payload: { ...payload, ...stale } })
+    }
+    handleWsMessage({ type: 'chat_message_stream', payload })
+    expect(deps.messages.applyStream).toHaveBeenCalledTimes(1)
+    expect(deps.messages.applyStream).toHaveBeenCalledWith(payload)
+    expect(calls.scroll).toEqual(['chat'])
+  })
+
   it('applies only the explicit versioned task status event', () => {
     const { deps, calls } = createDeps()
     const router = createTaskWsEventRouter(deps)

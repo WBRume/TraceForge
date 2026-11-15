@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from sqlalchemy.orm import sessionmaker
 
+from app.agents.adapters.opencode.event_mapper import map_opencode_event
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.task import SddTask, TaskStatus
@@ -72,6 +73,47 @@ def test_reply_replay_from_new_engine_is_deduplicated_in_database(db, engine_fac
     assert first.frontend._persist_chat_message_sync("assistant", "finished", metadata)
     assert recovered.frontend._persist_chat_message_sync("assistant", "finished", metadata) is None
     assert db.query(ChatMessage).filter_by(task_id="replay-task").count() == 1
+
+
+@pytest.mark.asyncio
+async def test_reply_stream_uses_one_message_id_per_segment(db, engine_factory):
+    engine = engine_factory()
+    engine.cli.capabilities.supports_streaming_text = True
+
+    async def send(kind, text_id, field, text):
+        raw = {
+            "type": f"session.text.{kind}",
+            "data": {
+                "assistantMessageID": "reply",
+                "textID": text_id,
+                field: text,
+            },
+        }
+        await engine.handle_agent_event(map_opencode_event(raw)[0])
+
+    await send("delta", "text-0", "delta", "first ")
+    await send("delta", "text-0", "delta", "part")
+    await send("delta", "text-1", "delta", "second ")
+    drafts = [call.args[1] for call in engine.frontend.push.await_args_list]
+    assert [draft["content"] for draft in drafts] == ["first ", "second "]
+    assert len({draft["id"] for draft in drafts}) == 2
+    assert db.query(ChatMessage).filter_by(task_id="replay-task").count() == 0
+
+    await send("ended", "text-0", "text", "first part")
+    await send("ended", "text-1", "text", "second part")
+    await send("delta", "text-0", "delta", "late delta")
+    await engine.text_stream.finish()
+    messages = db.query(ChatMessage).filter_by(task_id="replay-task").order_by(ChatMessage.sort_seq).all()
+    assert [(row.id, row.content) for row in messages] == [
+        (drafts[0]["id"], "first part"),
+        (drafts[1]["id"], "second part"),
+    ]
+    assert [call.args[0] for call in engine.frontend.push.await_args_list] == [
+        "chat_message_stream",
+        "chat_message_stream",
+        "chat_message",
+        "chat_message",
+    ]
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,6 @@ import json
 import os
 import time
 import uuid
-from functools import partial
 from typing import Any
 from urllib.parse import quote
 
@@ -30,6 +29,7 @@ import httpx
 import websockets
 
 from app.agents.activity_watchdog import AgentActivityWatchdog
+from app.agents.adapters.dsh.text_events import DshTextEvents
 from app.agents.contract import (
     AgentBackend,
     AgentCapabilities,
@@ -206,14 +206,6 @@ def map_dsh_event(raw_event: dict[str, Any]) -> AgentEvent | None:
             raw=raw_event,
         )
     return None
-
-
-def _finalize_stream_text(*, text_parts, delta_parts, outcome) -> dict[str, Any]:
-    body = "\n".join(part for part in text_parts if part).strip()
-    if not body:
-        body = "".join(delta_parts).strip()
-    outcome["text"] = body
-    return outcome
 
 
 class DshServerAdapter(AgentBackend):
@@ -531,36 +523,24 @@ class DshServerAdapter(AgentBackend):
                     )
                 )
 
-    async def _finalize_legacy_turn(self, event, outcome, text_parts, _finalize, on_event):
-        reason = event.get("data", {}).get("reason", {})
-        kind = str(reason.get("kind") or "completed") if isinstance(reason, dict) else "completed"
-        outcome["finish_reason"] = {
-            "completed": "completed",
-            "aborted": "aborted",
-            "error": "error",
-            "max-tokens": "max-tokens",
-        }.get(kind, kind)
-        finalize_result = _finalize()
-        # 若流式过程中只收到 text-delta 而缺失完整 assistant/message，
-        # 把累积文本作为完整 text 事件补发，确保前端收到落库的 assistant 消息。
-        body = str(finalize_result.get("text") or "")
-        if body and not text_parts:
-            await on_event(
-                AgentEvent(
-                    type="text",
-                    payload={"text": body, "provider": "dsh"},
-                    provider="dsh",
-                )
-            )
-        # DSH 模型/provider 出错时没有正文，把具体错误写到 result，
-        # 避免前端只看到空白的“Agent execution failed”。
+    @staticmethod
+    async def _publish_session_event(event: dict, text_events: DshTextEvents, on_event: AgentEventSink) -> None:
+        for unified in text_events.project(event, map_dsh_event(event)):
+            await on_event(unified)
+
+    @staticmethod
+    async def _finalize_turn(event: dict, text_events: DshTextEvents, on_event: AgentEventSink) -> dict:
+        reason = event.get("data", {}).get("reason")
+        reason = reason if isinstance(reason, dict) else {}
+        kind = str(reason.get("kind") or "completed")
+        for unified in text_events.finish():
+            await on_event(unified)
+        body = "\n".join(text_events.completed)
         if kind == "error" and not body:
-            error_info = reason.get("error") if isinstance(reason, dict) else None
-            if isinstance(error_info, dict):
-                finalize_result["text"] = str(error_info.get("message") or "DSH stream error")
-            else:
-                finalize_result["text"] = "DSH stream error"
-        return finalize_result
+            error = reason.get("error")
+            body = str(error.get("message") or "") if isinstance(error, dict) else ""
+            body = body or "DSH stream error"
+        return {"finish_reason": kind, "text": body, "usage_raw": None}
 
     async def _consume_events(
         self,
@@ -568,6 +548,7 @@ class DshServerAdapter(AgentBackend):
         on_event: AgentEventSink,
         *,
         read_only: bool = False,
+        ready: asyncio.Event | None = None,
     ) -> dict[str, Any]:
         """消费 events.mux 下行流直到该会话 turn/end，返回收尾信息。
 
@@ -575,13 +556,9 @@ class DshServerAdapter(AgentBackend):
         会话事件帧 method=session/event，payload 含 sessionId 与原生 SessionEvent。
         """
         if self._gateway_protocol is True:
-            return await self._consume_gateway_events(session_id, on_event)
+            return await self._consume_gateway_events(session_id, on_event, ready=ready)
 
-        outcome: dict[str, Any] = {"finish_reason": None, "text": "", "usage_raw": None}
-        text_parts: list[str] = []
-        delta_parts: list[str] = []
-
-        _finalize = partial(_finalize_stream_text, text_parts=text_parts, delta_parts=delta_parts, outcome=outcome)
+        text_events = DshTextEvents()
 
         async with websockets.connect(
             self._ws_url(),
@@ -603,58 +580,24 @@ class DshServerAdapter(AgentBackend):
                     if str(payload.get("sessionId") or "") != session_id:
                         continue
                     event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
-                    unified = map_dsh_event(event)
-                    if unified:
-                        if unified.type == "text" and unified.payload.get("text"):
-                            text_parts.append(str(unified.payload["text"]))
-                        elif unified.type == "text_delta" and unified.payload.get("text"):
-                            delta_parts.append(str(unified.payload["text"]))
-                        await on_event(unified)
+                    await self._publish_session_event(event, text_events, on_event)
                     etype = str(event.get("type") or "")
                     if etype == "assistant/message":
                         await self._emit_message_reasoning(event, on_event)
                     if etype == "turn/end":
-                        return await self._finalize_legacy_turn(event, outcome, text_parts, _finalize, on_event)
+                        return await self._finalize_turn(event, text_events, on_event)
                 elif method in ("approval/requested", "question/requested"):
                     await self._handle_interaction_request(method, payload, rpc_id, session_id, read_only, on_event)
                 elif method == "stream/error":
-                    outcome["finish_reason"] = "error"
-                    outcome["text"] = str(payload.get("message") or "stream error")
-                    return _finalize()
-        return _finalize()
-
-    async def _finalize_gateway_turn(self, event, outcome, text_parts, _finalize, on_event):
-        reason = event.get("data", {}).get("reason", {})
-        kind = str(reason.get("kind") or "completed") if isinstance(reason, dict) else "completed"
-        outcome["finish_reason"] = {
-            "completed": "completed",
-            "aborted": "aborted",
-            "error": "error",
-            "max-tokens": "max-tokens",
-        }.get(kind, kind)
-        result = _finalize()
-        body = str(result.get("text") or "")
-        if body and not text_parts:
-            await on_event(
-                AgentEvent(
-                    type="text",
-                    payload={"text": body, "provider": "dsh"},
-                    provider="dsh",
-                )
-            )
-        if kind == "error" and not body:
-            error_info = reason.get("error") if isinstance(reason, dict) else None
-            result["text"] = (
-                str(error_info.get("message") or "DSH stream error")
-                if isinstance(error_info, dict)
-                else "DSH stream error"
-            )
-        return result
+                    return {"finish_reason": "error", "text": str(payload.get("message") or "stream error")}
+        return {"finish_reason": None, "text": "\n".join(text_events.completed)}
 
     async def _consume_gateway_events(
         self,
         session_id: str,
         on_event: AgentEventSink,
+        *,
+        ready: asyncio.Event | None = None,
     ) -> dict[str, Any]:
         """Consume the current DSH gateway ``session/follow`` stream.
 
@@ -665,17 +608,8 @@ class DshServerAdapter(AgentBackend):
         admission runs concurrently and only post-open events belong to this
         turn.
         """
-        outcome: dict[str, Any] = {"finish_reason": None, "text": "", "usage_raw": None}
-        text_parts: list[str] = []
-        delta_parts: list[str] = []
+        text_events = DshTextEvents()
         stream_id = f"tf-{uuid.uuid4().hex}"
-
-        def _finalize() -> dict[str, Any]:
-            body = "\n".join(part for part in text_parts if part).strip()
-            if not body:
-                body = "".join(delta_parts).strip()
-            outcome["text"] = body
-            return outcome
 
         async with websockets.connect(
             self._ws_url(),
@@ -693,6 +627,7 @@ class DshServerAdapter(AgentBackend):
                                 "request": {
                                     "address": {"kind": "session", "sessionId": session_id},
                                     "maxMessages": 50,
+                                    "assistantStream": True,
                                 },
                             },
                         },
@@ -718,20 +653,18 @@ class DshServerAdapter(AgentBackend):
                     continue
                 value = frame.get("value") if isinstance(frame.get("value"), dict) else {}
                 if value.get("type") == "snapshot":
+                    if ready is not None:
+                        ready.set()
                     continue
-                event = value.get("event") if value.get("type") == "event" else value
+                if value.get("type") == "assistant-stream":
+                    event = text_events.live_event(value.get("frame") or {})
+                else:
+                    event = value.get("event") if value.get("type") == "event" else value
                 if not isinstance(event, dict):
                     continue
-                unified = map_dsh_event(event)
-                if unified:
-                    if unified.type == "text" and unified.payload.get("text"):
-                        text_parts.append(str(unified.payload["text"]))
-                    elif unified.type == "text_delta" and unified.payload.get("text"):
-                        delta_parts.append(str(unified.payload["text"]))
-                    await on_event(unified)
-                etype = str(event.get("type") or "")
-                if etype == "turn/end":
-                    return await self._finalize_gateway_turn(event, outcome, text_parts, _finalize, on_event)
+                await self._publish_session_event(event, text_events, on_event)
+                if event.get("type") == "turn/end":
+                    return await self._finalize_turn(event, text_events, on_event)
         raise AgentError("DSH session stream disconnected before a terminal turn event")
 
     async def _emit_run_result(self, consumed, session_id, request, started_at, _tracked_event):
@@ -775,6 +708,55 @@ class DshServerAdapter(AgentBackend):
                 "content": [{"type": "text", "text": prompt_text}],
             },
         )
+
+    async def _run_stream_turn(
+        self, session_id: str, request: AgentRunRequest, watchdog: AgentActivityWatchdog, on_event: AgentEventSink
+    ) -> dict:
+        # Open the gateway subscription before admitting the prompt.
+        read_only = str(request.permission_mode or "").strip().lower() in {"read-only", "readonly", "plan"}
+        ready = asyncio.Event() if self._gateway_protocol is True else None
+        consume_task = asyncio.create_task(self._consume_events(session_id, on_event, read_only=read_only, ready=ready))
+        prompt = request.prompt
+        if read_only:
+            prompt = (
+                "[只读会话约束] 只能分析、读取和总结；禁止创建、修改、删除文件，"
+                "禁止执行会改变项目或外部系统状态的命令。\n\n" + prompt
+            )
+
+        async def send_when_ready() -> None:
+            if ready is not None:
+                await ready.wait()
+            await self._send_prompt(session_id, prompt)
+
+        def abort_on_prompt_failure(task: asyncio.Task) -> None:
+            if not task.cancelled() and task.exception() is not None:
+                consume_task.cancel()
+
+        prompt_task = asyncio.create_task(send_when_ready())
+        prompt_task.add_done_callback(abort_on_prompt_failure)
+        try:
+            result = await watchdog.wait(consume_task)
+            await prompt_task
+            return result
+        except AgentTimeoutError:
+            prompt_task.cancel()
+            consume_task.cancel()
+            from app.agents.contract import record_attempt_remote_stop
+
+            record_attempt_remote_stop(await self.cancel(session_id=session_id))
+            await asyncio.gather(prompt_task, consume_task, return_exceptions=True)
+            raise
+        except asyncio.CancelledError as exc:
+            prompt_task.cancel()
+            try:
+                await prompt_task
+            except AgentError as prompt_error:
+                raise prompt_error from exc
+            raise
+        except Exception:
+            prompt_task.cancel()
+            await asyncio.gather(prompt_task, return_exceptions=True)
+            raise
 
     async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
         await self._ensure_client()
@@ -822,46 +804,7 @@ class DshServerAdapter(AgentBackend):
                 )
             )
 
-            # 先开事件流再发 prompt，避免错过早期事件；prompt 失败时立刻终止等待
-            is_read_only = str(request.permission_mode or "").strip().lower() in {
-                "read-only",
-                "readonly",
-                "plan",
-            }
-            consume_task = asyncio.create_task(self._consume_events(session_id, _tracked_event, read_only=is_read_only))
-            prompt_text = request.prompt
-            if is_read_only:
-                prompt_text = (
-                    "[只读会话约束] 只能分析、读取和总结；禁止创建、修改、删除文件，"
-                    "禁止执行会改变项目或外部系统状态的命令。\n\n" + prompt_text
-                )
-            prompt_task = asyncio.create_task(self._send_prompt(session_id, prompt_text))
-
-            def _abort_on_prompt_failure(task: asyncio.Task) -> None:
-                if not task.cancelled() and task.exception() is not None:
-                    consume_task.cancel()
-
-            prompt_task.add_done_callback(_abort_on_prompt_failure)
-            try:
-                consumed = await watchdog.wait(consume_task)
-            except AgentTimeoutError:
-                prompt_task.cancel()
-                consume_task.cancel()
-                from app.agents.contract import record_attempt_remote_stop
-
-                record_attempt_remote_stop(await self.cancel(session_id=session_id))
-                await asyncio.gather(prompt_task, consume_task, return_exceptions=True)
-                raise
-            except asyncio.CancelledError as exc:
-                prompt_task.cancel()
-                # consume 被 prompt 失败回调取消：抛出 prompt 的真实错误
-                try:
-                    await prompt_task
-                except AgentError as prompt_error:
-                    raise prompt_error from exc
-                raise
-            await prompt_task
-
+            consumed = await self._run_stream_turn(session_id, request, watchdog, _tracked_event)
             return await self._emit_run_result(consumed, session_id, request, started_at, _tracked_event)
 
         except AgentError:

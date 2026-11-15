@@ -1,6 +1,6 @@
 /* Generated from Python contracts. Do not edit. */
 
-export type AgentEvent = (SessionStartedEvent | ModelEvent | TextEvent | TextDeltaEvent | ThinkingEvent | ToolUseEvent | ToolResultEvent | ToolProgressEvent | ResultEvent | ErrorEvent | UsageEvent | LogEvent | AskUserEvent | AskUserResolvedEvent | ContextCompactedEvent)
+export type AgentEvent = (SessionStartedEvent | ModelEvent | TextEvent | TextDeltaEvent | ThinkingEvent | ToolUseEvent | ToolResultEvent | ToolProgressEvent | ResultEvent | ErrorEvent | UsageEvent | LogEvent | AskUserEvent | AskUserResolvedEvent | ContextCompactedEvent | TextDiscardedEvent)
 export type Type = "session_started"
 export type ProviderSessionId = string
 export type Model = (string | null)
@@ -23,12 +23,16 @@ export type Usage = ({
 [k: string]: JsonValue
 } | null)
 export type JsonValue = unknown
+export type SegmentId = (string | null)
+export type ProviderMessageId = (string | null)
 export type Provider5 = string
 export type ContractVersion2 = 2
 export type Type3 = "text_delta"
 export type Delta1 = string
 export type Text1 = (string | null)
 export type Provider6 = (string | null)
+export type SegmentId1 = (string | null)
+export type ProviderMessageId1 = (string | null)
 export type Provider7 = string
 export type ContractVersion3 = 2
 export type Type4 = "thinking"
@@ -107,6 +111,10 @@ export type TokenBefore = (number | null)
 export type TokenAfter = (number | null)
 export type Provider22 = string
 export type ContractVersion14 = 2
+export type Type15 = "text_discarded"
+export type SegmentIds = string[]
+export type Provider23 = string
+export type ContractVersion15 = 2
 
 export interface SessionStartedEvent {
 type: Type
@@ -143,6 +151,8 @@ delta?: Delta
 provider?: Provider4
 model?: Model2
 usage?: Usage
+segment_id?: SegmentId
+provider_message_id?: ProviderMessageId
 }
 export interface TextDeltaEvent {
 type: Type3
@@ -154,6 +164,8 @@ export interface DeltaPayload {
 delta: Delta1
 text?: Text1
 provider?: Provider6
+segment_id?: SegmentId1
+provider_message_id?: ProviderMessageId1
 }
 export interface ThinkingEvent {
 type: Type4
@@ -307,4 +319,13 @@ event_type?: EventType
 source?: Source1
 token_before?: TokenBefore
 token_after?: TokenAfter
+}
+export interface TextDiscardedEvent {
+type: Type15
+payload: TextDiscardedPayload
+provider: Provider23
+contract_version: ContractVersion15
+}
+export interface TextDiscardedPayload {
+segment_ids: SegmentIds
 }

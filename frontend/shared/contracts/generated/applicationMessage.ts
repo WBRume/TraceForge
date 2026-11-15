@@ -1,6 +1,6 @@
 /* Generated from Python contracts. Do not edit. */
 
-export type ApplicationMessage = (ToolUseMessage | ToolResultMessage | ThinkingMessage | ResultMessage | StatusMessage | ChatMessageMessage | LogMessage | JobUpdateMessage | JobDoneMessage)
+export type ApplicationMessage = (ToolUseMessage | ToolResultMessage | ThinkingMessage | ResultMessage | StatusMessage | ChatMessageMessage | LogMessage | JobUpdateMessage | JobDoneMessage | ChatMessageStreamMessage)
 export type EventType = "tool_use"
 export type TaskId = string
 export type ToolName = string
@@ -112,6 +112,14 @@ export type FinishedAt = (string | null)
 export type ContractVersion7 = 2
 export type EventType8 = "job_done"
 export type ContractVersion8 = 2
+export type EventType9 = "chat_message_stream"
+export type TaskId7 = string
+export type Id3 = string
+export type Content4 = (string | null)
+export type CreatedAt2 = string
+export type SessionGeneration3 = (number | null)
+export type SessionRevision2 = (number | null)
+export type ContractVersion9 = 2
 
 export interface ToolUseMessage {
 event_type: EventType
@@ -284,4 +292,17 @@ export interface JobDoneMessage {
 event_type: EventType8
 payload: ApiMockJobEventContract
 contract_version: ContractVersion8
+}
+export interface ChatMessageStreamMessage {
+event_type: EventType9
+payload: WSChatStreamPayloadContract
+contract_version: ContractVersion9
+}
+export interface WSChatStreamPayloadContract {
+task_id: TaskId7
+id: Id3
+content: Content4
+created_at: CreatedAt2
+session_generation?: SessionGeneration3
+session_revision?: SessionRevision2
 }

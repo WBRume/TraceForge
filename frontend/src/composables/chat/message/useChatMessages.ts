@@ -58,7 +58,12 @@ export function useChatMessages(options: {
   const applyHistoryPage = (mapped: any[], reset: boolean, snapshot?: Map<string, any>) => {
     if (reset) {
       const initialMessages = snapshot ?? captureIdentitySnapshot()
-      const duringRequest = messages.value.filter(item => initialMessages.get(messageIdentity(item)) !== item)
+      const completed = new Set(mapped.map(messageIdentity))
+      const duringRequest = messages.value.filter(item => {
+        const identity = messageIdentity(item)
+        if (item.streaming) return !completed.has(identity)
+        return initialMessages.get(identity) !== item
+      })
       messages.value = dedupeMessages([...mapped, ...duringRequest])
       return
     }
@@ -104,7 +109,30 @@ export function useChatMessages(options: {
     for (const item of items) {
       const id = messageIdentity(item)
       // 保留请求期间收到的更新，也不重新插入已从会话撤回的消息。
-      if (current.get(id) === atRequest.get(id)) upsert(item)
+      if (current.get(id)?.streaming || current.get(id) === atRequest.get(id)) upsert(item)
+    }
+  }
+
+  const applyStream = (payload: { id: string; content: string | null; created_at: string }) => {
+    const existing = findById(payload.id)
+    if (existing && !existing.streaming) return
+    if (payload.content === null) {
+      if (existing) removeByIds(new Set([payload.id]))
+      return
+    }
+    upsert({
+      id: payload.id,
+      role: 'assistant',
+      content: payload.content,
+      created_at: payload.created_at,
+      message_type: 'text',
+      streaming: true,
+    })
+  }
+
+  const clearStreams = () => {
+    if (messages.value.some(item => item.streaming)) {
+      messages.value = messages.value.filter(item => !item.streaming)
     }
   }
 
@@ -122,5 +150,7 @@ export function useChatMessages(options: {
     applyHistoryPage,
     appendPage,
     upsert,
+    applyStream,
+    clearStreams,
   }
 }

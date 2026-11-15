@@ -13,10 +13,11 @@ import json
 import random
 import time
 import uuid
+from collections import Counter
 
 import httpx
 
-from app.agents.adapters.opencode.event_mapper import map_opencode_event, opencode_event_session_id
+from app.agents.adapters.opencode.event_mapper import map_opencode_event, opencode_event_session_id, text_segment_fields
 from app.agents.errors import AgentExecutionDetached, AgentTimeoutError
 from app.agents.events import AgentEvent
 from app.config import settings
@@ -29,8 +30,12 @@ class StreamDisconnected(Exception):
     pass
 
 
-def message_key(session_id: str, message_id: str, text: str) -> str:
-    return hashlib.sha256(f"{session_id}\0{message_id}\0{text}".encode()).hexdigest()
+def message_key(session_id: str, message_id: str, text: str, occurrence: int = 0) -> str:
+    # Keep the first occurrence compatible with messages persisted by older workers.
+    identity = f"{session_id}\0{message_id}\0{text}"
+    if occurrence:
+        identity += f"\0{occurrence}"
+    return hashlib.sha256(identity.encode()).hexdigest()
 
 
 def turn_messages(messages: list[dict], prompt_id: str) -> list[dict]:
@@ -82,6 +87,8 @@ class ExecutionMonitor:
         self.adapter._user_message_id = self.checkpoint["prompt_id"]
         self.adapter._execution_checkpoint = self.checkpoint
         self.seen_types: set[str] = set()
+        self._text_occurrences: Counter[tuple[str, str]] = Counter()
+        self._text_keys: dict[str, str] = {}
         self.delivered: set[str] = set()
         self.last_check = time.monotonic()
         self.interval = min(settings.OPENCODE_RECONCILE_INTERVAL_SECONDS, request.idle_timeout_seconds / 3)
@@ -158,14 +165,20 @@ class ExecutionMonitor:
             # Only completed assistant messages contain stable text. An active
             # partially projected response must not become a permanent bubble.
             completed = bool((row.get("time") or {}).get("completed"))
+            text_occurrences: Counter[str] = Counter()
             for part in row.get("content", []):
                 kind = part.get("type")
                 if kind == "text" and completed and part.get("text"):
-                    text = str(part["text"])
+                    text = str(part["text"]).strip()
                     await self.emit(
-                        AgentEvent(type="text", payload={"text": text}, provider="opencode"),
-                        message_key(self.session_id, mid, text),
+                        AgentEvent(
+                            type="text",
+                            payload={"text": text, **text_segment_fields(mid, part.get("textID") or part.get("id"))},
+                            provider="opencode",
+                        ),
+                        message_key(self.session_id, mid, text, text_occurrences[text]),
                     )
+                    text_occurrences[text] += 1
                 elif kind == "tool":
                     tid = str(part.get("id") or "")
                     name = part.get("name")
@@ -285,6 +298,18 @@ class ExecutionMonitor:
         except Exception as exc:
             await queue.put(exc)
 
+    def _live_text_key(self, message_id: str, payload: dict) -> str:
+        text = payload["text"]
+        segment = payload.get("segment_id")
+        if segment and segment in self._text_keys:
+            return self._text_keys[segment]
+        count_key = (message_id, text)
+        key = message_key(self.session_id, message_id, text, self._text_occurrences[count_key])
+        if segment:
+            self._text_occurrences[count_key] += 1
+            self._text_keys[segment] = key
+        return key
+
     async def handle_event(self, event):
         kind = event.get("type")
         if kind == "server.connected":
@@ -311,8 +336,8 @@ class ExecutionMonitor:
             if unified.type == "result":
                 continue  # A model step is not a terminal execution.
             key = ""
-            if unified.type == "text" and mid:
-                key = message_key(self.session_id, mid, unified.payload.get("text", ""))
+            if unified.type == "text" and (message_id := unified.payload.get("provider_message_id") or mid):
+                key = self._live_text_key(message_id, unified.payload)
             elif unified.type in {"tool_use", "tool_result"}:
                 key = f"{unified.type}:{unified.payload.get('tool_use_id')}"
             elif unified.type == "ask_user":

@@ -747,6 +747,76 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen.count("text_delta"), 2)
         self.assertEqual(seen.count("text"), 1)
 
+    async def test_gateway_stream_maps_live_blocks_to_two_completed_text_events(self):
+        from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+
+        def stream(frame):
+            return {"type": "assistant-stream", "frame": {"attemptId": "a", **frame}}
+
+        def text_delta(index, text):
+            return stream({"type": "chunk", "chunk": {"type": "text-delta", "index": index, "text": text}})
+
+        values = [
+            {"type": "snapshot"},
+            stream({"type": "start", "turn": 1, "step": 1}),
+            text_delta(1, "First "),
+            text_delta(1, "block"),
+            text_delta(3, "Second block"),
+            {
+                "type": "event",
+                "event": {
+                    "type": "assistant/message",
+                    "data": {
+                        "turn": 1,
+                        "step": 1,
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": "First block"},
+                                {"type": "text", "text": "Second block"},
+                            ]
+                        },
+                    },
+                },
+            },
+            {"type": "event", "event": {"type": "turn/end", "data": {"reason": {"kind": "completed"}}}},
+        ]
+
+        class Gateway:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def send(self, raw):
+                self.open = json.loads(raw)
+
+            async def __aiter__(self):
+                for value in values:
+                    yield json.dumps({"type": "item", "streamId": self.open["streamId"], "value": value})
+
+        gateway = Gateway()
+        adapter = DshServerAdapter("http://mock:3080")
+        seen = []
+
+        async def record(event):
+            seen.append((event.type, event.payload["segment_id"], event.payload["text"]))
+
+        with mock.patch("app.agents.adapters.dsh.dsh_server_adapter.websockets.connect", return_value=gateway):
+            result = await adapter._consume_gateway_events("session-1", record)
+        self.assertTrue(gateway.open["payload"]["args"]["request"]["assistantStream"])
+        self.assertEqual(
+            seen,
+            [
+                ("text_delta", "1:1:1", "First "),
+                ("text_delta", "1:1:1", "block"),
+                ("text_delta", "1:1:3", "Second block"),
+                ("text", "1:1:1", "First block"),
+                ("text", "1:1:3", "Second block"),
+            ],
+        )
+        self.assertEqual(result["text"], "First block\nSecond block")
+
     async def test_dsh_approval_response_uses_host_wire_contract(self):
         from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
 

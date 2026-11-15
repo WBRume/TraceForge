@@ -51,6 +51,7 @@ from app.engine.session.persistence import (
     update_task_metrics,
 )
 from app.engine.session.registry import register_engine, unregister_engine
+from app.engine.session.text_stream import AssistantTextStream
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -156,6 +157,7 @@ class TaskAgentEngine:
 
         # 子组件：前端呈现通道与持久化批量窗口
         self.frontend = FrontendFeed(self)
+        self.text_stream = AssistantTextStream(self)
         self.thinking = ThinkingStream(self, self.frontend)
         self.logs = ExecutionLogBatcher(self)
         self.segments = ContextSegmentBatcher(self)
@@ -243,6 +245,7 @@ class TaskAgentEngine:
     async def _drain_buffers(self) -> None:
         """结束/异常/HITL 前统一排空：thinking 收口帧 → segment（含 snapshot）→ 执行日志。"""
         await self.thinking.finish()
+        await self.text_stream.finish()
         await self.segments.drain()
         await self.logs.drain()
 
@@ -669,15 +672,30 @@ class TaskAgentEngine:
                 self._guide_text = (self._guide_text + text)[-200001:]
             await self.thinking.finish()
             key = payload.get("provider_event_key")
-            await self.frontend.push_chat(
-                "assistant", text, **({"metadata": {"provider_event_key": key}} if key else {})
-            )
+            options = {"metadata": {"provider_event_key": key}} if key else {}
+            draft = self.text_stream.take(payload)
+            if draft is None:
+                await self.frontend.push_chat("assistant", text, **options)
+            else:
+                saved = False
+                try:
+                    saved = await self.frontend.push_chat("assistant", text, message_id=draft.id, **options)
+                finally:
+                    if not saved:
+                        await self.text_stream.discard(draft)
 
     async def _on_thinking(self, payload):
         text = str(payload.get("text") or "")
         if text:
             await self.thinking.handle_update(text, is_delta=payload.get("delta") is not None)
             self.segments.mark_thinking_dirty()
+
+    async def _on_text_stream(self, event: AgentEvent) -> None:
+        if event.type == "text_discarded":
+            await self.text_stream.discard_segments(event.payload["segment_ids"])
+        elif getattr(getattr(self.cli, "capabilities", None), "supports_streaming_text", False):
+            await self.thinking.finish()
+            await self.text_stream.append(event.payload)
 
     async def _on_provider_log(self, payload):
         message = str(payload.get("message") or "")
@@ -705,6 +723,8 @@ class TaskAgentEngine:
                 await self._on_session_started(payload)
             elif event_type == "text":
                 await self._on_text(payload)
+            elif event_type in {"text_delta", "text_discarded"}:
+                await self._on_text_stream(event)
             elif event_type == "thinking":
                 await self._on_thinking(payload)
             elif event_type == "tool_use":
@@ -724,10 +744,8 @@ class TaskAgentEngine:
                 )
             elif event_type == "log":
                 await self._on_provider_log(payload)
-            elif event_type == "result":
-                await self._on_result(payload, is_error=False)
-            elif event_type == "error":
-                await self._on_result(payload, is_error=True)
+            elif event_type in {"result", "error"}:
+                await self._on_result(payload, is_error=event_type == "error")
 
     # ─────────────── 事件分支 ───────────────
 

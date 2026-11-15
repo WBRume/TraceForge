@@ -81,6 +81,7 @@ const showTrailingAvatar = computed(() => (
     v-if="!isRedundantConfirmationReceipt(confirmation)"
     class="message-wrapper"
     :data-message-id="msg.id"
+    :aria-busy="msg.streaming || undefined"
     :class="[
       `role-${msgRole}`,
       {

@@ -28,6 +28,7 @@ PAYLOADS = {
     "log": ws.WSLogPayload,
     "job_update": ApiMockJobEvent,
     "job_done": ApiMockJobEvent,
+    "chat_message_stream": ws.WSChatStreamPayload,
 }
 STRICT_PAYLOADS = {
     kind: type(model.__name__ + "Contract", (model,), {"model_config": ConfigDict(extra="forbid", strict=True)})

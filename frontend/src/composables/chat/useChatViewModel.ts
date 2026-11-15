@@ -495,7 +495,10 @@ export function useChatViewModel() {
     messages,
     loadHistory: (taskId, reset) => history.loadHistory(taskId, reset),
     loadActivePreInput: (taskId) => preinput.loadActive(taskId),
-    onSessionGenerationBump: () => history.bumpGeneration(),
+    onSessionGenerationBump: () => {
+      history.bumpGeneration()
+      messages.clearStreams()
+    },
     applyTaskStatusSnapshot,
     reloadSpecBootstrap: (taskId) => void specBootstrap.load(taskId, taskState.currentTask.value),
     hasTaskSpecification: specDrawer.hasTaskSpecification,
@@ -537,6 +540,7 @@ export function useChatViewModel() {
         handleWsMessage(frame)
       },
       onResync: async (taskId, frame, _reason, context, signal) => {
+        messages.clearStreams()
         const restored = await sessionState.restoreSessionState(taskId)
         if (signal.aborted || context.socket !== ws.getSocket() || context.socket.readyState !== WebSocket.OPEN) return
         if (!restored) context.socket.close(4002, 'session_snapshot_failed')
@@ -596,6 +600,8 @@ export function useChatViewModel() {
     },
     messages: {
       upsert: messages.upsert,
+      applyStream: messages.applyStream,
+      clearStreams: messages.clearStreams,
       findByIdentity: messages.findByIdentity,
       removeByIds: messages.removeByIds,
       invalidateUndoBeforeRevision: (revision) => {
@@ -644,7 +650,10 @@ export function useChatViewModel() {
     skillsMergeTraceEvent: skills.mergeRuntimeTraceEvent,
     skillsScheduleUsageRefresh: skills.scheduleRuntimeUsageRefresh,
     onMessagesRetracted: () => { void readingProgress.refresh(taskState.getTaskId()) },
-    onSessionGenerationBump: () => history.bumpGeneration(),
+    onSessionGenerationBump: () => {
+      history.bumpGeneration()
+      messages.clearStreams()
+    },
     contextWindowScheduleRefresh: contextPanel.scheduleRefresh,
     onModelObserved: agentModels.observe,
     scrollTo: workbenchScroll.followToBottom,

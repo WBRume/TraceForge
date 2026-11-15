@@ -251,13 +251,19 @@ class FrontendFeed:
         )
 
     async def push_chat(
-        self, role: str, content: str, *, metadata: dict | None = None, message_type: str = "text"
-    ) -> None:
+        self,
+        role: str,
+        content: str,
+        *,
+        metadata: dict | None = None,
+        message_type: str = "text",
+        message_id: str | None = None,
+    ) -> bool:
         """推送自然语言对话消息到前端气泡区（先落库后广播，DB 全程 off-loop）"""
         if not content.strip():
-            return
+            return False
         if not self._owner.is_current():
-            return
+            return False
 
         try:
             payload = await self.persist_chat_message(
@@ -265,19 +271,27 @@ class FrontendFeed:
                 content,
                 metadata=metadata,
                 message_type=message_type,
+                message_id=message_id,
             )
         except Exception as exc:
             logger.exception(f"Persist chat message failed: {exc}")
             if (metadata or {}).get("provider_event_key"):
                 raise
-            return
+            return False
         if not payload:
-            return
+            return False
 
         await self.push("chat_message", payload)
+        return True
 
     async def persist_chat_message(
-        self, role: str, content: str, *, metadata: dict | None = None, message_type: str = "text"
+        self,
+        role: str,
+        content: str,
+        *,
+        metadata: dict | None = None,
+        message_type: str = "text",
+        message_id: str | None = None,
     ) -> dict | None:
         """落库一条聊天消息（off-loop）并返回 WS payload；不广播。"""
         return await run_db(
@@ -286,6 +300,7 @@ class FrontendFeed:
             content,
             metadata,
             message_type,
+            message_id,
         )
 
     def _persist_chat_message_sync(
@@ -294,6 +309,7 @@ class FrontendFeed:
         content: str,
         metadata: dict | None = None,
         message_type: str = "text",
+        message_id: str | None = None,
     ) -> dict | None:
         """线程内执行：消息落库（含每条即时通知）+ context 归因 + WS payload 组装。"""
         owner = self._owner
@@ -341,6 +357,7 @@ class FrontendFeed:
                 metadata_json=metadata,
                 session_turn_id=owner.session_turn_id,
                 session_generation=generation,
+                message_id=message_id,
             )
             try:
                 snapshot = context_token_service.ensure_snapshot(

@@ -327,6 +327,31 @@
       "title": "ChatMessageMessage",
       "type": "object"
     },
+    "ChatMessageStreamMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "const": "chat_message_stream",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/WSChatStreamPayloadContract"
+        },
+        "contract_version": {
+          "const": 2,
+          "title": "Contract Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_type",
+        "payload",
+        "contract_version"
+      ],
+      "title": "ChatMessageStreamMessage",
+      "type": "object"
+    },
     "JobArtifact": {
       "additionalProperties": false,
       "properties": {
@@ -814,6 +839,67 @@
       "title": "WSChatPayloadContract",
       "type": "object"
     },
+    "WSChatStreamPayloadContract": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Content"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "session_generation": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Generation"
+        },
+        "session_revision": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Revision"
+        }
+      },
+      "required": [
+        "task_id",
+        "id",
+        "content",
+        "created_at"
+      ],
+      "title": "WSChatStreamPayloadContract",
+      "type": "object"
+    },
     "WSLogPayloadContract": {
       "additionalProperties": false,
       "properties": {
@@ -1158,6 +1244,7 @@
   "discriminator": {
     "mapping": {
       "chat_message": "#/$defs/ChatMessageMessage",
+      "chat_message_stream": "#/$defs/ChatMessageStreamMessage",
       "job_done": "#/$defs/JobDoneMessage",
       "job_update": "#/$defs/JobUpdateMessage",
       "log": "#/$defs/LogMessage",
@@ -1196,6 +1283,9 @@
     },
     {
       "$ref": "#/$defs/JobDoneMessage"
+    },
+    {
+      "$ref": "#/$defs/ChatMessageStreamMessage"
     }
   ]
 }

@@ -78,6 +78,15 @@ class WSChatPayload(BaseModel):
     reading_change_seq: str | None = None
 
 
+class WSChatStreamPayload(BaseModel):
+    task_id: str
+    id: str = Field(min_length=1)
+    content: str | None
+    created_at: str
+    session_generation: int | None = None
+    session_revision: int | None = None
+
+
 # ── AI 思考过程 ──
 # 统一帧协议：sequence 单调递增；delta 帧携带增量片段（前端 append），
 # 快照帧 content 为全量累积 buffer（前端整体替换，缺 delta 字段）；
