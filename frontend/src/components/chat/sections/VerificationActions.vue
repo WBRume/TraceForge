@@ -74,16 +74,31 @@ const canShowStatusSummary = computed(() => (
 
 <style scoped>
 .verification-actions {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 24px;
-  /* 保留原底色，仅做轻微透明；不使用毛玻璃模糊 */
-  background-color: rgba(248, 250, 252, 0.9);
-  border-top: 1px solid #F1F5F9;
+  /* 左右内边距与输入卡外沿对齐 */
+  padding: 8px 16px;
+  /* 会话区已是白色圆角卡片：这里不再铺一条灰色横带，改用白色实底托住操作行，
+     让快捷操作与右侧状态摘要像悬浮在对话之上，而不是被灰条切成两段 */
+  background: var(--color-surface-white, #FFFFFF);
+  border-top: 0;
   min-height: 44px;
   box-sizing: border-box;
+}
+
+/* 操作行上方的白色渐隐：滚动内容淡出到卡片底色，避免生硬切断 */
+.verification-actions::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 32px;
+  background: linear-gradient(to top, var(--color-surface-white, #FFFFFF) 0%, rgba(255, 255, 255, 0) 100%);
+  pointer-events: none;
 }
 
 .actions-left {
