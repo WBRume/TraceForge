@@ -9,7 +9,7 @@ const props = withDefaults(defineProps<{
   leftHash?: string; rightHash?: string; leftLabel: string; rightLabel: string
   readText?: (hash: string) => Promise<string>; path: string
   leftText?: string; rightText?: string; leftExists?: boolean; rightExists?: boolean; editable?: boolean
-  wordWrap?: boolean; openInIde?: boolean; ideTitle?: string
+  wordWrap?: boolean; openInIde?: boolean; ideTitle?: string; hidePath?: boolean
 }>(), { leftExists:undefined, rightExists:undefined })
 const emit = defineEmits<{ 'open-in-ide': [position: { line: number; column: number }]; 'ide-error': [message: string]; 'update:rightText': [text: string] }>()
 const { t } = useI18n()
@@ -43,7 +43,7 @@ const pathParts = computed(() => {
   <section class="code-comparison">
     <!-- 顶部工具条 -->
     <div class="comparison-toolbar">
-      <div class="breadcrumb-box" :title="path">
+      <div v-if="!hidePath" class="breadcrumb-box" :title="path">
         <span v-if="pathParts.dir" class="dir-path">{{ pathParts.dir }} /</span>
         <strong class="file-path">{{ pathParts.file }}</strong>
       </div>

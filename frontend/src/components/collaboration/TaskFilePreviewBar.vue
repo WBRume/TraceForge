@@ -12,7 +12,7 @@ const { t } = useI18n()
 <template>
   <header class="task-preview-bar">
     <FileTypeBadge :path="path" />
-    <strong :title="path">{{ path.split('/').at(-1) }}</strong>
+    <strong :title="path">{{ path }}</strong>
     <small v-if="size !== undefined">{{ formatFileSize(size) }}</small>
     <small v-if="removed">{{ t('task_deliverables.removed') }}</small>
     <button type="button" class="btn-primary btn-xs" :disabled="pending || size === undefined" @click="emit('download')">

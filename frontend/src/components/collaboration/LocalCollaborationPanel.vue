@@ -295,7 +295,20 @@ async function confirmRestore() {
             <TaskFilePreviewBar :path="activePath" :size="activeExport?.size" :pending="exports.pending" :removed="active.kind === 'cloud' && !active.right" @download="exports.single(active.key)" />
             <TaskPatchPreview v-if="previewSource && previewEngine === 'patch'" :source="previewSource" />
             <ArtifactPreview v-else-if="previewSource" :key="active.key" :name="active.path" :source="previewSource" :resolve-html-asset="resolveHtmlAsset" />
-            <CodeComparison v-else :path="activePath" :left-hash="comparison.left?.sha256" :right-hash="comparison.right?.sha256" :left-label="comparison.leftLabel" :right-label="comparison.rightLabel" :read-text="readComparisonText" :open-in-ide="ide.available && !!active.repo_slug" :ide-title="ide.hint(active.task_repository_id)" @ide-error="ide.error.value = $event" @open-in-ide="position => ide.open(active!.task_repository_id, active!.path, position.line, position.column)">
+            <CodeComparison
+              v-else
+              :path="activePath"
+              hide-path
+              :left-hash="comparison.left?.sha256"
+              :right-hash="comparison.right?.sha256"
+              :left-label="comparison.leftLabel"
+              :right-label="comparison.rightLabel"
+              :read-text="readComparisonText"
+              :open-in-ide="ide.available && !!active.repo_slug"
+              :ide-title="ide.hint(active.task_repository_id)"
+              @ide-error="ide.error.value = $event"
+              @open-in-ide="position => ide.open(active!.task_repository_id, active!.path, position.line, position.column)"
+            >
               <template v-if="diffScope === 'round'" #tools><BaseSelect v-model="pair" size="sm" :aria-label="t('collaboration.ui.compareVersions')" :options="[{ value: 'auto', label: t('collaboration.ui.defaultComparison') }, { value: 'local-cloud', label: t('collaboration.localCloud'), disabled: !ui.localAvailable }, { value: 'input-cloud', label: t('collaboration.inputCloud') }]" /></template>
             </CodeComparison>
             <div v-if="!previewSource" class="diff-note-bar" :class="{ 'is-decision-bar': active.kind === 'conflicts' && ui.canRestore }">
