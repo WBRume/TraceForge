@@ -19,6 +19,24 @@ from .test_search_contracts import db_session as db_session
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "backend,key,configured",
+    [("postgresql_lexical", "retained-key", False), ("postgresql", "", False), ("postgresql", "vector-key", True)],
+)
+async def test_capabilities_separate_embedding_config_from_readiness(monkeypatch, backend, key, configured):
+    monkeypatch.setattr(settings, "SEARCH_ENABLED", True)
+    monkeypatch.setattr(settings, "SEARCH_BACKEND", backend)
+    monkeypatch.setattr(settings, "SEARCH_EMBEDDING_API_KEY", key)
+    target = {"verified": True, "schema_version": 3, "semantic_indexing_state": "unavailable"}
+    monkeypatch.setattr(router, "run_db_txn", AsyncMock(return_value=(target, None)))
+
+    result = await router.capabilities(None, None)
+
+    assert result["embedding_configured"] is configured
+    assert result["hybrid_available"] is False
+
+
+@pytest.mark.asyncio
 async def test_explicit_es_without_a_target_keeps_outbox_pending(db_session, monkeypatch):
     db = db_session
     _seed_task(db)
@@ -118,4 +136,5 @@ async def test_worker_verification_activation_and_capabilities_share_partition_i
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(search_es=es)))
     capabilities = await router.capabilities(request, SimpleNamespace(id=task.creator_id))
     assert capabilities["ready"] and capabilities["hybrid_available"]
+    assert capabilities["embedding_configured"]
     assert capabilities["semantic_types"] == ["task", "message", "case", "playbook"]

@@ -17,16 +17,23 @@ const onServerChanged = () => {
   searchStore.loadCapabilities()
 }
 
+const refresh = () => { if (auth.isAuthenticated && !document.hidden) void searchStore.loadCapabilities(true) }
+
+watch(() => searchStore.isOpen, open => {
+  if (!open) return
+  const { embedding_configured, hybrid_available, hybrid_unavailable_reason } = searchStore.capabilities
+  const embeddingConfigured = embedding_configured
+    ?? (hybrid_available || hybrid_unavailable_reason === 'semantic_index_not_ready')
+  if (embeddingConfigured) refresh()
+})
+
 window.addEventListener('sdd-server-changed', onServerChanged)
 window.addEventListener('traceforge-features-changed', onServerChanged)
-const refresh = () => { if (auth.isAuthenticated && !document.hidden) void searchStore.loadCapabilities(true) }
 window.addEventListener('focus', refresh)
-const capabilityTimer = window.setInterval(refresh, 15000)
 onScopeDispose(() => {
   window.removeEventListener('sdd-server-changed', onServerChanged)
   window.removeEventListener('traceforge-features-changed', onServerChanged)
   window.removeEventListener('focus', refresh)
-  window.clearInterval(capabilityTimer)
 })
 
 // 全局双击 Shift 快捷键唤起

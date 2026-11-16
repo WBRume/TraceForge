@@ -2,6 +2,7 @@ export type Retrieval = 'hybrid' | 'lexical'
 export interface SearchCapabilities {
   enabled: boolean
   ready: boolean
+  embedding_configured?: boolean
   hybrid_available: boolean
   hybrid_unavailable_reason?: string | null
   semantic_types?: string[]

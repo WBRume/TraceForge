@@ -38,7 +38,6 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
   let requestId = ''
   let timer: number | undefined
   let disposed = false
-  let capabilityTimer: number | undefined
   let capabilityGeneration = ''
   let capabilityRequest = 0
   let uploadController: AbortController | undefined
@@ -257,7 +256,6 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
   onMounted(() => {
     mounted = true
     void refresh()
-    capabilityTimer = window.setInterval(() => { if (!document.hidden) void refresh() }, 15000)
     window.addEventListener('pagehide', pageHidden)
     window.addEventListener('pageshow', focused)
     window.addEventListener('blur', blurred)
@@ -267,7 +265,7 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
     document.addEventListener('visibilitychange', visibilityChanged)
   })
   onBeforeUnmount(() => {
-    disposed = true; cachedSession = undefined; window.clearInterval(capabilityTimer); cancel(false)
+    disposed = true; cachedSession = undefined; cancel(false)
     window.removeEventListener('pagehide', pageHidden)
     window.removeEventListener('pageshow', focused)
     window.removeEventListener('blur', blurred)

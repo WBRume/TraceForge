@@ -94,6 +94,9 @@ async def capabilities(request: Request, user=Depends(get_current_user)):
     if not settings.SEARCH_ENABLED:
         return {"enabled": False, "ready": False, "hybrid_available": False}
     target, profile = await run_db_txn(configuration) if postgres_index.es_enabled() else (None, None)
+    embedding_configured = bool(profile) or postgres_index.embedding_enabled(
+        settings.SEARCH_BACKEND, settings.SEARCH_EMBEDDING_API_KEY
+    )
     ready = False
     if target:
         try:
@@ -123,6 +126,7 @@ async def capabilities(request: Request, user=Depends(get_current_user)):
         "indexing_state": "ready" if target and target["verified"] else "partial",
         "default_retrieval": "hybrid" if hybrid else "lexical",
         "available_retrievals": ["lexical", "hybrid"] if hybrid else ["lexical"],
+        "embedding_configured": embedding_configured,
         "hybrid_available": hybrid,
         "semantic_types": ["case", "playbook"]
         if target and target["schema_version"] == 2
