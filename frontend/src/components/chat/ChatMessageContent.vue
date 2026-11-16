@@ -6,6 +6,7 @@ import UserAvatar from '@/components/user/UserAvatar.vue'
 import { messageAuthorColor, memberColorFor, memberColorRgba } from '@/composables/chat/message/memberColor'
 import type { ChatMessageFields } from '@/composables/chat/shared/messageIdentity'
 import ConfirmationHistory from './ConfirmationHistory.vue'
+import ChatMessageMarkdown from './ChatMessageMarkdown.vue'
 import { confirmationHistoryRecord, isRedundantConfirmationReceipt } from '@/composables/chat/message/confirmationHistory'
 
 // 只负责消息展示；交互和诊断结果由主会话通过插槽提供。
@@ -142,6 +143,10 @@ const showTrailingAvatar = computed(() => (
               :title="segmentTitle(seg)"
             >{{ seg.text }}</span>
           </div>
+          <ChatMessageMarkdown
+            v-else-if="msgRole === 'user' || msgRole === 'assistant'"
+            :source="content ?? msg.content ?? ''"
+          />
           <div v-else class="msg-content">{{ content ?? msg.content }}</div>
         </div>
       </slot>
@@ -386,7 +391,7 @@ const showTrailingAvatar = computed(() => (
   padding: 0 1px;
 }
 
-.msg-content {
+.msg-content:not(.message-markdown) {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;

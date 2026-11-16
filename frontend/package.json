@@ -48,6 +48,8 @@
     "echarts": "^6.0.0",
     "element-plus": "^2.13.6",
     "exceljs": "^4.4.0",
+    "micromark": "^4.0.2",
+    "micromark-extension-gfm": "^3.0.0",
     "mockjs": "^1.1.0",
     "monaco-editor": "^0.55.1",
     "parse5": "^8.0.0",

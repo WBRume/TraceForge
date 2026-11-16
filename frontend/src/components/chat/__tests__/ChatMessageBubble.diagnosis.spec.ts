@@ -56,7 +56,7 @@ describe('ChatMessageBubble diagnosis_result rendering', () => {
     const bound = mountBubble(msg, { currentTask: { task_meta_json: { diagnosis_playbook_guide: {} } } })
     expect(bound.find('.msg-content').text()).toBe('采证完成')
     const ordinary = mountBubble(msg)
-    expect(ordinary.find('.msg-content').text()).toContain('traceforge-sop')
+    expect(ordinary.get('pre code.language-traceforge-sop').text()).toContain('{"phase":"PROBE"}')
     bound.unmount()
     ordinary.unmount()
   })
@@ -77,7 +77,7 @@ describe('ChatMessageBubble diagnosis_result rendering', () => {
     expect(wrapper.find('.message-bubble').exists()).toBe(false)
   })
 
-  it('renders a plain text bubble for regular messages', () => {
+  it('renders a regular bubble for text messages', () => {
     const wrapper = mountBubble({
       id: 'msg-1',
       role: 'assistant',

@@ -724,6 +724,8 @@
     "tasklist_collapse": "Collapse task list ( [ )",
     "tasklist_expand": "Expand task list ( [ )",
     "ai_assistant_name": "AI Assistant",
+    "markdown_footnotes": "Footnotes",
+    "markdown_back_to_reference": "Back to footnote reference",
     "copy": "Copy message",
     "copied": "Copied",
     "copy_failed": "Copy failed",
