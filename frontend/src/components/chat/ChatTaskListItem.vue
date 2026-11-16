@@ -51,63 +51,65 @@ const toggleFollow = (event?: MouseEvent) => {
 
 <template>
   <article class="task-item" :class="{ active }">
-    <button
-      class="task-select"
-      type="button"
-      :aria-current="active ? 'page' : undefined"
-      @click="selectTask"
-    >
-      <span class="task-name" :title="task.name || ''">{{ task.name }}</span>
+    <div class="task-main">
+      <button
+        class="task-select"
+        type="button"
+        :aria-current="active ? 'page' : undefined"
+        @click="selectTask"
+      >
+        <span class="task-name" :title="task.name || ''">{{ task.name }}</span>
 
-      <span class="task-state-row">
-        <span class="task-state-group">
-          <span v-if="task.execution_location === 'LOCAL'" class="task-type-tag is-local">本地</span>
-          <span
-            class="task-type-tag"
-            :class="isDiagnosis ? 'is-diagnosis' : 'is-development'"
-          >
-            {{ isDiagnosis ? $t('task_types.diagnosis_short') : $t('task_types.development_short') }}
-          </span>
-          <span class="task-status" :title="t(taskStatusKey(task.status))" :data-status="normalizeTaskStatus(task.status)">
-            <TaskStatusIcon :status="task.status" :size="16" />
-            {{ t(taskStatusKey(task.status)) }}
+        <span class="task-state-row">
+          <span class="task-state-group">
+            <span v-if="task.execution_location === 'LOCAL'" class="task-type-tag is-local">本地</span>
+            <span
+              class="task-type-tag"
+              :class="isDiagnosis ? 'is-diagnosis' : 'is-development'"
+            >
+              {{ isDiagnosis ? $t('task_types.diagnosis_short') : $t('task_types.development_short') }}
+            </span>
+            <span class="task-status" :title="t(taskStatusKey(task.status))" :data-status="normalizeTaskStatus(task.status)">
+              <TaskStatusIcon :status="task.status" :size="16" />
+              {{ t(taskStatusKey(task.status)) }}
+            </span>
           </span>
         </span>
-      </span>
 
-      <span v-if="hasMetadata" class="task-meta">
-        <span v-if="task.creator_name" class="task-creator">{{ task.creator_name }}</span>
-        <span v-if="task.creator_name && task.created_at" class="task-meta-separator">·</span>
-        <time v-if="task.created_at" class="task-date" :datetime="task.created_at">
-          {{ formatTime(task.created_at) }}
-        </time>
-      </span>
-    </button>
+        <span v-if="hasMetadata" class="task-meta">
+          <span v-if="task.creator_name" class="task-creator" :title="task.creator_name">{{ task.creator_name }}</span>
+          <span v-if="task.creator_name && task.created_at" class="task-meta-separator">·</span>
+          <time v-if="task.created_at" class="task-date" :datetime="task.created_at">
+            {{ formatTime(task.created_at) }}
+          </time>
+        </span>
+      </button>
+
+      <button
+        class="follow-btn"
+        :class="{ active: task.is_following }"
+        type="button"
+        :title="$t(task.is_following ? 'chat.task_unfollow_messages' : 'chat.task_follow_messages')"
+        :aria-label="$t(task.is_following ? 'chat.task_unfollow_messages' : 'chat.task_follow_messages')"
+        :aria-pressed="Boolean(task.is_following)"
+        @click.stop="toggleFollow($event)"
+      >
+        <StarSolid v-if="task.is_following" class="follow-icon" />
+        <Star v-else class="follow-icon" />
+      </button>
+
+      <DeleteActionButton
+        mode="icon"
+        class="delete-btn"
+        :title="$t('common.delete')"
+        :disabled="!canDelete"
+        @click="deleteTask($event)"
+      />
+    </div>
 
     <div v-if="task.requirements?.length" class="task-requirement-row">
       <TaskRequirementBadges :workspace-id="task.workspace_id || ''" :task-id="task.id" :requirements="task.requirements" />
     </div>
-
-    <button
-      class="follow-btn"
-      :class="{ active: task.is_following }"
-      type="button"
-      :title="$t(task.is_following ? 'chat.task_unfollow_messages' : 'chat.task_follow_messages')"
-      :aria-label="$t(task.is_following ? 'chat.task_unfollow_messages' : 'chat.task_follow_messages')"
-      :aria-pressed="Boolean(task.is_following)"
-      @click.stop="toggleFollow($event)"
-    >
-      <StarSolid v-if="task.is_following" class="follow-icon" />
-      <Star v-else class="follow-icon" />
-    </button>
-
-    <DeleteActionButton
-      mode="icon"
-      class="delete-btn"
-      :title="$t('common.delete')"
-      :disabled="!canDelete"
-      @click="deleteTask($event)"
-    />
   </article>
 </template>
 
@@ -120,6 +122,11 @@ const toggleFollow = (event?: MouseEvent) => {
   border: 1px solid transparent;
   border-radius: 12px;
   transition: background-color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+/* 操作按钮锚定在主内容区，避免挂载需求徽标后整个卡片变高导致按钮下移压住日期 */
+.task-main {
+  position: relative;
 }
 
 .task-select {
@@ -253,7 +260,9 @@ const toggleFollow = (event?: MouseEvent) => {
   align-items: center;
   gap: 5px;
   min-width: 0;
+  /* 右侧操作按钮只在状态行垂直居中，元信息行可越过按钮占位区贴到卡片右侧 */
   margin-top: 6px;
+  margin-right: -48px;
   overflow: hidden;
   color: var(--color-text-muted);
   font-size: 0.68rem;
@@ -271,18 +280,26 @@ const toggleFollow = (event?: MouseEvent) => {
 
 .task-creator {
   flex: 0 1 auto;
-  max-width: 42%;
   color: var(--color-primary-600);
   font-weight: 600;
 }
 
 .task-date {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
+/* 有创建人时把分隔符与日期一起推到右侧，创建人过长则在自身范围内省略 */
 .task-meta-separator {
   flex: 0 0 auto;
+  margin-left: auto;
   opacity: 0.55;
+}
+
+/* 仅有日期时同样贴右对齐 */
+.task-date:first-child {
+  margin-left: auto;
 }
 
 .follow-btn,
