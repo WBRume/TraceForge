@@ -13,11 +13,13 @@ from sqlalchemy.orm import Session
 
 from app.domains.workspace_asset.models.workspace_asset import (
     RequirementAuditAction,
+    RequirementStatus,
     SddRequirement,
     SddRequirementAuditLog,
     SddRequirementImportBatch,
     SddRequirementImportItem,
     SddTaskRequirement,
+    TaskRequirementRelationType,
 )
 from app.domains.workspace_asset.schemas.workspace_asset import (
     RequirementAuditLogResponse,
@@ -27,6 +29,7 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     RequirementLinkedTaskResponse,
     RequirementSplitDraftPayload,
     RequirementSummary,
+    RequirementTaskProgress,
     TaskRequirementLinkResponse,
 )
 from app.domains.workspace_asset.services.common.primitives import (
@@ -47,6 +50,7 @@ def requirement_snapshot(requirement: SddRequirement) -> dict[str, Any]:
         "status": enum_value(requirement.status),
         "acceptance_criteria": list(requirement.acceptance_criteria_json or []),
         "priority": requirement.priority,
+        "owner_id": requirement.owner_id,
         "parent_requirement_id": requirement.parent_requirement_id,
         "import_batch_id": requirement.import_batch_id,
         "source_kind": requirement.source_kind,
@@ -119,6 +123,42 @@ def requirement_task_links(requirement: SddRequirement) -> list[SddTaskRequireme
     return [link for member in requirement_family(requirement) for link in (member.task_links or [])]
 
 
+def implementation_tasks(requirement: SddRequirement) -> dict[str, SddTaskRequirement]:
+    return {
+        link.task_id: link
+        for link in requirement_task_links(requirement)
+        if link.task is not None and link.relation_type == TaskRequirementRelationType.COVERS
+    }
+
+
+def requirement_task_progress(requirement: SddRequirement) -> RequirementTaskProgress:
+    tasks = implementation_tasks(requirement)
+    counts: dict[str, int] = {}
+    for link in tasks.values():
+        status = enum_value(link.task.status)
+        counts[status] = counts.get(status, 0) + 1
+    return RequirementTaskProgress(
+        total=len(tasks),
+        completed=counts.get("COMPLETED", 0),
+        reference_only=len({link.task_id for link in requirement_task_links(requirement)} - tasks.keys()),
+        status_counts=counts,
+        unassigned_child_ids=[
+            child.id for child in requirement.child_requirements or [] if not implementation_tasks(child)
+        ],
+    )
+
+
+def requirement_acceptance_blocker(requirement: SddRequirement, progress: RequirementTaskProgress) -> str | None:
+    children = requirement.child_requirements or []
+    if children and any(child.status != RequirementStatus.VERIFIED for child in children):
+        return "children_pending"
+    if not children and not progress.total:
+        return "no_tasks"
+    if progress.completed != progress.total:
+        return "tasks_pending"
+    return None
+
+
 def requirement_coverage_summary(requirement: SddRequirement) -> RequirementCoverageSummary:
     task_links = requirement_task_links(requirement)
     tasks = [link.task for link in task_links if link.task]
@@ -189,6 +229,7 @@ def requirement_summary(
         requirement.child_requirements or [], key=lambda item: item.created_at or datetime.min, reverse=True
     )
     child_count = len(children)
+    progress = requirement_task_progress(requirement)
     return RequirementSummary(
         task_prompt=clean_optional((requirement.source_metadata_json or {}).get("task_prompt"))
         if isinstance(requirement.source_metadata_json, dict)
@@ -200,6 +241,8 @@ def requirement_summary(
         status=enum_value(requirement.status),
         acceptance_criteria=normalize_list(requirement.acceptance_criteria_json),
         priority=requirement.priority,
+        owner_id=requirement.owner_id,
+        owner_name=requirement.owner.display_name if requirement.owner else None,
         parent_requirement_id=requirement.parent_requirement_id,
         parent_title=requirement.parent_requirement.title if requirement.parent_requirement else None,
         child_count=child_count,
@@ -218,6 +261,8 @@ def requirement_summary(
         change_history_count=len(requirement.audit_logs or []),
         related_task_count=len(task_links),
         linked_tasks=[requirement_linked_task(link) for link in task_links] if include_linked_tasks else [],
+        task_progress=progress,
+        acceptance_blocker=requirement_acceptance_blocker(requirement, progress),
         created_at=requirement.created_at,
         updated_at=requirement.updated_at,
     )

@@ -2293,6 +2293,53 @@
       "knowledge_base_body": "知识库尚未实现，正在施工中。后续将沉淀业务概念、API 用法、框架模式、约束规则与可复用 ADR 等长期资产。"
     },
     "requirements": {
+      "status_labels": {
+        "DRAFT": "草稿",
+        "READY": "待开始",
+        "IN_PROGRESS": "进行中",
+        "PENDING_ACCEPTANCE": "待验收",
+        "VERIFIED": "已验收",
+        "REJECTED": "已退回",
+        "ARCHIVED": "已归档",
+        "ACTIVE": "已启用",
+        "WAITING_SOURCE": "待补充来源",
+        "unknown": "未知"
+      },
+      "owner": "需求负责人",
+      "owner_placeholder": "搜索工作区成员",
+      "owner_unassigned": "未分配",
+      "progress": {
+        "complete": "已完成 {done} / {total}",
+        "no_tasks": "尚无计入任务",
+        "stats_title": "任务进度统计",
+        "counted_tasks": "{count} 个计入任务",
+        "reference": "仅参考任务",
+        "unassigned_children": "尚无计入任务的子需求",
+        "rule": "核心覆盖任务计入进度。父需求汇总自身和子需求的核心任务，共享任务只计一次。仅已完成任务计入完成数。",
+        "change_to_covers": "计入进度",
+        "change_to_reference": "改为协同参考"
+      },
+      "pending": {
+        "title": "待处理事项",
+        "count": "待处理 {count} 项",
+        "assign": "关联实施任务",
+        "child": "补充任务 · {name}",
+        "child_review": "处理子需求验收 · {name}",
+        "task": "{status} · {name}"
+      },
+      "acceptance": {
+        "title": "需求验收",
+        "submit": "提交验收",
+        "approve": "验收通过",
+        "reject": "退回整改",
+        "reopen": "重新打开需求",
+        "reason": "验收意见",
+        "submit_ready": "计入进度的任务已完成，可以提交验收。",
+        "no_tasks": "请先关联至少一个核心覆盖任务。",
+        "tasks_pending": "请先完成所有核心覆盖任务。",
+        "children_pending": "请先完成所有子需求验收。",
+        "recorded": "已记录验收操作"
+      },
       "repository": {
         "eyebrow": "需求仓库",
         "title": "真实需求资产",
@@ -2331,30 +2378,43 @@
         "relation_type": "关系类型",
         "task": "Task"
       },
-      "related_tasks_title": "关联 Task",
-      "related_tasks_empty": "暂无关联 Task。",
+      "related_tasks_title": "关联任务",
+      "related_tasks_empty": "暂无关联任务",
+      "task_links": {
+        "associate": "关联",
+        "more": "{name}的更多操作",
+        "creator": "任务创建人：{name}",
+        "parent_hint": "新增关联请在对应的子需求中操作。",
+        "review_scope_changed": "此操作会变更验收范围，需退回后重新提交。",
+        "change_relation_confirm": "确定调整任务「{name}」的进度计入口径吗？",
+        "no_candidates": "当前没有可关联的任务。",
+        "save_failed": "任务关联保存失败，请重试。",
+        "added": "已关联任务",
+        "removed": "已取消关联",
+        "relation_updated": "已更新任务的关联类型"
+      },
       "relation_types": {
         "covers": "核心覆盖 (COVERS)",
         "covers_short": "核心覆盖",
-        "covers_desc": "该任务直接实现本需求的业务规格与验收条件，执行通过后计入需求覆盖率。",
+        "covers_desc": "直接实现本需求的任务，计入需求的任务进度。",
         "relates_to": "协同参考 (RELATES)",
         "relates_to_short": "协同参考",
-        "relates_to_desc": "与本需求存在上下文协同、前置依赖或调研参考关系，不直接作为交付物验收。"
+        "relates_to_desc": "用于协同、依赖或调研参考，不计入任务进度。"
       },
       "link_task_modal": {
-        "title": "关联执行 Task",
+        "title": "关联已有任务",
         "subtitle": "将工作空间已有任务与本需求建立追溯链接",
         "select_task_label": "选择任务",
         "select_task_placeholder": "请选择要关联的 Task",
         "search_task_placeholder": "搜索任务名称...",
         "select_task_tip": "仅显示当前工作空间中尚未关联该需求的可选任务",
         "relation_type_label": "关联关系类型",
-        "reason_label": "关联原因 / 追溯说明 (选填)",
+        "reason_label": "关联说明（选填）",
         "reason_placeholder": "例如：负责实现核心接口交付与联调，记录至审计历史",
         "submit": "确认关联",
         "cancel": "取消",
         "unlink_confirm_title": "解除关联确认",
-        "unlink_confirm_message": "确定要解除与任务「{name}」的关联吗？解除后该任务的产出将不再计入本需求的覆盖率统计。"
+        "unlink_confirm_message": "确定取消与「{name}」的关联吗？任务会保留在任务会话中。"
       },
       "actions": {
         "new": "新建需求",
@@ -2375,8 +2435,8 @@
         "confirming": "写入中",
         "back_to_list": "返回需求资产",
         "back_to_task": "返回任务过程资产",
-        "link_task": "关联 Task",
-        "unlink_task": "取消关联 Task",
+        "link_task": "关联任务",
+        "unlink_task": "取消关联",
         "delete": "删除"
       },
       "fields": {

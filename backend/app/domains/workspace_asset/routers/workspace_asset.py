@@ -39,6 +39,7 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     HumanReviewCreateRequest,
     HumanReviewResponse,
     HumanReviewUpdateRequest,
+    RequirementAcceptanceRequest,
     RequirementCreateRequest,
     RequirementDetailResponse,
     RequirementImportBatchResponse,
@@ -49,6 +50,7 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     RequirementSplitPreviewRequest,
     RequirementSplitRequest,
     RequirementTaskLinkRequest,
+    RequirementTaskRelationRequest,
     RequirementUpdateRequest,
     TaskClarificationsSectionResponse,
     TaskDecisionsSectionResponse,
@@ -73,7 +75,7 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
 )
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 from app.domains.workspace_asset.services.overview import get_overview, list_knowledge_assets
-from app.domains.workspace_asset.services.requirements import import_service
+from app.domains.workspace_asset.services.requirements import acceptance, import_service
 from app.domains.workspace_asset.services.requirements import queries as requirement_queries
 from app.domains.workspace_asset.services.requirements import writes as requirement_writes
 from app.domains.workspace_asset.services.requirements.presenters import import_batch_response
@@ -410,6 +412,45 @@ def link_workspace_asset_requirement_task(
     _verify_manage_requirements(ws_id, current_user, db)
     try:
         result = requirement_writes.link_requirement_task(db, ws_id, requirement_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
+        _raise_write_error(exc)
+    if not result:
+        raise HTTPException(status_code=404, detail="Requirement not found")
+    return result
+
+
+@router.patch("/requirements/{requirement_id}/tasks/{task_id}", response_model=RequirementDetailResponse)
+def update_workspace_asset_requirement_task_relation(
+    ws_id: str,
+    requirement_id: str,
+    task_id: str,
+    payload: RequirementTaskRelationRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _verify_manage_requirements(ws_id, current_user, db)
+    try:
+        result = requirement_writes.update_requirement_task_relation(
+            db, ws_id, requirement_id, task_id, current_user.id, payload.relation_type
+        )
+    except WorkspaceAssetError as exc:
+        _raise_write_error(exc)
+    if not result:
+        raise HTTPException(status_code=404, detail="Requirement not found")
+    return result
+
+
+@router.post("/requirements/{requirement_id}/acceptance", response_model=RequirementDetailResponse)
+def apply_workspace_asset_requirement_acceptance(
+    ws_id: str,
+    requirement_id: str,
+    payload: RequirementAcceptanceRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _verify_manage_requirements(ws_id, current_user, db)
+    try:
+        result = acceptance.apply_acceptance(db, ws_id, requirement_id, current_user.id, payload)
     except WorkspaceAssetError as exc:
         _raise_write_error(exc)
     if not result:

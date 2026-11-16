@@ -4,6 +4,7 @@ import { Sparkles } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 import BaseSelect from '@/components/BaseSelect.vue'
 import type { RequirementEditableStatus } from '@/types/workspaceAssets'
+import { editableRequirementStatuses, requirementStatusKey } from '@/utils/requirementStatus'
 import type { RequirementManualPayload, RequirementPreviewPayload } from './requirementCreateTypes'
 
 const props = defineProps<{
@@ -19,15 +20,9 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const statusOptions: RequirementEditableStatus[] = [
-  'DRAFT',
-  'READY',
-  'IN_PROGRESS',
-  'VERIFIED',
-  'REJECTED',
-  'ARCHIVED',
-]
-const statusSelectOptions = statusOptions.map((status) => ({ label: status, value: status }))
+const statusSelectOptions = computed(() => editableRequirementStatuses.map(status => ({
+  label: t(requirementStatusKey(status)), value: status,
+})))
 
 const form = reactive({
   title: '',

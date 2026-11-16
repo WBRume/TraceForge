@@ -591,6 +591,7 @@ watch(
 
     <RequirementEditDrawer
       :open="editorOpen"
+      :workspace-id="workspaceId"
       :requirement="editingRequirement"
       :loading="actionLoading"
       @close="editorOpen = false"

@@ -122,6 +122,8 @@ def list_requirement_options(
 
 def requirement_load_options() -> tuple[Any, ...]:
     return (
+        selectinload(SddRequirement.owner),
+        selectinload(SddRequirement.child_requirements).selectinload(SddRequirement.owner),
         selectinload(SddRequirement.parent_requirement),
         selectinload(SddRequirement.child_requirements),
         selectinload(SddRequirement.child_requirements).selectinload(SddRequirement.task_links),
@@ -181,13 +183,17 @@ def _requirement_sort_key(requirement: SddRequirement, sort_by: str) -> Any:
     return requirement.created_at or datetime.min
 
 
-def get_requirement(db: Session, workspace_id: str, requirement_id: str) -> SddRequirement | None:
-    return (
+def get_requirement(
+    db: Session, workspace_id: str, requirement_id: str, *, for_update: bool = False
+) -> SddRequirement | None:
+    query = (
         db.query(SddRequirement)
         .options(*requirement_load_options())
         .filter(SddRequirement.workspace_id == workspace_id, SddRequirement.id == requirement_id)
-        .first()
     )
+    if for_update:
+        query = query.populate_existing().with_for_update()
+    return query.first()
 
 
 def list_requirements(

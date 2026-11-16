@@ -8,6 +8,7 @@ from __future__ import annotations
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.domains.auth.models.user import WorkspaceMember
 from app.domains.task.models.task import SddTask
 from app.domains.workspace_asset.models.workspace_asset import (
     RequirementAuditAction,
@@ -69,7 +70,7 @@ def create_requirement(
         raise WorkspaceAssetError("Requirement title is required.", status_code=422)
     parent_id = clean_optional(payload.parent_requirement_id, limit=36)
     if parent_id:
-        parent = get_requirement(db, workspace_id, parent_id)
+        parent = get_requirement(db, workspace_id, parent_id, for_update=True)
         if not parent:
             raise WorkspaceAssetError("Parent Requirement not found.", status_code=404)
         if parent.parent_requirement_id:
@@ -78,6 +79,7 @@ def create_requirement(
     requirement = SddRequirement(
         workspace_id=workspace_id,
         created_by_id=actor_id,
+        owner_id=actor_id,
         title=title,
         body=clean_optional(payload.body),
         status=normalize_requirement_status(payload.status),
@@ -113,6 +115,32 @@ def create_requirement(
     return detail
 
 
+def _assign_requirement_owner(db: Session, requirement: SddRequirement, owner_id: str | None) -> None:
+    if owner_id and owner_id != requirement.owner_id:
+        member = (
+            db.query(WorkspaceMember.id)
+            .filter_by(
+                workspace_id=requirement.workspace_id,
+                user_id=owner_id,
+            )
+            .first()
+        )
+        if not member:
+            raise WorkspaceAssetError("Requirement owner must be a workspace member.", status_code=422)
+    requirement.owner_id = owner_id
+
+
+def _change_requirement_status(requirement: SddRequirement, value: str | None) -> None:
+    next_status = normalize_requirement_status(value)
+    if requirement.status == RequirementStatus.PENDING_ACCEPTANCE:
+        raise WorkspaceAssetError("Use the requirement acceptance actions to change this status.", status_code=409)
+    if requirement.status in {RequirementStatus.VERIFIED, RequirementStatus.REJECTED} and (
+        next_status != RequirementStatus.ARCHIVED
+    ):
+        raise WorkspaceAssetError("Use the requirement acceptance actions to change this status.", status_code=409)
+    requirement.status = next_status
+
+
 def update_requirement(
     db: Session,
     workspace_id: str,
@@ -120,11 +148,13 @@ def update_requirement(
     actor_id: str | None,
     payload: RequirementUpdateRequest,
 ) -> RequirementDetailResponse | None:
-    requirement = get_requirement(db, workspace_id, requirement_id)
+    requirement = get_requirement(db, workspace_id, requirement_id, for_update=True)
     if not requirement:
         return None
 
     before = requirement_snapshot(requirement)
+    if payload_has_field(payload, "owner_id"):
+        _assign_requirement_owner(db, requirement, payload.owner_id or None)
     if payload_has_field(payload, "title"):
         title = clean_optional(payload.title, limit=300)
         if not title:
@@ -137,7 +167,7 @@ def update_requirement(
     if payload_has_field(payload, "priority"):
         requirement.priority = clean_optional(payload.priority, limit=40)
     if payload_has_field(payload, "status"):
-        requirement.status = normalize_requirement_status(payload.status)
+        _change_requirement_status(requirement, payload.status)
     if payload_has_field(payload, "source_kind"):
         requirement.source_kind = clean_optional(payload.source_kind, limit=80)
     if payload_has_field(payload, "source_uri"):
@@ -183,7 +213,7 @@ def link_requirement_task(
     actor_id: str | None,
     payload: RequirementTaskLinkRequest,
 ) -> RequirementDetailResponse | None:
-    requirement = get_requirement(db, workspace_id, requirement_id)
+    requirement = get_requirement(db, workspace_id, requirement_id, for_update=True)
     if not requirement:
         return None
     if requirement.child_requirements:
@@ -210,7 +240,6 @@ def link_requirement_task(
         created_by_id=actor_id,
     )
     db.add(link)
-    db.flush()
     add_requirement_audit(
         db,
         workspace_id=workspace_id,
@@ -230,6 +259,38 @@ def link_requirement_task(
     return get_requirement_detail(db, workspace_id, requirement_id)
 
 
+def update_requirement_task_relation(
+    db: Session,
+    workspace_id: str,
+    requirement_id: str,
+    task_id: str,
+    actor_id: str,
+    relation_type: str,
+) -> RequirementDetailResponse | None:
+    requirement = get_requirement(db, workspace_id, requirement_id, for_update=True)
+    if not requirement:
+        return None
+    link = next((link for link in requirement.task_links if link.task_id == task_id), None)
+    if not link:
+        raise WorkspaceAssetError("Requirement-Task link not found.", status_code=404)
+    relation = _normalize_relation_type(relation_type)
+    if relation != link.relation_type:
+        before = {"task_id": task_id, "relation_type": enum_value(link.relation_type)}
+        link.relation_type = relation
+        add_requirement_audit(
+            db,
+            workspace_id=workspace_id,
+            requirement_id=requirement_id,
+            task_id=task_id,
+            actor_id=actor_id,
+            action=RequirementAuditAction.UPDATED,
+            before=before,
+            after={"task_id": task_id, "relation_type": relation.value},
+        )
+    db.commit()
+    return get_requirement_detail(db, workspace_id, requirement_id)
+
+
 def unlink_requirement_task(
     db: Session,
     workspace_id: str,
@@ -238,7 +299,7 @@ def unlink_requirement_task(
     actor_id: str | None,
     change_reason: str | None = None,
 ) -> RequirementDetailResponse | None:
-    requirement = get_requirement(db, workspace_id, requirement_id)
+    requirement = get_requirement(db, workspace_id, requirement_id, for_update=True)
     if not requirement:
         return None
     link = (

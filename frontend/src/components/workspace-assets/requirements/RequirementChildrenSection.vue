@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { requirementCoverageKey, requirementStatusKey } from '@/utils/requirementStatus'
 import type { RequirementSummary } from '@/types/workspaceAssets'
 
 defineProps<{
@@ -39,9 +40,9 @@ const { t } = useI18n()
           <small v-if="child.body">{{ child.body }}</small>
         </span>
         <span class="child-meta">
-          <span>{{ child.status }}</span>
+          <span>{{ t(requirementStatusKey(child.status)) }}</span>
           <span>{{ t('workspace_assets.requirements.table.task_count') }} {{ child.related_task_count }}</span>
-          <span>{{ child.coverage_summary?.coverage_status || 'not_available' }}</span>
+          <span>{{ t(requirementCoverageKey(child.coverage_summary?.coverage_status)) }}</span>
         </span>
       </button>
     </div>

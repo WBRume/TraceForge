@@ -2,10 +2,13 @@
 import { computed, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseSelect from '@/components/BaseSelect.vue'
+import RequirementOwnerSelect from './RequirementOwnerSelect.vue'
+import { editableRequirementStatuses, requirementStatusKey } from '@/utils/requirementStatus'
 import type { RequirementEditableStatus, RequirementMutationPayload, RequirementSummary } from '@/types/workspaceAssets'
 
 const props = defineProps<{
   open: boolean
+  workspaceId?: string
   requirement?: RequirementSummary | null
   loading?: boolean
 }>()
@@ -16,15 +19,11 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const statusOptions: RequirementEditableStatus[] = [
-  'DRAFT',
-  'READY',
-  'IN_PROGRESS',
-  'VERIFIED',
-  'REJECTED',
-  'ARCHIVED',
-]
-const statusSelectOptions = statusOptions.map((status) => ({ label: status, value: status }))
+const statusSelectOptions = computed(() => {
+  const status = props.requirement?.status
+  const choices = status === 'VERIFIED' || status === 'REJECTED' ? [status, 'ARCHIVED'] : editableRequirementStatuses
+  return choices.map(value => ({ label: t(requirementStatusKey(value)), value }))
+})
 
 const form = reactive({
   title: '',
@@ -33,6 +32,7 @@ const form = reactive({
   acceptanceCriteriaText: '',
   priority: '',
   status: 'DRAFT' as RequirementEditableStatus,
+  ownerId: null as string | null,
   sourceKind: '',
   sourceUri: '',
   sourceRef: '',
@@ -40,6 +40,13 @@ const form = reactive({
 })
 
 const isEdit = computed(() => Boolean(props.requirement))
+const statusEditable = computed(() => !props.requirement || statusSelectOptions.value.some(
+  option => option.value === props.requirement?.status,
+))
+const initialOwner = computed(() => props.requirement?.owner_id ? {
+  user_id: props.requirement.owner_id,
+  display_name: props.requirement.owner_name || props.requirement.owner_id,
+} : undefined)
 
 watch(
   () => [props.open, props.requirement] as const,
@@ -51,6 +58,7 @@ watch(
     form.acceptanceCriteriaText = (requirement?.acceptance_criteria || []).join('\n')
     form.priority = requirement?.priority || ''
     form.status = (requirement?.status as RequirementEditableStatus) || 'DRAFT'
+    form.ownerId = requirement?.owner_id || null
     form.sourceKind = requirement?.source_kind || ''
     form.sourceUri = requirement?.source_uri || ''
     form.sourceRef = requirement?.source_ref || ''
@@ -69,7 +77,8 @@ function submit() {
       .map((item) => item.trim())
       .filter(Boolean),
     priority: form.priority || null,
-    status: form.status,
+    ...(statusEditable.value && form.status !== props.requirement?.status ? { status: form.status } : {}),
+    ...(isEdit.value && form.ownerId !== (props.requirement?.owner_id || null) ? { owner_id: form.ownerId } : {}),
     source_kind: form.sourceKind || null,
     source_uri: form.sourceUri || null,
     source_ref: form.sourceRef || null,
@@ -108,13 +117,18 @@ function submit() {
           <div class="field-grid">
             <label>
               <span>{{ t('workspace_assets.requirements.fields.status') }}</span>
-              <BaseSelect v-model="form.status" :options="statusSelectOptions" size="sm" />
+              <BaseSelect v-if="statusEditable" v-model="form.status" :options="statusSelectOptions" size="sm" />
+              <input v-else :value="t(requirementStatusKey(requirement?.status || 'DRAFT'))" readonly />
             </label>
             <label>
               <span>{{ t('workspace_assets.requirements.fields.priority') }}</span>
               <input v-model="form.priority" maxlength="40" :placeholder="t('workspace_assets.requirements.placeholders.priority')" />
             </label>
           </div>
+          <label v-if="isEdit && workspaceId">
+            <span>{{ t('workspace_assets.requirements.owner') }}</span>
+            <RequirementOwnerSelect v-model="form.ownerId" :workspace-id="workspaceId" :initial-owner="initialOwner" />
+          </label>
           <div class="field-grid">
             <label>
               <span>{{ t('workspace_assets.requirements.fields.source_kind') }}</span>

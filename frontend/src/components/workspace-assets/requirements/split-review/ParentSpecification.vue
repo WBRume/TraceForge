@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { requirementStatusKey } from '@/utils/requirementStatus'
 import RequirementSpecificationBlock from '../RequirementSpecificationBlock.vue'
 import type { RequirementDetail } from '@/types/workspaceAssets'
 import { getPriorityBadgeClass } from './model'
@@ -18,7 +19,7 @@ const { t } = useI18n()
           <div class="spec-hero-box">
             <h3 class="parent-title">{{ requirement?.title || '未命名需求' }}</h3>
             <div class="parent-meta-row">
-              <span class="meta-tag status-tag">{{ requirement?.status || 'DRAFT' }}</span>
+              <span class="meta-tag status-tag">{{ t(requirementStatusKey(requirement?.status || 'DRAFT')) }}</span>
               <span class="meta-tag priority-tag" :class="getPriorityBadgeClass(requirement?.priority || '')">
                 {{ requirement?.priority || '未设置' }}
               </span>

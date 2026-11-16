@@ -3,6 +3,9 @@ import { computed, reactive, watch, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { TableInstance } from 'element-plus'
 import BaseSelect from '@/components/BaseSelect.vue'
+import RequirementTaskProgress from './RequirementTaskProgress.vue'
+import RequirementPendingItems from './RequirementPendingItems.vue'
+import { requirementCoverageKey, requirementStatuses, requirementStatusKey } from '@/utils/requirementStatus'
 import type { RequirementListQuery, RequirementSummary } from '@/types/workspaceAssets'
 
 const props = defineProps<{
@@ -39,7 +42,7 @@ const filters = reactive({
   page_size: props.pageSize || 20,
 })
 
-const statusOptions = ['DRAFT', 'READY', 'IN_PROGRESS', 'VERIFIED', 'REJECTED', 'ARCHIVED', 'ACTIVE', 'WAITING_SOURCE'].map(opt => ({ label: opt, value: opt }))
+const statusOptions = computed(() => requirementStatuses.map(value => ({ label: t(requirementStatusKey(value)), value })))
 const priorityOptions = ['P0', 'P1', 'P2', 'P3', 'High', 'Medium', 'Low'].map(opt => ({ label: opt, value: opt }))
 const sourceOptions = ['document', 'manual', 'pasted_text', 'source_link', 'issue', 'ticket', 'split'].map(opt => ({ label: opt, value: opt }))
 
@@ -139,14 +142,21 @@ function sourceLabel(row: RequirementSummary): string {
   return row.source_ref || row.source_kind || t('workspace_assets.requirements.detail.source_pending')
 }
 
-function levelLabel(row: RequirementSummary): string {
-  return row.parent_requirement_id
-    ? t('workspace_assets.requirements.table.child_requirement')
-    : t('workspace_assets.requirements.table.parent_requirement')
-}
-
 function isParent(row: RequirementSummary): boolean {
   return !row.parent_requirement_id
+}
+
+function priorityLabel(priority: string) {
+  const label = priority.trim()
+  return /^p\d+$/i.test(label) ? label.toUpperCase() : label
+}
+
+function priorityTagType(priority: string) {
+  const level = priority.trim().toUpperCase()
+  if (level === 'P0') return 'danger'
+  if (level === 'P1' || level === 'HIGH') return 'warning'
+  if (level === 'P2' || level === 'MEDIUM') return 'primary'
+  return 'info'
 }
 
 function handleRowClick(row: RequirementSummary) {
@@ -207,42 +217,54 @@ function handleRowClick(row: RequirementSummary) {
       @row-click="handleRowClick"
       @sort-change="handleSortChange"
     >
-      <el-table-column prop="title" class-name="title-column" :label="t('workspace_assets.requirements.fields.title')" min-width="400" sortable="custom">
+      <el-table-column prop="title" class-name="title-column" :label="t('workspace_assets.requirements.fields.title')" min-width="260" sortable="custom">
         <template #default="{ row }">
           <div class="title-cell" :class="{ 'is-child': !!row.parent_requirement_id }">
-            <span class="title-text">{{ row.title }}</span>
+            <div class="title-line">
+              <span class="title-text">{{ row.title }}</span>
+              <el-tag
+                v-if="row.priority?.trim()"
+                class="priority-badge"
+                :type="priorityTagType(row.priority)"
+                effect="light"
+                size="small"
+              >
+                {{ priorityLabel(row.priority) }}
+              </el-tag>
+            </div>
             <span v-if="row.parent_title && !!row.parent_requirement_id" class="parent-hint">{{ row.parent_title }}</span>
           </div>
         </template>
       </el-table-column>
-      <el-table-column :label="t('workspace_assets.requirements.table.level')" width="90">
+      <el-table-column prop="status" :label="t('workspace_assets.requirements.fields.status')" width="110" sortable="custom">
         <template #default="{ row }">
-          <el-tag :type="row.parent_requirement_id ? 'success' : 'info'" effect="light">
-            {{ levelLabel(row) }}
+          <el-tag :type="row.status === 'VERIFIED' ? 'success' : row.status === 'PENDING_ACCEPTANCE' ? 'warning' : row.status === 'REJECTED' ? 'danger' : 'primary'" effect="light">
+            {{ t(requirementStatusKey(row.status)) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="status" :label="t('workspace_assets.requirements.fields.status')" width="110" sortable="custom">
+      <el-table-column :label="t('workspace_assets.requirements.owner')" width="120">
         <template #default="{ row }">
-          <el-tag effect="light">{{ row.status }}</el-tag>
+          <span>{{ row.owner_name || t('workspace_assets.requirements.owner_unassigned') }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="priority" :label="t('workspace_assets.requirements.fields.priority')" width="110" sortable="custom">
+      <el-table-column prop="related_task_count" :label="t('workspace_assets.requirements.table.task_count')" width="185" sortable="custom">
         <template #default="{ row }">
-          <span>{{ row.priority || t('workspace_assets.requirements.detail.not_set') }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column prop="child_count" :label="t('workspace_assets.requirements.table.child_count')" width="120" sortable="custom" />
-      <el-table-column prop="related_task_count" :label="t('workspace_assets.requirements.table.task_count')" width="130" sortable="custom" />
-      <el-table-column :label="t('workspace_assets.requirements.fields.coverage')" width="160">
-        <template #default="{ row }">
-          <div class="coverage-cell">
-            <el-tag type="warning" effect="light">{{ row.coverage_summary?.coverage_status || 'not_available' }}</el-tag>
-            <small>{{ t('workspace_assets.requirements.table.coverage_readonly') }}</small>
+          <div class="related-cell">
+            <RequirementTaskProgress :requirement="row" />
+            <RequirementPendingItems v-if="row.task_progress" :requirement="row" />
           </div>
         </template>
       </el-table-column>
-      <el-table-column :label="t('workspace_assets.requirements.fields.source_reference')" min-width="150">
+      <el-table-column prop="child_count" :label="t('workspace_assets.requirements.table.child_count')" width="105" sortable="custom" />
+      <el-table-column :label="t('workspace_assets.requirements.fields.coverage')" width="145">
+        <template #default="{ row }">
+          <div class="coverage-cell">
+            <el-tag type="warning" effect="light">{{ t(requirementCoverageKey(row.coverage_summary?.coverage_status)) }}</el-tag>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column :label="t('workspace_assets.requirements.fields.source_reference')" min-width="120">
         <template #default="{ row }">
           <span>{{ sourceLabel(row) }}</span>
         </template>
@@ -252,7 +274,7 @@ function handleRowClick(row: RequirementSummary) {
           <span>{{ row.updated_at || row.created_at || t('workspace_assets.requirements.detail.time_pending') }}</span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('workspace_assets.requirements.table.operations')" fixed="right" width="380">
+      <el-table-column :label="t('workspace_assets.requirements.table.operations')" fixed="right" width="335">
         <template #default="{ row }">
           <div class="operation-row">
             <el-button size="small" @click.stop="emit('open', row)">{{ t('workspace_assets.requirements.table.view_detail') }}</el-button>
@@ -289,6 +311,7 @@ function handleRowClick(row: RequirementSummary) {
 </template>
 
 <style scoped>
+.related-cell { display: grid; gap: 5px; padding-block: 4px; }
 .requirement-table-workbench {
   display: grid;
   gap: 16px;
@@ -441,6 +464,11 @@ function handleRowClick(row: RequirementSummary) {
   font-size: 14px;
 }
 
+.priority-badge {
+  margin-inline-start: 6px;
+  vertical-align: baseline;
+}
+
 .is-child {
   padding-left: 22px;
   position: relative;
@@ -472,12 +500,6 @@ function handleRowClick(row: RequirementSummary) {
 
 .coverage-cell {
   display: grid;
-  gap: 4px;
-}
-
-.coverage-cell small {
-  color: #64748b;
-  line-height: 1.45;
 }
 
 .operation-row {

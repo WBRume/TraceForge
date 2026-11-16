@@ -14,6 +14,7 @@ import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
 import { useProvisioningStore, type ProvisionJobView } from '@/stores/provisioning'
 import { formatApiError } from '@/utils/error'
 import type {
+  RequirementAcceptanceAction,
   RequirementDetail,
   RequirementImportBatch,
   RequirementImportConfirmPayload,
@@ -22,6 +23,7 @@ import type {
   RequirementSplitPayload,
   RequirementSummary,
   RequirementTaskLinkPayload,
+  RequirementTaskRelation,
 } from '@/types/workspaceAssets'
 
 const route = useRoute()
@@ -36,6 +38,8 @@ const {
   createRequirement,
   updateRequirement,
   linkRequirementTask,
+  updateRequirementTaskRelation,
+  applyRequirementAcceptance,
   unlinkRequirementTask,
   createRequirementSplitPreviewJob,
   fetchRequirementPreviewJob,
@@ -363,22 +367,62 @@ watch(
   { immediate: true },
 )
 
-async function linkTask(payload: { taskId: string; relationType: 'RELATES_TO' | 'COVERS'; reason?: string | null }) {
-  if (!currentRequirement.value) return
-  const request: RequirementTaskLinkPayload = {
-    task_id: payload.taskId,
-    relation_type: payload.relationType,
-    change_reason: payload.reason,
-  }
-  const result = await linkRequirementTask(wsId.value, currentRequirement.value.id, request)
-  if (result) detail.value = result
+async function linkTask(payload: RequirementTaskLinkPayload) {
+  const id = requirementId.value
+  if (!currentRequirement.value || currentRequirement.value.id !== id) return false
+  const result = await linkRequirementTask(wsId.value, id, payload)
+  if (!result || requirementId.value !== id) return false
+  detail.value = result
+  ElMessage.success(t('workspace_assets.requirements.task_links.added'))
+  return true
 }
 
 async function unlinkTask(taskId: string) {
-  if (!currentRequirement.value) return
-  const result = await unlinkRequirementTask(wsId.value, currentRequirement.value.id, taskId)
-  if (result) detail.value = result
+  const id = requirementId.value
+  const result = await unlinkRequirementTask(wsId.value, id, taskId)
+  if (requirementId.value !== id) return
+  if (result) {
+    detail.value = result
+    ElMessage.success(t('workspace_assets.requirements.task_links.removed'))
+  } else {
+    ElMessage.error(t('workspace_assets.requirements.task_links.save_failed'))
+  }
 }
+
+async function changeTaskRelation(taskId: string, relation: RequirementTaskRelation) {
+  const id = requirementId.value
+  const result = await updateRequirementTaskRelation(wsId.value, id, taskId, relation)
+  if (requirementId.value !== id) return
+  if (result) {
+    detail.value = result
+    ElMessage.success(t('workspace_assets.requirements.task_links.relation_updated'))
+  } else {
+    ElMessage.error(t('workspace_assets.requirements.task_links.save_failed'))
+  }
+}
+
+async function acceptRequirement(action: RequirementAcceptanceAction, reason?: string) {
+  const id = requirementId.value
+  const result = await applyRequirementAcceptance(wsId.value, id, action, reason)
+  if (requirementId.value !== id) return
+  if (result) {
+    detail.value = result
+    ElMessage.success(t('workspace_assets.requirements.acceptance.recorded'))
+  } else if (error.value) {
+    ElMessage.error(error.value)
+  }
+}
+
+watch(
+  [() => route.query.focus, () => currentRequirement.value?.id],
+  ([focus, id]) => {
+    if (!id || id !== requirementId.value || (focus !== 'tasks' && focus !== 'acceptance')) return
+    const target = document.getElementById(`requirement-${focus}`)
+    target?.scrollIntoView({ block: 'start' })
+    target?.focus({ preventScroll: true })
+  },
+  { flush: 'post' },
+)
 
 watch(
   [wsId, requirementId],
@@ -424,17 +468,21 @@ watch(() => provisioningStore.taskListRefreshToken, () => { void reloadDetail() 
         :detail="detail"
         :tasks="taskItems"
         :loading="loading"
+        :can-manage="taskCreation.canManageRequirements.value"
         @edit="openEdit"
         @split="openSplit"
         @open-child="openRequirementDetail($event.id)"
         @create-child="openCreateChild"
-        @link="linkTask"
+        :link-task="linkTask"
         @unlink="unlinkTask"
+        @change-relation="changeTaskRelation"
+        @acceptance="acceptRequirement"
       />
     </main>
 
     <RequirementEditDrawer
       :open="editorOpen"
+      :workspace-id="wsId"
       :requirement="editingRequirement"
       :loading="loading"
       @close="editorOpen = false"

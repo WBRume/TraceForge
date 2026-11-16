@@ -76,6 +76,7 @@ def create_requirement_direct_import(
     requirement = SddRequirement(
         workspace_id=workspace_id,
         created_by_id=actor_id,
+        owner_id=actor_id,
         title=direct_import_title(file_name, markdown),
         body=markdown,
         status=RequirementStatus.DRAFT,
@@ -159,6 +160,7 @@ def _create_requirement_from_values(
     requirement = SddRequirement(
         workspace_id=workspace_id,
         created_by_id=actor_id,
+        owner_id=actor_id,
         title=values["title"],
         body=clean_optional(values["body"]),
         status=normalize_requirement_status(values["status"]),
@@ -232,6 +234,7 @@ def confirm_requirement_import(
         parent = SddRequirement(
             workspace_id=workspace_id,
             created_by_id=actor_id,
+            owner_id=actor_id,
             title=parent_title,
             body=clean_optional(batch.normalized_markdown),
             status=RequirementStatus.DRAFT,
@@ -375,7 +378,7 @@ def confirm_requirement_split(
     payload: RequirementSplitRequest,
 ) -> RequirementImportBatchResponse | None:
     """把 split preview 批次确认为父 Requirement 下的子 Requirement。"""
-    parent = get_requirement(db, workspace_id, requirement_id)
+    parent = get_requirement(db, workspace_id, requirement_id, for_update=True)
     if not parent:
         return None
     batch = get_import_batch(db, workspace_id, payload.batch_id)
@@ -398,6 +401,7 @@ def confirm_requirement_split(
         child = SddRequirement(
             workspace_id=workspace_id,
             created_by_id=actor_id,
+            owner_id=actor_id,
             title=values["title"],
             body=clean_optional(values["body"]),
             status=RequirementStatus.DRAFT,

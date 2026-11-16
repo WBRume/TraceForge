@@ -1,6 +1,8 @@
 import { computed, readonly, shallowRef } from 'vue'
 import api from '@/utils/api'
+import { formatApiError } from '@/utils/error'
 import type {
+  RequirementAcceptanceAction,
   RequirementDetail,
   RequirementImportBatch,
   RequirementImportConfirmPayload,
@@ -10,6 +12,7 @@ import type {
   RequirementSplitDraft,
   RequirementSplitPayload,
   RequirementTaskLinkPayload,
+  RequirementTaskRelation,
   TaskDetail,
   TaskListQuery,
   WorkspaceAssetConnectionStatus,
@@ -185,6 +188,30 @@ export function useWorkspaceAssets() {
         payload,
       )
       return response.data
+    })
+  }
+
+  function updateRequirementTaskRelation(
+    workspaceId: string, requirementId: string, taskId: string, relationType: RequirementTaskRelation,
+  ) {
+    return mutate(async () => (await api.patch<RequirementDetail>(
+      `/workspaces/${workspaceId}/workspace-assets/requirements/${requirementId}/tasks/${taskId}`,
+      { relation_type: relationType },
+    )).data)
+  }
+
+  function applyRequirementAcceptance(
+    workspaceId: string, requirementId: string, action: RequirementAcceptanceAction, reason?: string,
+  ) {
+    return mutate(async () => {
+      try {
+        return (await api.post<RequirementDetail>(
+          `/workspaces/${workspaceId}/workspace-assets/requirements/${requirementId}/acceptance`,
+          { action, reason },
+        )).data
+      } catch (err) {
+        throw new Error(formatApiError(err, 'Requirement acceptance failed.'))
+      }
     })
   }
 
@@ -469,6 +496,8 @@ export function useWorkspaceAssets() {
     createRequirement,
     updateRequirement,
     linkRequirementTask,
+    updateRequirementTaskRelation,
+    applyRequirementAcceptance,
     unlinkRequirementTask,
     createRequirementImportPreviewJob,
     fetchRequirementPreviewJob,

@@ -6,7 +6,9 @@ import RequirementChildrenSection from './RequirementChildrenSection.vue'
 import RequirementSpecificationBlock from './RequirementSpecificationBlock.vue'
 import RequirementTaskLinksSection from './RequirementTaskLinksSection.vue'
 import RequirementDeliveryContext from './RequirementDeliveryContext.vue'
-import type { RequirementDetail, RequirementLinkedTask, RequirementSummary, TaskSummary } from '@/types/workspaceAssets'
+import RequirementAcceptancePanel from './RequirementAcceptancePanel.vue'
+import { requirementCoverageKey, requirementStatusKey } from '@/utils/requirementStatus'
+import type { RequirementAcceptanceAction, RequirementDetail, RequirementLinkedTask, RequirementSummary, RequirementTaskLinkPayload, RequirementTaskRelation, TaskSummary } from '@/types/workspaceAssets'
 
 const props = defineProps<{
   workspaceId: string
@@ -14,6 +16,8 @@ const props = defineProps<{
   detail: RequirementDetail | null
   tasks: readonly TaskSummary[]
   loading?: boolean
+  canManage?: boolean
+  linkTask?: (payload: RequirementTaskLinkPayload) => Promise<boolean>
 }>()
 
 const emit = defineEmits<{
@@ -21,8 +25,9 @@ const emit = defineEmits<{
   split: [requirement: RequirementSummary]
   openChild: [requirement: RequirementSummary]
   createChild: [requirement: RequirementSummary]
-  link: [payload: { taskId: string; relationType: 'RELATES_TO' | 'COVERS'; reason?: string | null }]
   unlink: [taskId: string]
+  changeRelation: [taskId: string, relation: RequirementTaskRelation]
+  acceptance: [action: RequirementAcceptanceAction, reason?: string]
 }>()
 
 const { t } = useI18n()
@@ -134,26 +139,33 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
             <div class="stats-grid">
               <div class="stat-item">
                 <label>{{ t('workspace_assets.requirements.fields.status') }}</label>
-                <span class="status-badge" :data-status="activeRequirement.status">{{ activeRequirement.status }}</span>
+                <span class="status-badge" :data-status="activeRequirement.status">{{ t(requirementStatusKey(activeRequirement.status)) }}</span>
               </div>
               <div class="stat-item">
                 <label>{{ t('workspace_assets.requirements.fields.priority') }}</label>
                 <span class="priority-text">{{ activeRequirement.priority || t('workspace_assets.requirements.detail.not_set') }}</span>
               </div>
               <div class="stat-item">
-                <label>{{ t('workspace_assets.requirements.table.level') }}</label>
-                <span class="level-text">
-                  {{ activeRequirement.parent_requirement_id ? t('workspace_assets.requirements.table.child_requirement') : t('workspace_assets.requirements.table.parent_requirement') }}
-                </span>
+                <label>{{ t('workspace_assets.requirements.owner') }}</label>
+                <span>{{ activeRequirement.owner_name || t('workspace_assets.requirements.owner_unassigned') }}</span>
               </div>
               <div class="stat-item">
                 <label>{{ t('workspace_assets.requirements.fields.coverage') }}</label>
                 <span class="coverage-text" :data-coverage="activeRequirement.coverage_summary?.coverage_status">
-                  {{ activeRequirement.coverage_summary?.coverage_status || 'N/A' }}
+                  {{ t(requirementCoverageKey(activeRequirement.coverage_summary?.coverage_status)) }}
                 </span>
               </div>
             </div>
           </div>
+
+          <RequirementAcceptancePanel
+            v-if="activeRequirement.status !== 'ARCHIVED' && activeRequirement.status !== 'WAITING_SOURCE'"
+            :requirement="activeRequirement"
+            :can-manage="Boolean(canManage)"
+            :loading="loading"
+            class="content-card"
+            @apply="(action, reason) => emit('acceptance', action, reason)"
+          />
 
           <!-- Linked Tasks (Scheme 1: Sidebar Traceability Card) -->
           <RequirementTaskLinksSection
@@ -162,9 +174,11 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
             :linked-tasks="linkedTasks"
             :tasks="tasks"
             :loading="loading"
+            :can-manage="canManage"
+            :link-task="linkTask"
             class="content-card task-links-card"
-            @link="emit('link', $event)"
             @unlink="emit('unlink', $event)"
+            @change-relation="(taskId, relation) => emit('changeRelation', taskId, relation)"
           />
 
           <!-- Source Reference -->

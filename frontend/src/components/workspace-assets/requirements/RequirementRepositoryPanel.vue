@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { FilePlus2 } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
+import { requirementStatusKey } from '@/utils/requirementStatus'
 import type { RequirementSummary } from '@/types/workspaceAssets'
 
 const props = defineProps<{
@@ -44,7 +45,7 @@ const { t } = useI18n()
       >
         <span>
           <strong>{{ item.title }}</strong>
-          <small>{{ item.status }} · {{ t('workspace_assets.requirements.repository.related_task_count', { count: item.related_task_count }) }}</small>
+          <small>{{ t(requirementStatusKey(item.status)) }} · {{ t('workspace_assets.requirements.repository.related_task_count', { count: item.related_task_count }) }}</small>
         </span>
         <span class="row-meta">
           {{ item.source_uri || item.source_ref || t('workspace_assets.requirements.repository.source_pending') }}

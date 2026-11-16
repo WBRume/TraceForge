@@ -2291,6 +2291,53 @@
       "knowledge_base_body": "The knowledge base is not implemented yet and is under construction. It will later accumulate long-term assets such as business concepts, API usage, framework patterns, constraint rules and reusable ADRs."
     },
     "requirements": {
+      "status_labels": {
+        "DRAFT": "Draft",
+        "READY": "Ready to start",
+        "IN_PROGRESS": "In progress",
+        "PENDING_ACCEPTANCE": "Awaiting acceptance",
+        "VERIFIED": "Accepted",
+        "REJECTED": "Returned",
+        "ARCHIVED": "Archived",
+        "ACTIVE": "Active",
+        "WAITING_SOURCE": "Awaiting source",
+        "unknown": "Unknown"
+      },
+      "owner": "Requirement owner",
+      "owner_placeholder": "Search workspace members",
+      "owner_unassigned": "Unassigned",
+      "progress": {
+        "complete": "Completed {done} / {total}",
+        "no_tasks": "No implementation tasks",
+        "stats_title": "Task progress",
+        "counted_tasks": "{count} implementation tasks",
+        "reference": "Reference tasks",
+        "unassigned_children": "Child requirements without implementation tasks",
+        "rule": "Core coverage tasks count toward progress. A parent includes its own and its children's core tasks. Shared tasks count once. Only completed tasks count as done.",
+        "change_to_covers": "Count toward progress",
+        "change_to_reference": "Set as reference"
+      },
+      "pending": {
+        "title": "Pending items",
+        "count": "{count} pending",
+        "assign": "Link implementation tasks",
+        "child": "Link tasks · {name}",
+        "child_review": "Review child requirement · {name}",
+        "task": "{status} · {name}"
+      },
+      "acceptance": {
+        "title": "Requirement acceptance",
+        "submit": "Submit for acceptance",
+        "approve": "Accept requirement",
+        "reject": "Return for changes",
+        "reopen": "Reopen requirement",
+        "reason": "Acceptance notes",
+        "submit_ready": "Implementation tasks are complete. You can submit for acceptance.",
+        "no_tasks": "Link at least one core coverage task first.",
+        "tasks_pending": "Complete all core coverage tasks first.",
+        "children_pending": "Accept all child requirements first.",
+        "recorded": "Acceptance action recorded"
+      },
       "repository": {
         "eyebrow": "Requirement Repository",
         "title": "Real Requirement Assets",
@@ -2331,13 +2378,26 @@
       },
       "related_tasks_title": "Related Tasks",
       "related_tasks_empty": "No linked Tasks yet.",
+      "task_links": {
+        "associate": "Link",
+        "more": "More actions for {name}",
+        "creator": "Task creator: {name}",
+        "parent_hint": "Open a child requirement to link a task.",
+        "review_scope_changed": "This changes the review scope. Return the requirement and submit it again.",
+        "change_relation_confirm": "Change how “{name}” counts toward progress?",
+        "no_candidates": "There are no available tasks to link.",
+        "save_failed": "Unable to save the task link. Try again.",
+        "added": "Task linked",
+        "removed": "Task unlinked",
+        "relation_updated": "Task relation updated"
+      },
       "relation_types": {
         "covers": "Covers (COVERS)",
         "covers_short": "Covers",
-        "covers_desc": "Directly implements this requirement's specification and criteria. Counts toward coverage.",
+        "covers_desc": "Directly implements the requirement and counts toward task progress.",
         "relates_to": "Relates To (RELATES)",
         "relates_to_short": "Relates To",
-        "relates_to_desc": "Contextual, dependency or research relation. Does not directly count toward acceptance coverage."
+        "relates_to_desc": "Context, dependency, or research link. Excluded from task progress."
       },
       "link_task_modal": {
         "title": "Link Execution Task",

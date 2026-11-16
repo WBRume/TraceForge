@@ -106,6 +106,7 @@ def create_task_record_for_provision(
                 SddRequirement.id == requirement_id,
                 SddRequirement.workspace_id == workspace_id,
             )
+            .with_for_update()
             .first()
         )
         if not requirement:
@@ -162,7 +163,10 @@ def create_task_record_for_provision(
         db.flush()
 
         if requirement:
-            from app.domains.workspace_asset.models.workspace_asset import RequirementAuditAction
+            from app.domains.workspace_asset.models.workspace_asset import (
+                RequirementAuditAction,
+                TaskRequirementRelationType,
+            )
             from app.domains.workspace_asset.services.requirements.presenters import add_requirement_audit
 
             db.add(
@@ -170,6 +174,7 @@ def create_task_record_for_provision(
                     workspace_id=workspace_id,
                     requirement_id=requirement.id,
                     task_id=task.id,
+                    relation_type=TaskRequirementRelationType.COVERS,
                     created_by_id=user.id,
                 )
             )
@@ -181,7 +186,7 @@ def create_task_record_for_provision(
                 task_id=task.id,
                 actor_id=user.id,
                 action=RequirementAuditAction.LINKED_TASK,
-                after={"task_id": task.id, "relation_type": "RELATES_TO"},
+                after={"task_id": task.id, "relation_type": TaskRequirementRelationType.COVERS.value},
                 source_metadata={"created_from": "task_create"},
             )
 

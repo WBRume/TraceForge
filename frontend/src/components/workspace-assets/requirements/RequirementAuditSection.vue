@@ -7,6 +7,14 @@ defineProps<{
 }>()
 
 const { t } = useI18n()
+
+function actionLabel(log: RequirementAuditLog) {
+  const action = log.source_metadata?.acceptance_action
+  if (action === 'submit' || action === 'approve' || action === 'reject' || action === 'reopen') {
+    return t(`workspace_assets.requirements.acceptance.${action}`)
+  }
+  return log.action
+}
 </script>
 
 <template>
@@ -17,7 +25,7 @@ const { t } = useI18n()
 
     <el-timeline v-if="logs.length">
       <el-timeline-item v-for="log in logs" :key="log.id" :timestamp="log.created_at || t('workspace_assets.requirements.detail.time_pending')">
-        <strong>{{ log.action }}</strong>
+        <strong>{{ actionLabel(log) }}</strong>
         <p>{{ log.reason || t('workspace_assets.requirements.detail.no_reason') }}</p>
       </el-timeline-item>
     </el-timeline>

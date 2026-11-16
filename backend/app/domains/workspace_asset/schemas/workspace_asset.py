@@ -18,8 +18,6 @@ RequirementEditableStatus = Literal[
     "DRAFT",
     "READY",
     "IN_PROGRESS",
-    "VERIFIED",
-    "REJECTED",
     "ARCHIVED",
     "ACTIVE",
     "WAITING_SOURCE",
@@ -133,6 +131,14 @@ class RequirementCoverageSummary(BaseModel):
     human_delta_count: int = 0
 
 
+class RequirementTaskProgress(BaseModel):
+    total: int = 0
+    completed: int = 0
+    reference_only: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    unassigned_child_ids: list[str] = Field(default_factory=list)
+
+
 class RequirementSummary(BaseModel):
     task_prompt: str | None = None
     id: str
@@ -142,6 +148,8 @@ class RequirementSummary(BaseModel):
     status: str
     acceptance_criteria: list[str] = Field(default_factory=list)
     priority: str | None = None
+    owner_id: str | None = None
+    owner_name: str | None = None
     parent_requirement_id: str | None = None
     parent_title: str | None = None
     child_count: int = 0
@@ -156,6 +164,8 @@ class RequirementSummary(BaseModel):
     change_history_count: int = 0
     related_task_count: int = 0
     linked_tasks: list[RequirementLinkedTaskResponse] = Field(default_factory=list)
+    task_progress: RequirementTaskProgress = Field(default_factory=RequirementTaskProgress)
+    acceptance_blocker: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -200,6 +210,7 @@ class RequirementCreateRequest(BaseModel):
 class RequirementUpdateRequest(BaseModel):
     task_prompt: str | None = None
     title: str | None = None
+    owner_id: str | None = Field(default=None, max_length=36)
     body: str | None = None
     acceptance_criteria: list[str] | None = None
     priority: str | None = None
@@ -215,6 +226,15 @@ class RequirementTaskLinkRequest(BaseModel):
     task_id: str
     relation_type: str = "RELATES_TO"
     change_reason: str | None = None
+
+
+class RequirementTaskRelationRequest(BaseModel):
+    relation_type: Literal["COVERS", "RELATES_TO"]
+
+
+class RequirementAcceptanceRequest(BaseModel):
+    action: Literal["submit", "approve", "reject", "reopen"]
+    reason: str | None = Field(default=None, max_length=2000)
 
 
 class RequirementImportPreviewItem(BaseModel):

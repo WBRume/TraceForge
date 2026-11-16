@@ -3,6 +3,7 @@ import { taskStatusKey } from '@/utils/taskStatus'
 import { computed, shallowRef } from 'vue'
 import { GitBranch, History, Link2Off, MessageSquare, Scissors } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
+import { requirementStatusKey } from '@/utils/requirementStatus'
 import BaseSelect from '@/components/BaseSelect.vue'
 import RequirementDeliveryContext from './RequirementDeliveryContext.vue'
 import type { RequirementDetail, RequirementSummary, TaskSummary } from '@/types/workspaceAssets'
@@ -80,7 +81,7 @@ function submitLink() {
       <dl class="meta-grid">
         <div>
           <dt>{{ t('workspace_assets.requirements.fields.status') }}</dt>
-          <dd>{{ requirement.status }}</dd>
+          <dd>{{ t(requirementStatusKey(requirement.status)) }}</dd>
         </div>
         <div>
           <dt>{{ t('workspace_assets.requirements.fields.priority') }}</dt>

@@ -4,8 +4,6 @@ export type RequirementEditableStatus =
   | 'DRAFT'
   | 'READY'
   | 'IN_PROGRESS'
-  | 'VERIFIED'
-  | 'REJECTED'
   | 'ARCHIVED'
   | 'ACTIVE'
   | 'WAITING_SOURCE'
@@ -67,6 +65,18 @@ export type RequirementCoverageSummary = {
   human_delta_count: number
 }
 
+export type RequirementAcceptanceAction = 'submit' | 'approve' | 'reject' | 'reopen'
+export type RequirementAcceptanceBlocker = 'no_tasks' | 'tasks_pending' | 'children_pending'
+export type RequirementTaskRelation = 'COVERS' | 'RELATES_TO'
+
+export type RequirementTaskProgress = {
+  total: number
+  completed: number
+  reference_only: number
+  status_counts: Record<string, number>
+  unassigned_child_ids: readonly string[]
+}
+
 export type RequirementSummary = {
   task_prompt?: string | null
   id: string
@@ -76,6 +86,8 @@ export type RequirementSummary = {
   status: string
   acceptance_criteria: readonly string[]
   priority?: string | null
+  owner_id?: string | null
+  owner_name?: string | null
   parent_requirement_id?: string | null
   parent_title?: string | null
   child_count: number
@@ -90,6 +102,8 @@ export type RequirementSummary = {
   change_history_count: number
   related_task_count: number
   linked_tasks?: readonly RequirementLinkedTask[]
+  task_progress?: RequirementTaskProgress
+  acceptance_blocker?: RequirementAcceptanceBlocker | null
   created_at?: string | null
   updated_at?: string | null
 }
@@ -122,6 +136,7 @@ export type RequirementMutationPayload = {
   body?: string | null
   acceptance_criteria?: string[]
   priority?: string | null
+  owner_id?: string | null
   parent_requirement_id?: string | null
   status?: RequirementEditableStatus
   source_kind?: string | null
