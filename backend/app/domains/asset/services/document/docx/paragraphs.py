@@ -112,11 +112,8 @@ class _ParagraphContent:
                         info["char_end"] = self.cursor
                 self.append_text(extract_run_text(child), extract_run_style(child))
                 continue
-            if lname in {"hyperlink", "smartTag", "sdt", "ins", "del", "fldSimple"}:
+            if lname in {"hyperlink", "smartTag", "sdt", "sdtContent", "ins", "fldSimple"}:
                 self.walk(child)
-                continue
-            if lname == "instrText" and child.text:
-                self.append_text(child.text, {})
 
 
 def parse_paragraph_content(

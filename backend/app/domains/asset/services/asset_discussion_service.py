@@ -44,8 +44,8 @@ def list_threads(
 def _extract_block_text(block: Any) -> str:
     if not isinstance(block, dict):
         return ""
-    text = str(block.get("text") or "").strip()
-    if text:
+    text = str(block.get("text") or "")
+    if text.strip():
         return text
     runs = block.get("runs")
     if isinstance(runs, list):

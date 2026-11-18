@@ -220,6 +220,27 @@ def test_parse_docx_table_block_and_markdown():
     assert payload["normalized_markdown"].startswith("| Name | Value |")
 
 
+def test_docx_review_spans_keep_source_paragraphs_and_table_offsets():
+    body = (
+        _para_xml(_run_xml("开始"))
+        + _para_xml("<w:r><w:drawing/></w:r>")
+        + _table_xml([["", "  🚀 重复"], ["财务", "重复"]])
+        + "<w:sdt><w:sdtContent>"
+        + _para_xml("<w:r><w:instrText> PAGE </w:instrText></w:r>" + _run_xml("结束"))
+        + "</w:sdtContent></w:sdt>"
+    )
+    title, table, ending = parse_docx_payload(_build_docx_zip(body))["blocks_json"]
+    assert title["docx_spans"] == [{"paragraph": 0, "start": 0, "end": 2}]
+    assert ending["docx_spans"] == [{"paragraph": 6, "start": 0, "end": 2}]
+    assert ending["text"] == "结束"
+    assert [span["paragraph"] for span in table["docx_spans"]] == [3, 4, 5]
+    assert [table["text"][span["start"] : span["end"]] for span in table["docx_spans"]] == [
+        "  🚀 重复",
+        "财务",
+        "重复",
+    ]
+
+
 def test_build_docx_bytes_roundtrip():
     markdown = "# Spec Title\n\nBody paragraph.\n\n- bullet one\n"
     blocks = markdown_blocks.markdown_to_blocks(markdown)

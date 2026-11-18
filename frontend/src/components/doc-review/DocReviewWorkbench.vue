@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, useSlots, watch } from "vue";
+import { computed, defineAsyncComponent, onMounted, ref, useSlots, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ElMessage } from "element-plus";
 import { ChevronDown, FileText, Clock } from '@/components/icons';
@@ -105,6 +105,16 @@ const {
 const selectedAsset = computed(
   () => assets.value.find((item) => item.id === selectedAssetId.value) || null,
 );
+const DocxReviewCanvas = defineAsyncComponent(() => import("./DocxReviewCanvas.vue"));
+const docxSource = computed(() => {
+  const version = documentData.value?.active_version;
+  const ext = version?.original_ext || selectedAsset.value?.source_ext;
+  if (ext?.toLowerCase() !== ".docx") return null;
+  return {
+    wsId: props.wsId, assetId: selectedAssetId.value, name: selectedAsset.value?.name || "",
+    versionId: version?.id === selectedVersionId.value ? version?.id : undefined,
+  };
+});
 const isPdfAsset = computed(() => {
   const versionExt = String(documentData.value?.active_version?.original_ext || "").toLowerCase();
   const assetExt = String(selectedAsset.value?.source_ext || "").toLowerCase();
@@ -970,8 +980,10 @@ onMounted(() => {
             :asset-id="selectedAssetId || ''"
             :version-id="pdfVersionId"
           />
-          <DocumentCanvas
+          <component
             v-else
+            :is="docxSource ? DocxReviewCanvas : DocumentCanvas"
+            v-bind="docxSource || {}"
             :blocks="documentData?.blocks || []"
             :markers-by-block="markersByBlock"
             :selected-thread-id="selectedThreadId"

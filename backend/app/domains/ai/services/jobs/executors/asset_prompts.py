@@ -76,6 +76,31 @@ def resolve_thread_anchor_text(
     }
 
 
+def describe_docx_selection(thread: SddAssetThread, block: Any) -> str:
+    """Identify the selected occurrence, including its exact table rows when applicable."""
+    if not isinstance(block, dict) or not block.get("docx_spans"):
+        return ""
+    text = str(block.get("text") or "")
+    selected_text = thread.selected_text
+    start, end = thread.char_start, thread.char_end
+    if start is None or end is None or not 0 <= start < end <= len(text) or text[start:end] != selected_text:
+        return ""
+
+    excerpt = f"{text[max(0, start - 120) : start]}【选区开始】{selected_text}【选区结束】{text[end : end + 120]}"
+    lines = [f"块内字符范围 [{start}, {end})", f"选区与相邻原文：\n{excerpt}"]
+    if block.get("type") == "table":
+        offset = 0
+        for index, row in enumerate(block["table"]["rows"], start=1):
+            row_text = " | ".join(str(cell.get("text") or "") for cell in row["cells"])
+            row_end = offset + len(row_text)
+            if start < row_end and end > offset:
+                lines.append(f"实际选中的表格第 {index} 行：{row_text}")
+            if row_end >= end:
+                break
+            offset = row_end + 1
+    return "\n".join(lines)
+
+
 def thread_history_lines(thread: SddAssetThread, limit: int = 18) -> list[str]:
     messages = sorted(thread.messages or [], key=lambda item: item.created_at)
     lines: list[str] = []

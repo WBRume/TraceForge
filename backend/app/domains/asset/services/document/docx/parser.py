@@ -1,18 +1,12 @@
-"""DOCX 主解析管线：document.xml → 统一 payload（含 python-docx 回退）。"""
+"""Project DOCX document text into review blocks and source paragraph ranges."""
 
 from __future__ import annotations
 
 import io
-import re
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import defaultdict
 from typing import Any
-
-try:
-    from docx import Document as DocxDocument  # type: ignore
-except Exception:
-    DocxDocument = None
 
 from app.domains.asset.services.document.docx.comments import parse_comments
 from app.domains.asset.services.document.docx.numbering import parse_numbering, resolve_list_marker
@@ -22,7 +16,7 @@ from app.domains.asset.services.document.docx.paragraphs import (
     parse_paragraph_content,
 )
 from app.domains.asset.services.document.docx.tables import parse_table_block, table_to_markdown
-from app.domains.asset.services.document.docx.xml_utils import DOCX_NS_MAP, local_name, safe_int
+from app.domains.asset.services.document.docx.xml_utils import DOCX_NS_MAP, iter_document_blocks, safe_int, xml_attr
 
 
 def looks_like_docx_bytes(raw) -> bool:
@@ -122,7 +116,7 @@ def _resolve_comment_anchors(anchor_items, comments_by_id, block_text_by_id):
     return docx_comments
 
 
-def _append_paragraph_block(child, comments_by_id, numbering, numbering_state, append_block):
+def _append_paragraph_block(child, ordinal, comments_by_id, numbering, numbering_state, append_block):
     paragraph_data = parse_paragraph_content(child, comments_by_id)
     text = str(paragraph_data.get("text") or "")
     if not text.strip():
@@ -154,14 +148,15 @@ def _append_paragraph_block(child, comments_by_id, numbering, numbering_state, a
             "text": text,
             "runs": paragraph_data.get("runs") or [],
             "meta": block_meta,
+            "docx_spans": [{"paragraph": ordinal, "start": 0, "end": len(text)}],
         },
         list(paragraph_data.get("comment_anchors") or []),
     )
     return
 
 
-def parse_docx_payload_via_xml(raw: bytes) -> dict[str, Any]:
-    """基于 OOXML 直接解析（保留 runs/表格/批注等富文档特征）。"""
+def parse_docx_payload(raw: bytes) -> dict[str, Any]:
+    """Read the text and review anchors from the version's OOXML document."""
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as zf:
             document_xml = zf.read("word/document.xml")
@@ -216,17 +211,16 @@ def parse_docx_payload_via_xml(raw: bytes) -> dict[str, Any]:
             item["block_id"] = block_id
             anchor_items.append(item)
 
-    for child in list(body):
-        tag = local_name(child.tag)
-        if tag == "p":
-            _append_paragraph_block(child, comments_by_id, numbering, numbering_state, append_block)
-            continue
-
-        if tag == "tbl":
-            table_block, table_anchors = parse_table_block(child, comments_by_id)
-            if not table_block["text"] and not table_block["table"]["rows"]:
-                continue
-            append_block(table_block, table_anchors)
+    paragraph_ordinals = {paragraph: index for index, paragraph in enumerate(body.iter(xml_attr("p")))}
+    for child in iter_document_blocks(body):
+        if child.tag == xml_attr("p"):
+            _append_paragraph_block(
+                child, paragraph_ordinals[child], comments_by_id, numbering, numbering_state, append_block
+            )
+        else:
+            table_block, table_anchors = parse_table_block(child, comments_by_id, paragraph_ordinals)
+            if table_block["table"]["rows"]:
+                append_block(table_block, table_anchors)
 
     markdown = "\n\n".join(line for line in markdown_lines if line).strip()
     block_text_by_id = {str(block.get("id")): str(block.get("text") or "") for block in blocks}
@@ -245,91 +239,6 @@ def parse_docx_payload_via_xml(raw: bytes) -> dict[str, Any]:
                 "tables": True,
                 "toc": True,
                 "comments": bool(docx_comments),
-            },
-        },
-    }
-
-
-def parse_docx_via_python_docx(raw: bytes) -> tuple[str, list[dict[str, Any]]]:
-    """python-docx 兜底解析（仅保留段落文本与基础样式分类）。"""
-    if DocxDocument is None:
-        return "", []
-    doc = DocxDocument(io.BytesIO(raw))  # type: ignore[misc]
-
-    lines: list[str] = []
-    blocks: list[dict[str, Any]] = []
-    order = 0
-    for paragraph in doc.paragraphs:
-        text = (paragraph.text or "").strip()
-        if not text:
-            continue
-        style_name = (getattr(paragraph.style, "name", "") or "").strip()
-        style_name_l = style_name.lower()
-
-        block_type = "paragraph"
-        meta: dict[str, Any] = {"style": style_name}
-        markdown_line = text
-
-        if style_name_l.startswith("heading"):
-            level_match = re.search(r"(\d+)", style_name_l)
-            level = int(level_match.group(1)) if level_match else 1
-            level = min(max(level, 1), 6)
-            markdown_line = f"{'#' * level} {text}"
-            block_type = "heading"
-            meta["level"] = level
-        elif "list bullet" in style_name_l or "list paragraph" in style_name_l:
-            markdown_line = f"- {text}"
-            block_type = "list_item"
-            meta["marker"] = "-"
-        elif "list number" in style_name_l:
-            markdown_line = f"1. {text}"
-            block_type = "list_item"
-            meta["marker"] = "1."
-
-        lines.append(markdown_line)
-        order += 1
-        blocks.append(
-            {
-                "id": f"blk-{order}",
-                "type": block_type,
-                "text": text,
-                "order": order,
-                "meta": meta,
-            }
-        )
-
-    markdown = "\n\n".join(lines).strip()
-    if not blocks:
-        return "", []
-    return markdown, blocks
-
-
-def parse_docx_payload(raw: bytes) -> dict[str, Any]:
-    """DOCX → 统一 payload：优先 XML 管线，失败时回退 python-docx。"""
-    parsed = parse_docx_payload_via_xml(raw)
-    if parsed.get("blocks_json") or parsed.get("normalized_markdown"):
-        return parsed
-
-    markdown = ""
-    blocks: list[dict[str, Any]] = []
-    try:
-        markdown, blocks = parse_docx_via_python_docx(raw)
-    except Exception:
-        markdown = ""
-        blocks = []
-
-    return {
-        "normalized_markdown": markdown,
-        "blocks_json": blocks,
-        "render_json": {
-            "format": "rich_doc",
-            "block_count": len(blocks),
-            "docx_comments": [],
-            "features": {
-                "runs": bool(blocks),
-                "tables": False,
-                "toc": False,
-                "comments": False,
             },
         },
     }

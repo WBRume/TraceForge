@@ -46,7 +46,9 @@ def get_asset_original_file(
     version = None
     if version_id:
         version = document_repository.get_asset_version(db, asset.id, version_id)
-    if not version:
+        if not version:
+            raise HTTPException(status_code=404, detail="Version not found")
+    else:
         version = asset_review_documents.ensure_active_version(db, asset)
     if not version or not str(version.original_path or "").strip():
         raise HTTPException(status_code=404, detail="Version file not found")

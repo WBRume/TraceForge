@@ -39,6 +39,18 @@ def _create_asset_thread_sync(
     if not version:
         raise ReviewError(status_code=400, detail="Asset has no version to annotate")
     asset_review_policy._ensure_latest_context_version_for_mutation(asset, version.id)
+    if (version.original_ext or "").lower() == ".docx":
+        block = asset_discussion_service.get_block_by_id(version, data.block_id)
+        text = str(block.get("text") or "") if block else ""
+        start, end = data.char_start, data.char_end
+        if (
+            start is None
+            or end is None
+            or not 0 <= start < end <= len(text)
+            or not data.selected_text
+            or text[start:end] != data.selected_text
+        ):
+            raise ReviewError(status_code=422, detail="Selection does not match the DOCX version")
     try:
         thread = asset_discussion_service.create_thread(
             db,

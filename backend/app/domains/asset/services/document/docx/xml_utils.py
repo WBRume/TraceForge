@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
+from xml.etree.ElementTree import Element
 
 DOCX_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 DOCX_NS_ATTR = f"{{{DOCX_NS}}}"
@@ -11,6 +13,17 @@ DOCX_NS_MAP = {"w": DOCX_NS}
 
 def xml_attr(name: str) -> str:
     return f"{DOCX_NS_ATTR}{name}"
+
+
+def iter_document_blocks(container: Element) -> Iterator[Element]:
+    """Yield paragraphs and tables in reading order through content controls."""
+    for child in container:
+        if child.tag in (xml_attr("p"), xml_attr("tbl")):
+            yield child
+        elif child.tag == xml_attr("sdt"):
+            content = child.find("w:sdtContent", DOCX_NS_MAP)
+            if content is not None:
+                yield from iter_document_blocks(content)
 
 
 def local_name(tag: str) -> str:

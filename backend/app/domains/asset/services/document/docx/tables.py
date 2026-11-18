@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
 from typing import Any
 
 from app.domains.asset.services.document.docx.paragraphs import parse_paragraph_content
 from app.domains.asset.services.document.docx.runs import merge_adjacent_runs
-from app.domains.asset.services.document.docx.xml_utils import DOCX_NS_MAP
+from app.domains.asset.services.document.docx.xml_utils import DOCX_NS_MAP, iter_document_blocks, xml_attr
+
+
+def _cell_paragraphs(cell: ET.Element) -> Iterator[ET.Element]:
+    for block in iter_document_blocks(cell):
+        if block.tag == xml_attr("p"):
+            yield block
+        else:
+            for nested_cell in block.findall("w:tr/w:tc", DOCX_NS_MAP):
+                yield from _cell_paragraphs(nested_cell)
 
 
 def parse_table_block(
     table_el: ET.Element,
     comments_by_id: dict[str, dict[str, Any]],
+    paragraph_ordinals: dict[ET.Element, int],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """解析 w:tbl → (table block, comment anchors)。
 
@@ -22,6 +33,7 @@ def parse_table_block(
     rows_payload: list[dict[str, Any]] = []
     row_line_texts: list[str] = []
     table_anchors: list[dict[str, Any]] = []
+    docx_spans: list[dict[str, int]] = []
     table_offset = 0
 
     for row in table_el.findall("./w:tr", DOCX_NS_MAP):
@@ -36,7 +48,7 @@ def parse_table_block(
             cell_anchors: list[dict[str, Any]] = []
             cell_cursor = 0
 
-            for paragraph in cell.findall("./w:p", DOCX_NS_MAP):
+            for paragraph in _cell_paragraphs(cell):
                 paragraph_data = parse_paragraph_content(paragraph, comments_by_id)
                 paragraph_text = str(paragraph_data.get("text") or "")
                 if not paragraph_text:
@@ -47,6 +59,14 @@ def parse_table_block(
                     cell_runs.append({"text": "\n"})
                     cell_cursor += 1
 
+                start = table_offset + row_cursor + cell_cursor
+                docx_spans.append(
+                    {
+                        "paragraph": paragraph_ordinals[paragraph],
+                        "start": start,
+                        "end": start + len(paragraph_text),
+                    }
+                )
                 cell_text_parts.append(paragraph_text)
                 cell_runs.extend(list(paragraph_data.get("runs") or []))
                 for anchor in list(paragraph_data.get("comment_anchors") or []):
@@ -58,7 +78,7 @@ def parse_table_block(
                     cell_anchors.append(mapped)
                 cell_cursor += len(paragraph_text)
 
-            cell_text = "".join(cell_text_parts).strip()
+            cell_text = "".join(cell_text_parts)
             row_cells.append({"text": cell_text, "runs": merge_adjacent_runs(cell_runs)})
             row_text_parts.append(cell_text)
 
@@ -84,11 +104,12 @@ def parse_table_block(
             table_anchors.append(mapped)
         table_offset += len(row_text) + 1
 
-    table_text = "\n".join(row_line_texts).strip()
+    table_text = "\n".join(row_line_texts)
     block = {
         "type": "table",
         "text": table_text,
         "table": {"rows": rows_payload},
+        "docx_spans": docx_spans,
         "meta": {
             "row_count": len(rows_payload),
             "column_count": max((len(row.get("cells") or []) for row in rows_payload), default=0),

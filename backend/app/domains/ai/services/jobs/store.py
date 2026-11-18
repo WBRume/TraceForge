@@ -412,19 +412,6 @@ def list_task_jobs(
     return query.order_by(SddAiJob.created_at.desc()).all()
 
 
-def job_prompt_text(db: Session, thread_id: str) -> str | None:
-    job = (
-        db.query(SddAiJob.prompt_text)
-        .filter(
-            SddAiJob.thread_id == thread_id,
-            SddAiJob.channel == AiJobChannel.ASSET_THREAD,
-        )
-        .order_by(SddAiJob.created_at.desc())
-        .first()
-    )
-    return job[0] if job else None
-
-
 # ────────────────────────── 陈旧作业清理 ──────────────────────────
 
 

@@ -3,7 +3,8 @@ import { shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { renderAsync } from 'docx-preview'
 
-const props = defineProps<{ bytes: ArrayBuffer; name: string }>()
+const props = defineProps<{ bytes: ArrayBuffer; name: string; tabStops?: boolean }>()
+const emit = defineEmits<{ rendered: [frame: HTMLIFrameElement, content: HTMLElement] }>()
 const { t } = useI18n()
 const frame = shallowRef<HTMLIFrameElement>()
 const loaded = shallowRef(false)
@@ -36,22 +37,29 @@ watch(loading, fitPages, { flush: 'post' })
 
 watch([loaded, () => props.bytes], async ([ready, bytes], _, cleanup) => {
   if (!ready) return
-  const doc = frame.value?.contentDocument
+  const element = frame.value
+  const doc = element?.contentDocument
   const target = doc?.querySelector('main')
-  if (!doc || !target) return
+  if (!element || !doc || !target) return
   let current = true
   cleanup(() => { current = false })
   const wrapper = doc.createElement('div')
   loading.value = true
   failed.value = false
   try {
-    await renderAsync(bytes, wrapper, wrapper, { renderAltChunks: false, useBase64URL: true, ignoreLastRenderedPageBreak: false })
+    await renderAsync(bytes, wrapper, wrapper, {
+      renderAltChunks: false,
+      useBase64URL: true,
+      ignoreLastRenderedPageBreak: false,
+      experimental: props.tabStops,
+    })
     if (!current) return
     for (const link of wrapper.querySelectorAll('a')) {
       if (!link.getAttribute('href')?.startsWith('#')) link.removeAttribute('href')
       link.removeAttribute('xlink:href')
     }
     target.replaceChildren(wrapper)
+    emit('rendered', element, wrapper)
   } catch {
     if (current) { failed.value = true; target.replaceChildren() }
   } finally {

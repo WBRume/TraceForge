@@ -40,6 +40,7 @@ from app.domains.ai.services.jobs.domain_turn import (
     stage_domain_success,
 )
 from app.domains.ai.services.jobs.executors.asset_prompts import (
+    describe_docx_selection,
     extract_block_text,
     normalize_relocated_anchor,
     proposal_discussion_lines,
@@ -57,7 +58,6 @@ from app.domains.ai.services.jobs.registry import runtime
 from app.domains.ai.services.jobs.store import (
     get_job_status,
     job_kind_from_job,
-    job_prompt_text,
 )
 from app.domains.asset.models.asset import (
     AssetThreadMessageRole,
@@ -121,6 +121,7 @@ def _prepare_asset_thread_context_sync(
     return {
         "job_id": str(job.id),
         "job_kind": job_kind,
+        "prompt_text": job.prompt_text,
         "run_token": run_token or str(job.run_token or "") or None,
         "creator_id": job.creator_id,
         "thread_id": thread.id,
@@ -336,6 +337,7 @@ def _build_asset_thread_run_sync(
     anchor_meta = resolve_thread_anchor_text(thread, selected_block)
     selected_text = anchor_meta["anchor_text"]
     anchor_block_text = anchor_meta["block_text"]
+    selection_location = describe_docx_selection(thread, selected_block)
     neighbor_text = "\n".join(
         f"- {extract_block_text(item)}" for item in (neighbor_blocks or []) if extract_block_text(item)
     ).strip()
@@ -351,13 +353,15 @@ def _build_asset_thread_run_sync(
         anchor_block_text=anchor_block_text,
         neighbor_text=neighbor_text,
         history_lines=history_lines,
-        manual_prompt=job_prompt_text(db, base["thread_id"]),
+        manual_prompt=base.get("prompt_text"),
+        selection_location=selection_location,
     )
     run_state.update(
         {
             "prompt": prompt,
             "selected_text": selected_text,
             "anchor_block_text": anchor_block_text,
+            "selection_location": selection_location,
             "neighbor_text": neighbor_text,
             "history_lines": history_lines,
         }
@@ -828,6 +832,7 @@ async def execute_asset_thread_job(job_id: str) -> bool | None:
                 context_patch={
                     "selected_text": run_state["selected_text"] or "",
                     "anchor_block_text": run_state["anchor_block_text"],
+                    "selection_location": run_state["selection_location"],
                     "neighbor_text": run_state["neighbor_text"],
                     "history_lines": run_state["history_lines"][-10:],
                     "project_path": run_state["project_path"],

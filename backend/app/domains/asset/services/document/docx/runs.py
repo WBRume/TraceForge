@@ -117,7 +117,7 @@ def extract_run_style(run: ET.Element) -> dict[str, Any]:
 
 
 def extract_run_text(run: ET.Element) -> str:
-    """提取 run 内的可见文本（w:t/tab/br/sym/instrText 等）。"""
+    """提取 run 内的可见文本（w:t/tab/br/sym 等）。"""
     parts: list[str] = []
     for node in list(run):
         lname = local_name(node.tag)
@@ -131,8 +131,6 @@ def extract_run_text(run: ET.Element) -> str:
             parts.append("-")
         elif lname == "sym":
             parts.append(decode_symbol(node.attrib.get(xml_attr("char"), "")))
-        elif lname == "instrText" and node.text:
-            parts.append(node.text)
     return "".join(parts)
 
 
