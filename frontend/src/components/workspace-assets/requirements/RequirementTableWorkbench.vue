@@ -6,6 +6,7 @@ import BaseSelect from '@/components/BaseSelect.vue'
 import RequirementTaskProgress from './RequirementTaskProgress.vue'
 import RequirementPendingItems from './RequirementPendingItems.vue'
 import RequirementActionColumn from './RequirementActionColumn.vue'
+import { Layers } from '@/components/icons'
 import { requirementCoverageKey, requirementStatuses, requirementStatusKey } from '@/utils/requirementStatus'
 import type { RequirementListQuery, RequirementSummary, RequirementWorkScope } from '@/types/workspaceAssets'
 
@@ -166,6 +167,10 @@ function priorityTagType(priority: string) {
   return 'info'
 }
 
+function childCount(row: RequirementSummary) {
+  return row.child_count || row.children?.length || 0
+}
+
 function handleRowClick(row: RequirementSummary) {
   if (row.children && row.children.length > 0) {
     tableRef.value?.toggleRowExpansion(row)
@@ -248,6 +253,17 @@ function handleRowClick(row: RequirementSummary) {
               >
                 {{ priorityLabel(row.priority) }}
               </el-tag>
+              <el-tag
+                v-if="childCount(row) > 0"
+                class="child-count-badge"
+                type="info"
+                effect="light"
+                size="small"
+                :title="t('workspace_assets.requirements.table.child_count')"
+                :aria-label="`${t('workspace_assets.requirements.table.child_count')} ${childCount(row)}`"
+              >
+                <Layers class="child-count-icon" />{{ childCount(row) }}
+              </el-tag>
             </div>
             <span v-if="row.parent_title && !!row.parent_requirement_id" class="parent-hint">{{ row.parent_title }}</span>
             <span v-if="row.clarification_reason && filters.work_scope === 'clarify'" class="parent-hint">
@@ -278,7 +294,6 @@ function handleRowClick(row: RequirementSummary) {
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="child_count" :label="t('workspace_assets.requirements.table.child_count')" width="105" sortable="custom" />
       <el-table-column :label="t('workspace_assets.requirements.fields.coverage')" width="145">
         <template #default="{ row }">
           <div class="coverage-cell">
@@ -535,6 +550,17 @@ function handleRowClick(row: RequirementSummary) {
 .priority-badge {
   margin-inline-start: 6px;
   vertical-align: baseline;
+}
+
+.child-count-badge {
+  margin-inline-start: 6px;
+  vertical-align: baseline;
+}
+
+.child-count-icon {
+  width: 11px;
+  height: 11px;
+  margin-inline-end: 3px;
 }
 
 .is-child {

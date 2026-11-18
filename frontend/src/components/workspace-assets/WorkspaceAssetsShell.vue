@@ -152,6 +152,7 @@ watch(
 
 .workspace-assets {
   min-height: 100%;
+  flex-shrink: 0;
   padding: 32px;
   display: flex;
   flex-direction: column;

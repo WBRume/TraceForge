@@ -68,12 +68,6 @@ const backToChat = () => {
         compact
       >
         <template #header-prefix>
-          <div class="head-brand">
-            <h2 class="title-gradient">{{ t('doc_review.task_spec_title') }}</h2>
-            <span class="badge-tag">{{ t('doc_review.task_session_badge') }}</span>
-          </div>
-        </template>
-        <template #header-actions>
           <button class="btn-secondary btn-back" @click="backToChat">
             <ArrowLeft class="w-4 h-4" />
             {{ t('doc_review.back_to_chat') }}
@@ -85,8 +79,6 @@ const backToChat = () => {
 </template>
 
 <style scoped>
-@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap');
-
 .task-spec-view {
   height: 100vh;
   min-height: 0;
@@ -117,35 +109,6 @@ const backToChat = () => {
 
 .readonly-banner strong {
   font-weight: 600;
-}
-
-.head-brand {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-
-.title-gradient {
-  margin: 0;
-  font-family: var(--font-heading), 'Poppins', sans-serif;
-  font-size: 1.25rem;
-  font-weight: 700;
-  background: linear-gradient(135deg, #0ea5e9 0%, #3b82f6 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.badge-tag {
-  background: var(--color-primary-50);
-  color: var(--color-primary-700);
-  padding: 0.25rem 0.75rem;
-  border-radius: 999px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  border: 1px solid var(--color-primary-100);
 }
 
 .btn-back {
