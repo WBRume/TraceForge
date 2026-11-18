@@ -645,6 +645,14 @@ watch(
 
 <style scoped>
 .requirements-workbench {
+  /* 本页统一使用设计系统的品牌亮蓝，覆盖 Element Plus 默认 #409EFF */
+  --el-color-primary: var(--color-primary-500);
+  --el-color-primary-light-3: #38bdf8;
+  --el-color-primary-light-5: #7dd3fc;
+  --el-color-primary-light-7: #bae6fd;
+  --el-color-primary-light-8: #e0f2fe;
+  --el-color-primary-light-9: #f0f9ff;
+  --el-color-primary-dark-2: var(--color-primary-600);
   display: flex;
   flex-direction: column;
   gap: 18px;

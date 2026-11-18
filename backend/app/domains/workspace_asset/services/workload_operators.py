@@ -9,7 +9,7 @@ from typing import Generic, ParamSpec, TypeVar
 from app.domains.ai.models.ai_job import AiJobStatus
 from app.domains.workspace_asset.schemas.workload import WorkloadExecution
 
-GRAPH_VERSION = 1
+GRAPH_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -23,14 +23,14 @@ class Operator:
 
 
 _SPECS = (
-    Operator("ExecutionProject", 1, ("durable_records",), "executions", "attempt", "uncertain"),
+    Operator("ExecutionProject", 2, ("durable_records",), "executions", "attempt", "uncertain"),
     Operator("EventNormalize", 1, ("durable_records", "executions"), "events", "workspace", "exclude invalid signal"),
-    Operator("HumanItemProject", 1, ("durable_records", "executions"), "human_items", "request", "retain known items"),
-    Operator("InteractionAccumulator", 1, ("events",), "interaction", "conversation", "start observing"),
+    Operator("HumanItemProject", 2, ("durable_records", "executions"), "human_items", "request", "retain known items"),
+    Operator("InteractionAccumulator", 2, ("events",), "interaction", "conversation", "start observing"),
     Operator("SlotProjection", 1, ("executions", "human_items", "interaction"), "slots", "attempt", "incomplete"),
     Operator(
         "FollowupCheckProject",
-        1,
+        2,
         ("durable_records", "executions"),
         "checks",
         "delivery cycle",
@@ -108,9 +108,12 @@ def interaction_accumulator(
     strength, following, last = 0.0, False, None
     seen: set[str] = set()
     for key, occurred_at in sorted(events, key=lambda event: (event[1], event[0])):
-        if key in seen or occurred_at > as_of or (since is not None and occurred_at < since):
+        if key in seen or occurred_at > as_of:
             continue
+        # A replay cannot move a business submission across the phase boundary.
         seen.add(key)
+        if since is not None and occurred_at < since:
+            continue
         if last is not None:
             strength *= 2 ** (-(occurred_at - last).total_seconds() / policy.half_life_seconds)
             following = following and strength > policy.leave
@@ -133,6 +136,7 @@ def execution_state(job, as_of: datetime, current_revision: int) -> str | None:
         return None
     if (
         not job.started_at
+        or job.started_at > as_of
         or (job.lease_expires_at and job.lease_expires_at <= as_of)
         or (job.session_revision is not None and job.session_revision != current_revision)
     ):

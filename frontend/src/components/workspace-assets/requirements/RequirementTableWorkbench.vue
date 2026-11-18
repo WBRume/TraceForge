@@ -398,8 +398,9 @@ function handleRowClick(row: RequirementSummary) {
 }
 
 .requirement-scope :deep(.el-radio-button) {
-  --el-radio-button-checked-bg-color: var(--color-primary-700);
-  --el-radio-button-checked-border-color: var(--color-primary-700);
+  --el-radio-button-checked-bg-color: var(--color-primary-500);
+  --el-radio-button-checked-border-color: var(--color-primary-500);
+  --el-radio-button-checked-text-color: #ffffff;
 }
 
 @container (max-width: 470px) {

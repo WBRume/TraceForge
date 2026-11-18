@@ -83,7 +83,7 @@ function navigate(key: string) {
   max-width: 100%;
   padding: 0;
   border: 0;
-  color: #0369a1;
+  color: var(--color-primary-600);
   background: none;
   font: inherit;
   font-size: 11px;

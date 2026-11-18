@@ -129,7 +129,7 @@ def _followup_events(db: Session, workspace_id: str, task_ids: set[str]):
 
 
 @register("HumanItemProject")
-def _pending_questions(db: Session, workspace_id: str, facts):
+def _pending_questions(db: Session, workspace_id: str, facts, as_of: datetime):
     jobs = {
         job.id: (job, task)
         for job, task in facts
@@ -145,43 +145,47 @@ def _pending_questions(db: Session, workspace_id: str, facts):
         .filter(
             ChatMessage.workspace_id == workspace_id,
             ChatMessage.role == MessageRole.ASSISTANT,
+            ChatMessage.created_at <= as_of,
             or_(confirmation["job_id"].as_string().in_(jobs), outcome["job_id"].as_string().in_(jobs)),
         )
         .order_by(ChatMessage.created_at, ChatMessage.id)
         .all()
     )
-    questions, resolved = {}, set()
+    questions, by_message, resolved = {}, {}, set()
     for row in rows:
         metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
         reply = metadata.get("confirmation_resolution")
         entry = reply if isinstance(reply, dict) else metadata.get("confirmation")
-        if not isinstance(entry, dict) or not isinstance(entry.get("interaction_id"), str):
+        if not isinstance(entry, dict):
             continue
-        pair = jobs.get(entry.get("job_id"))
+        job_id, interaction_id = entry.get("job_id"), entry.get("interaction_id")
+        if not isinstance(job_id, str) or not isinstance(interaction_id, str) or not interaction_id:
+            continue
+        pair = jobs.get(job_id)
         if not pair or (row.task_id, row.session_generation) != (pair[1].id, pair[1].session_generation):
             continue
         if pair[0].attempt_count > 1 and pair[0].started_at and row.created_at < pair[0].started_at:
             continue
-        key = (entry["job_id"], entry["interaction_id"])
+        key = (job_id, interaction_id)
         if isinstance(reply, dict):
             resolved.add(key)
         elif pair[0].status != AiJobStatus.SUCCESS or entry.get("delivery_mode") == "turn":
             questions.setdefault(key, (row, entry))
+            by_message[row.id] = (key, row)
     if questions:
         answers = (
             db.query(ChatMessage.task_id, ChatMessage.session_generation, ChatMessage.metadata_json)
             .filter(
                 ChatMessage.workspace_id == workspace_id,
                 ChatMessage.role == MessageRole.USER,
-                ChatMessage.metadata_json["reply_to_message_id"]
-                .as_string()
-                .in_([row.id for row, _ in questions.values()]),
+                ChatMessage.created_at <= as_of,
+                ChatMessage.metadata_json["reply_to_message_id"].as_string().in_(by_message),
             )
             .all()
         )
-        by_message = {row.id: (key, row) for key, (row, _) in questions.items()}
         for task_id, generation, metadata in answers:
-            target = by_message.get(metadata.get("reply_to_message_id"))
+            reply_to = metadata.get("reply_to_message_id")
+            target = by_message.get(reply_to) if isinstance(reply_to, str) else None
             if (
                 target
                 and (task_id, generation) == (target[1].task_id, target[1].session_generation)
@@ -225,10 +229,10 @@ def get_workload(db: Session, workspace_id: str, *, can_edit_limits: bool, as_of
     states = {job.id: execution_state(job, as_of, task.session_revision) for job, task in facts}
     running_ids = {task.id for job, task in facts if states[job.id] == "active"}
     possible_producers = {task.id for job, task in facts if states[job.id] is not None}
-    items, phase_ends, unspecified = requirement_workload(db, workspace_id, possible_producers)
+    items, phase_ends, unspecified = requirement_workload(db, workspace_id, possible_producers, as_of)
     followups = _followup_events(db, workspace_id, running_ids)
     phase_starts = _phase_starts(db, workspace_id, running_ids, phase_ends)
-    pending = _pending_questions(db, workspace_id, facts)
+    pending = _pending_questions(db, workspace_id, facts, as_of)
     next_evaluate_at = None
     gaps = 0
     for job, task in facts:
