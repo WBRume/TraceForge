@@ -995,7 +995,7 @@ export function useChatViewModel() {
 
   // 准备浮窗终态变化（成功就绪/取消/失败）后刷新任务列表：任务此时才会出现（或已被回滚删除）
   watch(() => provisioningStore.taskListRefreshToken, () => {
-    void loadTasks({ reset: true, trySelectRouteTask: false })
+    void loadTasks({ reset: true, trySelectRouteTask: true })
   })
 
   // ChatView 复用不重挂载：仅 URL 变化的任务会话切换（浮窗「进入任务会话」/浏览器前进后退）走这里

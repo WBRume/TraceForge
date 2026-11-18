@@ -139,6 +139,7 @@ class WorkspaceMember(Base):
     role = Column(Enum(WorkspaceRole), nullable=False, default=WorkspaceRole.DEVELOPER)
     permissions_json = Column(String(2048), nullable=False, default="[]")
     is_expert = Column(Boolean, nullable=False, default=False)
+    workload_limits = Column(JSON, nullable=True)
     joined_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     workspace = relationship("Workspace", back_populates="members")

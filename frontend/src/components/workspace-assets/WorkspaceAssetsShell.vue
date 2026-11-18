@@ -7,19 +7,19 @@ import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
 import RequirementsWorkbench from '@/components/workspace-assets/requirements/RequirementsWorkbench.vue'
 import TaskTableWorkbench from '@/components/workspace-assets/tasks/TaskTableWorkbench.vue'
 import WorkspaceAssetsUnderConstruction from '@/components/workspace-assets/WorkspaceAssetsUnderConstruction.vue'
+import MemberWorkloadWorkbench from '@/components/workspace-assets/workload/MemberWorkloadWorkbench.vue'
 import {
   Database,
   FileText,
-  GitBranch,
+  Users,
   MessageSquare,
 } from '@/components/icons'
 
-type WorkspaceAssetsSection = 'requirements' | 'tasks' | 'traceability' | 'knowledgeBase'
+type WorkspaceAssetsSection = 'requirements' | 'tasks' | 'workload' | 'knowledgeBase'
 
 type NavItem = {
   key: WorkspaceAssetsSection
   label: string
-  description: string
   to: string
   icon: Component
 }
@@ -44,28 +44,24 @@ const navItems = computed<NavItem[]>(() => [
   {
     key: 'requirements',
     label: t('workspace_assets.nav.requirements'),
-    description: t('workspace_assets.nav_desc.requirements'),
     to: `/workspaces/${wsId.value}/assets/requirements`,
     icon: FileText,
   },
   {
     key: 'tasks',
     label: t('workspace_assets.nav.tasks'),
-    description: t('workspace_assets.nav_desc.tasks'),
     to: `/workspaces/${wsId.value}/assets/tasks`,
     icon: MessageSquare,
   },
   {
-    key: 'traceability',
-    label: t('workspace_assets.nav.traceability'),
-    description: t('workspace_assets.nav_desc.traceability'),
-    to: `/workspaces/${wsId.value}/assets/traceability`,
-    icon: GitBranch,
+    key: 'workload',
+    label: t('workspace_assets.workload.title'),
+    to: `/workspaces/${wsId.value}/assets/workload`,
+    icon: Users,
   },
   {
     key: 'knowledgeBase',
     label: t('workspace_assets.nav.knowledge_base'),
-    description: t('workspace_assets.nav_desc.knowledgeBase'),
     to: `/workspaces/${wsId.value}/assets/knowledge-base`,
     icon: Database,
   },
@@ -138,12 +134,8 @@ watch(
             />
         </section>
 
-        <section v-else-if="section === 'traceability'" class="structured-page">
-          <WorkspaceAssetsUnderConstruction
-            :badge="t('workspace_assets.under_construction.badge')"
-            :title="t('workspace_assets.under_construction.traceability_title')"
-            :description="t('workspace_assets.under_construction.traceability_body')"
-          />
+        <section v-else-if="section === 'workload'" class="structured-page">
+          <MemberWorkloadWorkbench :workspace-id="wsId" />
         </section>
 
         <section v-else class="structured-page">

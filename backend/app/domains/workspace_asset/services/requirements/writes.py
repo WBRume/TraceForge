@@ -8,7 +8,7 @@ from __future__ import annotations
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.domains.auth.models.user import WorkspaceMember
+from app.domains.auth.models.user import Workspace, WorkspaceMember
 from app.domains.task.models.task import SddTask
 from app.domains.workspace_asset.models.workspace_asset import (
     RequirementAuditAction,
@@ -30,6 +30,11 @@ from app.domains.workspace_asset.services.common.primitives import (
     json_dict,
     normalize_list,
     payload_has_field,
+)
+from app.domains.workspace_asset.services.requirements.delivery import (
+    activity_times,
+    implementation_links,
+    matches_work_scope,
 )
 from app.domains.workspace_asset.services.requirements.presenters import (
     add_requirement_audit,
@@ -68,6 +73,8 @@ def create_requirement(
     title = clean_optional(payload.title, limit=300)
     if not title:
         raise WorkspaceAssetError("Requirement title is required.", status_code=422)
+    if payload.predecessor_id:
+        db.query(Workspace.id).filter_by(id=workspace_id).with_for_update().first()
     parent_id = clean_optional(payload.parent_requirement_id, limit=36)
     if parent_id:
         parent = get_requirement(db, workspace_id, parent_id, for_update=True)
@@ -89,6 +96,7 @@ def create_requirement(
         source_kind=clean_optional(payload.source_kind, limit=80),
         source_uri=clean_optional(payload.source_uri, limit=1000),
         source_ref=clean_optional(payload.source_ref, limit=300),
+        result_check_required=payload.result_check_required,
         source_metadata_json={
             **(json_dict(payload.source_metadata) or {}),
             "task_prompt": clean_optional(
@@ -97,7 +105,12 @@ def create_requirement(
         },
     )
     db.add(requirement)
+    for field in ("owner_id", "reviewer_id", "acceptor_id"):
+        if payload_has_field(payload, field):
+            _assign_requirement_member(db, requirement, field, getattr(payload, field) or None)
     db.flush()
+    if payload.predecessor_id:
+        _set_predecessor(db, requirement, payload.predecessor_id)
     add_requirement_audit(
         db,
         workspace_id=workspace_id,
@@ -115,19 +128,35 @@ def create_requirement(
     return detail
 
 
-def _assign_requirement_owner(db: Session, requirement: SddRequirement, owner_id: str | None) -> None:
-    if owner_id and owner_id != requirement.owner_id:
+def _assign_requirement_member(db: Session, requirement: SddRequirement, field: str, user_id: str | None) -> None:
+    if user_id and user_id != getattr(requirement, field):
         member = (
             db.query(WorkspaceMember.id)
             .filter_by(
                 workspace_id=requirement.workspace_id,
-                user_id=owner_id,
+                user_id=user_id,
             )
             .first()
         )
         if not member:
-            raise WorkspaceAssetError("Requirement owner must be a workspace member.", status_code=422)
-    requirement.owner_id = owner_id
+            raise WorkspaceAssetError("Requirement assignee must be a workspace member.", status_code=422)
+    setattr(requirement, field, user_id)
+
+
+def _set_predecessor(db: Session, requirement: SddRequirement, predecessor_id: str | None) -> None:
+    seen = {requirement.id}
+    cursor = predecessor_id
+    while cursor:
+        if cursor in seen:
+            raise WorkspaceAssetError("Requirement prerequisites must not form a cycle.", status_code=422)
+        seen.add(cursor)
+        row = (
+            db.query(SddRequirement.predecessor_id).filter_by(id=cursor, workspace_id=requirement.workspace_id).first()
+        )
+        if row is None:
+            raise WorkspaceAssetError("The prerequisite must belong to this workspace.", status_code=422)
+        cursor = row.predecessor_id
+    requirement.predecessor_id = predecessor_id
 
 
 def _change_requirement_status(requirement: SddRequirement, value: str | None) -> None:
@@ -141,6 +170,16 @@ def _change_requirement_status(requirement: SddRequirement, value: str | None) -
     requirement.status = next_status
 
 
+def _update_delivery_fields(db: Session, requirement: SddRequirement, payload: RequirementUpdateRequest) -> None:
+    for field in ("owner_id", "reviewer_id", "acceptor_id"):
+        if payload_has_field(payload, field):
+            _assign_requirement_member(db, requirement, field, getattr(payload, field) or None)
+    if payload_has_field(payload, "predecessor_id"):
+        _set_predecessor(db, requirement, payload.predecessor_id)
+    if payload.result_check_required is not None:
+        requirement.result_check_required = payload.result_check_required
+
+
 def update_requirement(
     db: Session,
     workspace_id: str,
@@ -148,13 +187,15 @@ def update_requirement(
     actor_id: str | None,
     payload: RequirementUpdateRequest,
 ) -> RequirementDetailResponse | None:
+    if payload_has_field(payload, "predecessor_id"):
+        # Serialize dependency changes so concurrent requests cannot create a cycle.
+        db.query(Workspace.id).filter_by(id=workspace_id).with_for_update().first()
     requirement = get_requirement(db, workspace_id, requirement_id, for_update=True)
     if not requirement:
         return None
 
     before = requirement_snapshot(requirement)
-    if payload_has_field(payload, "owner_id"):
-        _assign_requirement_owner(db, requirement, payload.owner_id or None)
+    _update_delivery_fields(db, requirement, payload)
     if payload_has_field(payload, "title"):
         title = clean_optional(payload.title, limit=300)
         if not title:
@@ -204,6 +245,35 @@ def update_requirement(
     db.commit()
     db.expire_all()
     return get_requirement_detail(db, workspace_id, requirement.id)
+
+
+def claim_requirement(
+    db: Session, workspace_id: str, requirement_id: str, actor_id: str, *, clarify: bool
+) -> RequirementDetailResponse | None:
+    requirement = get_requirement(db, workspace_id, requirement_id, for_update=True)
+    if not requirement:
+        return None
+    if requirement.owner_id == actor_id:
+        return get_requirement_detail(db, workspace_id, requirement_id)
+    starts = activity_times(db, workspace_id, (link.task_id for link in implementation_links(requirement)))
+    if requirement.owner_id or not matches_work_scope(
+        requirement, starts, "clarify" if clarify else "claimable", actor_id
+    ):
+        raise WorkspaceAssetError("This requirement is no longer available to claim.", status_code=409)
+    before = requirement_snapshot(requirement)
+    requirement.owner_id = actor_id
+    add_requirement_audit(
+        db,
+        workspace_id=workspace_id,
+        requirement_id=requirement_id,
+        actor_id=actor_id,
+        action=RequirementAuditAction.UPDATED,
+        before=before,
+        after=requirement_snapshot(requirement),
+        source_metadata={"claim": "clarify" if clarify else "ready"},
+    )
+    db.commit()
+    return get_requirement_detail(db, workspace_id, requirement_id)
 
 
 def link_requirement_task(

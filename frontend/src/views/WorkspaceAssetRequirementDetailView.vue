@@ -8,18 +8,22 @@ import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import RequirementDetailContent from '@/components/workspace-assets/requirements/RequirementDetailContent.vue'
 import RequirementTaskCreateDialog from '@/components/workspace-assets/requirements/RequirementTaskCreateDialog.vue'
 import { useRequirementTaskCreation } from '@/composables/useRequirementTaskCreation'
-import RequirementEditDrawer from '@/components/workspace-assets/requirements/RequirementEditDrawer.vue'
+import RequirementWorkActions from '@/components/workspace-assets/requirements/RequirementWorkActions.vue'
 import RequirementImportDialog from '@/components/workspace-assets/requirements/RequirementImportDialog.vue'
 import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
+import { useRequirementWork } from '@/composables/useRequirementWork'
+import { useAuthStore } from '@/stores/auth'
 import { useProvisioningStore, type ProvisionJobView } from '@/stores/provisioning'
 import { formatApiError } from '@/utils/error'
+import api from '@/utils/api'
+import type { TaskCreatedEvent } from '@/components/task-create/types'
 import type {
   RequirementAcceptanceAction,
   RequirementDetail,
   RequirementImportBatch,
   RequirementImportConfirmPayload,
-  RequirementMutationPayload,
   RequirementPreviewJob,
+  RequirementResultCheckAction,
   RequirementSplitPayload,
   RequirementSummary,
   RequirementTaskLinkPayload,
@@ -35,8 +39,6 @@ const {
   tasks,
   loadTasks,
   loadRequirementDetail,
-  createRequirement,
-  updateRequirement,
   linkRequirementTask,
   updateRequirementTaskRelation,
   applyRequirementAcceptance,
@@ -52,6 +54,8 @@ const provisioningStore = useProvisioningStore()
 const wsId = computed(() => String(route.params.wsId || ''))
 const requirementId = computed(() => String(route.params.requirementId || ''))
 const taskCreation = useRequirementTaskCreation(() => wsId.value)
+const auth = useAuthStore()
+const work = useRequirementWork(() => wsId.value, () => auth.user?.id, taskCreation.open, reloadDetail)
 watch(requirementId, () => taskCreation.close())
 
 const backLabelKey = computed(() =>
@@ -74,12 +78,17 @@ function goBack() {
     router.back()
     return
   }
-  router.push({ name: 'workspaceAssetsRequirements', params: { wsId: wsId.value } })
+  if (typeof route.query.back === 'string' && route.query.back.startsWith('/')) {
+    const target = router.resolve(route.query.back)
+    if (target.name === 'workspaceAssetsRequirements' && target.params.wsId === wsId.value) {
+      void router.push(target.fullPath)
+      return
+    }
+  }
+  void router.push({ name: 'workspaceAssetsRequirements', params: { wsId: wsId.value } })
 }
 const detail = shallowRef<RequirementDetail | null>(null)
-const editorOpen = shallowRef(false)
-const editingRequirement = shallowRef<RequirementSummary | null>(null)
-const childParent = shallowRef<RequirementSummary | null>(null)
+const checking = shallowRef(false)
 const splitDialogOpen = shallowRef(false)
 const splitRequirementId = shallowRef('')
 let detailLoadSeq = 0
@@ -110,32 +119,33 @@ async function openRequirementDetail(nextRequirementId: string) {
 }
 
 function openEdit(requirement: RequirementSummary) {
-  childParent.value = null
-  editingRequirement.value = requirement
-  editorOpen.value = true
+  void router.push({ name: 'workspaceAssetsRequirementEdit', params: { wsId: wsId.value, requirementId: requirement.id },
+    query: { back: route.fullPath } })
 }
 
 function openCreateChild(parent: RequirementSummary) {
-  childParent.value = parent
-  editingRequirement.value = null
-  editorOpen.value = true
+  void router.push({ name: 'workspaceAssetsRequirementChild', params: { wsId: wsId.value, requirementId: parent.id },
+    query: { back: route.fullPath } })
 }
 
-async function submitEditor(payload: RequirementMutationPayload) {
-  const result = editingRequirement.value
-    ? await updateRequirement(wsId.value, editingRequirement.value.id, payload)
-    : await createRequirement(wsId.value, {
-      ...payload,
-      parent_requirement_id: childParent.value?.id || payload.parent_requirement_id || null,
-    })
+function openCreatedTask(event: TaskCreatedEvent) {
+  void router.push({ name: 'taskChat', params: { wsId: event.workspaceId, taskId: event.taskId } })
+}
 
-  if (!result) return
-  editorOpen.value = false
-  editingRequirement.value = null
-  childParent.value = null
-  detail.value = result
-  if (result.requirement.id !== requirementId.value) {
-    await openRequirementDetail(result.requirement.id)
+async function applyCheck(action: RequirementResultCheckAction, reason?: string) {
+  const id = requirementId.value
+  if (checking.value) return
+  checking.value = true
+  try {
+    const { data } = await api.post<RequirementDetail>(`/workspaces/${wsId.value}/workspace-assets/requirements/${id}/result-check`, {
+      action, reason,
+    })
+    if (requirementId.value === id) detail.value = data
+    ElMessage.success(t('workspace_assets.delivery.checked'))
+  } catch (err) {
+    ElMessage.error(formatApiError(err, t('workspace_assets.requirements.task_links.save_failed'), t))
+  } finally {
+    checking.value = false
   }
 }
 
@@ -450,9 +460,14 @@ watch(() => provisioningStore.taskListRefreshToken, () => { void reloadDetail() 
     </button>
     <div v-if="currentRequirement" class="requirement-task-action">
       <h2>{{ currentRequirement.title }}</h2>
-      <button v-if="currentRequirement.can_link_task && currentRequirement.child_count === 0" type="button" class="btn-primary" :disabled="!taskCreation.canCreateTask.value" @click="taskCreation.open(currentRequirement)">{{ t('task_rail.create_for_requirement') }}</button>
+      <RequirementWorkActions :requirement="currentRequirement" :user-id="auth.user?.id"
+        :enabled="taskCreation.canCreateTask.value" :busy="work.busy.value === currentRequirement.id"
+        @claim="work.claim(currentRequirement, $event)" @enter="work.enter(currentRequirement)" />
+      <button v-if="currentRequirement.work_started && currentRequirement.can_link_task && currentRequirement.child_count === 0 && taskCreation.canCreateTask.value"
+        type="button" class="btn-primary" @click="taskCreation.open(currentRequirement)">{{ t('task_rail.create_for_requirement') }}</button>
     </div>
-    <RequirementTaskCreateDialog :workspace-id="wsId" :requirement="taskCreation.selectedRequirement.value" @close="taskCreation.close" @created="reloadDetail" />
+    <RequirementTaskCreateDialog :workspace-id="wsId" :requirement="taskCreation.selectedRequirement.value"
+      @close="taskCreation.close" @created="openCreatedTask" />
 
     <el-alert
       v-if="error"
@@ -467,8 +482,9 @@ watch(() => provisioningStore.taskListRefreshToken, () => { void reloadDetail() 
         :requirement="currentRequirement"
         :detail="detail"
         :tasks="taskItems"
-        :loading="loading"
+        :loading="loading || checking"
         :can-manage="taskCreation.canManageRequirements.value"
+        :user-id="auth.user?.id"
         @edit="openEdit"
         @split="openSplit"
         @open-child="openRequirementDetail($event.id)"
@@ -477,17 +493,9 @@ watch(() => provisioningStore.taskListRefreshToken, () => { void reloadDetail() 
         @unlink="unlinkTask"
         @change-relation="changeTaskRelation"
         @acceptance="acceptRequirement"
+        @result-check="applyCheck"
       />
     </main>
-
-    <RequirementEditDrawer
-      :open="editorOpen"
-      :workspace-id="wsId"
-      :requirement="editingRequirement"
-      :loading="loading"
-      @close="editorOpen = false"
-      @submit="submitEditor"
-    />
 
     <RequirementImportDialog
       :open="splitDialogOpen && !splitBatch"
@@ -516,6 +524,7 @@ watch(() => provisioningStore.taskListRefreshToken, () => { void reloadDetail() 
   </div>
 </template>
 
+<style scoped src="../components/workspace-assets/asset-back-link.css"></style>
 <style scoped>
 @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap');
 
@@ -534,38 +543,6 @@ watch(() => provisioningStore.taskListRefreshToken, () => { void reloadDetail() 
     radial-gradient(circle at 100% 100%, #f0f9ff 0%, transparent 40%);
   color: #0f172a;
   font-family: 'Open Sans', var(--font-body);
-}
-
-.back-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  width: fit-content;
-  min-height: 38px;
-  padding: 0 16px;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(8px);
-  color: #64748b;
-  font-size: 0.875rem;
-  font-weight: 600;
-  text-decoration: none;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.back-link:hover {
-  color: #0ea5e9;
-  border-color: #0ea5e966;
-  background: white;
-  transform: translateX(-2px);
-  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.1);
-}
-
-.back-icon {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 auto;
 }
 
 .detail-shell {

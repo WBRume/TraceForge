@@ -8,7 +8,7 @@ import RequirementTaskLinksSection from './RequirementTaskLinksSection.vue'
 import RequirementDeliveryContext from './RequirementDeliveryContext.vue'
 import RequirementAcceptancePanel from './RequirementAcceptancePanel.vue'
 import { requirementCoverageKey, requirementStatusKey } from '@/utils/requirementStatus'
-import type { RequirementAcceptanceAction, RequirementDetail, RequirementLinkedTask, RequirementSummary, RequirementTaskLinkPayload, RequirementTaskRelation, TaskSummary } from '@/types/workspaceAssets'
+import type { RequirementAcceptanceAction, RequirementDetail, RequirementLinkedTask, RequirementResultCheckAction, RequirementSummary, RequirementTaskLinkPayload, RequirementTaskRelation, TaskSummary } from '@/types/workspaceAssets'
 
 const props = defineProps<{
   workspaceId: string
@@ -17,6 +17,7 @@ const props = defineProps<{
   tasks: readonly TaskSummary[]
   loading?: boolean
   canManage?: boolean
+  userId?: string
   linkTask?: (payload: RequirementTaskLinkPayload) => Promise<boolean>
 }>()
 
@@ -28,6 +29,7 @@ const emit = defineEmits<{
   unlink: [taskId: string]
   changeRelation: [taskId: string, relation: RequirementTaskRelation]
   acceptance: [action: RequirementAcceptanceAction, reason?: string]
+  resultCheck: [action: RequirementResultCheckAction, reason?: string]
 }>()
 
 const { t } = useI18n()
@@ -162,9 +164,11 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
             v-if="activeRequirement.status !== 'ARCHIVED' && activeRequirement.status !== 'WAITING_SOURCE'"
             :requirement="activeRequirement"
             :can-manage="Boolean(canManage)"
+            :user-id="userId"
             :loading="loading"
             class="content-card"
             @apply="(action, reason) => emit('acceptance', action, reason)"
+            @result-check="(action, reason) => emit('resultCheck', action, reason)"
           />
 
           <!-- Linked Tasks (Scheme 1: Sidebar Traceability Card) -->

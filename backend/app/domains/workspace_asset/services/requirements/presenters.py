@@ -40,6 +40,13 @@ from app.domains.workspace_asset.services.common.primitives import (
     json_dict,
     normalize_list,
 )
+from app.domains.workspace_asset.services.requirements.delivery import (
+    OPEN_STATUSES,
+    clarification_reason,
+    result_check_blocks_acceptance,
+    result_check_state,
+    work_started,
+)
 
 
 def requirement_snapshot(requirement: SddRequirement) -> dict[str, Any]:
@@ -51,6 +58,10 @@ def requirement_snapshot(requirement: SddRequirement) -> dict[str, Any]:
         "acceptance_criteria": list(requirement.acceptance_criteria_json or []),
         "priority": requirement.priority,
         "owner_id": requirement.owner_id,
+        "reviewer_id": requirement.reviewer_id,
+        "acceptor_id": requirement.acceptor_id,
+        "predecessor_id": requirement.predecessor_id,
+        "result_check_required": requirement.result_check_required,
         "parent_requirement_id": requirement.parent_requirement_id,
         "import_batch_id": requirement.import_batch_id,
         "source_kind": requirement.source_kind,
@@ -199,6 +210,7 @@ def requirement_linked_task(link: SddTaskRequirement) -> RequirementLinkedTaskRe
         task_name=task.name if task else "",
         task_status=enum_value(task.status) if task else "unknown",
         current_phase=task.current_phase if task else None,
+        creator_id=task.creator_id if task else None,
         creator_name=task.creator_name if task else None,
         total_duration_ms=task.total_duration_ms if task else 0,
         relation_type=enum_value(link.relation_type),
@@ -223,6 +235,7 @@ def requirement_summary(
     *,
     include_linked_tasks: bool = False,
     include_children: bool = False,
+    starts: dict[str, datetime] | None = None,
 ) -> RequirementSummary:
     task_links = requirement_task_links(requirement)
     children = sorted(
@@ -230,6 +243,9 @@ def requirement_summary(
     )
     child_count = len(children)
     progress = requirement_task_progress(requirement)
+    starts = starts or {}
+    started = work_started(requirement, starts)
+    check_state = result_check_state(requirement, starts)
     return RequirementSummary(
         task_prompt=clean_optional((requirement.source_metadata_json or {}).get("task_prompt"))
         if isinstance(requirement.source_metadata_json, dict)
@@ -243,10 +259,22 @@ def requirement_summary(
         priority=requirement.priority,
         owner_id=requirement.owner_id,
         owner_name=requirement.owner.display_name if requirement.owner else None,
+        reviewer_id=requirement.reviewer_id,
+        reviewer_name=requirement.reviewer.display_name if requirement.reviewer else None,
+        acceptor_id=requirement.acceptor_id,
+        acceptor_name=requirement.acceptor.display_name if requirement.acceptor else None,
+        predecessor_id=requirement.predecessor_id,
+        predecessor_title=requirement.predecessor.title if requirement.predecessor else None,
+        work_started=started,
+        clarification_reason=clarification_reason(requirement)
+        if not started and not child_count and requirement.status in OPEN_STATUSES
+        else None,
+        check_ready=check_state == "ready",
+        result_check_required=bool(requirement.result_check_required),
         parent_requirement_id=requirement.parent_requirement_id,
         parent_title=requirement.parent_requirement.title if requirement.parent_requirement else None,
         child_count=child_count,
-        children=[requirement_summary(child, include_linked_tasks=True, include_children=False) for child in children]
+        children=[requirement_summary(child, include_linked_tasks=True, starts=starts) for child in children]
         if include_children
         else [],
         can_link_task=child_count == 0,
@@ -262,7 +290,8 @@ def requirement_summary(
         related_task_count=len(task_links),
         linked_tasks=[requirement_linked_task(link) for link in task_links] if include_linked_tasks else [],
         task_progress=progress,
-        acceptance_blocker=requirement_acceptance_blocker(requirement, progress),
+        acceptance_blocker=requirement_acceptance_blocker(requirement, progress)
+        or ("review_pending" if result_check_blocks_acceptance(requirement, starts) else None),
         created_at=requirement.created_at,
         updated_at=requirement.updated_at,
     )

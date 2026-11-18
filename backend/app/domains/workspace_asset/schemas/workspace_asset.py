@@ -116,6 +116,7 @@ class RequirementLinkedTaskResponse(BaseModel):
     task_status: str
     current_phase: str | None = None
     creator_name: str | None = None
+    creator_id: str | None = None
     total_duration_ms: int = 0
     relation_type: str
     coverage_status: CoverageStatus = "not_available"
@@ -150,6 +151,16 @@ class RequirementSummary(BaseModel):
     priority: str | None = None
     owner_id: str | None = None
     owner_name: str | None = None
+    reviewer_id: str | None = None
+    reviewer_name: str | None = None
+    acceptor_id: str | None = None
+    acceptor_name: str | None = None
+    predecessor_id: str | None = None
+    predecessor_title: str | None = None
+    work_started: bool = False
+    clarification_reason: str | None = None
+    check_ready: bool = False
+    result_check_required: bool = False
     parent_requirement_id: str | None = None
     parent_title: str | None = None
     child_count: int = 0
@@ -199,6 +210,11 @@ class RequirementCreateRequest(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
     priority: str | None = None
     parent_requirement_id: str | None = None
+    owner_id: str | None = Field(default=None, max_length=36)
+    reviewer_id: str | None = Field(default=None, max_length=36)
+    acceptor_id: str | None = Field(default=None, max_length=36)
+    predecessor_id: str | None = Field(default=None, max_length=36)
+    result_check_required: bool = False
     status: RequirementEditableStatus = "DRAFT"
     source_kind: str | None = None
     source_uri: str | None = None
@@ -211,6 +227,10 @@ class RequirementUpdateRequest(BaseModel):
     task_prompt: str | None = None
     title: str | None = None
     owner_id: str | None = Field(default=None, max_length=36)
+    reviewer_id: str | None = Field(default=None, max_length=36)
+    acceptor_id: str | None = Field(default=None, max_length=36)
+    predecessor_id: str | None = Field(default=None, max_length=36)
+    result_check_required: bool | None = None
     body: str | None = None
     acceptance_criteria: list[str] | None = None
     priority: str | None = None
@@ -234,6 +254,11 @@ class RequirementTaskRelationRequest(BaseModel):
 
 class RequirementAcceptanceRequest(BaseModel):
     action: Literal["submit", "approve", "reject", "reopen"]
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class RequirementResultCheckRequest(BaseModel):
+    action: Literal["complete", "return"] = "complete"
     reason: str | None = Field(default=None, max_length=2000)
 
 

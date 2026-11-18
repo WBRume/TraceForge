@@ -37,8 +37,14 @@ vi.mock('vue-router', () => ({
 }))
 
 vi.mock('@/utils/api', () => ({
-  default: apiMock,
+  default: {
+    ...apiMock,
+    get: (url: string, ...args: unknown[]) => url.endsWith('/permissions/me')
+      ? Promise.resolve({ data: { permissions: { manage_requirements: true, create_task: true } } })
+      : apiMock.get(url, ...args),
+  },
 }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ user: { id: 'user-1' } }) }))
 
 vi.mock('element-plus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('element-plus')>()

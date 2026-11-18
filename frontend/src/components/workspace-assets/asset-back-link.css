@@ -1,0 +1,31 @@
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  min-height: 38px;
+  padding: 0 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(8px);
+  color: #64748b;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.back-link:hover {
+  color: #0ea5e9;
+  border-color: #0ea5e966;
+  background: white;
+  transform: translateX(-2px);
+  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.1);
+}
+
+.back-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}

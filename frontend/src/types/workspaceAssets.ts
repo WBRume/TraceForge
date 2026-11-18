@@ -49,6 +49,7 @@ export type RequirementLinkedTask = {
   task_name: string
   task_status: string
   current_phase?: string | null
+  creator_id?: string | null
   creator_name?: string | null
   total_duration_ms?: number
   relation_type: string
@@ -66,7 +67,8 @@ export type RequirementCoverageSummary = {
 }
 
 export type RequirementAcceptanceAction = 'submit' | 'approve' | 'reject' | 'reopen'
-export type RequirementAcceptanceBlocker = 'no_tasks' | 'tasks_pending' | 'children_pending'
+export type RequirementResultCheckAction = 'complete' | 'return'
+export type RequirementAcceptanceBlocker = 'no_tasks' | 'tasks_pending' | 'children_pending' | 'review_pending'
 export type RequirementTaskRelation = 'COVERS' | 'RELATES_TO'
 
 export type RequirementTaskProgress = {
@@ -88,6 +90,16 @@ export type RequirementSummary = {
   priority?: string | null
   owner_id?: string | null
   owner_name?: string | null
+  reviewer_id?: string | null
+  reviewer_name?: string | null
+  acceptor_id?: string | null
+  acceptor_name?: string | null
+  predecessor_id?: string | null
+  predecessor_title?: string | null
+  result_check_required?: boolean
+  work_started?: boolean
+  clarification_reason?: 'scope' | 'predecessor' | null
+  check_ready?: boolean
   parent_requirement_id?: string | null
   parent_title?: string | null
   child_count: number
@@ -137,6 +149,10 @@ export type RequirementMutationPayload = {
   acceptance_criteria?: string[]
   priority?: string | null
   owner_id?: string | null
+  reviewer_id?: string | null
+  acceptor_id?: string | null
+  predecessor_id?: string | null
+  result_check_required?: boolean
   parent_requirement_id?: string | null
   status?: RequirementEditableStatus
   source_kind?: string | null
@@ -146,6 +162,8 @@ export type RequirementMutationPayload = {
   change_reason?: string | null
 }
 
+export type RequirementWorkScope = 'all' | 'claimable' | 'mine' | 'clarify'
+
 export type RequirementListQuery = {
   q?: string | null
   status?: string | null
@@ -153,6 +171,7 @@ export type RequirementListQuery = {
   source_kind?: string | null
   parent_id?: string | null
   scope?: 'tree' | 'flat' | 'children'
+  work_scope?: RequirementWorkScope
   sort_by?: 'created_at' | 'updated_at' | 'title' | 'status' | 'priority' | 'child_count' | 'related_task_count'
   sort_order?: 'asc' | 'desc'
   page?: number

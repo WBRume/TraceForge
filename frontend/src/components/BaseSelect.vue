@@ -6,6 +6,7 @@ interface Option {
   label: string
   value: any
   disabled?: boolean
+  detail?: string
 }
 
 const props = defineProps<{
@@ -16,6 +17,7 @@ const props = defineProps<{
   size?: 'sm' | 'md' | 'lg'
   dropUp?: boolean
   searchable?: boolean
+  remoteSearch?: boolean
   searchPlaceholder?: string
   ariaLabel?: string
   /** 多选：modelValue 为数组，选项以复选方式切换且不关闭下拉。 */
@@ -29,6 +31,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:modelValue', value: any): void
   (e: 'open'): void
+  (e: 'search', value: string): void
 }>()
 
 const isOpen = ref(false)
@@ -113,7 +116,7 @@ const handleClickOutside = (event: MouseEvent) => {
 }
 
 const filteredOptions = computed(() => {
-  if (!props.searchable || !searchQuery.value.trim()) return props.options || []
+  if (props.remoteSearch || !props.searchable || !searchQuery.value.trim()) return props.options || []
   const q = searchQuery.value.trim().toLowerCase()
   return (props.options || []).filter((opt) => (opt.label || '').toLowerCase().includes(q))
 })
@@ -222,6 +225,7 @@ onUnmounted(() => {
             :aria-activedescendant="activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined"
             :placeholder="searchPlaceholder || '搜索...'"
             @keydown="handleKeydown"
+            @input="emit('search', ($event.target as HTMLInputElement).value)"
           />
         </div>
 
@@ -240,7 +244,10 @@ onUnmounted(() => {
             @click="selectOption(option)"
           >
             <span v-if="isMultiple" class="option-check" :class="{ 'is-checked': isOptionSelected(option.value) }" aria-hidden="true" />
-            <span class="option-label">{{ option.label }}</span>
+            <span class="option-label">
+              {{ option.label }}
+              <small v-if="option.detail" class="option-detail">{{ option.detail }}</small>
+            </span>
           </li>
           <li v-if="filteredOptions.length === 0" class="no-options-item">
             暂无匹配选项
@@ -258,6 +265,8 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.option-detail { display: block; color: var(--el-text-color-secondary); font-size: 12px; font-weight: 400; }
+
 .base-select {
   position: relative;
   width: 100%;

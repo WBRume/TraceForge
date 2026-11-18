@@ -4,14 +4,16 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
-import RequirementEditDrawer from './RequirementEditDrawer.vue'
 import RequirementImportDialog from './RequirementImportDialog.vue'
 import RequirementTableWorkbench from './RequirementTableWorkbench.vue'
 import RequirementTaskCreateDialog from './RequirementTaskCreateDialog.vue'
 import { useRequirementTaskCreation } from '@/composables/useRequirementTaskCreation'
+import { useRequirementWork } from '@/composables/useRequirementWork'
+import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
 import { useProvisioningStore, type ProvisionJobView } from '@/stores/provisioning'
 import { formatApiError } from '@/utils/error'
+import type { TaskCreatedEvent } from '@/components/task-create/types'
 import type {
   RequirementImportBatch,
   RequirementImportConfirmPayload,
@@ -20,6 +22,7 @@ import type {
   RequirementPreviewJob,
   RequirementSplitPayload,
   RequirementSummary,
+  RequirementWorkScope,
   WorkspaceAssetsRequirements,
 } from '@/types/workspaceAssets'
 
@@ -41,7 +44,6 @@ const {
   error,
   loadRequirements,
   createRequirement,
-  updateRequirement,
   createRequirementImportPreviewJob,
   fetchRequirementPreviewJob,
   listActiveRequirementPreviewJobs,
@@ -53,6 +55,8 @@ const {
 } = useWorkspaceAssets()
 const provisioningStore = useProvisioningStore()
 const taskCreation = useRequirementTaskCreation(() => props.workspaceId)
+const auth = useAuthStore()
+const work = useRequirementWork(() => props.workspaceId, () => auth.user?.id, taskCreation.open, reloadRequirements)
 
 function routeString(key: string): string | undefined {
   const value = route.query[key]
@@ -64,6 +68,11 @@ function routeNumber(key: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback
 }
 
+function routeWorkScope(): RequirementWorkScope {
+  const value = routeString('work_scope')
+  return value === 'claimable' || value === 'mine' || value === 'clarify' ? value : 'all'
+}
+
 const tableQuery = reactive<RequirementListQuery>({
   q: routeString('q'),
   status: routeString('status'),
@@ -71,15 +80,13 @@ const tableQuery = reactive<RequirementListQuery>({
   source_kind: routeString('source_kind'),
   parent_id: routeString('parentId'),
   scope: 'tree',
+  work_scope: routeWorkScope(),
   sort_by: (routeString('sort_by') as RequirementListQuery['sort_by']) || 'updated_at',
   sort_order: (routeString('sort_order') as RequirementListQuery['sort_order']) || 'desc',
   page: routeNumber('page', 1),
   page_size: routeNumber('page_size', 20),
 })
 const requirementsResponse = shallowRef<WorkspaceAssetsRequirements | null>(null)
-const editorOpen = shallowRef(false)
-const editingRequirement = shallowRef<RequirementSummary | null>(null)
-const childParent = shallowRef<RequirementSummary | null>(null)
 const createOpen = shallowRef(false)
 // AI 预览作业：创建后交给右下角浮窗后台跟踪（分钟级等待不再阻塞弹窗/页面）
 const createPreviewJobId = shallowRef('')
@@ -182,11 +189,19 @@ function currentQuery(): RequirementListQuery {
   return { ...tableQuery }
 }
 
-async function reloadRequirements(query: RequirementListQuery = currentQuery()) {
+async function reloadRequirements(query: RequirementListQuery = currentQuery()): Promise<WorkspaceAssetsRequirements | null> {
+  const seq = ++loadSequence
   const result = await loadRequirements(props.workspaceId, query)
-  if (result) requirementsResponse.value = result
+  if (result && seq === loadSequence) {
+    requirementsResponse.value = result
+    if (result.page > 1 && result.items.length === 0) {
+      await handleQueryChange({ ...query, page: Math.max(1, Math.ceil(result.total / result.page_size)) })
+      return requirementsResponse.value
+    }
+  }
   return result
 }
+let loadSequence = 0
 
 async function openRequirement(requirement: RequirementSummary) {
   await openRequirementById(requirement.id)
@@ -199,6 +214,7 @@ async function openRequirementById(requirementId: string) {
       wsId: props.workspaceId,
       requirementId,
     },
+    query: { back: route.fullPath },
   })
 }
 
@@ -208,46 +224,48 @@ async function handleQueryChange(query: RequirementListQuery) {
     status: undefined,
     priority: undefined,
     source_kind: undefined,
-    parent_id: undefined,
+    work_scope: 'all',
     sort_by: 'updated_at',
     sort_order: 'desc',
     page: 1,
     page_size: 20,
   }, query)
-  await reloadRequirements()
   const nextQuery = { ...route.query }
-  for (const key of ['q', 'status', 'priority', 'source_kind', 'sort_by', 'sort_order', 'page', 'page_size', 'parentId']) {
+  for (const key of ['q', 'status', 'priority', 'source_kind', 'work_scope', 'sort_by', 'sort_order', 'page', 'page_size', 'parentId']) {
     delete nextQuery[key]
   }
   if (tableQuery.q) nextQuery.q = String(tableQuery.q)
   if (tableQuery.status) nextQuery.status = String(tableQuery.status)
   if (tableQuery.priority) nextQuery.priority = String(tableQuery.priority)
   if (tableQuery.source_kind) nextQuery.source_kind = String(tableQuery.source_kind)
+  if (tableQuery.work_scope && tableQuery.work_scope !== 'all') nextQuery.work_scope = tableQuery.work_scope
   if (tableQuery.parent_id) nextQuery.parentId = String(tableQuery.parent_id)
   if (tableQuery.sort_by && tableQuery.sort_by !== 'updated_at') nextQuery.sort_by = tableQuery.sort_by
   if (tableQuery.sort_order && tableQuery.sort_order !== 'desc') nextQuery.sort_order = tableQuery.sort_order
   if (tableQuery.page && tableQuery.page > 1) nextQuery.page = String(tableQuery.page)
   if (tableQuery.page_size && tableQuery.page_size !== 20) nextQuery.page_size = String(tableQuery.page_size)
   await router.replace({ query: nextQuery })
+  await reloadRequirements()
 }
 
 function openCreate() {
-  childParent.value = null
   // 重新打开新建弹窗时回到初始步骤；进行中的预览作业留在浮窗继续跑
   createPreviewJobId.value = ''
   createOpen.value = true
 }
 
 function openCreateChild(parent: RequirementSummary) {
-  childParent.value = parent
-  editingRequirement.value = null
-  editorOpen.value = true
+  void router.push({ name: 'workspaceAssetsRequirementChild', params: { wsId: props.workspaceId, requirementId: parent.id },
+    query: { back: route.fullPath } })
 }
 
 function openEdit(requirement: RequirementSummary) {
-  childParent.value = null
-  editingRequirement.value = requirement
-  editorOpen.value = true
+  void router.push({ name: 'workspaceAssetsRequirementEdit', params: { wsId: props.workspaceId, requirementId: requirement.id },
+    query: { back: route.fullPath } })
+}
+
+function openCreatedTask(event: TaskCreatedEvent) {
+  void router.push({ name: 'taskChat', params: { wsId: event.workspaceId, taskId: event.taskId } })
 }
 
 async function refreshAfterMutation(nextRequirementId?: string | null) {
@@ -255,21 +273,6 @@ async function refreshAfterMutation(nextRequirementId?: string | null) {
   emit('refresh')
   if (nextRequirementId) {
     await openRequirementById(nextRequirementId)
-  }
-}
-
-async function submitEditor(payload: RequirementMutationPayload) {
-  const result = editingRequirement.value
-    ? await updateRequirement(props.workspaceId, editingRequirement.value.id, payload)
-    : await createRequirement(props.workspaceId, {
-      ...payload,
-      parent_requirement_id: childParent.value?.id || payload.parent_requirement_id || null,
-    })
-  if (result) {
-    editorOpen.value = false
-    editingRequirement.value = null
-    childParent.value = null
-    await refreshAfterMutation(result.requirement.id)
   }
 }
 
@@ -542,6 +545,7 @@ watch(
   () => props.workspaceId,
   async (workspaceId) => {
     if (!workspaceId) return
+    requirementsResponse.value = null
     await reloadRequirements()
     if (requestedRequirementId.value) {
       await openRequirementById(requestedRequirementId.value)
@@ -574,6 +578,12 @@ watch(
 
     <RequirementTableWorkbench
       :can-create-task="taskCreation.canCreateTask.value"
+      :can-manage="taskCreation.canManageRequirements.value"
+      :user-id="auth.user?.id"
+      :claiming-id="work.busy.value"
+      :query="tableQuery"
+      @claim="work.claim"
+      @enter="work.enter"
       @create-task="taskCreation.open"
       :items="requirementItems"
       :total="activeResponse.total"
@@ -587,16 +597,8 @@ watch(
       @edit="openEdit"
       @split="openSplit"
     />
-    <RequirementTaskCreateDialog :workspace-id="workspaceId" :requirement="taskCreation.selectedRequirement.value" @close="taskCreation.close" @created="reloadRequirements()" />
-
-    <RequirementEditDrawer
-      :open="editorOpen"
-      :workspace-id="workspaceId"
-      :requirement="editingRequirement"
-      :loading="actionLoading"
-      @close="editorOpen = false"
-      @submit="submitEditor"
-    />
+    <RequirementTaskCreateDialog :workspace-id="workspaceId" :requirement="taskCreation.selectedRequirement.value"
+      @close="taskCreation.close" @created="openCreatedTask" />
 
     <RequirementImportDialog
       :open="createOpen"

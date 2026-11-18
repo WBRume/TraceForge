@@ -5,17 +5,22 @@ import type { TableInstance } from 'element-plus'
 import BaseSelect from '@/components/BaseSelect.vue'
 import RequirementTaskProgress from './RequirementTaskProgress.vue'
 import RequirementPendingItems from './RequirementPendingItems.vue'
+import RequirementWorkActions from './RequirementWorkActions.vue'
 import { requirementCoverageKey, requirementStatuses, requirementStatusKey } from '@/utils/requirementStatus'
-import type { RequirementListQuery, RequirementSummary } from '@/types/workspaceAssets'
+import type { RequirementListQuery, RequirementSummary, RequirementWorkScope } from '@/types/workspaceAssets'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   canCreateTask?: boolean
+  canManage?: boolean
+  userId?: string
+  claimingId?: string | null
+  query?: RequirementListQuery
   items: readonly RequirementSummary[]
   total: number
   page: number
   pageSize: number
   loading?: boolean
-}>()
+}>(), { canManage: true })
 
 const emit = defineEmits<{
   queryChange: [query: RequirementListQuery]
@@ -25,6 +30,8 @@ const emit = defineEmits<{
   edit: [requirement: RequirementSummary]
   split: [requirement: RequirementSummary]
   createTask: [requirement: RequirementSummary]
+  claim: [requirement: RequirementSummary, clarify: boolean]
+  enter: [requirement: RequirementSummary]
 }>()
 
 const tableRef = ref<TableInstance>()
@@ -32,15 +39,18 @@ const tableRef = ref<TableInstance>()
 const { t } = useI18n()
 
 const filters = reactive({
-  q: '',
-  status: '',
-  priority: '',
-  source_kind: '',
-  sort_by: 'updated_at' as NonNullable<RequirementListQuery['sort_by']>,
-  sort_order: 'desc' as NonNullable<RequirementListQuery['sort_order']>,
+  q: props.query?.q || '',
+  status: props.query?.status || '',
+  priority: props.query?.priority || '',
+  source_kind: props.query?.source_kind || '',
+  work_scope: (props.query?.work_scope || 'all') as RequirementWorkScope,
+  sort_by: props.query?.sort_by || 'updated_at' as NonNullable<RequirementListQuery['sort_by']>,
+  sort_order: props.query?.sort_order || 'desc' as NonNullable<RequirementListQuery['sort_order']>,
   page: props.page || 1,
   page_size: props.pageSize || 20,
 })
+const workScopeOptions = computed(() => (['all', 'claimable', 'mine', 'clarify'] as const)
+  .map(value => ({ label: t('workspace_assets.delivery.' + value), value })))
 
 const statusOptions = computed(() => requirementStatuses.map(value => ({ label: t(requirementStatusKey(value)), value })))
 const priorityOptions = ['P0', 'P1', 'P2', 'P3', 'High', 'Medium', 'Low'].map(opt => ({ label: opt, value: opt }))
@@ -96,6 +106,7 @@ function compactQuery(): RequirementListQuery {
     status: filters.status || undefined,
     priority: filters.priority || undefined,
     source_kind: filters.source_kind || undefined,
+    work_scope: filters.work_scope,
     sort_by: filters.sort_by,
     sort_order: filters.sort_order,
     page: filters.page,
@@ -113,6 +124,7 @@ function resetQuery() {
   filters.status = ''
   filters.priority = ''
   filters.source_kind = ''
+  filters.work_scope = 'all'
   filters.sort_by = 'updated_at'
   filters.sort_order = 'desc'
   filters.page = 1
@@ -169,13 +181,23 @@ function handleRowClick(row: RequirementSummary) {
 <template>
   <section class="requirement-table-workbench">
     <header class="table-toolbar">
-      <p class="eyebrow">{{ t('workspace_assets.requirements.table.eyebrow') }}</p>
-      <el-button type="primary" @click="emit('create')">
+      <h3>{{ t('workspace_assets.nav.requirements') }}</h3>
+      <el-button v-if="canManage" type="primary" @click="emit('create')">
         {{ t('workspace_assets.requirements.actions.new') }}
       </el-button>
     </header>
 
     <el-form class="query-bar" label-position="top" @submit.prevent="submitQuery">
+      <el-radio-group
+        v-model="filters.work_scope"
+        class="requirement-scope"
+        :aria-label="t('workspace_assets.delivery.scope_label')"
+        @change="submitQuery"
+      >
+        <el-radio-button v-for="option in workScopeOptions" :key="option.value" :value="option.value">
+          {{ option.label }}
+        </el-radio-button>
+      </el-radio-group>
       <div class="query-grid">
         <el-form-item :label="t('workspace_assets.requirements.table.search')" class="search-field">
           <el-input
@@ -233,6 +255,11 @@ function handleRowClick(row: RequirementSummary) {
               </el-tag>
             </div>
             <span v-if="row.parent_title && !!row.parent_requirement_id" class="parent-hint">{{ row.parent_title }}</span>
+            <span v-if="row.clarification_reason && filters.work_scope === 'clarify'" class="parent-hint">
+              {{ row.clarification_reason === 'predecessor'
+                ? t('workspace_assets.delivery.blocked', { title: row.predecessor_title })
+                : t('workspace_assets.delivery.clarify_scope') }}
+            </span>
           </div>
         </template>
       </el-table-column>
@@ -278,12 +305,15 @@ function handleRowClick(row: RequirementSummary) {
         <template #default="{ row }">
           <div class="operation-row">
             <el-button size="small" @click.stop="emit('open', row)">{{ t('workspace_assets.requirements.table.view_detail') }}</el-button>
-            <el-button v-if="row.can_link_task && row.child_count === 0" size="small" :disabled="!canCreateTask" @click.stop="emit('createTask', row)">{{ t('task_rail.create_for_requirement') }}</el-button>
-            <el-button size="small" type="primary" @click.stop="emit('edit', row)">{{ t('workspace_assets.requirements.actions.edit') }}</el-button>
-            <el-button v-if="isParent(row)" size="small" type="success" @click.stop="emit('createChild', row)">
+            <RequirementWorkActions :requirement="row" :user-id="userId" :enabled="canCreateTask" :busy="claimingId === row.id"
+              @claim="emit('claim', row, $event)" @enter="emit('enter', row)" />
+            <el-button v-if="row.can_link_task && row.child_count === 0 && row.work_started !== false && canCreateTask"
+              size="small" @click.stop="emit('createTask', row)">{{ t('task_rail.create_for_requirement') }}</el-button>
+            <el-button v-if="canManage" size="small" type="primary" @click.stop="emit('edit', row)">{{ t('workspace_assets.requirements.actions.edit') }}</el-button>
+            <el-button v-if="isParent(row) && canManage" size="small" type="success" @click.stop="emit('createChild', row)">
               {{ t('workspace_assets.requirements.table.add_child') }}
             </el-button>
-            <el-button v-if="isParent(row)" size="small" type="warning" @click.stop="emit('split', row)">
+            <el-button v-if="isParent(row) && canManage" size="small" type="warning" @click.stop="emit('split', row)">
               {{ t('workspace_assets.requirements.actions.split') }}
             </el-button>
           </div>
@@ -314,6 +344,7 @@ function handleRowClick(row: RequirementSummary) {
 .related-cell { display: grid; gap: 5px; padding-block: 4px; }
 .requirement-table-workbench {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   padding: 20px;
   border: 1px solid #e2e8f0;
@@ -354,10 +385,48 @@ function handleRowClick(row: RequirementSummary) {
 }
 
 .query-bar {
+  container-type: inline-size;
   padding: 1.25rem;
   border-radius: 12px;
   background: #f8fafc;
   border: 1px solid rgba(226, 232, 240, 0.6);
+}
+
+.requirement-scope {
+  --el-border-radius-base: var(--radius-md);
+  margin-bottom: 16px;
+}
+
+.requirement-scope :deep(.el-radio-button) {
+  --el-radio-button-checked-bg-color: var(--color-primary-700);
+  --el-radio-button-checked-border-color: var(--color-primary-700);
+}
+
+@container (max-width: 470px) {
+  .requirement-scope {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .requirement-scope :deep(.el-radio-button__inner) {
+    width: 100%;
+    height: 100%;
+    padding-inline: 8px;
+    border: 1px solid var(--el-border-color);
+    border-radius: var(--radius-md);
+    outline: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .requirement-scope :deep(.el-radio-button.is-active .el-radio-button__inner) {
+    box-shadow: none;
+  }
+
+  .requirement-scope :deep(.el-radio-button__original-radio:focus-visible + .el-radio-button__inner) {
+    outline: 2px solid var(--color-primary-600);
+  }
 }
 
 .query-grid {
@@ -369,7 +438,7 @@ function handleRowClick(row: RequirementSummary) {
 
 .search-field {
   flex: 1;
-  min-width: 320px;
+  min-width: min(100%, 320px);
   margin-bottom: 0 !important;
 }
 
@@ -508,6 +577,7 @@ function handleRowClick(row: RequirementSummary) {
 }
 
 .pagination-row {
+  flex-wrap: wrap;
   padding-top: 4px;
   color: #64748b;
   font-size: 13px;

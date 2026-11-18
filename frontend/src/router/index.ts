@@ -316,6 +316,16 @@ const router = createRouter({
           component: () => import('../views/WorkspaceAssetRequirementDetailView.vue')
         },
         {
+          path: 'assets/requirements/:requirementId/edit',
+          name: 'workspaceAssetsRequirementEdit',
+          component: () => import('../views/WorkspaceAssetRequirementEditView.vue'),
+        },
+        {
+          path: 'assets/requirements/:requirementId/children/new',
+          name: 'workspaceAssetsRequirementChild',
+          component: () => import('../views/WorkspaceAssetRequirementEditView.vue'),
+        },
+        {
           path: 'assets/requirements/:requirementId/split-review/:batchId',
           name: 'workspaceAssetRequirementSplitReview',
           component: () => import('../views/WorkspaceAssetRequirementSplitReviewView.vue')
@@ -341,9 +351,14 @@ const router = createRouter({
           component: () => import('../views/DeltaWorkbenchView.vue')
         },
         {
+          path: 'assets/workload',
+          name: 'workspaceAssetsWorkload',
+          component: () => import('../views/AssetView.vue')
+        },
+        {
           path: 'assets/traceability',
           name: 'workspaceAssetsTraceability',
-          component: () => import('../views/AssetView.vue')
+          redirect: to => ({ name: 'workspaceAssetsWorkload', params: { wsId: to.params.wsId } }),
         },
         {
           path: 'cases',

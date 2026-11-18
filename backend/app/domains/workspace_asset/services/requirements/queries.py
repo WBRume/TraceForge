@@ -26,6 +26,12 @@ from app.domains.workspace_asset.services.common.primitives import (
     enum_value,
     make_connection,
 )
+from app.domains.workspace_asset.services.requirements.delivery import (
+    OPEN_STATUSES,
+    READY_STATUSES,
+    activity_times,
+    matches_work_scope,
+)
 from app.domains.workspace_asset.services.requirements.presenters import (
     requirement_audit_response,
     requirement_linked_task,
@@ -123,6 +129,12 @@ def list_requirement_options(
 def requirement_load_options() -> tuple[Any, ...]:
     return (
         selectinload(SddRequirement.owner),
+        selectinload(SddRequirement.reviewer),
+        selectinload(SddRequirement.acceptor),
+        selectinload(SddRequirement.predecessor),
+        selectinload(SddRequirement.child_requirements).selectinload(SddRequirement.reviewer),
+        selectinload(SddRequirement.child_requirements).selectinload(SddRequirement.acceptor),
+        selectinload(SddRequirement.child_requirements).selectinload(SddRequirement.predecessor),
         selectinload(SddRequirement.child_requirements).selectinload(SddRequirement.owner),
         selectinload(SddRequirement.parent_requirement),
         selectinload(SddRequirement.child_requirements),
@@ -210,8 +222,10 @@ def list_requirements(
     sort_order: str = "desc",
     page: int = 1,
     page_size: int = 50,
+    work_scope: str = "all",
+    actor_id: str = "",
 ) -> WorkspaceAssetsRequirementsResponse:
-    scope_value = scope if scope in {"tree", "flat", "children"} else "tree"
+    scope_value = "flat" if work_scope != "all" else scope if scope in {"tree", "flat", "children"} else "tree"
     sort_value = sort_by if sort_by in _REQUIREMENT_SORT_FIELDS else "created_at"
     page_value = max(1, int(page or 1))
     page_size_value = max(1, min(200, int(page_size or 50)))
@@ -246,16 +260,28 @@ def list_requirements(
     if source_kind:
         query = query.filter(SddRequirement.source_kind == source_kind)
 
+    if work_scope != "all":
+        query = query.filter(SddRequirement.status.in_(OPEN_STATUSES), ~SddRequirement.child_requirements.any())
+        if work_scope == "mine":
+            query = query.filter(SddRequirement.owner_id == actor_id)
+        elif work_scope == "claimable":
+            query = query.filter(SddRequirement.owner_id.is_(None), SddRequirement.status.in_(READY_STATUSES))
     requirements = query.all()
+    starts = None
+    if work_scope != "all":
+        starts = _activity_times(db, workspace_id, requirements)
+        requirements = [item for item in requirements if matches_work_scope(item, starts, work_scope, actor_id)]
     reverse = sort_order != "asc"
     requirements = sorted(requirements, key=lambda item: _requirement_sort_key(item, sort_value), reverse=reverse)
     total = len(requirements)
     offset = (page_value - 1) * page_size_value
     page_items = requirements[offset : offset + page_size_value]
+    if starts is None:
+        starts = _activity_times(db, workspace_id, page_items)
     return WorkspaceAssetsRequirementsResponse(
         workspace_id=workspace_id,
         items=[
-            requirement_summary(item, include_linked_tasks=True, include_children=scope_value == "tree")
+            requirement_summary(item, include_linked_tasks=True, include_children=scope_value == "tree", starts=starts)
             for item in page_items
         ],
         total=total,
@@ -276,17 +302,31 @@ def list_requirements(
     )
 
 
+def _activity_times(db: Session, workspace_id: str, requirements: list[SddRequirement]) -> dict[str, datetime]:
+    return activity_times(
+        db,
+        workspace_id,
+        (
+            link.task_id
+            for requirement in requirements
+            for item in [requirement, *requirement.child_requirements]
+            for link in item.task_links
+        ),
+    )
+
+
 def get_requirement_detail(db: Session, workspace_id: str, requirement_id: str) -> RequirementDetailResponse | None:
     requirement = get_requirement(db, workspace_id, requirement_id)
     if not requirement:
         return None
     links = sorted(requirement.task_links or [], key=lambda item: item.created_at, reverse=True)
     logs = sorted(requirement.audit_logs or [], key=lambda item: item.created_at, reverse=True)
+    starts = _activity_times(db, workspace_id, [requirement])
     return RequirementDetailResponse(
-        requirement=requirement_summary(requirement, include_linked_tasks=True, include_children=True),
+        requirement=requirement_summary(requirement, include_linked_tasks=True, include_children=True, starts=starts),
         linked_tasks=[requirement_linked_task(link) for link in links],
         children=[
-            requirement_summary(child, include_linked_tasks=True)
+            requirement_summary(child, include_linked_tasks=True, starts=starts)
             for child in sorted(
                 requirement.child_requirements or [],
                 key=lambda item: item.created_at or datetime.min,

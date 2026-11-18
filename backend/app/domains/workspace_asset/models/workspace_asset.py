@@ -232,6 +232,10 @@ class SddRequirement(Base):
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     created_by_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     owner_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    reviewer_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    acceptor_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    predecessor_id = Column(String(36), ForeignKey("sdd_requirements.id", ondelete="SET NULL"), nullable=True)
+    result_check_required = Column(Boolean, nullable=False, default=False, server_default="false")
     title = Column(String(300), nullable=False)
     body = Column(Text, nullable=True)
     status = Column(
@@ -264,8 +268,15 @@ class SddRequirement(Base):
     workspace = relationship("Workspace", back_populates="requirements")
     creator = relationship("User", foreign_keys=[created_by_id])
     owner = relationship("User", foreign_keys=[owner_id])
-    parent_requirement = relationship("SddRequirement", remote_side=[id], back_populates="child_requirements")
-    child_requirements = relationship("SddRequirement", back_populates="parent_requirement")
+    predecessor = relationship("SddRequirement", foreign_keys=[predecessor_id], remote_side=[id])
+    reviewer = relationship("User", foreign_keys=[reviewer_id])
+    acceptor = relationship("User", foreign_keys=[acceptor_id])
+    parent_requirement = relationship(
+        "SddRequirement", foreign_keys=[parent_requirement_id], remote_side=[id], back_populates="child_requirements"
+    )
+    child_requirements = relationship(
+        "SddRequirement", foreign_keys=[parent_requirement_id], back_populates="parent_requirement"
+    )
     import_batch = relationship("SddRequirementImportBatch", back_populates="requirements")
     task_links = relationship("SddTaskRequirement", back_populates="requirement", cascade="all, delete-orphan")
     evidence_items = relationship("SddEvidence", back_populates="requirement")

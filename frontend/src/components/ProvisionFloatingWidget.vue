@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import DomainMilestones from '@/components/ai/DomainMilestones.vue'
 import { computed, nextTick, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { AlertTriangle, CheckCircle2, Loader2, Minimize2, X } from '@/components/icons'
@@ -14,6 +14,7 @@ import { useFloatingPosition } from '@/composables/useFloatingPosition'
 const store = useProvisioningStore()
 const skillAnalysisStore = useSkillAnalysisStore()
 const router = useRouter()
+const route = useRoute()
 const { t } = useI18n()
 const widget = ref<HTMLElement | null>(null)
 const position = useFloatingPosition(widget)
@@ -23,7 +24,11 @@ const KNOWN_ERROR_KEYS = new Set(['task_status_not_ready', 'load_failed', 'faile
 
 // 预览作业在弹窗点「缩小」或取消请求已发出（cancelRequested）后出现在浮窗；
 // 查看结果后隐藏。取消中的作业必须可见：这是「关闭弹窗已停止 CLI」的可见反馈
-const jobs = computed(() => [...store.jobList.filter((job) => job.kind === 'provision' || ((job.handedOver || job.cancelRequested) && !job.viewed)), ...skillAnalysisStore.jobs])
+const jobs = computed(() => [...store.jobList.filter((job) => {
+  if (job.kind !== 'provision') return (job.handedOver || job.cancelRequested) && !job.viewed
+  const isCurrentTask = route.name === 'taskChat' && route.params.wsId === job.workspaceId && route.params.taskId === job.taskId
+  return !(job.ready && isCurrentTask)
+}), ...skillAnalysisStore.jobs])
 const activeJobs = computed(() => jobs.value.filter((job) => !job.terminal))
 const terminalJobs = computed(() => jobs.value.filter((job) => job.terminal))
 const reviewJobs = computed(() => terminalJobs.value.filter((job) => job.status === 'SUCCESS' && job.reviewRequired))

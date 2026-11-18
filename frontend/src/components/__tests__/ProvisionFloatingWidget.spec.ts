@@ -32,6 +32,7 @@ vi.mock('element-plus', () => ({
 
 vi.mock('vue-router', () => ({
   useRouter: () => routerMock,
+  useRoute: () => ({ name: 'workspaceAssetsRequirements', params: {} }),
 }))
 
 vi.mock('@/utils/api', () => ({

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { mount, RouterLinkStub } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
+import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
 import RequirementDetailContent from '../RequirementDetailContent.vue'
 import RequirementDetailPanel from '../RequirementDetailPanel.vue'
-import RequirementEditDrawer from '../RequirementEditDrawer.vue'
+import RequirementEditForm from '../RequirementEditForm.vue'
 import RequirementImportDialog from '../RequirementImportDialog.vue'
 import RequirementRepositoryPanel from '../RequirementRepositoryPanel.vue'
 import RequirementSpecificationBlock from '../RequirementSpecificationBlock.vue'
@@ -87,11 +88,12 @@ describe('Requirement panels', () => {
     expect(wrapper.text()).toContain('docs/checkout.md')
     expect(wrapper.text()).toContain('Implement checkout validation')
     expect(wrapper.text().indexOf('Initialization prompt')).toBeLessThan(wrapper.text().indexOf('Related Tasks'))
-    const editor = mount(RequirementEditDrawer, { props:{ open:true, requirement:record }, global:{ plugins:[i18nPlugin()], stubs:{ Teleport:true } } })
-    const promptLabel = editor.findAll('label').find((label) => label.text() === 'Initialization prompt')!
+    const editor = mount(RequirementEditForm, { props:{ workspaceId:'ws-1', requirement:record },
+      global:{ plugins:[i18nPlugin(), ElementPlus, createPinia()], stubs:{ RequirementAssignmentFields:true } } })
+    const promptLabel = editor.findAll('.el-form-item').find((item) => item.text().startsWith('Initialization prompt'))!
     expect(promptLabel.find('textarea').element).toHaveProperty('value', 'Implement checkout validation')
     await promptLabel.find('textarea').setValue('Edited checkout instructions')
-    const locationLabel = editor.findAll('label').find((label) => label.text() === 'Document location')!
+    const locationLabel = editor.findAll('.el-form-item').find((item) => item.text().startsWith('Document location'))!
     await locationLabel.find('input').setValue('docs/new-checkout.md')
     await editor.find('form').trigger('submit')
     expect(editor.emitted('submit')?.[0]?.[0]).toMatchObject({ task_prompt:'Edited checkout instructions', source_uri:'docs/new-checkout.md' })
@@ -147,7 +149,7 @@ describe('Requirement panels', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('需求资产表格')
+    expect(wrapper.get('h3').text()).toBe('需求资产')
     expect(wrapper.html()).toContain('el-table')
     expect(wrapper.text()).toContain('新建需求')
     await wrapper.get('.table-toolbar .el-button--primary').trigger('click')
