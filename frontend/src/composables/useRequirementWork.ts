@@ -43,5 +43,5 @@ export function useRequirementWork(workspace: () => string, userId: () => string
     }
   }
 
-  return { busy, claim, enter }
+  return { busy, claim }
 }

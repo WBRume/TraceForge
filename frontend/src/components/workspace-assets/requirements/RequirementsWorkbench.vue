@@ -583,7 +583,6 @@ watch(
       :claiming-id="work.busy.value"
       :query="tableQuery"
       @claim="work.claim"
-      @enter="work.enter"
       @create-task="taskCreation.open"
       :items="requirementItems"
       :total="activeResponse.total"

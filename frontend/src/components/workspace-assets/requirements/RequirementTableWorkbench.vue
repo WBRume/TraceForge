@@ -31,7 +31,6 @@ const emit = defineEmits<{
   split: [requirement: RequirementSummary]
   createTask: [requirement: RequirementSummary]
   claim: [requirement: RequirementSummary, clarify: boolean]
-  enter: [requirement: RequirementSummary]
 }>()
 
 const tableRef = ref<TableInstance>()
@@ -316,7 +315,6 @@ function handleRowClick(row: RequirementSummary) {
             @create-child="emit('createChild', row)"
             @split="emit('split', row)"
             @claim="(clarify: boolean) => emit('claim', row, clarify)"
-            @enter="emit('enter', row)"
           />
         </template>
       </el-table-column>

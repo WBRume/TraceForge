@@ -28,7 +28,6 @@ const emit = defineEmits<{
   createTask: []
   createChild: []
   split: []
-  enter: []
   claim: [clarify: boolean]
 }>()
 
@@ -36,13 +35,11 @@ const { t } = useI18n()
 const moreOpen = ref(false)
 
 const isParent = computed(() => !props.requirement.parent_requirement_id)
-const workActionVisible = computed(() => Boolean(props.userId) && props.canCreateTask
-  && !props.requirement.child_count && !props.requirement.work_started
+const isClaimable = computed(() => Boolean(props.userId) && props.canCreateTask
+  && !props.requirement.owner_id && !props.requirement.child_count && !props.requirement.work_started
   && !['ARCHIVED', 'VERIFIED', 'PENDING_ACCEPTANCE'].includes(props.requirement.status))
-const isClaimable = computed(() => workActionVisible.value && !props.requirement.owner_id)
-const canEnter = computed(() => workActionVisible.value && props.requirement.owner_id === props.userId)
 const canCreateTaskForRequirement = computed(() => props.requirement.can_link_task
-  && props.requirement.child_count === 0 && props.requirement.work_started !== false && props.canCreateTask)
+  && props.requirement.child_count === 0 && props.canCreateTask)
 
 const claimLabel = computed(() => t(props.requirement.clarification_reason
   ? 'workspace_assets.delivery.claim_clarify'
@@ -103,21 +100,6 @@ async function handleMoreCommand(command: MoreCommand) {
           <span v-if="claiming" class="requirement-action-spinner" />
           <svg v-else class="requirement-action-icon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" />
-          </svg>
-        </button>
-      </el-tooltip>
-
-      <el-tooltip v-else-if="canEnter" :content="t('workspace_assets.delivery.enter')" placement="top" :show-after="120" popper-class="requirement-action-tooltip">
-        <button
-          type="button"
-          class="requirement-action-btn"
-          :aria-label="t('workspace_assets.delivery.enter')"
-          @click.stop="emit('enter')"
-        >
-          <svg class="requirement-action-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-            <polyline points="10 17 15 12 10 7" />
-            <line x1="15" x2="3" y1="12" y2="12" />
           </svg>
         </button>
       </el-tooltip>

@@ -124,17 +124,54 @@ const splitPreviewPayload = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 })
 
-const mountWorkbench = () =>
+const mountWorkbench = (item = requirement()) =>
   mount(RequirementsWorkbench, {
     props: {
       workspaceId: 'ws-1',
-      requirements: [requirement()],
+      requirements: [item],
     },
     global: {
       plugins: [createPinia(), i18nPlugin('zh'), ElementPlus],
       stubs: { teleport: true },
     },
   })
+
+describe('RequirementsWorkbench task creation', () => {
+  it.each([
+    { status: 'DRAFT', workStarted: false, hasTask: false },
+    { status: 'READY', workStarted: false, hasTask: true },
+    { status: 'IN_PROGRESS', workStarted: true, hasTask: true },
+  ])('opens a new task for $status (linked task: $hasTask)', async ({ status, workStarted, hasTask }) => {
+    const record = requirement({
+      status,
+      owner_id: 'user-1',
+      work_started: workStarted,
+      related_task_count: hasTask ? 1 : 0,
+      linked_tasks: hasTask ? [{
+        link_id: 'link-1',
+        task_id: 'existing-task',
+        task_name: 'Existing task',
+        task_status: workStarted ? 'RUNNING' : 'INITIALIZED',
+        relation_type: 'COVERS',
+        coverage_status: 'waiting_evidence',
+      }] : [],
+    })
+    apiMock.get.mockImplementation(async (url: string) => ({
+      data: url.endsWith(`/requirements/${record.id}`) ? { requirement: record } : { repositories: [] },
+    }))
+    const wrapper = mountWorkbench(record)
+    try {
+      await flushPromises()
+      expect(wrapper.find('button[aria-label="进入会话"]').exists()).toBe(false)
+      await wrapper.get('button[aria-label="为此需求创建任务"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.get('.modal-overlay .primary-input').element).toHaveProperty('value', record.title)
+      expect(routerMock.push).not.toHaveBeenCalled()
+    } finally {
+      wrapper.unmount()
+    }
+  })
+})
 
 async function clickSplitButton(wrapper: ReturnType<typeof mountWorkbench>) {
   const splitButton = wrapper.findAll('button').find((btn) => btn.attributes('aria-label') === '拆分')

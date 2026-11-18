@@ -462,8 +462,8 @@ watch(() => provisioningStore.taskListRefreshToken, () => { void reloadDetail() 
       <h2>{{ currentRequirement.title }}</h2>
       <RequirementWorkActions :requirement="currentRequirement" :user-id="auth.user?.id"
         :enabled="taskCreation.canCreateTask.value" :busy="work.busy.value === currentRequirement.id"
-        @claim="work.claim(currentRequirement, $event)" @enter="work.enter(currentRequirement)" />
-      <button v-if="currentRequirement.work_started && currentRequirement.can_link_task && currentRequirement.child_count === 0 && taskCreation.canCreateTask.value"
+        @claim="work.claim(currentRequirement, $event)" />
+      <button v-if="currentRequirement.can_link_task && currentRequirement.child_count === 0 && taskCreation.canCreateTask.value"
         type="button" class="btn-primary" @click="taskCreation.open(currentRequirement)">{{ t('task_rail.create_for_requirement') }}</button>
     </div>
     <RequirementTaskCreateDialog :workspace-id="wsId" :requirement="taskCreation.selectedRequirement.value"
