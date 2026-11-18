@@ -36,15 +36,35 @@ const canShowStatusSummary = computed(() => (
     <div v-if="canShowActions" class="actions-left">
       <template v-if="!props.vm.hidePatchWorkflows">
         <span class="verify-label">{{ t('portal.architecture') }}:</span>
-        <button class="btn-micro" @click="props.vm.sendVerification('ui')" title="Playwright UI">
+        <!-- 架构图能力尚未接入：三个快捷验证按钮统一置灰，仅保留可见的可用性标记 -->
+        <button
+          class="btn-micro is-unavailable"
+          type="button"
+          disabled
+          aria-disabled="true"
+          :title="t('chat.verification_unavailable_title')"
+        >
           <TestTube class="w-3" /> UI
         </button>
-        <button class="btn-micro" @click="props.vm.sendVerification('api')" title="Postman API">
+        <button
+          class="btn-micro is-unavailable"
+          type="button"
+          disabled
+          aria-disabled="true"
+          :title="t('chat.verification_unavailable_title')"
+        >
           <Database class="w-3" /> API
         </button>
-        <button class="btn-micro" @click="props.vm.sendVerification('e2e')" :title="t('chat.verification_e2e_title')">
+        <button
+          class="btn-micro is-unavailable"
+          type="button"
+          disabled
+          aria-disabled="true"
+          :title="t('chat.verification_unavailable_title')"
+        >
           <Sparkles class="w-3" /> E2E
         </button>
+        <span class="unavailable-badge">{{ t('chat.verification_unavailable_badge') }}</span>
       </template>
       <template v-else>
         <button
@@ -123,6 +143,27 @@ const canShowStatusSummary = computed(() => (
   font-size: 0.75rem;
   color: #94A3B8;
   margin-right: 4px;
+}
+
+/* 未接入能力的按钮：保持占位可见，但明确置灰且不可点击 */
+.actions-left .btn-micro.is-unavailable,
+.actions-left .btn-micro.is-unavailable:hover {
+  background: #F8FAFC;
+  color: #CBD5E1;
+  border-color: #E2E8F0;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.unavailable-badge {
+  padding: 2px 8px;
+  border-radius: 9999px;
+  border: 1px dashed #E2E8F0;
+  background: #F8FAFC;
+  color: #94A3B8;
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 @media (max-width: 760px) {

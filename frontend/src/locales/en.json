@@ -918,6 +918,8 @@
     "plan_docs_load_failed": "Failed to load markdown file",
     "plan_docs_save_failed": "Failed to save markdown file",
     "verification_e2e_title": "End-to-end integration",
+    "verification_unavailable_title": "Architecture quick verification is not connected yet and is unavailable",
+    "verification_unavailable_badge": "Unavailable",
     "verification_tag": "Advanced Verification",
     "verification_prompt_ui": "Please orchestrate Playwright MCP: simulate user clicks, typing, and route transitions in Chrome to validate UI rendering and interaction logic. Important: run teardown and clean dirty data after testing.",
     "verification_prompt_api": "Please orchestrate Postman MCP: run automated API scripts remotely to verify HTTP status codes, JSON schema, and persistence outcomes. Important: run teardown and clean dirty data after testing.",
@@ -2579,7 +2581,9 @@
           "file": "Import file",
           "file_body": "Upload DOCX, Markdown, or Text.",
           "source_link": "Source link",
-          "source_link_body": "Record an external PRD, Issue, or Ticket reference."
+          "source_link_body": "Record an external PRD, Issue, or Ticket reference.",
+          "unavailable_badge": "Unavailable",
+          "unavailable_hint": "Not available yet: external sources only record a reference without fetching content, so no usable Requirement can be created."
         },
         "manual_step_title": "Manual creation and pasted text",
         "manual_step_body": "Fill in a Requirement directly, or paste requirement text into the description and generate an AI Preview from it.",

@@ -49,6 +49,15 @@ describe('VerificationActions & RunSummaryCard Integration', () => {
     expect(wrapper.text()).toContain('API')
     expect(wrapper.text()).toContain('E2E')
 
+    // 架构图能力未接入：三个快捷验证按钮置灰不可用
+    const architectureButtons = wrapper.findAll('.actions-left .btn-micro')
+    expect(architectureButtons).toHaveLength(3)
+    architectureButtons.forEach((button) => {
+      expect(button.attributes('disabled')).toBeDefined()
+      expect(button.attributes('aria-disabled')).toBe('true')
+    })
+    expect(wrapper.text()).toContain('暂不可用')
+
     expect(wrapper.find('.actions-right').exists()).toBe(true)
     expect(wrapper.text()).not.toContain('任务状态分布')
     expect(wrapper.text()).toContain('96.5s')

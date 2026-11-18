@@ -918,6 +918,8 @@
     "plan_docs_load_failed": "加载 Markdown 文件失败",
     "plan_docs_save_failed": "保存 Markdown 文件失败",
     "verification_e2e_title": "全链路集成",
+    "verification_unavailable_title": "架构图快捷验证暂未接入，暂不可用",
+    "verification_unavailable_badge": "暂不可用",
     "verification_tag": "高阶验证",
     "verification_prompt_ui": "请调度 Playwright MCP：直接在 Chrome 浏览器中模拟用户点击、输入、路由跳转，验证 UI 渲染与交互逻辑。注意：务必在测试结束后自行执行清理脏数据 (Teardown)。",
     "verification_prompt_api": "请调度 Postman MCP：远程执行自动化 API 脚本，验证 HTTP 状态码、响应 JSON 结构、数据持久化成果。注意：务必在测试结束后自行执行清理脏数据 (Teardown)。",
@@ -2581,7 +2583,9 @@
           "file": "导入单文件",
           "file_body": "上传 DOCX、Markdown 或 Text。",
           "source_link": "来源链接",
-          "source_link_body": "记录外部 PRD、Issue 或 Ticket 引用。"
+          "source_link_body": "记录外部 PRD、Issue 或 Ticket 引用。",
+          "unavailable_badge": "不可用",
+          "unavailable_hint": "暂不开放：外部来源只记录引用、不获取内容，无法建立有效需求。"
         },
         "manual_step_title": "手工创建 / 粘贴文本",
         "manual_step_body": "可以直接填写一条 Requirement，也可以把需求文本粘贴到描述中，再生成 AI Preview 拆分。",

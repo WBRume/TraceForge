@@ -187,6 +187,7 @@ describe('Requirement panels', () => {
     expect(dialog.text()).toContain('手工创建')
     expect(dialog.text()).toContain('导入单文件')
     expect(dialog.text()).toContain('来源链接')
+    expect(dialog.text()).toContain('不可用')
     expect(dialog.findAll('.method-card')).toHaveLength(3)
     expect(dialog.text()).not.toContain('暂无 Preview')
     await dialog.findAll('.method-card')[1].trigger('click')
@@ -202,10 +203,13 @@ describe('Requirement panels', () => {
     await fileInput.trigger('change')
     expect(dialog.findAll('.secondary-action').some((button) => button.attributes('disabled') === undefined)).toBe(true)
     await dialog.findAll('.ghost-action')[0].trigger('click')
-    await dialog.findAll('.method-card')[2].trigger('click')
-    expect(dialog.text()).toContain('记录来源链接')
-    expect(dialog.text()).toContain('来源链接')
-    expect(dialog.text()).toContain('来源引用')
+    // 外部来源链接当前置灰不可用：点击不会进入来源链接步骤
+    const sourceLinkCard = dialog.findAll('.method-card')[2]
+    expect(sourceLinkCard.attributes('disabled')).toBeDefined()
+    expect(sourceLinkCard.attributes('aria-disabled')).toBe('true')
+    await sourceLinkCard.trigger('click')
+    expect(dialog.text()).not.toContain('记录来源链接')
+    expect(dialog.findAll('.method-card')).toHaveLength(3)
   })
 
   it('renders editable AI preview items with task prompts before confirmation', () => {

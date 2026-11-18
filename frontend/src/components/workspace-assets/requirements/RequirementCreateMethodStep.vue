@@ -11,7 +11,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-const methods: Array<{ key: CreateMethod; icon: typeof FilePlus2; labelKey: string; bodyKey: string }> = [
+const methods: Array<{ key: CreateMethod; icon: typeof FilePlus2; labelKey: string; bodyKey: string; disabled?: boolean }> = [
   {
     key: 'manual',
     icon: FilePlus2,
@@ -25,12 +25,19 @@ const methods: Array<{ key: CreateMethod; icon: typeof FilePlus2; labelKey: stri
     bodyKey: 'workspace_assets.requirements.create.methods.file_body',
   },
   {
+    // 外部来源只记录引用、不抓取内容，当前没有实际创建价值，先置灰保留占位
     key: 'source_link',
     icon: Link2,
     labelKey: 'workspace_assets.requirements.create.methods.source_link',
     bodyKey: 'workspace_assets.requirements.create.methods.source_link_body',
+    disabled: true,
   },
 ]
+
+function selectMethod(method: (typeof methods)[number]) {
+  if (method.disabled) return
+  emit('select', method.key)
+}
 </script>
 
 <template>
@@ -41,11 +48,20 @@ const methods: Array<{ key: CreateMethod; icon: typeof FilePlus2; labelKey: stri
         :key="method.key"
         type="button"
         class="method-card"
-        @click="emit('select', method.key)"
+        :class="{ 'is-unavailable': method.disabled }"
+        :disabled="method.disabled"
+        :aria-disabled="method.disabled ? 'true' : undefined"
+        :title="method.disabled ? t('workspace_assets.requirements.create.methods.unavailable_hint') : undefined"
+        @click="selectMethod(method)"
       >
         <component :is="method.icon" :size="19" />
         <span>
-          <strong>{{ t(method.labelKey) }}</strong>
+          <strong>
+            {{ t(method.labelKey) }}
+            <em v-if="method.disabled" class="unavailable-badge">
+              {{ t('workspace_assets.requirements.create.methods.unavailable_badge') }}
+            </em>
+          </strong>
           <small>{{ t(method.bodyKey) }}</small>
         </span>
       </button>
@@ -106,6 +122,43 @@ const methods: Array<{ key: CreateMethod; icon: typeof FilePlus2; labelKey: stri
   color: #64748b;
   font-size: 0.8125rem;
   line-height: 1.5;
+}
+
+/* 未开放的方式：保持占位可见，但明确置灰且不可点击 */
+.method-card.is-unavailable,
+.method-card.is-unavailable:hover {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  transform: none;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.method-card.is-unavailable svg {
+  color: #cbd5e1;
+}
+
+.method-card.is-unavailable strong {
+  color: #94a3b8;
+}
+
+.method-card.is-unavailable small {
+  color: #a8b4c4;
+}
+
+.unavailable-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0 0.4375rem;
+  border-radius: 9999px;
+  border: 1px dashed #e2e8f0;
+  background: #f1f5f9;
+  color: #94a3b8;
+  font-size: 0.6875rem;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1.6;
+  vertical-align: middle;
 }
 
 @media (max-width: 640px) {
