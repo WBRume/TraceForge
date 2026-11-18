@@ -23,7 +23,6 @@ const { t } = useI18n()
 const fileInput = shallowRef<HTMLInputElement | null>(null)
 const selectedFile = shallowRef<File | null>(null)
 const changeReason = shallowRef('')
-const sourceUri = shallowRef('')
 const taskPrompt = shallowRef('')
 
 const hasContent = computed(() => Boolean(selectedFile.value))
@@ -32,7 +31,6 @@ watch(
   () => props.resetKey,
   () => {
     changeReason.value = ''
-    sourceUri.value = ''
     taskPrompt.value = ''
     selectedFile.value = null
     if (fileInput.value) fileInput.value.value = ''
@@ -49,7 +47,7 @@ function directImport() {
     file: selectedFile.value,
     text: null,
     source_kind: 'document',
-    source_uri: sourceUri.value || null,
+    source_uri: null,
     source_ref: null,
     change_reason: changeReason.value || null,
     task_prompt: taskPrompt.value || null,
@@ -61,7 +59,7 @@ function createPreview() {
     file: selectedFile.value,
     text: null,
     source_kind: 'document',
-    source_uri: sourceUri.value || null,
+    source_uri: null,
     source_ref: null,
   })
 }
@@ -86,7 +84,6 @@ function createPreview() {
       <small v-if="selectedFile">{{ selectedFile.name }}</small>
     </label>
 
-    <label><span>{{ t('task_rail.document_location') }}</span><input v-model="sourceUri" maxlength="1000" :placeholder="t('task_rail.document_location_placeholder')" /></label>
     <label><span>{{ t('task_rail.direct_prompt') }}</span><textarea v-model="taskPrompt" rows="3" :placeholder="t('task_rail.direct_prompt_placeholder')" /></label>
 
     <label>
