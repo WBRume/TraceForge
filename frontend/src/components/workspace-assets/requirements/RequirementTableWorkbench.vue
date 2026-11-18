@@ -5,7 +5,7 @@ import type { TableInstance } from 'element-plus'
 import BaseSelect from '@/components/BaseSelect.vue'
 import RequirementTaskProgress from './RequirementTaskProgress.vue'
 import RequirementPendingItems from './RequirementPendingItems.vue'
-import RequirementWorkActions from './RequirementWorkActions.vue'
+import RequirementActionColumn from './RequirementActionColumn.vue'
 import { requirementCoverageKey, requirementStatuses, requirementStatusKey } from '@/utils/requirementStatus'
 import type { RequirementListQuery, RequirementSummary, RequirementWorkScope } from '@/types/workspaceAssets'
 
@@ -154,10 +154,6 @@ function sourceLabel(row: RequirementSummary): string {
   return row.source_ref || row.source_kind || t('workspace_assets.requirements.detail.source_pending')
 }
 
-function isParent(row: RequirementSummary): boolean {
-  return !row.parent_requirement_id
-}
-
 function priorityLabel(priority: string) {
   const label = priority.trim()
   return /^p\d+$/i.test(label) ? label.toUpperCase() : label
@@ -301,22 +297,27 @@ function handleRowClick(row: RequirementSummary) {
           <span>{{ row.updated_at || row.created_at || t('workspace_assets.requirements.detail.time_pending') }}</span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('workspace_assets.requirements.table.operations')" fixed="right" width="335">
+      <el-table-column
+        :label="t('workspace_assets.requirements.table.operations')"
+        fixed="right"
+        width="150"
+        class-name="operation-column"
+      >
         <template #default="{ row }">
-          <div class="operation-row">
-            <el-button size="small" @click.stop="emit('open', row)">{{ t('workspace_assets.requirements.table.view_detail') }}</el-button>
-            <RequirementWorkActions :requirement="row" :user-id="userId" :enabled="canCreateTask" :busy="claimingId === row.id"
-              @claim="emit('claim', row, $event)" @enter="emit('enter', row)" />
-            <el-button v-if="row.can_link_task && row.child_count === 0 && row.work_started !== false && canCreateTask"
-              size="small" @click.stop="emit('createTask', row)">{{ t('task_rail.create_for_requirement') }}</el-button>
-            <el-button v-if="canManage" size="small" type="primary" @click.stop="emit('edit', row)">{{ t('workspace_assets.requirements.actions.edit') }}</el-button>
-            <el-button v-if="isParent(row) && canManage" size="small" type="success" @click.stop="emit('createChild', row)">
-              {{ t('workspace_assets.requirements.table.add_child') }}
-            </el-button>
-            <el-button v-if="isParent(row) && canManage" size="small" type="warning" @click.stop="emit('split', row)">
-              {{ t('workspace_assets.requirements.actions.split') }}
-            </el-button>
-          </div>
+          <RequirementActionColumn
+            :requirement="row"
+            :user-id="userId"
+            :can-manage="canManage"
+            :can-create-task="canCreateTask"
+            :claiming="claimingId === row.id"
+            @open="emit('open', row)"
+            @edit="emit('edit', row)"
+            @create-task="emit('createTask', row)"
+            @create-child="emit('createChild', row)"
+            @split="emit('split', row)"
+            @claim="(clarify: boolean) => emit('claim', row, clarify)"
+            @enter="emit('enter', row)"
+          />
         </template>
       </el-table-column>
       <template #empty>
@@ -354,8 +355,7 @@ function handleRowClick(row: RequirementSummary) {
 }
 
 .table-toolbar,
-.pagination-row,
-.operation-row {
+.pagination-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -572,9 +572,8 @@ function handleRowClick(row: RequirementSummary) {
   display: grid;
 }
 
-.operation-row {
-  justify-content: flex-start;
-  flex-wrap: wrap;
+.requirements-table :deep(.operation-column .cell) {
+  overflow: visible;
 }
 
 .pagination-row {

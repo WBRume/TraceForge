@@ -137,7 +137,7 @@ const mountWorkbench = () =>
   })
 
 async function clickSplitButton(wrapper: ReturnType<typeof mountWorkbench>) {
-  const splitButton = wrapper.findAll('button').find((btn) => btn.text().includes('拆分'))
+  const splitButton = wrapper.findAll('button').find((btn) => btn.attributes('aria-label') === '拆分')
   expect(splitButton, 'split row action should be rendered for parent requirements').toBeTruthy()
   await splitButton!.trigger('click')
   await flushPromises()
