@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, proxyRefs, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { ElTooltip } from 'element-plus'
 import { RefreshCw } from '@/components/icons'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
@@ -13,10 +14,18 @@ const c = computed(() => proxyRefs(props.controller))
 const ui = useCollaborationPresentation(() => props.controller)
 const available = computed(() => c.value.available && Boolean(c.value.state) && c.value.state?.repository_configured !== false)
 const disabled = computed(() => c.value.busy || c.value.leaving || c.value.loading)
+const mappingMissing = computed(() => c.value.state?.repositories.some(repo => !c.value.mappings[repo.task_repository_id]?.local_path?.trim()))
+const deviceUnavailable = computed(() => c.value.enabled && !c.value.canReconnect)
+const switchDisabled = computed(() => disabled.value || !c.value.participating && (mappingMissing.value || deviceUnavailable.value))
+const switchHint = computed(() => {
+  if (c.value.participating || c.value.loading) return ''
+  if (mappingMissing.value) return t('collaboration.mappingRequired')
+  return deviceUnavailable.value ? t('collaboration.ui.activeDeviceHint') : ''
+})
 const confirmingDisconnect = shallowRef(false)
 watch(() => props.controller, () => { confirmingDisconnect.value = false })
 async function toggleCollaboration(value: boolean) {
-  if (disabled.value) return
+  if (switchDisabled.value) return
   if (!value) confirmingDisconnect.value = true
   else await connectOrReceive()
 }
@@ -24,7 +33,7 @@ async function disconnect() {
   if (await c.value.leave()) confirmingDisconnect.value = false
 }
 async function connectOrReceive(receive = false) {
-  if (c.value.state?.repositories.some(repo => !c.value.mappings[repo.task_repository_id])) {
+  if (mappingMissing.value) {
     c.value.view.page = 'settings'; return
   }
   if (receive) await c.value.receiveOnce()
@@ -41,10 +50,12 @@ async function recover() {
 <template>
   <div class="collaboration-actions">
     <button v-if="!c.participating && available" class="session-button" type="button" :disabled="disabled" @click="connectOrReceive(true)">{{ t('collaboration.session.receive') }}</button>
-    <div v-if="available" class="collaboration-switch" :title="!c.participating && c.enabled && !c.canReconnect ? t('collaboration.ui.activeDeviceHint') : ''">
-      <span>{{ t('collaboration.connectionLabel') }}</span>
-      <ToggleSwitch :model-value="c.participating" :disabled="disabled || !c.participating && c.enabled && !c.canReconnect" :aria-label="t('collaboration.connectionLabel')" @update:model-value="toggleCollaboration" />
-    </div>
+    <ElTooltip v-if="available" :content="switchHint" :disabled="!switchHint" :trigger="['hover', 'focus']" placement="top" :show-after="80">
+      <div class="collaboration-switch" :tabindex="switchHint ? 0 : undefined">
+        <span>{{ t('collaboration.connectionLabel') }}</span>
+        <ToggleSwitch :model-value="c.participating" :disabled="switchDisabled" :aria-label="t('collaboration.connectionLabel')" @update:model-value="toggleCollaboration" />
+      </div>
+    </ElTooltip>
     <button v-if="c.participating && ui && ui.action !== 'none' && available" class="session-button primary" type="button" :disabled="disabled" @click="recover">{{ ui.actionLabel }}</button>
     <div v-if="c.participating && c.driver && available" class="auto-receive" :title="t('collaboration.ui.autoReceiveHint')">
       <span>{{ t('collaboration.ui.autoReceive') }}</span>
@@ -60,6 +71,7 @@ async function recover() {
 <style scoped>
 .collaboration-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .collaboration-switch { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #475569; white-space: nowrap; }
+.collaboration-switch[tabindex] { cursor: help; }
 .session-button { flex: none; padding: 6px 10px; border: 1px solid #dbe5ef; border-radius: 6px; color: #0284c7; background: #fff; font-size: 12px; line-height: 18px; cursor: pointer; white-space: nowrap; }
 .session-button:hover:not(:disabled) { background: #f0f9ff; border-color: #7dd3fc; }
 .session-button.primary { color: #fff; background: #0284c7; border-color: #0284c7; }

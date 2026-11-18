@@ -7,7 +7,10 @@ import TaskCreateDialog from '../TaskCreateDialog.vue'
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
 vi.mock('@/utils/api', () => ({ default: api }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
-vi.mock('element-plus', () => ({ ElMessage: { error: vi.fn(), warning: vi.fn() } }))
+vi.mock('element-plus', async (importOriginal) => ({
+  ...await importOriginal<typeof import('element-plus')>(),
+  ElMessage: { error: vi.fn(), warning: vi.fn() },
+}))
 const item = { id: 'guide-1', title: '支付空返回排查', version: 'analysis-1', validation_state: 'SCHEMA_VALID', inputs: {}, match: {}, reasons: ['NullPointerException'], score: 1, source_case_refs: ['case-1'] }
 let wrapper: VueWrapper | undefined
 beforeEach(() => {

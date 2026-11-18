@@ -10,6 +10,9 @@ export function useTaskCreateDraft(props: TaskCreateFormProps, onPlaybookContext
   // ── 草稿字段 ──
   const execution = shallowRef<TaskExecution>({ location: 'SERVER' })
   const localCollaborationIntent = shallowRef(false)
+  watch(() => props.localRepoMappingsReady, ready => {
+    if (ready === false) localCollaborationIntent.value = false
+  })
   const models = useAgentModels(() => ({
     workspaceId: props.wsId,
     resourceId: execution.value.location === 'LOCAL' ? execution.value.resource_id : undefined,
@@ -52,7 +55,7 @@ export function useTaskCreateDraft(props: TaskCreateFormProps, onPlaybookContext
   const snapshot = computed<TaskDraftSnapshot>(() => ({
       taskType: props.taskType,
       execution: execution.value,
-      ...(!isDiagnosisTask.value && execution.value.location === 'SERVER' && localCollaborationIntent.value ? { enableLocalCollaboration: true } : {}),
+      ...(!isDiagnosisTask.value && execution.value.location === 'SERVER' && props.localRepoMappingsReady && localCollaborationIntent.value ? { enableLocalCollaboration: true } : {}),
       agentModel: models.selection.value,
       name: name.value,
       requirementId: isDiagnosisTask.value ? undefined : props.selectedRequirement?.id,

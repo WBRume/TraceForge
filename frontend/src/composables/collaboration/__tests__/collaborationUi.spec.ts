@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, defineComponent, nextTick, proxyRefs, ref } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
+import { ElTooltip } from 'element-plus'
 import zh from '@/locales/zh.json'
 import api from '@/utils/api'
 import { collaborationPresentation, openCollaborationView } from '../useCollaborationPresentation'
@@ -159,7 +160,7 @@ describe('local collaboration presentation and review', () => {
     expect(model.enable).not.toHaveBeenCalled()
     panel.unmount()
   })
-  it('keeps one pair of session actions above every tab and routes missing mappings to settings', async () => {
+  it('disables connection until every repository is mapped and keeps the settings path available', async () => {
     const { controller, reviewQuery, model } = fixture()
     model.participating.value = false; model.enabled.value = false
     const host = mount(defineComponent({
@@ -170,12 +171,24 @@ describe('local collaboration presentation and review', () => {
     const receive = () => host.findAll('button').filter(button => button.text() === '接收最新代码')
     const connect = () => host.findAll('input[role="switch"][aria-label="本地协同"]')
     expect(receive()).toHaveLength(1); expect(connect()).toHaveLength(1)
+    const hint = () => host.getComponent(CollaborationActions).getComponent(ElTooltip)
+    expect(connect()[0]!.attributes('disabled')).toBeDefined()
+    expect(hint().props('content')).toBe(zh.collaboration.mappingRequired)
+    expect(host.get('.collaboration-switch').attributes('tabindex')).toBe('0')
+    await connect()[0]!.trigger('click')
+    expect(model.enable).not.toHaveBeenCalled()
     await receive()[0]!.trigger('click')
     expect(controller.view.value.page).toBe('settings')
     expect(model.receiveOnce).not.toHaveBeenCalled()
     expect(receive()).toHaveLength(1); expect(connect()).toHaveLength(1)
     expect(host.find('.repository-settings .btn-primary').exists()).toBe(false)
+    model.mappings.value = { dsh: { local_path: 'G:/dsh' }, repo: { local_path: '  ' } }
+    await nextTick()
+    expect(connect()[0]!.attributes('disabled')).toBeDefined()
     model.mappings.value = { dsh: { local_path: 'G:/dsh' }, repo: { local_path: 'G:/repo' } }
+    await nextTick()
+    expect(connect()[0]!.attributes('disabled')).toBeUndefined()
+    expect(hint().props('disabled')).toBe(true)
     await connect()[0]!.setValue(true)
     expect(model.enable).toHaveBeenCalledOnce()
     expect((connect()[0]!.element as HTMLInputElement).checked).toBe(false)

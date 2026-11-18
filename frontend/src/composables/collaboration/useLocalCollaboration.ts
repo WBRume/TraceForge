@@ -3,7 +3,7 @@ import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { getSddDesktop } from '@/utils/runtime'
 import { formatApiError } from '@/utils/error'
-import { onRepoPreferencesChanged, readRepoPreferences, saveRepoPreferences } from '@/composables/localRepoPreferences'
+import { loadLocalRepoMapping, onRepoPreferencesChanged, readRepoPreferences, saveRepoPreferences } from '@/composables/localRepoPreferences'
 import { remoteUrlsMatch } from '@/composables/local-agent/localAgentUtils'
 import { chooseGitRemote, getLocalGitRemotes } from '@/composables/local-agent/localGitRemotes'
 import { collaborationApi, base64Bytes, bytesBase64, decodeCollaborationText } from '@/services/collaborationApi'
@@ -119,10 +119,9 @@ function createController(options: { workspaceId: () => string; task: () => Reco
     const preferences = readRepoPreferences(wsId, String(auth.user?.id || ''))
     const next: typeof mappings.value = {}
     for (const repo of state.value?.repositories || []) {
-      const stored = await desktop?.config.getRepoMapping({ workspaceId: wsId, remoteUrl: repo.repo_url })
+      const mapping = await loadLocalRepoMapping(desktop?.config, wsId, repo, preferences)
       check(token)
-      const preference = preferences.find(row => Boolean(repo.repository_id && row.repository_id === repo.repository_id) || remoteUrlsMatch(row.configured_git_url, repo.repo_url))
-      if (stored?.localPath || preference?.local_path) next[repo.task_repository_id] = { local_path: stored?.localPath || preference!.local_path, configured_git_url: stored?.gitRemoteUrl || preference?.configured_git_url || repo.repo_url }
+      if (mapping) next[repo.task_repository_id] = mapping
     }
     mappings.value = next
     if (available && (!nativeIdentityReady || !directories.value)) {

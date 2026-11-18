@@ -7,6 +7,7 @@
 
 import os
 import sys
+from pathlib import Path
 
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
@@ -16,7 +17,7 @@ if TEST_ROOT not in sys.path:
     sys.path.insert(0, TEST_ROOT)
 
 from app.domains.asset.models.asset import AssetType, SddAsset, SddAssetVersion  # noqa: E402
-from app.domains.asset.services.document.docx import looks_like_docx_bytes  # noqa: E402
+from app.domains.asset.services.document.docx import build_docx_bytes, looks_like_docx_bytes  # noqa: E402
 from app.domains.asset.services.document.repair import repair_docx_version_if_needed  # noqa: E402
 from app.domains.asset.services.document.versioning import (  # noqa: E402
     create_asset_version_from_normalized_content,
@@ -26,6 +27,7 @@ from app.domains.asset.services.document.versioning import (  # noqa: E402
     ensure_asset_has_version,
     ensure_spec_asset_backfilled,
 )
+from app.domains.task.services.task_workspace.specification import upload_task_spec  # noqa: E402
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
 
 SPEC_MD = b"# Requirement\n\nLogin must work.\n"
@@ -66,6 +68,26 @@ def test_create_asset_version_from_upload_upserts_spec_and_increments_versions(t
 
             assets = db.query(SddAsset).filter(SddAsset.task_id == task.id).all()
             assert len(assets) == 1
+    finally:
+        engine.dispose()
+
+
+def test_upload_spec_preserves_docx_extension_for_chinese_filename(tmp_path):
+    content = build_docx_bytes([], "# Requirement\n\nLogin must work.\n")
+    assert content is not None
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            _ws, task = _seed_task_with_project(db, tmp_path)
+
+            path, _, version_id = upload_task_spec(db, task.id, "需求文档.docx", content)
+
+            version = db.get(SddAssetVersion, version_id)
+            assert Path(path).suffix == ".docx"
+            assert Path(path).read_bytes() == content
+            assert version.original_ext == ".docx"
+            assert version.render_json["format"] == "rich_doc"
+            assert "Login must work." in version.normalized_markdown
     finally:
         engine.dispose()
 

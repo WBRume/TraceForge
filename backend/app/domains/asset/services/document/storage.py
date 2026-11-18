@@ -16,8 +16,11 @@ def normalize_filename(file_name: str | None, fallback_ext: str = ".md") -> str:
     base = os.path.basename(file_name or "").strip()
     if not base:
         base = f"document{fallback_ext}"
-    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._")
-    return sanitized or f"document{fallback_ext}"
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", base).rstrip("._")
+    stem, ext = os.path.splitext(sanitized)
+    if ext and not stem.strip("._"):
+        return f"document{ext}"
+    return sanitized.lstrip("._") or f"document{fallback_ext}"
 
 
 def task_assets_root(task: SddTask) -> str:

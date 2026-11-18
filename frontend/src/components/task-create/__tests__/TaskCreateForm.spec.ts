@@ -38,15 +38,24 @@ const selectSpecFile = async (wrapper: VueWrapper, file: File) => {
 const mountForm = () =>
   mount(TaskCreateForm, {
     props: baseProps,
-    global: { mocks: { $t: (key: string) => key } },
+    global: {
+      mocks: { $t: (key: string) => key },
+      stubs: { 'el-tooltip': { props: ['content'], template: '<span><slot /></span>' } },
+    },
   })
 
 describe('TaskCreateForm spec upload', () => {
   it('removes local collaboration and excludes a previously checked intent when switching to diagnosis', async () => {
     const desktop = vi.spyOn(runtime, 'isDesktop').mockReturnValue(true)
     const wrapper = mountForm()
-    await wrapper.setProps({ reposTotal: 2 })
-    await wrapper.get('.collaboration-intent input').setValue(true)
+    await wrapper.setProps({ reposTotal: 2, localRepoMappingsReady: true })
+    const collaborationSwitch = wrapper.get('.collaboration-intent [role="switch"]')
+    expect((collaborationSwitch.element as HTMLInputElement).checked).toBe(false)
+    expect(wrapper.get('.collaboration-intent label[for]').attributes('for')).toBe(collaborationSwitch.attributes('id'))
+    expect(wrapper.get('.collaboration-intent-tip').attributes('aria-label')).toBe('collaboration.createIntentHint')
+    await wrapper.get('.collaboration-intent-tip').trigger('click')
+    expect((collaborationSwitch.element as HTMLInputElement).checked).toBe(false)
+    await collaborationSwitch.setValue(true)
     await wrapper.get('form').trigger('submit')
     expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({ enableLocalCollaboration: true })
     await wrapper.setProps({ taskType: 'DIAGNOSIS' })

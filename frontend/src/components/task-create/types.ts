@@ -27,6 +27,7 @@ export interface TaskCreateFormProps {
   repoReview?: TaskCreateRepoReview[]
   reposLoading?: boolean
   reposError?: boolean
+  localRepoMappingsReady?: boolean | null
   activeSidebar: TaskCreateSidebar
   selectedPlaybook?: { id: string; title: string } | null
   selectedRequirement?: import('@/types/taskRail').RequirementOption | null

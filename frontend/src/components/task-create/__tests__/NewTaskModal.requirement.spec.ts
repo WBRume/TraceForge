@@ -6,7 +6,10 @@ import { useProvisioningStore } from '@/stores/provisioning'
 const api = vi.hoisted(() => ({ get:vi.fn(), post:vi.fn() }))
 vi.mock('@/utils/api', () => ({ default:api }))
 vi.mock('vue-i18n', () => ({ useI18n:() => ({ t:(key:string) => key }) }))
-vi.mock('element-plus', () => ({ ElMessage:{ error:vi.fn(), warning:vi.fn() } }))
+vi.mock('element-plus', async (importOriginal) => ({
+  ...await importOriginal<typeof import('element-plus')>(),
+  ElMessage: { error: vi.fn(), warning: vi.fn() },
+}))
 const leaf = { id:'child', title:'Payment checks', status:'READY', child_count:0, can_link_task:true,
   body:'# Payment document\nValidate payments.', acceptance_criteria:['Reject expired tokens'], source_metadata:{ task_prompt:'Implement payment checks' } }
 beforeEach(() => {

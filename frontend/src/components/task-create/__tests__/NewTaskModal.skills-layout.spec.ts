@@ -12,7 +12,8 @@ vi.mock('vue-i18n', () => ({
   useI18n: () => ({ t: (key: string, params?: any) => (params ? `${key}:${JSON.stringify(params)}` : key) }),
 }))
 
-vi.mock('element-plus', () => ({
+vi.mock('element-plus', async (importOriginal) => ({
+  ...await importOriginal<typeof import('element-plus')>(),
   ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
 }))
 

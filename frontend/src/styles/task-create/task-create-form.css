@@ -1,4 +1,21 @@
-.collaboration-intent { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; }.collaboration-intent small { width: 100%; color: var(--text-secondary); padding-left: 22px; }
+.collaboration-intent { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.collaboration-intent-control { display: inline-flex; align-items: center; gap: 8px; }
+.collaboration-intent-control > label { cursor: pointer; }
+.collaboration-intent-control[tabindex], .collaboration-intent-control[tabindex] > label { cursor: help; }
+.collaboration-intent-tip {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: help;
+}
+.collaboration-intent-tip:hover, .collaboration-intent-tip:focus-visible { color: var(--color-primary-600); }
 .requirement-context-hint { color:var(--color-text-muted); font-size:.72rem; }
 .requirement-selection { max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .requirement-context-error { color:#b91c1c; font-size:.75rem; }

@@ -1,7 +1,10 @@
-import { computed, reactive, shallowRef } from 'vue'
+import { computed, reactive, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
+import { loadLocalRepoMapping, onRepoPreferencesChanged, readRepoPreferences } from '@/composables/localRepoPreferences'
+import { useAuthStore } from '@/stores/auth'
+import { getSddDesktop } from '@/utils/runtime'
 import type { WorkspaceRepo } from '../types'
 import { workspaceRepoBindingId } from '../lib/repoTree'
 
@@ -41,6 +44,35 @@ export function useWorkspaceRepos(getWsId: () => string) {
   )
 
   const isSelected = (repoId: string): boolean => selectedIds.value.includes(repoId)
+  const selectedRepos = computed(() => repos.value.filter(repo => isSelected(workspaceRepoBindingId(repo))))
+  const localRepoMappingsReady = shallowRef<boolean | null>(false)
+  const desktop = getSddDesktop()
+  if (desktop) {
+    const auth = useAuthStore()
+    let request = 0
+    watch([getWsId, () => auth.user?.id || '', selectedRepos], ([workspaceId, userId, selected], _, onCleanup) => {
+      async function checkMappings() {
+        const current = ++request
+        if (!workspaceId || !selected.length) {
+          localRepoMappingsReady.value = false
+          return
+        }
+        localRepoMappingsReady.value = null
+        try {
+          const preferences = readRepoPreferences(workspaceId, userId)
+          const mappings = await Promise.all(selected.map(repo => loadLocalRepoMapping(desktop?.config, workspaceId, {
+            repository_id: workspaceRepoBindingId(repo), repo_url: repo.repo_url,
+          }, preferences)))
+          if (current === request) localRepoMappingsReady.value = mappings.every(Boolean)
+        } catch {
+          if (current === request) localRepoMappingsReady.value = false
+        }
+      }
+      const stop = onRepoPreferencesChanged(workspaceId, userId, () => { void checkMappings() })
+      onCleanup(() => { request++; stop() })
+      void checkMappings()
+    }, { immediate: true })
+  }
 
   const defaultBranchOf = (repoId: string): string =>
     repoById.value.get(repoId)?.branch_name || 'main'
@@ -109,6 +141,8 @@ export function useWorkspaceRepos(getWsId: () => string) {
     loading,
     error,
     selectedIds,
+    selectedRepos,
+    localRepoMappingsReady,
     branchOverrides,
     refsCache,
     refsLoading,

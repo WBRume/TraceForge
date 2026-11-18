@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, shallowRef, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, shallowRef, useId, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { BookOpen, ChevronRight, FileText, GitFork, Loader2, Sparkles } from '@/components/icons'
+import { ElTooltip } from 'element-plus'
+import { BookOpen, ChevronRight, CircleHelp, FileText, GitFork, Loader2, Sparkles } from '@/components/icons'
 import TaskResourcePicker from '@/components/local-resource/TaskResourcePicker.vue'
 import AgentModelSelect from '@/components/agent/AgentModelSelect.vue'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
@@ -30,6 +31,10 @@ const steps: TaskCreateStep[] = ['content', 'environment', 'options', 'review']
 const step = shallowRef<TaskCreateStep>('content')
 const validationMessage = shallowRef('')
 const executionLabel = shallowRef('')
+const collaborationIntentId = useId()
+const collaborationMappingHint = computed(() => props.localRepoMappingsReady === null ? t('common.loading')
+  : props.localRepoMappingsReady ? '' : t('collaboration.mappingRequired'))
+const collaborationIntentHint = computed(() => collaborationMappingHint.value || t('collaboration.createIntentHint'))
 const formContent = useTemplateRef<HTMLElement>('formContent')
 const stepHeading = useTemplateRef<HTMLElement>('stepHeading')
 const modelLabel = computed(() => models.options.value.find(item => item.value === models.selected.value)?.label || models.selected.value || t('task_create.default_model'))
@@ -186,8 +191,21 @@ defineExpose({ reset, goTo })
       </button>
     </div>
 
+    <div v-if="!isDiagnosisTask && isDesktop() && execution.location === 'SERVER' && reposTotal > 0" v-show="visible('environment')" class="collaboration-intent">
+      <ElTooltip :content="collaborationMappingHint" :disabled="!collaborationMappingHint" :trigger="['hover', 'focus']" placement="top" :show-after="80">
+        <span class="collaboration-intent-control" :tabindex="collaborationMappingHint ? 0 : undefined">
+          <ToggleSwitch :id="collaborationIntentId" v-model="localCollaborationIntent" :disabled="creating || !localRepoMappingsReady" />
+          <label :for="collaborationIntentId">{{ $t('collaboration.createIntent') }}</label>
+        </span>
+      </ElTooltip>
+      <ElTooltip :content="collaborationIntentHint" :trigger="['hover', 'focus']" placement="top" :show-after="80">
+        <button type="button" class="collaboration-intent-tip" :aria-label="collaborationIntentHint">
+          <CircleHelp class="w-3.5 h-3.5" aria-hidden="true" />
+        </button>
+      </ElTooltip>
+    </div>
+
     <!-- 行 4：Worktree 仓库载入触发条（整行可点击展开右侧仓库树） -->
-    <label v-if="!isDiagnosisTask && isDesktop() && execution.location === 'SERVER' && reposTotal > 0" v-show="visible('environment')" class="collaboration-intent"><input v-model="localCollaborationIntent" type="checkbox" :disabled="creating" />{{ $t('collaboration.createIntent') }}<small>{{ $t('collaboration.createIntentHint') }}</small></label>
     <div v-if="reposTotal > 0" v-show="visible('environment')" class="form-meta-container">
       <button type="button" :disabled="creating"
         class="meta-skills-bar skills-entry-card repo-entry-card"

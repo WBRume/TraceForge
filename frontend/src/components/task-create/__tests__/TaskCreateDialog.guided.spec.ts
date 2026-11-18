@@ -3,13 +3,19 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import TaskCreateDialog from '../TaskCreateDialog.vue'
 import TaskCreateForm from '../TaskCreateForm.vue'
+import { saveRepoPreferences } from '@/composables/localRepoPreferences'
+import { useAuthStore } from '@/stores/auth'
 import { useProvisioningStore } from '@/stores/provisioning'
+import { consumeCollaborationIntent } from '../lib/localCollaborationIntent'
 import * as runtime from '@/utils/runtime'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
 vi.mock('@/utils/api', () => ({ default: api }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
-vi.mock('element-plus', () => ({ ElMessage: { error: vi.fn(), warning: vi.fn(), success: vi.fn() } }))
+vi.mock('element-plus', async (importOriginal) => ({
+  ...await importOriginal<typeof import('element-plus')>(),
+  ElMessage: { error: vi.fn(), warning: vi.fn(), success: vi.fn() },
+}))
 const repos = [
   { repository_id: 'r1', repo_name: 'web', repo_url: 'https://example.com/web', branch_name: 'release/web' },
   { repository_id: 'r2', repo_name: 'api', repo_url: 'https://example.com/api', branch_name: 'release/api' },
@@ -23,7 +29,7 @@ beforeEach(() => {
   }))
   api.post.mockReset().mockResolvedValue({ data: { task_id: 'task-guided', job_id: 'job-guided' } })
 })
-afterEach(() => { wrapper?.unmount(); localStorage.clear(); vi.restoreAllMocks() })
+afterEach(() => { wrapper?.unmount(); localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 async function open(props: Record<string, unknown> = {}) {
   wrapper = mount(TaskCreateDialog, { attachTo: document.body, props: { wsId: 'ws', ...props }, global: { plugins: [createPinia()], mocks: { $t: (key: string) => key } } })
   await flushPromises()
@@ -195,6 +201,49 @@ describe('guided task creation', () => {
     await advance()
     expect(wrapper.get('[role="alert"]').text()).toBe('task_rail.select_requirement')
     expect(wrapper.emitted('submit')).toBeUndefined()
+  })
+
+  it('requires a local path for each selected repository and reacts to mapping changes', async () => {
+    const getRepoMapping = vi.fn(async ({ remoteUrl }: { remoteUrl: string }) => ({
+      localPath: remoteUrl === repos[0]!.repo_url ? 'G:/web' : '  ',
+    }))
+    vi.stubGlobal('sddDesktop', { config: { getRepoMapping } })
+    await open()
+    useAuthStore().setUser({ id: 'developer', email: 'developer@example.com', display_name: 'Developer' })
+    await fillContent()
+    await advance()
+
+    const toggle = wrapper.get<HTMLInputElement>('.collaboration-intent [role="switch"]')
+    expect(toggle.element.disabled).toBe(true)
+    expect(wrapper.get('.collaboration-intent-control').attributes('tabindex')).toBe('0')
+    expect(wrapper.get('.collaboration-intent-tip').attributes('aria-label')).toBe('collaboration.mappingRequired')
+
+    await wrapper.get('.repo-entry-card').trigger('click')
+    await flushPromises()
+    const apiRepo = wrapper.findAll('.wf-tree-repo').find(repo => repo.get('.wf-tree-repo-name').text() === 'api')!
+    const apiSelection = apiRepo.get('input[type="checkbox"]')
+    await apiSelection.setValue(false)
+    await flushPromises()
+    expect(toggle.element.disabled).toBe(false)
+    await toggle.setValue(true)
+    await apiSelection.setValue(true)
+    await flushPromises()
+    expect(toggle.element.disabled).toBe(true)
+    expect(toggle.element.checked).toBe(false)
+
+    saveRepoPreferences('ws', 'developer', [{ repository_id: 'r2', local_path: 'G:/api', configured_git_url: repos[1]!.repo_url }])
+    await flushPromises()
+    expect(toggle.element.disabled).toBe(false)
+    expect(wrapper.get('.collaboration-intent-tip').attributes('aria-label')).toBe('collaboration.createIntentHint')
+    await toggle.setValue(true)
+    saveRepoPreferences('ws', 'developer', [])
+    await flushPromises()
+    expect(toggle.element.disabled).toBe(true)
+    expect(toggle.element.checked).toBe(false)
+
+    await advance(); await advance(); await advance()
+    expect(api.post).toHaveBeenCalledOnce()
+    expect(consumeCollaborationIntent('ws', 'task-guided')).toBe(false)
   })
 
   it('keeps a local execution resource mounted across steps and mode switches', async () => {

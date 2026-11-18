@@ -64,7 +64,7 @@ function rememberSkills(items: SkillSummary[]) {
   knownSkills.value = { ...knownSkills.value, ...Object.fromEntries(items.map(item => [item.id, item.name])) }
 }
 const selectedSkillNames = computed(() => selectedSkillIds.value.map(id => knownSkills.value[id] || id))
-const repoReview = computed(() => repos.repos.filter(repo => repos.isSelected(workspaceRepoBindingId(repo))).map(repo => {
+const repoReview = computed(() => repos.selectedRepos.map(repo => {
   const id = workspaceRepoBindingId(repo)
   return { id, name: repo.repo_name, branch: repos.branchOverrides[id]?.trim() || repos.defaultBranchOf(id) }
 }))
@@ -130,7 +130,9 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
     if (!jobId || !taskId) {
       throw new Error(t('provisioning.invalid_job_id'))
     }
-    if (draft.taskType !== 'DIAGNOSIS' && draft.enableLocalCollaboration && draft.execution?.location !== 'LOCAL') rememberCollaborationIntent(props.wsId, taskId)
+    if (draft.enableLocalCollaboration && repos.localRepoMappingsReady) {
+      rememberCollaborationIntent(props.wsId, taskId)
+    }
 
     // 附件暂存到 provision 浮窗：作业成功后统一上传
     if (draft.specFile) {
@@ -220,6 +222,7 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
         :repo-review="repoReview"
         :repos-loading="repos.loading"
         :repos-error="repos.error"
+        :local-repo-mappings-ready="repos.localRepoMappingsReady"
         :selected-skill-names="selectedSkillNames"
         :selected-requirement="selectedRequirement"
         :requirement-context="requirementContext.requirement.value"
