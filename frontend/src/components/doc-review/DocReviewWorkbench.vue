@@ -841,7 +841,8 @@ watch(
   (status, previousStatus) => {
     if (!props.taskId || !selectedAssetId.value) return;
     if (status !== "READY" || previousStatus === "READY") return;
-    void discussion.loadDocument(selectedVersionId.value || activeVersionId.value || undefined);
+    void discussion.refresh(selectedVersionId.value || activeVersionId.value || undefined)
+      .catch((error) => ElMessage.error(formatApiError(error, t("doc_review.document_load_failed"), t)));
   },
 );
 
