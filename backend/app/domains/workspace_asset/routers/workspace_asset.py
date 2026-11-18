@@ -22,7 +22,7 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
     WorkflowClarificationCreateRequest,
     WorkflowFinalSummaryUpsertRequest,
 )
-from app.domains.workspace_asset.schemas.workload import WorkloadLimits, WorkspaceWorkload
+from app.domains.workspace_asset.schemas.workload import WorkloadLimits, WorkspaceMemberWorkload, WorkspaceWorkload
 from app.domains.workspace_asset.schemas.workspace_asset import (
     ClarificationCreateRequest,
     ClarificationResponse,
@@ -102,6 +102,7 @@ from app.domains.workspace_asset.services.tasks import list_query, sections
 from app.domains.workspace_asset.services.tasks import summary_query as task_summary_query
 from app.domains.workspace_asset.services.traceability import get_traceability
 from app.domains.workspace_asset.services.workload import get_workload
+from app.domains.workspace_asset.services.workload_overview import get_workspace_member_workload
 
 router = APIRouter(prefix="/workspaces/{ws_id}/workspace-assets", tags=["Workspace Assets"])
 
@@ -221,6 +222,21 @@ def read_workspace_workload(
         db, ws_id, current_user.id, WorkspacePermission.MANAGE_REQUIREMENTS
     )
     return get_workload(db, ws_id, can_edit_limits=can_edit, as_of=datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+@router.get("/workload/members", response_model=WorkspaceMemberWorkload)
+def read_workspace_member_workload(
+    ws_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _verify_view_assets(ws_id, current_user, db)
+    can_edit = workspace_service.user_has_permission(
+        db, ws_id, current_user.id, WorkspacePermission.MANAGE_REQUIREMENTS
+    )
+    return get_workspace_member_workload(
+        db, ws_id, current_user.id, can_edit_limits=can_edit, as_of=datetime.now(timezone.utc).replace(tzinfo=None)
+    )
 
 
 @router.put("/workload/members/{user_id}/limits", response_model=WorkloadLimits)

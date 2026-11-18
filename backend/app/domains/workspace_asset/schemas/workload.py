@@ -33,21 +33,53 @@ class WorkloadExecution(BaseModel):
     since: datetime | None = None
 
 
-class MemberWorkload(BaseModel):
+class WorkloadMember(BaseModel):
     user_id: str
     display_name: str
     role: str
     avatar_url: str | None = None
     limits: WorkloadLimits
+
+
+class WorkloadDetails(BaseModel):
     executions: list[WorkloadExecution] = Field(default_factory=list)
     items: list[WorkloadItem] = Field(default_factory=list)
 
 
-class WorkspaceWorkload(BaseModel):
+class MemberWorkload(WorkloadMember, WorkloadDetails):
+    pass
+
+
+class WorkloadCounts(BaseModel):
+    slots: dict[Slot, int]
+    items: dict[WorkKind, int]
+    overdue: int
+
+
+class WorkloadSource(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    counts: WorkloadCounts
+    details: WorkloadDetails | None = None
+
+
+class MemberWorkloadOverview(WorkloadMember):
+    counts: WorkloadCounts
+    sources: list[WorkloadSource]
+
+
+class WorkloadSnapshot(BaseModel):
     graph_version: int
     as_of: datetime
     next_evaluate_at: datetime | None = None
     can_edit_limits: bool
-    members: list[MemberWorkload]
     unassigned: list[WorkloadItem]
     observation_gaps: int = 0
+
+
+class WorkspaceWorkload(WorkloadSnapshot):
+    members: list[MemberWorkload]
+
+
+class WorkspaceMemberWorkload(WorkloadSnapshot):
+    members: list[MemberWorkloadOverview]

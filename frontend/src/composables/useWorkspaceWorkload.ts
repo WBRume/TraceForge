@@ -1,9 +1,21 @@
 import { onBeforeUnmount, onMounted, shallowRef, watch } from 'vue'
 import api from '@/utils/api'
-import type { WorkspaceWorkload, WorkloadLimits } from '@/types/workload'
+import type { WorkspaceMemberWorkload, WorkspaceWorkload, WorkloadLimits } from '@/types/workload'
 
 export function useWorkspaceWorkload(workspaceId: () => string, enabled: () => boolean = () => true) {
-  const data = shallowRef<WorkspaceWorkload | null>(null)
+  return useWorkloadSnapshot<WorkspaceWorkload>(workspaceId, 'workload', enabled)
+}
+
+export function useWorkspaceMemberWorkload(workspaceId: () => string) {
+  return useWorkloadSnapshot<WorkspaceMemberWorkload>(workspaceId, 'workload/members', () => true)
+}
+
+function useWorkloadSnapshot<T extends WorkspaceWorkload | WorkspaceMemberWorkload>(
+  workspaceId: () => string,
+  endpoint: 'workload' | 'workload/members',
+  enabled: () => boolean,
+) {
+  const data = shallowRef<T | null>(null)
   const failed = shallowRef(false)
   const loading = shallowRef(false)
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -18,7 +30,7 @@ export function useWorkspaceWorkload(workspaceId: () => string, enabled: () => b
     request = controller
     loading.value = true
     try {
-      const result = await api.get<WorkspaceWorkload>(`/workspaces/${workspaceId()}/workspace-assets/workload`, {
+      const result = await api.get<T>(`/workspaces/${workspaceId()}/workspace-assets/${endpoint}`, {
         signal: controller.signal,
       })
       if (controller.signal.aborted) return

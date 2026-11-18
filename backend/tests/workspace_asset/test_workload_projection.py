@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
@@ -19,7 +21,9 @@ from app.domains.workspace_asset.models.workspace_asset import (
     SddTaskRequirement,
     TaskRequirementRelationType,
 )
+from app.domains.workspace_asset.routers import workspace_asset as routes
 from app.domains.workspace_asset.services.workload import get_workload
+from app.domains.workspace_asset.services.workload_overview import get_workspace_member_workload
 
 NOW = datetime(2026, 11, 18, 12)
 WORKSPACE = "workload"
@@ -86,8 +90,8 @@ class Scenario:
         item = SddRequirement(
             id=requirement_id,
             title=requirement_id,
-            workspace_id=WORKSPACE,
             **{
+                "workspace_id": WORKSPACE,
                 "owner_id": EXPERT,
                 "reviewer_id": REVIEWER,
                 "acceptor_id": ACCEPTOR,
@@ -102,7 +106,7 @@ class Scenario:
         self.db.flush()
         self.db.add_all(
             SddTaskRequirement(
-                workspace_id=WORKSPACE,
+                workspace_id=item.workspace_id,
                 requirement_id=item.id,
                 task_id=task.id,
                 relation_type=TaskRequirementRelationType.COVERS,
@@ -592,3 +596,115 @@ def test_workspace_and_job_channel_boundaries(scenario):
     scenario.job(own_task, "private-asset-assistant", visibility="private", current=False)
     scenario.job(own_task, "background-tool", channel=AiJobChannel.BACKGROUND, current=False)
     assert slots(scenario.read(), EXPERT) == {"ordinary-run": ("background", "started")}
+
+
+def test_cross_workspace_workload_counts_borrowed_members_without_granting_asset_access(scenario):
+    hidden, visible, unrelated = "workload-hidden", "workload-visible", "workload-unrelated"
+    outsider = User(id="other-member", display_name=EXPERT, email="other@example.test", hashed_password="fixture")
+    scenario.db.add(outsider)
+    scenario.db.flush()
+    scenario.db.add_all(
+        Workspace(id=identifier, name=name, owner_id=outsider.id)
+        for identifier, name in ((hidden, "Borrowed work"), (visible, "Shared work"), (unrelated, "Unrelated work"))
+    )
+    scenario.db.flush()
+    scenario.db.add_all(
+        WorkspaceMember(workspace_id=workspace_id, user_id=user_id, role=WorkspaceRole.DEVELOPER)
+        for workspace_id, user_id in (
+            (hidden, EXPERT),
+            (hidden, DEVELOPER),
+            (hidden, outsider.id),
+            (visible, EXPERT),
+            (unrelated, outsider.id),
+        )
+    )
+    scenario.db.add(
+        WorkspaceMember(
+            workspace_id=visible,
+            user_id=ACCEPTOR,
+            role=WorkspaceRole.VIEWER,
+            permissions_json='["VIEW_ASSETS"]',
+        )
+    )
+    anchor_viewer = scenario.db.query(WorkspaceMember).filter_by(workspace_id=WORKSPACE, user_id=ACCEPTOR).one()
+    anchor_viewer.role = WorkspaceRole.VIEWER
+    anchor_viewer.permissions_json = '["VIEW_ASSETS"]'
+    local = scenario.task("local-execution")
+    scenario.job(local, "local-run")
+    borrowed = scenario.task("private-execution-title", workspace_id=hidden, status=TaskStatus.AWAITING_INPUT)
+    borrowed_job = scenario.job(borrowed, "private-run")
+    scenario.question(borrowed, borrowed_job, "private-question", -10, recipient_id=DEVELOPER)
+    scenario.requirement(
+        "private-requirement-title", borrowed, workspace_id=hidden, owner_id=EXPERT, reviewer_id=DEVELOPER
+    )
+
+    # Work by an external member still produces review work for a member of the anchor.
+    foreign = scenario.task("foreign-execution", workspace_id=hidden, creator_id=outsider.id)
+    scenario.job(foreign, "foreign-run")
+    scenario.followup(foreign, 2, -110)
+    scenario.followup(foreign, 3, -100)
+    scenario.requirement(
+        "foreign-requirement", foreign, workspace_id=hidden, owner_id=outsider.id, reviewer_id=DEVELOPER
+    )
+    shared = scenario.task("visible-review-target", workspace_id=visible)
+    scenario.job(shared, "visible-run")
+    scenario.followup(shared, 2, -25)
+    scenario.followup(shared, 3, -5)
+    waiting = scenario.task("borrowed-missing-question", workspace_id=hidden, status=TaskStatus.AWAITING_INPUT)
+    scenario.job(waiting, "borrowed-missing-question-run", status=AiJobStatus.WAITING_HITL)
+    scenario.db.add_all(
+        SddHumanReview(
+            id=f"{workspace_id}-review",
+            workspace_id=workspace_id,
+            task_id=task.id,
+            reviewer_id=reviewer,
+            status=HumanReviewStatus.OPEN,
+            title=f"{workspace_id}-review-title",
+            created_at=at(-1900),
+        )
+        for workspace_id, task, reviewer in (
+            (visible, shared, EXPERT),
+            (hidden, foreign, None),
+            (WORKSPACE, local, None),
+        )
+    )
+    scenario.db.flush()
+    scenario.db.expire_all()
+
+    view = get_workspace_member_workload(scenario.db, WORKSPACE, ACCEPTOR, can_edit_limits=False, as_of=at())
+    expert = member(view, EXPERT)
+    assert {person.user_id for person in view.members} == {EXPERT, DEVELOPER, REVIEWER, ACCEPTOR}
+    assert expert.counts.slots == {"background": 1, "interactive": 2}
+    assert expert.counts.items == {"ongoing": 1, "check": 1}
+    assert expert.counts.overdue == 1
+    assert [source.workspace_id for source in expert.sources] == [WORKSPACE, hidden, visible]
+    assert expert.sources[1].workspace_name == "Borrowed work"
+    assert expert.sources[1].counts.slots == {"interactive": 1}
+    assert expert.sources[1].details is None
+    assert [run.id for run in expert.sources[2].details.executions] == ["visible-run"]
+    assert member(view, DEVELOPER).counts.items == {"reply": 1, "expected_check": 2}
+    assert not member(view, DEVELOPER).counts.slots
+    assert [item.id for item in view.unassigned] == [f"review:{WORKSPACE}-review"]
+    assert view.observation_gaps == 1
+    shared_deadline = get_workload(scenario.db, visible, can_edit_limits=False, as_of=at()).next_evaluate_at
+    assert shared_deadline is not None and view.next_evaluate_at == shared_deadline
+
+    app = FastAPI()
+    app.include_router(routes.router)
+    viewer = scenario.db.get(User, ACCEPTOR)
+    app.dependency_overrides[routes.get_current_user] = lambda: viewer
+    app.dependency_overrides[routes.get_db] = lambda: scenario.db
+    with TestClient(app) as client:
+        url = f"/workspaces/{WORKSPACE}/workspace-assets/workload"
+        aggregate = client.get(url + "/members")
+        assert aggregate.status_code == 200
+        assert aggregate.json()["can_edit_limits"] is False
+        assert "Borrowed work" in aggregate.text and "visible-review-target" in aggregate.text
+        for private in ("private-execution-title", "private-requirement-title", "private-run", "foreign-requirement"):
+            assert private not in aggregate.text
+        assert "Unrelated work" not in aggregate.text
+        assert "Borrowed work" not in client.get(url).text
+        hidden_url = f"/workspaces/{hidden}/workspace-assets/workload"
+        assert client.get(hidden_url).status_code == 403
+        assert client.get(hidden_url + "/members").status_code == 403
+        assert client.put(hidden_url + f"/members/{EXPERT}/limits", json={"background": 4}).status_code == 403

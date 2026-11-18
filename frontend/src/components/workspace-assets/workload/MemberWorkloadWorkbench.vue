@@ -5,17 +5,18 @@ import { ElMessage } from 'element-plus'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { Inbox, SlidersHorizontal } from '@/components/icons'
 import UserAvatar from '@/components/user/UserAvatar.vue'
-import { useWorkspaceWorkload } from '@/composables/useWorkspaceWorkload'
+import { useWorkspaceMemberWorkload } from '@/composables/useWorkspaceWorkload'
 import { formatApiError } from '@/utils/error'
 import MemberWorkloadTable from './MemberWorkloadTable.vue'
 import MemberWorkloadDetails from './MemberWorkloadDetails.vue'
-import { countsFor } from './workloadCounts'
+import MemberWorkloadSources from './MemberWorkloadSources.vue'
+import { countsFromSummary } from './workloadCounts'
 import type { WorkloadLimits } from '@/types/workload'
 
 const props = defineProps<{ workspaceId: string }>()
 const { t } = useI18n()
 const prefix = 'workspace_assets.workload.'
-const { data, failed, loading, saveLimits } = useWorkspaceWorkload(() => props.workspaceId)
+const { data, failed, loading, saveLimits } = useWorkspaceMemberWorkload(() => props.workspaceId)
 const query = shallowRef('')
 const scope = shallowRef('all')
 const selected = shallowRef<string | null>(null)
@@ -26,7 +27,7 @@ const limitInput = reactive<WorkloadLimits>({ background: null, interactive: nul
 const options = computed(() => ['all', 'only_pending'].map(value => ({ value, label: t(prefix + value) })))
 const visible = computed(() => {
   const text = query.value.trim().toLocaleLowerCase()
-  return (data.value?.members || []).map(member => ({ member, counts: countsFor(member) })).filter(
+  return (data.value?.members || []).map(member => ({ member, counts: countsFromSummary(member.counts) })).filter(
     row => row.member.display_name.toLocaleLowerCase().includes(text) && (scope.value === 'all' || row.counts.pending),
   ).sort((a, b) => b.counts.overdue - a.counts.overdue || b.counts.pending - a.counts.pending
     || a.member.display_name.localeCompare(b.member.display_name)).map(row => row.member)
@@ -67,7 +68,10 @@ async function submitLimits() {
 <template>
   <section class="asset-table-workbench">
     <header class="table-toolbar">
-      <h3>{{ t(prefix + 'title') }}</h3>
+      <div class="workload-title">
+        <h3>{{ t(prefix + 'title') }}</h3>
+        <span>{{ t(prefix + 'cross_workspace') }}</span>
+      </div>
       <el-button v-if="unassignedCount" :icon="Inbox" aria-haspopup="dialog" @click="selected = 'unassigned'">
         {{ t(prefix + 'unassigned', { count: unassignedCount }) }}
       </el-button>
@@ -104,12 +108,19 @@ async function submitLimits() {
           </h2>
         </div>
       </template>
+      <MemberWorkloadSources
+        v-if="data && member"
+        :key="member.user_id"
+        :workspace-id="workspaceId"
+        :sources="member.sources"
+        :as-of="data.as_of"
+        :limits="member.limits"
+      />
       <MemberWorkloadDetails
-        v-if="data && (member || showUnassigned)"
+        v-else-if="data && showUnassigned"
         :workspace-id="workspaceId"
         :as-of="data.as_of"
-        :items="member?.items || data.unassigned"
-        :executions="member?.executions"
+        :items="data.unassigned"
       />
       <template v-if="data?.can_edit_limits && member" #footer>
         <el-button :icon="SlidersHorizontal" @click="editLimits">{{ t(prefix + 'limits') }}</el-button>
@@ -134,6 +145,8 @@ async function submitLimits() {
 <style scoped>
 .query-grid { align-items: flex-end; }
 .workload-footer { color: var(--el-text-color-secondary); }
+.workload-title { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; }
+.workload-title > span { color: var(--color-text-muted); font-size: 12px; }
 
 .drawer-heading {
   display: flex;

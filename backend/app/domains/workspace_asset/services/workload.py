@@ -1,6 +1,7 @@
 """Read-only workload projection over durable workspace facts."""
 
 from collections import defaultdict
+from collections.abc import Collection
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, exists, func, or_
@@ -214,7 +215,14 @@ def _pending_questions(db: Session, workspace_id: str, facts, as_of: datetime):
 
 
 @register("MemberAggregate")
-def get_workload(db: Session, workspace_id: str, *, can_edit_limits: bool, as_of: datetime) -> WorkspaceWorkload:
+def get_workload(
+    db: Session,
+    workspace_id: str,
+    *,
+    can_edit_limits: bool,
+    as_of: datetime,
+    member_ids: Collection[str] | None = None,
+) -> WorkspaceWorkload:
     members = {
         row.user_id: MemberWorkload(
             user_id=row.user_id,
@@ -224,10 +232,16 @@ def get_workload(db: Session, workspace_id: str, *, can_edit_limits: bool, as_of
             limits=WorkloadLimits(**(row.workload_limits or {})),
         )
         for row in list_workspace_members(db, workspace_id)
+        if member_ids is None or row.user_id in member_ids
     }
     facts = _job_facts(db, workspace_id)
     states = {job.id: execution_state(job, as_of, task.session_revision) for job, task in facts}
-    running_ids = {task.id for job, task in facts if states[job.id] == "active"}
+    running_ids = {
+        task.id
+        for job, task in facts
+        if states[job.id] == "active" and (member_ids is None or job.creator_id in members)
+    }
+    # A selected member can review or answer work started by a different member.
     possible_producers = {task.id for job, task in facts if states[job.id] is not None}
     items, phase_ends, unspecified = requirement_workload(db, workspace_id, possible_producers, as_of)
     followups = _followup_events(db, workspace_id, running_ids)
@@ -258,7 +272,7 @@ def get_workload(db: Session, workspace_id: str, *, can_edit_limits: bool, as_of
                     ),
                 )
             )
-        if job.status == AiJobStatus.WAITING_HITL and not questions:
+        if job.status == AiJobStatus.WAITING_HITL and not questions and (member_ids is None or member):
             gaps += 1
 
     reviews = (
@@ -292,7 +306,7 @@ def get_workload(db: Session, workspace_id: str, *, can_edit_limits: bool, as_of
             item.overdue = item.overdue or as_of - item.since >= WAIT_LIMIT
         if recipient in members:
             members[recipient].items.append(item)
-        else:
+        elif member_ids is None:
             unassigned.append(item)
     for member in members.values():
         member.items.sort(key=lambda item: (not item.overdue, item.since or datetime.max, item.id))

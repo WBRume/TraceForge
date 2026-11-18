@@ -18,21 +18,40 @@ export type WorkloadExecution = {
   reason: 'running' | 'started' | 'reply' | 'recent_activity' | 'incomplete' | 'uncertain'
   since?: string | null
 }
-export type MemberWorkload = {
+type WorkloadMember = {
   user_id: string
   display_name: string
   role: string
   avatar_url?: string | null
   limits: WorkloadLimits
+}
+export type WorkloadDetails = {
   executions: WorkloadExecution[]
   items: WorkloadItem[]
 }
-export type WorkspaceWorkload = {
+export type MemberWorkload = WorkloadMember & WorkloadDetails
+export type WorkloadCounts = {
+  slots: Partial<Record<WorkloadSlot, number>>
+  items: Partial<Record<WorkloadKind, number>>
+  overdue: number
+}
+export type WorkloadSource = {
+  workspace_id: string
+  workspace_name: string
+  counts: WorkloadCounts
+  details: WorkloadDetails | null
+}
+export type MemberWorkloadOverview = WorkloadMember & {
+  counts: WorkloadCounts
+  sources: WorkloadSource[]
+}
+type WorkloadSnapshot = {
   graph_version: number
   as_of: string
   next_evaluate_at: string | null
   can_edit_limits: boolean
-  members: MemberWorkload[]
   unassigned: WorkloadItem[]
   observation_gaps: number
 }
+export type WorkspaceWorkload = WorkloadSnapshot & { members: MemberWorkload[] }
+export type WorkspaceMemberWorkload = WorkloadSnapshot & { members: MemberWorkloadOverview[] }
