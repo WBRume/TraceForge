@@ -140,17 +140,19 @@ describe('TaskCreateForm spec upload', () => {
     expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({ agentModel: { backend: 'dsh', model: 'private/b' } })
     wrapper.unmount()
   })
-  it('accept 不再包含 .doc', () => {
+  it('accept 不再包含 .doc 与 .pdf', () => {
     const wrapper = mountForm()
-    expect(findSpecInput(wrapper).attributes('accept')).toBe('.pdf,.docx,.md,.txt')
+    expect(findSpecInput(wrapper).attributes('accept')).toBe('.docx,.md,.txt')
   })
 
-  it('选择 PDF 时显示 agent 能力提示', async () => {
+  it('选择 PDF 时拒绝并提示', async () => {
     const wrapper = mountForm()
-    expect(wrapper.find('.pdf-agent-hint').exists()).toBe(false)
+    expect(wrapper.find('.spec-upload-hint').exists()).toBe(false)
     await selectSpecFile(wrapper, new File(['x'], 'req.pdf', { type: 'application/pdf' }))
-    expect(wrapper.find('.pdf-agent-hint').exists()).toBe(true)
-    expect(wrapper.find('.pdf-agent-hint').text()).toBe('dashboard.spec_pdf_agent_hint')
+    expect(wrapper.find('.spec-upload-hint').exists()).toBe(true)
+    expect(wrapper.find('.spec-upload-hint').text()).toBe('dashboard.spec_upload_unsupported')
+    await wrapper.find('form').trigger('submit')
+    expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({ specFile: null })
   })
 
   it('选择 docx 时不显示提示', async () => {
@@ -161,6 +163,6 @@ describe('TaskCreateForm spec upload', () => {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       }),
     )
-    expect(wrapper.find('.pdf-agent-hint').exists()).toBe(false)
+    expect(wrapper.find('.spec-upload-hint').exists()).toBe(false)
   })
 })

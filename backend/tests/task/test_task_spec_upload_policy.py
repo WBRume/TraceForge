@@ -1,4 +1,4 @@
-"""SPEC 上传策略:.doc 拒绝、PDF 跳过基线。"""
+"""SPEC 上传策略:.doc 与 PDF 拒绝。"""
 
 import os
 
@@ -24,33 +24,20 @@ def test_upload_task_spec_rejects_doc(tmp_path):
         engine.dispose()
 
 
-def test_upload_task_spec_accepts_pdf_and_stores_original(tmp_path):
+def test_upload_task_spec_rejects_pdf(tmp_path):
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
             _user, _ws, task = _seed_workspace(db)
             task.project_path = str(tmp_path)
             db.commit()
-            _path, asset_id, version_id = task_task_workspace_specification.upload_task_spec(
-                db, task.id, "spec.pdf", b"%PDF-1.4 fake"
-            )
-            from app.domains.asset.services.document.repository import get_asset_version
-
-            version = get_asset_version(db, asset_id, version_id)
-            assert version.original_ext == ".pdf"
-            assert os.path.isfile(version.original_path)
-            assert _path == version.original_path == task.spec_doc_path
-            # 服务层不建基线(基线由路由层按策略决定)
+            with pytest.raises(ValueError, match=r"supported formats"):
+                task_task_workspace_specification.upload_task_spec(db, task.id, "spec.pdf", b"%PDF-1.4 fake")
+            # 不应留下任何文件/资产，也不应创建基线
+            assert not os.path.exists(os.path.join(tmp_path, ".sdd", "spec", "spec.pdf"))
             assert db.query(SddTaskCliBootstrap).filter_by(task_id=task.id).first() is None
     finally:
         engine.dispose()
-
-
-def test_spec_bootstrap_enabled_for_ext():
-    assert task_task_workspace_specification.spec_bootstrap_enabled_for_ext(".docx") is True
-    assert task_task_workspace_specification.spec_bootstrap_enabled_for_ext(".md") is True
-    assert task_task_workspace_specification.spec_bootstrap_enabled_for_ext(".txt") is True
-    assert task_task_workspace_specification.spec_bootstrap_enabled_for_ext(".pdf") is False
 
 
 def test_failed_upload_preserves_previous_task_document(tmp_path, monkeypatch):

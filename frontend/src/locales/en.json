@@ -687,7 +687,7 @@
     "requirement_duration": "Requirement Duration (Hours)",
     "requirement_placeholder": "e.g. 8",
     "spec_placeholder": "Upload Requirement Doc...",
-    "spec_pdf_agent_hint": "PDF selected: make sure the underlying agent can read PDF files on its own or has the matching skills installed, otherwise the engine won't understand the requirements after start.",
+    "spec_upload_unsupported": "Specification documents support only .docx, .md, and .txt files.",
     "spec_upload_failed_after_create": "Task was created, but requirement document upload failed. Please re-upload it in the chat session.",
     "create_task_failed": "Failed to create task. Please try again later.",
     "delete_confirm": "Are you sure to delete session {name}? All history and process assets will be cleared, this action is irreversible."

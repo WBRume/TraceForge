@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { shallowRef, watch } from 'vue'
 import { Clock, FileText, Loader2, Upload, X } from '@/components/icons'
 
 defineProps<{ wsId: string; isDiagnosisTask: boolean; creating: boolean }>()
@@ -8,11 +8,21 @@ const priority = defineModel<string>('priority', { required: true })
 const specFile = defineModel<File | null>('specFile', { required: true })
 const diagnosisFiles = defineModel<File[]>('diagnosisFiles', { required: true })
 const PRIORITIES = ['P0', 'P1', 'P2', 'P3'] as const
-const isPdfSpecFile = computed(() => (specFile.value?.name || '').toLowerCase().endsWith('.pdf'))
+const SPEC_FILE_EXTENSIONS = ['.docx', '.md', '.txt'] as const
+const specFileUnsupported = shallowRef(false)
+watch(specFile, () => { specFileUnsupported.value = false })
+function specFileExt(name: string) {
+  const index = name.lastIndexOf('.')
+  return index >= 0 ? name.slice(index).toLowerCase() : ''
+}
 function handleSpecFileUpload(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
-  if (file) specFile.value = file
+  if (file) {
+    const supported = (SPEC_FILE_EXTENSIONS as readonly string[]).includes(specFileExt(file.name))
+    specFileUnsupported.value = !supported
+    if (supported) specFile.value = file
+  }
   input.value = ''
 }
 function handleDiagnosisFiles(event: Event) {
@@ -83,15 +93,15 @@ function removeDiagnosisFile(index: number) {
             :id="`spec-upload-${wsId}`"
             type="file"
             class="hidden-input"
-            accept=".pdf,.docx,.md,.txt"
+            accept=".docx,.md,.txt"
             @change="handleSpecFileUpload"
           />
           <label :for="`spec-upload-${wsId}`" class="btn-primary file-choose-btn">
             {{ $t('common.select') }}
           </label>
         </div>
-        <p v-if="isPdfSpecFile" class="pdf-agent-hint">
-          {{ $t('dashboard.spec_pdf_agent_hint') }}
+        <p v-if="specFileUnsupported" class="spec-upload-hint" role="alert">
+          {{ $t('dashboard.spec_upload_unsupported') }}
         </p>
       </div>
 

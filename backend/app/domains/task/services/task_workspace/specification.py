@@ -8,11 +8,17 @@ from app.domains.asset.services import asset_discussion_service
 from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.task.models.task import SddTask
 
-PDF_SPEC_BOOTSTRAP_DISABLED_EXTS = {".pdf"}
+SUPPORTED_SPEC_EXTS = {".docx", ".md", ".txt"}
 
 
-def spec_bootstrap_enabled_for_ext(ext: str) -> bool:
-    return (ext or "").lower() not in PDF_SPEC_BOOTSTRAP_DISABLED_EXTS
+def ensure_supported_spec_ext(file_name: str | None) -> str:
+    """Reject unsupported specification formats at the API boundary."""
+    ext = os.path.splitext(file_name or "")[1].lower()
+    if ext == ".doc":
+        raise ValueError("Legacy .doc files are not supported; please convert to .docx")
+    if ext not in SUPPORTED_SPEC_EXTS:
+        raise ValueError("Unsupported specification file type; supported formats: .docx, .md, .txt")
+    return ext
 
 
 def upload_task_spec(
@@ -26,9 +32,7 @@ def upload_task_spec(
     if not task:
         raise ValueError("Task not found")
 
-    ext = os.path.splitext(file_name or "")[1].lower()
-    if ext == ".doc":
-        raise ValueError("Legacy .doc files are not supported; please convert to .docx or upload a PDF")
+    ensure_supported_spec_ext(file_name)
 
     from app.domains.asset.services.document.storage import normalize_filename
     from app.domains.local_resource.service import is_local, materialize_file

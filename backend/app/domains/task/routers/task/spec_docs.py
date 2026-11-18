@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
@@ -71,15 +69,9 @@ async def upload_task_spec(
 ):
     with bind_task_context(task_id=task_id, workspace_id=ws_id, user_id=current_user.id):
         try:
+            task_task_workspace_specification.ensure_supported_spec_ext(file.filename)
             async with lock_task(task_id):
                 content = await file.read()
-                ext = os.path.splitext(file.filename or "")[1].lower()
-                if ext == ".doc":
-                    raise HTTPException(
-                        status_code=415,
-                        detail="Legacy .doc is not supported; please convert to .docx or upload a PDF",
-                    )
-                bootstrap_enabled = task_task_workspace_specification.spec_bootstrap_enabled_for_ext(ext)
 
                 def persist_task_spec_upload(db: Session):
                     verify_workspace_permission(
@@ -95,19 +87,16 @@ async def upload_task_spec(
                     file_path, asset_id, version_id = task_task_workspace_specification.upload_task_spec(
                         db, task_id, file.filename, content
                     )
-                    if bootstrap_enabled:
-                        bootstrap = task_cli_state_service.upsert_bootstrap_for_upload(
-                            db,
-                            workspace_id=ws_id,
-                            task_id=task_id,
-                            spec_asset_id=asset_id,
-                            spec_version_id=version_id,
-                        )
-                        bootstrap_status = (
-                            bootstrap.status.value if hasattr(bootstrap.status, "value") else str(bootstrap.status)
-                        )
-                    else:
-                        bootstrap_status = "DISABLED"
+                    bootstrap = task_cli_state_service.upsert_bootstrap_for_upload(
+                        db,
+                        workspace_id=ws_id,
+                        task_id=task_id,
+                        spec_asset_id=asset_id,
+                        spec_version_id=version_id,
+                    )
+                    bootstrap_status = (
+                        bootstrap.status.value if hasattr(bootstrap.status, "value") else str(bootstrap.status)
+                    )
                     return {
                         "path": file_path,
                         "asset_id": asset_id,

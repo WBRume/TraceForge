@@ -163,8 +163,8 @@ describe('NewTaskModal diagnosis mode', () => {
 
     const specInput = wrapper.find('#spec-upload-ws-1')
     expect(specInput.exists()).toBe(true)
-    // 需求开发侧:禁止 legacy .doc,其余白名单不受诊断上传放开影响
-    expect(specInput.attributes('accept')).toBe('.pdf,.docx,.md,.txt')
+    // 需求开发侧:仅允许 .docx/.md/.txt,不受诊断上传放开影响
+    expect(specInput.attributes('accept')).toBe('.docx,.md,.txt')
   })
 
   it('exposes the auto-run main switch only for diagnosis tasks and submits sop_auto_run', async () => {
