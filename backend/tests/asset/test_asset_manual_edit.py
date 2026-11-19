@@ -2,8 +2,20 @@
 人工编辑（manual_edit_block）服务层测试。
 
 覆盖：段落/标题块编辑生成新版本、样式继承、空文本与未知块/表格拦截、
-并发版本校验、thread 锚点重映射与 close_hint 对账、docx 重建。
+并发版本校验、thread 锚点重映射与 close_hint 对账、DOCX 原位编辑。
 """
+
+from base64 import b64decode
+from io import BytesIO
+from pathlib import Path
+from zipfile import ZipFile
+
+import pytest
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Pt, RGBColor
 
 from app.domains.asset.models.asset import (
     SddAssetVersion,
@@ -15,7 +27,6 @@ from app.domains.asset.services.asset_resolution_service import (
     ResolutionServiceError,
     manual_edit_block,
 )
-from app.domains.asset.services.document.docx import looks_like_docx_bytes
 from app.domains.asset.services.document.versioning import (
     create_asset_version_from_normalized_content,
     create_asset_version_from_upload,
@@ -363,35 +374,94 @@ def test_manual_edit_restores_missing_anchor_clears_close_hint(tmp_path):
         engine.dispose()
 
 
-def test_manual_edit_rebuilds_docx_for_docx_asset(tmp_path):
+def test_manual_edit_preserves_original_docx_parts_and_paragraph_styles(tmp_path):
+    document = Document()
+    document.sections[0].header.paragraphs[0].text = "Requirement header"
+    document.sections[0].footer.paragraphs[0].text = "Requirement footer"
+    document.add_paragraph("Repeated words")
+    document.add_paragraph()  # Source paragraph ordinals also count blank paragraphs.
+    paragraph = document.add_paragraph(style="List Number")
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.space_after = Pt(16)
+    heading = paragraph.add_run("  Deadline: ")
+    heading.bold = True
+    heading.font.color.rgb = RGBColor.from_string("8F2020")
+    paragraph.add_run("700 ms").italic = True
+    paragraph.add_run().add_tab()
+    paragraph.add_run("Reject on timeout").underline = True
+    image = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X9V0AAAAASUVORK5CYII=")
+    paragraph.add_run().add_picture(BytesIO(image))
+    paragraph.add_run().add_break(WD_BREAK.LINE)
+    link = OxmlElement("w:hyperlink")
+    link.set(qn("w:anchor"), "audit")
+    link.append(paragraph.add_run("Audit record")._r)
+    paragraph._p.append(link)
+    paragraph.add_run().add_break(WD_BREAK.PAGE)
+    paragraph.add_run("Continued")
+    document.add_heading("Appendix", level=1)
+    table = document.add_table(rows=2, cols=2)
+    table.style = "Light Shading Accent 1"
+    table.cell(0, 0).merge(table.cell(0, 1)).text = "Merged heading"
+    original = BytesIO()
+    document.save(original)
+
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
             _ws, task = _seed_task_with_project(db, tmp_path)
-            asset, _v1 = _seed_spec(db, task, tmp_path)
-
-            docx_version = create_asset_version_from_normalized_content(
+            asset, docx_version = create_asset_version_from_upload(
                 db,
-                asset,
+                task,
                 creator_id=task.creator_id,
-                normalized_markdown=SPEC_MD,
-                change_note="convert to docx",
-                output_ext=".docx",
-                output_file_name="spec-export.docx",
+                file_name="spec.docx",
+                file_content=original.getvalue(),
             )
             db.commit()
 
+            edited_text = "  Deadline: 950 ms\tReject on timeout\nAudit record\nContinued"
             version, _affected = manual_edit_block(
                 db,
                 asset=asset,
                 block_id="blk-2",
-                new_text="Login must work with SSO.",
+                new_text=edited_text,
                 actor_user_id=task.creator_id,
             )
 
             assert version.version_no == docx_version.version_no + 1
-            with open(version.original_path, "rb") as f:
-                assert looks_like_docx_bytes(f.read())
+            assert _block_text(version, "blk-2") == edited_text
+            assert version.blocks_json[1]["docx_spans"][0]["paragraph"] == 2
+            assert Path(docx_version.original_path).read_bytes() == original.getvalue()
+            with ZipFile(original) as source, ZipFile(version.original_path) as result:
+                assert set(source.namelist()) == set(result.namelist())
+                for part in source.namelist():
+                    if part != "word/document.xml":
+                        assert result.read(part) == source.read(part), part
+
+            saved = Document(version.original_path)
+            edited = saved.paragraphs[2]
+            assert saved.paragraphs[0].text == "Repeated words"
+            assert edited.style.name == "List Number"
+            assert edited.alignment == WD_ALIGN_PARAGRAPH.CENTER
+            assert edited.paragraph_format.space_after == Pt(16)
+            assert edited.runs[0].bold and edited.runs[0].font.color.rgb == RGBColor.from_string("8F2020")
+            assert edited.runs[1].text == "950 ms" and edited.runs[1].italic
+            assert edited.runs[3].text == "Reject on timeout" and edited.runs[3].underline
+            assert len(edited._p.xpath(".//w:drawing")) == 1
+            assert len(edited._p.xpath('.//w:br[@w:type="page"]')) == 1
+            assert edited._p.xpath('w:hyperlink[@w:anchor="audit"]/w:r/w:t')[0].text == "Audit record"
+
+            db.commit()
+            with pytest.raises(ResolutionServiceError, match="page or column break") as error:
+                manual_edit_block(
+                    db,
+                    asset=asset,
+                    block_id="blk-2",
+                    new_text=edited_text.replace("\nContinued", " Continued"),
+                    actor_user_id=task.creator_id,
+                )
+            assert error.value.status_code == 422
+            assert asset.active_version_id == version.id
+            assert db.query(SddAssetVersion).filter_by(asset_id=asset.id).count() == 2
     finally:
         engine.dispose()
 

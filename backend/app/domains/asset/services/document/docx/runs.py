@@ -116,22 +116,27 @@ def extract_run_style(run: ET.Element) -> dict[str, Any]:
     return style
 
 
+def run_child_text(node: ET.Element) -> str:
+    """Project one Word run child to the text used by review offsets."""
+    if not isinstance(node.tag, str):
+        return ""
+    lname = local_name(node.tag)
+    if lname == "t":
+        return node.text or ""
+    if lname in {"tab", "ptab"}:
+        return "\t"
+    if lname in {"br", "cr"}:
+        return "\n"
+    if lname in {"noBreakHyphen", "softHyphen"}:
+        return "-"
+    if lname == "sym":
+        return decode_symbol(node.attrib.get(xml_attr("char"), ""))
+    return ""
+
+
 def extract_run_text(run: ET.Element) -> str:
     """提取 run 内的可见文本（w:t/tab/br/sym 等）。"""
-    parts: list[str] = []
-    for node in list(run):
-        lname = local_name(node.tag)
-        if lname == "t" and node.text:
-            parts.append(node.text)
-        elif lname in {"tab", "ptab"}:
-            parts.append("\t")
-        elif lname in {"br", "cr"}:
-            parts.append("\n")
-        elif lname in {"noBreakHyphen", "softHyphen"}:
-            parts.append("-")
-        elif lname == "sym":
-            parts.append(decode_symbol(node.attrib.get(xml_attr("char"), "")))
-    return "".join(parts)
+    return "".join(run_child_text(node) for node in run)
 
 
 def merge_adjacent_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:

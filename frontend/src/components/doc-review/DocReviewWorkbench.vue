@@ -238,15 +238,15 @@ const cancelBlockEdit = () => {
 
 const saveBlockEdit = async (blockId: string, text: string) => {
   if (!canManualEdit.value || savingBlockEdit.value) return;
-  const normalized = String(text || "").trim();
-  if (!normalized) {
+  const normalized = docxSource.value ? text : text.trim();
+  if (!normalized.trim()) {
     ElMessage.warning(t("doc_review.manual_edit_empty"));
     return;
   }
   const originalBlock = (documentData.value?.blocks || []).find(
     (block: any) => String(block?.id || "") === blockId,
   );
-  if (originalBlock && String(originalBlock?.text || "").trim() === normalized) {
+  if (originalBlock && (docxSource.value ? originalBlock.text : String(originalBlock.text || "").trim()) === normalized) {
     editingBlockId.value = "";
     return;
   }
@@ -850,7 +850,7 @@ watch(
   () => activeVersionId.value,
   (_next, previous) => {
     if (!previous) return;
-    if (!editingBlockId.value) return;
+    if (!editingBlockId.value || savingBlockEdit.value) return;
     editingBlockId.value = "";
     ElMessage.info(t("doc_review.manual_edit_stale"));
   },

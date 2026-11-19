@@ -4,6 +4,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 const props = defineProps<{
   initialText: string;
   disabled?: boolean;
+  preserveWhitespace?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -16,7 +17,7 @@ let saved = false;
 let cancelledByEsc = false;
 
 const normalizeText = (raw: string) =>
-  String(raw || "").replace(/\r?\n+/g, " ").trim();
+  props.preserveWhitespace ? raw.replace(/\r\n?/g, "\n") : raw.replace(/\r?\n+/g, " ").trim();
 
 const focusAtEnd = async () => {
   await nextTick();
@@ -37,7 +38,7 @@ const submitSave = () => {
   const el = editorRef.value;
   if (!el) return;
   const normalized = normalizeText(el.innerText);
-  if (!normalized) {
+  if (!normalized.trim()) {
     void focusAtEnd();
     return;
   }
@@ -46,7 +47,7 @@ const submitSave = () => {
 };
 
 const handleEsc = () => {
-  if (saved || cancelledByEsc) return;
+  if (cancelledByEsc) return;
   cancelledByEsc = true;
   emit("cancel");
 };
@@ -58,9 +59,8 @@ const handleBlur = () => {
 
 const handlePaste = (event: ClipboardEvent) => {
   event.preventDefault();
-  const plain = String(event.clipboardData?.getData("text/plain") || "")
-    .replace(/\r?\n+/g, " ");
-  document.execCommand("insertText", false, plain);
+  const plain = event.clipboardData?.getData("text/plain") || "";
+  document.execCommand("insertText", false, props.preserveWhitespace ? plain : plain.replace(/\r?\n+/g, " "));
 };
 
 onMounted(() => {
@@ -82,6 +82,7 @@ onBeforeUnmount(() => {
     @keydown.enter.prevent="submitSave"
     @keydown.esc.prevent="handleEsc"
     @blur="handleBlur"
+    @input="saved = false"
     @paste="handlePaste"
   >{{ initialText }}</div>
 </template>

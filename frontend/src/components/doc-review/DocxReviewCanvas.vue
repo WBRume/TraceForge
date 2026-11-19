@@ -214,6 +214,7 @@ watch(() => [surface.value, props.selectedThreadId] as const, ([current, selecte
       <BlockInlineEditor
         :key="editedBlock.id"
         :initial-text="editedBlock.text"
+        preserve-whitespace
         @save="text => emit('save-block-edit', editedBlock!.id, text)"
         @cancel="emit('cancel-block-edit')"
       />

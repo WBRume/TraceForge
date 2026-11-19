@@ -186,10 +186,9 @@ class AssetManualEditBlockRequest(BaseModel):
     @field_validator("new_text")
     @classmethod
     def validate_new_text(cls, value: str) -> str:
-        normalized = str(value or "").strip()
-        if not normalized:
+        if not value.strip():
             raise ValueError("new_text is required")
-        return normalized
+        return value
 
 
 class AssetResolutionProposalCreateRequest(BaseModel):

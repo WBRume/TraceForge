@@ -25,7 +25,7 @@ from app.domains.asset.services import asset_discussion_service
 from app.domains.asset.services.document import payload as document_payload
 from app.domains.asset.services.document import repository as document_repository
 from app.domains.asset.services.document import versioning as document_versioning
-from app.domains.asset.services.document.docx import apply_blocks_to_docx_inplace
+from app.domains.asset.services.document.docx import apply_blocks_to_docx_inplace, edit_docx_paragraph
 from app.domains.task.models.task import SddTask
 from app.domains.task.services import task_cli_state_service
 
@@ -1292,6 +1292,16 @@ def _remap_anchor_selection(
     return old_selected, start, start + len(old_selected)
 
 
+def _edit_docx_review_block(version: SddAssetVersion, block: dict[str, Any], old_text: str, new_text: str) -> bytes:
+    spans = block.get("docx_spans") or []
+    if len(spans) != 1 or not isinstance(spans[0].get("paragraph"), int):
+        raise ResolutionServiceError("The review block has no source DOCX paragraph", status_code=422)
+    try:
+        return edit_docx_paragraph(version.original_path or "", spans[0]["paragraph"], old_text, new_text)
+    except ValueError as exc:
+        raise ResolutionServiceError(str(exc), status_code=422) from exc
+
+
 def manual_edit_block(
     db: Session,
     *,
@@ -1302,8 +1312,8 @@ def manual_edit_block(
     context_version_id: str | None = None,
     change_note: str | None = None,
 ) -> tuple[SddAssetVersion, list[SddAssetThread]]:
-    text = str(new_text or "").strip()
-    if not text:
+    text = str(new_text or "")
+    if not text.strip():
         raise ResolutionServiceError("Edited block content cannot be empty", status_code=422)
 
     resolved_context_version_id = str(context_version_id or "").strip() or asset.active_version_id
@@ -1326,11 +1336,21 @@ def manual_edit_block(
     if not isinstance(base_blocks, list):
         raise ResolutionServiceError("Base version blocks are invalid")
 
-    old_runs = _normalize_runs(base_block.get("runs"), str(base_block.get("text") or ""))
-    old_text = _runs_text(old_runs)
-    target_block = _build_new_block_ast(base_block, old_runs, text)
-    next_blocks = _replace_block_ast(base_blocks, block_id=block_id, target_block=target_block)
-    next_markdown = _blocks_to_markdown(next_blocks)
+    output_ext = base_version.original_ext or asset.source_ext or ".md"
+    if output_ext.lower() == ".docx":
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        old_text = str(base_block.get("text") or "")
+        output_bytes = _edit_docx_review_block(base_version, base_block, old_text, text)
+        next_blocks = base_blocks
+        next_markdown = base_version.normalized_markdown or ""
+    else:
+        text = text.strip()
+        old_runs = _normalize_runs(base_block.get("runs"), str(base_block.get("text") or ""))
+        old_text = _runs_text(old_runs)
+        target_block = _build_new_block_ast(base_block, old_runs, text)
+        next_blocks = _replace_block_ast(base_blocks, block_id=block_id, target_block=target_block)
+        next_markdown = _blocks_to_markdown(next_blocks)
+        output_bytes = next_markdown.encode("utf-8")
 
     version = document_versioning.create_asset_version_from_normalized_content(
         db,
@@ -1340,9 +1360,9 @@ def manual_edit_block(
         blocks_json=next_blocks,
         change_note=change_note or f"Manual edit on block {block_id}",
         base_version_id=base_version.id,
-        output_ext=asset.source_ext or base_version.original_ext or ".md",
-        output_mime=asset.source_mime or base_version.original_mime or "text/markdown",
-        output_file_bytes=next_markdown.encode("utf-8"),
+        output_ext=output_ext,
+        output_mime=base_version.original_mime or asset.source_mime or "text/markdown",
+        output_file_bytes=output_bytes,
         output_file_name=asset.source_file_name or f"spec-v{base_version.version_no + 1}.md",
     )
 

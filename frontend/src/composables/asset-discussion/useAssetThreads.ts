@@ -214,7 +214,7 @@ export function useAssetThreads(
     return scope.run(null, (!blockId) ? undefined : scope.capture(), async (request) => {
       const res = await api.post(
         `${request.baseUrl}/document/blocks/${blockId}`,
-        { new_text: newText },
+        { new_text: newText, context_version_id: activeVersionId.value || undefined },
         { signal: request.signal },
       )
       if (!request.isCurrent()) return null

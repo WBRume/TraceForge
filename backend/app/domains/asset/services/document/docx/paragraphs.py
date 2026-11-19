@@ -19,6 +19,8 @@ from app.domains.asset.services.document.docx.xml_utils import (
     xml_attr,
 )
 
+PARAGRAPH_RUN_CONTAINERS = frozenset({"hyperlink", "smartTag", "sdt", "sdtContent", "ins", "fldSimple"})
+
 
 def extract_paragraph_meta(paragraph: ET.Element) -> dict[str, Any]:
     """提取 pPr 段落属性（样式名、编号定义）。"""
@@ -112,7 +114,7 @@ class _ParagraphContent:
                         info["char_end"] = self.cursor
                 self.append_text(extract_run_text(child), extract_run_style(child))
                 continue
-            if lname in {"hyperlink", "smartTag", "sdt", "sdtContent", "ins", "fldSimple"}:
+            if lname in PARAGRAPH_RUN_CONTAINERS:
                 self.walk(child)
 
 
