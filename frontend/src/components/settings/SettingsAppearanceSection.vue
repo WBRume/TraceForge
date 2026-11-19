@@ -1,23 +1,18 @@
 <script setup lang="ts">
-import { proxyRefs, useId, useTemplateRef, watchPostEffect } from 'vue'
+import { proxyRefs, useId, useTemplateRef } from 'vue'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { Loader2, Palette, Save, UploadCloud } from '@/components/icons'
+import AvatarCropPreview from '@/components/settings/AvatarCropPreview.vue'
 import AvatarImageCrop from '@/components/settings/AvatarImageCrop.vue'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 import type { AvatarPreference } from '@/composables/useAvatarPreference'
-import { AVATAR_FILE_ACCEPT, AVATAR_SOURCE_LIMIT_MB, drawAvatarCrop } from '@/utils/avatarImage'
+import { AVATAR_FILE_ACCEPT, AVATAR_SOURCE_LIMIT_MB } from '@/utils/avatarImage'
 
 const props = defineProps<{ preference: AvatarPreference }>()
 const avatar = proxyRefs(props.preference)
 const fileInput = useTemplateRef<HTMLInputElement>('fileInput')
-const preview = useTemplateRef<HTMLCanvasElement>('preview')
 const previewTitle = useId()
 const colorInput = useId()
-
-watchPostEffect(() => {
-  const draft = avatar.editing
-  if (preview.value && draft) drawAvatarCrop(preview.value, draft.image, draft.crop)
-})
 
 function handleFileChange(event: Event) {
   const input = event.currentTarget as HTMLInputElement
@@ -136,7 +131,13 @@ function handleFileDrop(event: DragEvent) {
           <div class="profile-card-inner">
             <h3 :id="previewTitle" class="preview-title">{{ $t('settings.appearance.preview') }}</h3>
             <div class="preview-avatar-wrap">
-              <canvas v-if="avatar.editing" ref="preview" class="crop-preview" width="256" height="256" aria-hidden="true" />
+              <AvatarCropPreview
+                v-if="avatar.editing"
+                class="crop-preview"
+                :image="avatar.editing.image"
+                :crop="avatar.editing.crop"
+                :side="256"
+              />
               <UserAvatar
                 v-else
                 :display-name="avatar.user?.display_name"

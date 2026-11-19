@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { shallowRef, useId, useTemplateRef, watchPostEffect } from 'vue'
+import { shallowRef, useId } from 'vue'
+import AvatarCropPreview from '@/components/settings/AvatarCropPreview.vue'
 import {
-  avatarCropSide, centeredAvatarCrop, constrainAvatarCrop, drawAvatarCrop, type AvatarCrop,
-} from '@/utils/avatarImage'
+  avatarCropSide, centeredAvatarCrop, constrainAvatarCrop, type AvatarCrop,
+} from '@/utils/avatarCrop'
+import type { AvatarImage } from '@/utils/avatarImage'
 
-const props = defineProps<{ image: ImageBitmap; disabled: boolean }>()
+const props = defineProps<{ image: AvatarImage; disabled: boolean }>()
 const crop = defineModel<AvatarCrop>({ required: true })
 
 const stageSize = 384
 const stageInset = 32
 const circleFraction = (stageSize - 2 * stageInset) / stageSize
-const canvas = useTemplateRef<HTMLCanvasElement>('canvas')
 const hintId = useId()
 const zoomId = useId()
 const drag = shallowRef<{ id: number; x: number; y: number } | null>(null)
@@ -20,10 +21,6 @@ const arrowOffsets: Record<string, [number, number]> = {
   ArrowUp: [0, -1],
   ArrowDown: [0, 1],
 }
-
-watchPostEffect(() => {
-  if (canvas.value) drawAvatarCrop(canvas.value, props.image, crop.value, stageInset)
-})
 
 function startDrag(event: PointerEvent) {
   if (props.disabled || event.button !== 0 || drag.value) return
@@ -81,7 +78,7 @@ function setZoom(event: Event) {
     @lostpointercapture="endDrag"
     @keydown="moveWithKeyboard"
   >
-    <canvas ref="canvas" class="crop-image" :width="stageSize" :height="stageSize" aria-hidden="true" />
+    <AvatarCropPreview class="crop-image" :image="image" :crop="crop" :side="stageSize" :inset="stageInset" />
     <div class="crop-circle" :style="{ inset: `${stageInset / stageSize * 100}%` }" aria-hidden="true"></div>
   </div>
   <p :id="hintId" class="crop-hint">{{ $t('settings.appearance.crop_hint') }}</p>

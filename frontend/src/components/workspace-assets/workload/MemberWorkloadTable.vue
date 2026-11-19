@@ -18,7 +18,7 @@ const slots = ['background', 'interactive'] as const
     <el-table-column :label="t(prefix + 'member')" min-width="136">
       <template #default="{ row }">
         <button type="button" class="member-link" @click="emit('open', row.user_id)">
-          <UserAvatar :display-name="row.display_name" :avatar-url="row.avatar_url" size="sm" aria-hidden="true" />
+          <UserAvatar :display-name="row.display_name" :avatar-url="row.avatar_url" size="md" aria-hidden="true" />
           <span class="identity">
             <strong>{{ row.display_name }}</strong><small>{{ t(prefix + 'role_' + row.role.toLowerCase()) }}</small>
           </span>

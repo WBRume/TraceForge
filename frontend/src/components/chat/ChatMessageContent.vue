@@ -120,7 +120,7 @@ const showTrailingAvatar = computed(() => (
           :user-id="msg.creator_id"
           :avatar-svg="msg.creator_avatar_svg"
           :avatar-url="msg.creator_avatar_url"
-          size="xs"
+          size="md"
           :accent-color="memberColor"
         />
       </div>

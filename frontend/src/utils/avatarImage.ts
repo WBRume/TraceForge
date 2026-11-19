@@ -1,52 +1,36 @@
+import {
+  AvatarImageError, MAX_AVATAR_SIDE, MAX_SOURCE_PIXELS, avatarCropSide, drawAvatarCrop, type AvatarCrop,
+  type AnimatedAvatarImage, type AvatarAnimationRequest, type AvatarAnimationResult,
+} from './avatarCrop'
+import { encodeAvatarSvgCrop, readAnimatedAvatarSvg } from './avatarVector'
+
 const imageMimeTypes: Record<string, string> = {
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
   png: 'image/png',
+  apng: 'image/apng',
   webp: 'image/webp',
   gif: 'image/gif',
   bmp: 'image/bmp',
   avif: 'image/avif',
+  avifs: 'image/avif',
   svg: 'image/svg+xml',
 }
 const supportedTypes = new Set(Object.values(imageMimeTypes))
-const MAX_SOURCE_PIXELS = 32_000_000
-const MAX_AVATAR_SIDE = 512
 export const AVATAR_SOURCE_LIMIT_MB = 20
 export const AVATAR_FILE_ACCEPT = [
   ...Object.keys(imageMimeTypes).map(extension => `.${extension}`),
   ...supportedTypes,
 ].join(',')
 
-export class AvatarImageError extends Error {
-  readonly reason: 'invalid_file' | 'file_too_large' | 'image_too_large'
+export type AvatarImage = ImageBitmap | AnimatedAvatarImage
 
-  constructor(reason: AvatarImageError['reason']) {
-    super(reason)
-    this.reason = reason
-  }
+export function isAnimatedAvatar(image: AvatarImage): image is AnimatedAvatarImage {
+  return 'previewUrl' in image
 }
-
-export type AvatarCrop = {
-  x: number
-  y: number
-  zoom: number
-}
-
-export function centeredAvatarCrop(image: ImageBitmap): AvatarCrop {
-  return { x: image.width / 2, y: image.height / 2, zoom: 1 }
-}
-
-export function avatarCropSide(image: ImageBitmap, crop: AvatarCrop): number {
-  return Math.min(image.width, image.height) / crop.zoom
-}
-
-export function constrainAvatarCrop(image: ImageBitmap, crop: AvatarCrop): AvatarCrop {
-  const halfSide = avatarCropSide(image, crop) / 2
-  return {
-    x: Math.max(halfSide, Math.min(image.width - halfSide, crop.x)),
-    y: Math.max(halfSide, Math.min(image.height - halfSide, crop.y)),
-    zoom: crop.zoom,
-  }
+export function releaseAvatarImage(image: AvatarImage) {
+  if (isAnimatedAvatar(image)) URL.revokeObjectURL(image.previewUrl)
+  else image.close()
 }
 
 function canvasContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
@@ -73,7 +57,7 @@ async function rasterizeSvg(file: Blob): Promise<ImageBitmap> {
   }
 }
 
-export async function decodeAvatarImage(file: File): Promise<ImageBitmap> {
+export async function decodeAvatarImage(file: File): Promise<AvatarImage> {
   const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
   const mimeType = supportedTypes.has(file.type) ? file.type : imageMimeTypes[extension]
   if (!supportedTypes.has(mimeType)) throw new AvatarImageError('invalid_file')
@@ -81,7 +65,28 @@ export async function decodeAvatarImage(file: File): Promise<ImageBitmap> {
     throw new AvatarImageError('file_too_large')
   }
 
-  const blob = file.slice(0, file.size, mimeType)
+  const blob = file.slice(0, file.size, mimeType === 'image/apng' ? 'image/png' : mimeType)
+  const signature = await blob.slice(0, 6).text()
+  if (signature === 'GIF87a' || signature === 'GIF89a') {
+    const source = blob.slice(0, blob.size, 'image/gif')
+    const { readAvatarGif } = await import('./avatarGif')
+    const gif = await readAvatarGif(source)
+    if (gif.numFrames() > 1) {
+      return { width: gif.width, height: gif.height, source, previewUrl: URL.createObjectURL(source) }
+    }
+  }
+  if (blob.type === 'image/svg+xml') {
+    const animation = await readAnimatedAvatarSvg(blob)
+    if (animation) return animation
+  } else if (blob.type === 'image/png' || blob.type === 'image/webp' || blob.type === 'image/avif') {
+    const { hasNativeAvatarAnimation, openAvatarAnimation } = await import('./avatarNativeAnimation')
+    const bytes = await blob.arrayBuffer()
+    if (hasNativeAvatarAnimation(blob.type, bytes)) {
+      const { width, height, decoder } = await openAvatarAnimation(blob.type, bytes)
+      decoder.close()
+      return { width, height, source: blob, previewUrl: URL.createObjectURL(blob) }
+    }
+  }
   const image = mimeType === 'image/svg+xml'
     ? await rasterizeSvg(blob)
     : await createImageBitmap(blob, { imageOrientation: 'from-image' })
@@ -92,22 +97,40 @@ export async function decodeAvatarImage(file: File): Promise<ImageBitmap> {
   return image
 }
 
-// The editor, preview and upload use the same crop in source-image coordinates.
-export function drawAvatarCrop(canvas: HTMLCanvasElement, image: ImageBitmap, crop: AvatarCrop, inset = 0) {
-  const context = canvasContext(canvas)
-  const scale = (canvas.width - inset * 2) / avatarCropSide(image, crop)
-  context.clearRect(0, 0, canvas.width, canvas.height)
-  context.imageSmoothingQuality = 'high'
-  context.drawImage(
-    image,
-    canvas.width / 2 - crop.x * scale,
-    canvas.height / 2 - crop.y * scale,
-    image.width * scale,
-    image.height * scale,
-  )
+async function encodeAnimatedAvatarCrop(source: Blob, crop: AvatarCrop, signal?: AbortSignal): Promise<Blob> {
+  const { default: AvatarAnimationWorker } = await import('./avatarAnimation.worker?worker&inline')
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted()
+    const worker = new AvatarAnimationWorker()
+    const cleanup = () => {
+      signal?.removeEventListener('abort', abort)
+      worker.terminate()
+    }
+    const abort = () => {
+      cleanup()
+      reject(signal?.reason)
+    }
+    worker.onmessage = (event: MessageEvent<AvatarAnimationResult>) => {
+      cleanup()
+      if ('image' in event.data) resolve(event.data.image)
+      else reject(new AvatarImageError(event.data.error))
+    }
+    worker.onerror = () => {
+      cleanup()
+      reject(new AvatarImageError('animation_unavailable'))
+    }
+    signal?.addEventListener('abort', abort, { once: true })
+    worker.postMessage({ source, crop } satisfies AvatarAnimationRequest)
+  })
 }
 
-export function encodeAvatarCrop(image: ImageBitmap, crop: AvatarCrop): Promise<Blob> {
+export function encodeAvatarCrop(image: AvatarImage, crop: AvatarCrop, signal?: AbortSignal): Promise<Blob> {
+  if (isAnimatedAvatar(image)) {
+    if (image.source.type === 'image/svg+xml') {
+      return encodeAvatarSvgCrop(image, crop)
+    }
+    return encodeAnimatedAvatarCrop(image.source, crop, signal)
+  }
   const canvas = document.createElement('canvas')
   const side = Math.max(1, Math.min(MAX_AVATAR_SIDE, Math.floor(avatarCropSide(image, crop))))
   canvas.width = side
@@ -117,6 +140,6 @@ export function encodeAvatarCrop(image: ImageBitmap, crop: AvatarCrop): Promise<
     canvas.toBlob(blob => {
       if (blob) resolve(blob)
       else reject(new Error('Avatar encoding failed'))
-    }, 'image/webp', 0.88)
+    }, 'image/png')
   })
 }

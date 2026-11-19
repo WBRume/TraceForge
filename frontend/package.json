@@ -34,6 +34,7 @@
     "test:desktop:host": "node --test desktop/tests/host.smoke.mjs desktop/tests/stdio.smoke.mjs"
   },
   "dependencies": {
+    "@adnsistemas/upng": "1.0.4",
     "@guolao/vue-monaco-editor": "^1.6.0",
     "@heroicons/vue": "^2.2.0",
     "@office-kit/pptx": "^0.28.0",
@@ -59,6 +60,7 @@
     "micromark-util-decode-string": "^2.0.1",
     "mockjs": "^1.1.0",
     "monaco-editor": "^0.55.1",
+    "omggif": "1.0.10",
     "parse5": "^8.0.0",
     "pdfjs-dist": "^4.10.38",
     "pinia": "^3.0.4",
@@ -72,6 +74,7 @@
     "@tauri-apps/cli": "2.12.1",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^24.12.0",
+    "@types/omggif": "1.0.5",
     "@vitejs/plugin-vue": "^6.0.5",
     "@vue/test-utils": "^2.4.6",
     "@vue/tsconfig": "^0.9.0",

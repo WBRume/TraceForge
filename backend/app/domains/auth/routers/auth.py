@@ -2,6 +2,7 @@
 Auth & User API Routers
 """
 
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -18,7 +19,7 @@ from app.domains.auth.schemas.auth import (
     UserRegister,
     UserResponse,
 )
-from app.domains.auth.services import auth_service, avatar_image
+from app.domains.auth.services import auth_service, avatar_image, avatar_vector
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 logger = get_logger(__name__)
@@ -101,10 +102,10 @@ def update_my_avatar(
 async def upload_my_avatar_image(
     request: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    """Save a cropped PNG or WebP from the avatar editor."""
+    """Save a static or animated crop from the avatar editor."""
     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    if media_type not in avatar_image.AVATAR_UPLOAD_FORMATS:
-        raise HTTPException(status_code=415, detail="Expected a WebP or PNG avatar image")
+    if media_type not in avatar_image.AVATAR_UPLOAD_FORMATS and media_type != avatar_vector.SVG_MIME:
+        raise HTTPException(status_code=415, detail="Expected a PNG, WebP, APNG, or SVG avatar image")
 
     raw = bytearray()
     async for chunk in request.stream():
@@ -114,19 +115,26 @@ async def upload_my_avatar_image(
 
     try:
         return await run_in_threadpool(auth_service.update_user_avatar_image, db, current_user, bytes(raw), media_type)
+    except avatar_image.AvatarImageTooLargeError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/avatars/{user_id}/{revision}.webp", response_class=Response)
-def get_avatar_image(user_id: str, revision: UUID, db: Session = Depends(get_db)) -> Response:
+@router.get("/avatars/{user_id}/{revision}.{extension}", response_class=Response)
+def get_avatar_image(
+    user_id: str,
+    revision: UUID,
+    extension: Literal["webp", "svg"],
+    db: Session = Depends(get_db),
+) -> Response:
     """Serve a profile photo to image tags using its versioned URL."""
-    image = auth_service.read_user_avatar_image(db, user_id, str(revision))
+    image = auth_service.read_user_avatar_image(db, user_id, str(revision), extension)
     if image is None:
         raise HTTPException(status_code=404, detail="Avatar image not found")
 
-    return Response(
-        image,
-        media_type="image/webp",
-        headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
-    )
+    headers = {"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"}
+    if extension == "svg":
+        headers["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:"
+        return Response(image, media_type=avatar_vector.SVG_MIME, headers=headers)
+    return Response(image, media_type="image/webp", headers=headers)

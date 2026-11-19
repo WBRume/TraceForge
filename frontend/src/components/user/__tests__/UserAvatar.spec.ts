@@ -53,4 +53,17 @@ describe('UserAvatar', () => {
     expect(wrapper.get('img').attributes('src')).toContain('new-photo.webp')
     wrapper.unmount()
   })
+
+  it('shows a saved vector avatar as an image with the original crop around it', () => {
+    const path = '/api/auth/avatars/u1/vector.svg'
+    const wrapper = mount(UserAvatar, { props: { displayName: 'Alice', avatarUrl: `${path}#crop=120,80,32,12,40` } })
+    const image = wrapper.get('img')
+    expect(image.attributes('src')).toBe(`${getApiServerUrl()}${path}`)
+    expect(image.attributes('style')).toContain('width: 300%')
+    expect(image.attributes('style')).toContain('height: 200%')
+    expect(image.attributes('style')).toContain('left: -80%')
+    expect(image.attributes('style')).toContain('top: -30%')
+    expect(wrapper.find('.avatar-svg').exists()).toBe(false)
+    wrapper.unmount()
+  })
 })

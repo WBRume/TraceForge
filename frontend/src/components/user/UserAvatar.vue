@@ -2,6 +2,7 @@
 import { computed, shallowRef, watch } from 'vue'
 import { getApiServerUrl } from '@/utils/api'
 import { scopeAvatarSvgIds } from '@/utils/avatar'
+import { avatarSvgView } from '@/utils/avatarVector'
 
 type AvatarSize = 'xs' | 'sm' | 'md' | 'lg'
 
@@ -44,8 +45,9 @@ const avatarSvgContent = computed(() => {
 })
 const rawAvatarUrl = computed(() => props.avatarUrl?.trim() || '')
 const isLocalPhoto = computed(() => rawAvatarUrl.value.startsWith('/api/auth/avatars/'))
+const vectorView = computed(() => isLocalPhoto.value ? avatarSvgView(rawAvatarUrl.value) : null)
 const resolvedAvatarUrl = computed(() => (
-  isLocalPhoto.value ? `${getApiServerUrl()}${rawAvatarUrl.value}` : rawAvatarUrl.value
+  isLocalPhoto.value ? `${getApiServerUrl()}${vectorView.value?.src ?? rawAvatarUrl.value}` : rawAvatarUrl.value
 ))
 const failedUrl = shallowRef('')
 watch(resolvedAvatarUrl, () => { failedUrl.value = '' })
@@ -71,7 +73,16 @@ const avatarStyle = computed(() => {
     :title="title || fallbackName"
     :style="avatarStyle"
   >
-    <img v-if="imageUrl" :key="imageUrl" class="avatar-image" :src="imageUrl" :alt="fallbackName" @error="failedUrl = imageUrl">
+    <img
+      v-if="imageUrl"
+      :key="imageUrl"
+      class="avatar-image"
+      :class="{ 'avatar-image-cropped': vectorView }"
+      :src="imageUrl"
+      :style="vectorView?.style"
+      :alt="fallbackName"
+      @error="failedUrl = imageUrl"
+    >
     <span v-else-if="avatarSvgContent" class="avatar-svg" v-html="avatarSvgContent"></span>
     <span v-else>{{ initial }}</span>
   </span>
@@ -79,6 +90,7 @@ const avatarStyle = computed(() => {
 
 <style scoped>
 .user-avatar {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -101,6 +113,13 @@ const avatarStyle = computed(() => {
 
 .avatar-image {
   object-fit: cover;
+}
+
+.avatar-image-cropped {
+  position: absolute;
+  max-width: none;
+  max-height: none;
+  object-fit: fill;
 }
 
 .avatar-svg :deep(svg) {

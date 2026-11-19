@@ -14,7 +14,7 @@ from app.config import settings
 from app.domains.auth.errors import RegisterEmailNotAllowedError
 from app.domains.auth.models.user import User
 from app.domains.auth.schemas.auth import TokenResponse
-from app.domains.auth.services import avatar_image
+from app.domains.auth.services import avatar_image, avatar_vector
 from app.domains.task.services import avatar_service
 
 # SERVER_BOOT_ID = str(uuid.uuid4())
@@ -180,8 +180,13 @@ def update_user_avatar(db: Session, user: User, avatar_svg: str) -> User:
 
 def update_user_avatar_image(db: Session, user: User, raw: bytes, media_type: str) -> User:
     """Replace the current avatar with a versioned profile photo."""
-    image = avatar_image.encode_avatar_image(raw, media_type)
-    avatar_url = _avatar_image_url(user.id, str(uuid4()))
+    revision = str(uuid4())
+    if media_type == avatar_vector.SVG_MIME:
+        image, viewport = avatar_vector.encode_avatar_svg(raw)
+        avatar_url = _avatar_image_url(user.id, revision, "svg") + viewport
+    else:
+        image = avatar_image.encode_avatar_image(raw, media_type)
+        avatar_url = _avatar_image_url(user.id, revision, "webp")
     db.execute(
         update(User).where(User.id == user.id).values(avatar_svg=None, avatar_url=avatar_url, avatar_image=image)
     )
@@ -190,15 +195,19 @@ def update_user_avatar_image(db: Session, user: User, raw: bytes, media_type: st
     return user
 
 
-def _avatar_image_url(user_id: str, revision: str) -> str:
-    return f"{avatar_service.AVATAR_IMAGE_URL_PREFIX}{user_id}/{revision}.webp"
+def _avatar_image_url(user_id: str, revision: str, extension: str) -> str:
+    return f"{avatar_service.AVATAR_IMAGE_URL_PREFIX}{user_id}/{revision}.{extension}"
 
 
-def read_user_avatar_image(db: Session, user_id: str, revision: str) -> bytes | None:
+def read_user_avatar_image(db: Session, user_id: str, revision: str, extension: str = "webp") -> bytes | None:
     """Retrieve the image if the opaque revision is still current."""
-    return db.scalar(
-        select(User.avatar_image).where(User.id == user_id, User.avatar_url == _avatar_image_url(user_id, revision))
-    )
+    url = _avatar_image_url(user_id, revision, extension)
+    if extension == "svg":
+        # Browsers omit the viewport fragment from the image request.
+        match = User.avatar_url.startswith(f"{url}#crop=", autoescape=True)
+    else:
+        match = User.avatar_url == url
+    return db.scalar(select(User.avatar_image).where(User.id == user_id, match))
 
 
 def resolve_user_avatar_svg(user: User) -> str | None:

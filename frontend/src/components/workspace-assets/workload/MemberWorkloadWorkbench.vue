@@ -101,7 +101,7 @@ async function submitLimits() {
     >
       <template #header="{ titleId, titleClass }">
         <div class="drawer-heading">
-          <UserAvatar v-if="member" :display-name="member.display_name" :avatar-url="member.avatar_url" aria-hidden="true" />
+          <UserAvatar v-if="member" :display-name="member.display_name" :avatar-url="member.avatar_url" size="lg" aria-hidden="true" />
           <span v-else class="drawer-icon" aria-hidden="true"><Inbox /></span>
           <h2 :id="titleId" :class="titleClass">
             {{ showUnassigned ? t(prefix + 'unassigned_title') : member?.display_name }}

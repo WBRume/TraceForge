@@ -1,14 +1,18 @@
+import { isAxiosError } from 'axios'
 import { computed, onScopeDispose, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import api, { getApiServerUrl } from '@/utils/api'
 import { buildAvatarSvg, type AvatarTemplateStyle } from '@/utils/avatar'
 import {
-  AVATAR_SOURCE_LIMIT_MB, AvatarImageError, centeredAvatarCrop, decodeAvatarImage, encodeAvatarCrop, type AvatarCrop,
+  AvatarImageError, MAX_AVATAR_ANIMATION_FRAMES, MAX_AVATAR_UPLOAD_BYTES, centeredAvatarCrop, type AvatarCrop,
+} from '@/utils/avatarCrop'
+import {
+  AVATAR_SOURCE_LIMIT_MB, decodeAvatarImage, encodeAvatarCrop, isAnimatedAvatar, releaseAvatarImage, type AvatarImage,
 } from '@/utils/avatarImage'
 
 type AvatarMode = 'template' | 'upload'
-type AvatarDraft = { image: ImageBitmap; fileName: string; crop: AvatarCrop }
+type AvatarDraft = { image: AvatarImage; fileName: string; crop: AvatarCrop }
 type SavedAvatar = { avatar_svg: string | null; avatar_url: string | null }
 
 export function useAvatarPreference() {
@@ -23,6 +27,7 @@ export function useAvatarPreference() {
   const error = shallowRef('')
   const success = shallowRef('')
   let disposed = false
+  let activeEncoding: AbortController | null = null
 
   const user = computed(() => auth.user)
   const templateOptions = computed(() => [
@@ -51,7 +56,16 @@ export function useAvatarPreference() {
   function replaceDraft(next: AvatarDraft | null) {
     const previous = draft.value
     draft.value = next
-    previous?.image.close()
+    if (previous) releaseAvatarImage(previous.image)
+  }
+
+  function errorMessage(cause: unknown, fallback: 'invalid_image' | 'save_failed') {
+    const reason = cause instanceof AvatarImageError ? cause.reason : fallback
+    return t(`settings.appearance.${reason}`, {
+      size: AVATAR_SOURCE_LIMIT_MB,
+      frames: MAX_AVATAR_ANIMATION_FRAMES,
+      uploadLimit: (MAX_AVATAR_UPLOAD_BYTES / 1024 ** 2).toFixed(2),
+    })
   }
 
   function changeMode(next: AvatarMode) {
@@ -68,13 +82,12 @@ export function useAvatarPreference() {
     try {
       const image = await decodeAvatarImage(file)
       if (disposed || auth.token !== token) {
-        image.close()
+        releaseAvatarImage(image)
         return
       }
       replaceDraft({ image, fileName: file.name, crop: centeredAvatarCrop(image) })
     } catch (cause) {
-      const reason = cause instanceof AvatarImageError ? cause.reason : 'invalid_image'
-      error.value = t(`settings.appearance.${reason}`, { size: AVATAR_SOURCE_LIMIT_MB })
+      error.value = errorMessage(cause, 'invalid_image')
     } finally {
       loading.value = false
     }
@@ -91,13 +104,15 @@ export function useAvatarPreference() {
     clearFeedback()
     saving.value = true
     const photo = editing.value
+    const encoding = photo && isAnimatedAvatar(photo.image) ? new AbortController() : null
+    activeEncoding = encoding
     const userId = auth.user.id
     const token = auth.token
     const server = getApiServerUrl()
     const sameSession = () => auth.user?.id === userId && auth.token === token && getApiServerUrl() === server
     try {
-      const image = photo ? await encodeAvatarCrop(photo.image, photo.crop) : null
-      if (!sameSession()) return
+      const image = photo ? await encodeAvatarCrop(photo.image, photo.crop, encoding?.signal) : null
+      if (!sameSession() || encoding?.signal.aborted) return
       const response = image
         ? await api.put<SavedAvatar>('/auth/me/avatar/image', image, { headers: { 'Content-Type': image.type } })
         : await api.put<SavedAvatar>('/auth/me/avatar', { avatar_svg: templateSvg.value })
@@ -106,20 +121,27 @@ export function useAvatarPreference() {
       auth.setUser({ ...auth.user, avatar_url: response.data.avatar_url, avatar_svg: response.data.avatar_svg })
       if (photo) replaceDraft(null)
       success.value = t('settings.appearance.save_success')
-    } catch {
-      error.value = t('settings.appearance.save_failed')
+    } catch (cause) {
+      if (encoding?.signal.aborted) return
+      if (encoding && isAxiosError(cause) && cause.response?.status === 413) {
+        cause = new AvatarImageError('animation_too_large')
+      }
+      error.value = errorMessage(cause, 'save_failed')
     } finally {
+      activeEncoding = null
       saving.value = false
     }
   }
 
   watch(() => auth.token, () => {
+    activeEncoding?.abort()
     replaceDraft(null)
     clearFeedback()
   })
   watch([style, color], clearFeedback)
   onScopeDispose(() => {
     disposed = true
+    activeEncoding?.abort()
     replaceDraft(null)
   })
 
