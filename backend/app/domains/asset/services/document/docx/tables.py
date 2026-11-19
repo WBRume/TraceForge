@@ -34,6 +34,7 @@ def parse_table_block(
     row_line_texts: list[str] = []
     table_anchors: list[dict[str, Any]] = []
     docx_spans: list[dict[str, int]] = []
+    empty_paragraphs: list[int] = []
     table_offset = 0
 
     for row in table_el.findall("./w:tr", DOCX_NS_MAP):
@@ -52,6 +53,7 @@ def parse_table_block(
                 paragraph_data = parse_paragraph_content(paragraph, comments_by_id)
                 paragraph_text = str(paragraph_data.get("text") or "")
                 if not paragraph_text:
+                    empty_paragraphs.append(paragraph_ordinals[paragraph])
                     continue
 
                 if cell_text_parts:
@@ -110,6 +112,7 @@ def parse_table_block(
         "text": table_text,
         "table": {"rows": rows_payload},
         "docx_spans": docx_spans,
+        "docx_empty_paragraphs": empty_paragraphs,
         "meta": {
             "row_count": len(rows_payload),
             "column_count": max((len(row.get("cells") or []) for row in rows_payload), default=0),

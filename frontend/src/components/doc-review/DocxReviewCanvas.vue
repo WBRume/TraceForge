@@ -12,6 +12,7 @@ const props = defineProps<{
   wsId: string
   assetId: string
   versionId?: string
+  draftRevision?: number
   name: string
   blocks: ReviewBlock[]
   markersByBlock: Record<string, AssetThreadMarker[]>
@@ -19,6 +20,7 @@ const props = defineProps<{
   inlineReviewEnabled: boolean
   canManualEdit: boolean
   editingBlockId: string
+  saving?: boolean
 }>()
 const emit = defineEmits<{
   'select-range': [selection: {
@@ -38,7 +40,8 @@ const surface = shallowRef<{
   frame: HTMLIFrameElement; content: HTMLElement; index: ReturnType<typeof indexDocxReview>
 }>()
 const editAnchor = shallowRef<{ top: number; left: number }>()
-const editedBlock = computed(() => props.blocks.find(block => block.id === props.editingBlockId))
+const editedParagraph = computed(() => surface.value?.index.paragraphs
+  .find(paragraph => paragraph.edit?.id === props.editingBlockId)?.edit)
 const highlightNames = ['traceforge-review-open', 'traceforge-review-closed', 'traceforge-review-selected'] as const
 
 const iframeStyles = `
@@ -61,7 +64,9 @@ const iframeStyles = `
   .tf-review-controls button[data-edit]:focus-visible {opacity:1;pointer-events:auto}
 `
 
-watch(() => [props.wsId, props.assetId, props.versionId] as const, async ([wsId, assetId, versionId], _, cleanup) => {
+watch(() => [props.wsId, props.assetId, props.versionId, props.draftRevision] as const, async (
+  [wsId, assetId, versionId, draftRevision], _, cleanup,
+) => {
   const request = new AbortController()
   cleanup(() => request.abort())
   surface.value = undefined
@@ -73,9 +78,14 @@ watch(() => [props.wsId, props.assetId, props.versionId] as const, async ([wsId,
 
   const blocks = props.blocks
   try {
+    const root = `/workspaces/${encodeURIComponent(wsId)}/assets/${encodeURIComponent(assetId)}`
     const response = await api.get<ArrayBuffer>(
-      `/workspaces/${encodeURIComponent(wsId)}/assets/${encodeURIComponent(assetId)}/file`,
-      { responseType: 'arraybuffer', params: { version_id: versionId }, signal: request.signal },
+      draftRevision ? `${root}/draft/file` : `${root}/file`,
+      {
+        responseType: 'arraybuffer',
+        params: draftRevision ? { revision: draftRevision } : { version_id: versionId },
+        signal: request.signal,
+      },
     )
     if (request.signal.aborted) return
     const prepared = await prepareDocxReview(response.data, blocks)
@@ -129,13 +139,12 @@ watch(() => [surface.value, props.markersByBlock, props.canManualEdit] as const,
   const document = content.ownerDocument
   const controls: Array<{ marker: HTMLElement; group: HTMLElement }> = []
   const seen = new Set<string>()
-  for (const { marker, block } of index.paragraphs) {
-    if (seen.has(block.id)) continue
-    seen.add(block.id)
+  for (const { marker, block, edit, hasTextRange } of index.paragraphs) {
     const group = document.createElement('span')
     const markers = props.markersByBlock[block.id] ?? []
     const preferred = markers.find(item => item.status === 'open') ?? markers[0]
-    if (preferred) {
+    if (preferred && hasTextRange && !seen.has(block.id)) {
+      seen.add(block.id)
       const button = document.createElement('button')
       button.type = 'button'
       button.title = t('doc_review.thread_count', { count: markers.length })
@@ -144,7 +153,7 @@ watch(() => [surface.value, props.markersByBlock, props.canManualEdit] as const,
       button.addEventListener('click', () => emit('open-thread', preferred.thread_id))
       group.append(button)
     }
-    if (props.canManualEdit && block.type !== 'table') {
+    if (props.canManualEdit && edit) {
       const button = document.createElement('button')
       button.type = 'button'
       button.title = t('doc_review.manual_edit_button')
@@ -153,8 +162,12 @@ watch(() => [surface.value, props.markersByBlock, props.canManualEdit] as const,
       button.setAttribute('data-edit', '')
       button.addEventListener('click', () => {
         emit('clear-selection')
-        editAnchor.value = viewportAnchor(frame, button.getBoundingClientRect())
-        emit('start-edit', block.id)
+        const anchor = viewportAnchor(frame, button.getBoundingClientRect())
+        editAnchor.value = {
+          top: Math.min(anchor.top, Math.max(16, window.innerHeight - 260)),
+          left: Math.min(anchor.left, Math.max(16, window.innerWidth - 456)),
+        }
+        emit('start-edit', edit.id)
       })
       group.append(button)
     }
@@ -207,15 +220,19 @@ watch(() => [surface.value, props.selectedThreadId] as const, ([current, selecte
     <p v-else-if="!source" class="docx-review-state" role="status">{{ t('common.loading') }}</p>
     <WordPreview v-else :bytes="source.bytes" :name="name" tab-stops @rendered="onRendered" />
     <div
-      v-if="editedBlock && editAnchor"
+      v-if="editedParagraph && editAnchor"
       class="docx-edit-popover glass-panel"
       :style="{ top: `${editAnchor.top + 4}px`, left: `${editAnchor.left}px` }"
     >
       <BlockInlineEditor
-        :key="editedBlock.id"
-        :initial-text="editedBlock.text"
+        :key="editedParagraph.id"
+        :initial-text="editedParagraph.text"
+        :allow-empty="editedParagraph.inTable"
+        :disabled="saving"
+        :save-label="t('doc_review.draft_save')"
+        :cancel-label="t('common.cancel')"
         preserve-whitespace
-        @save="text => emit('save-block-edit', editedBlock!.id, text)"
+        @save="text => emit('save-block-edit', editedParagraph!.id, text)"
         @cancel="emit('cancel-block-edit')"
       />
     </div>
@@ -225,5 +242,8 @@ watch(() => [surface.value, props.selectedThreadId] as const, ([current, selecte
 <style scoped>
 .docx-review-canvas { display: flex; height: 100%; min-height: 0; min-width: 0; }
 .docx-review-state { margin: auto; padding: 16px; color: var(--color-text-muted, #64748b); }
-.docx-edit-popover { position: fixed; z-index: 30; width: min(440px, 80vw); padding: 12px; }
+.docx-edit-popover {
+  position: fixed; z-index: 30; width: min(440px, 80vw); padding: 12px;
+  max-height: min(50vh, 248px); overflow: auto;
+}
 </style>

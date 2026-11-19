@@ -79,9 +79,24 @@ class AssetDocumentCapabilities(BaseModel):
 class AssetDocumentResponse(BaseModel):
     asset: AssetResponse
     active_version: AssetVersionResponse | None = None
+    source_text: str | None = None
     blocks: list[Any] = Field(default_factory=list)
     thread_markers: list[AssetThreadMarkerResponse] = Field(default_factory=list)
     capabilities: AssetDocumentCapabilities
+
+
+class AssetDraftState(BaseModel):
+    base_version_id: str = Field(min_length=1, max_length=36)
+    revision: int = Field(ge=0)
+
+
+class AssetDraftSave(AssetDraftState):
+    text: str | None = Field(default=None, max_length=2_000_000)
+    docx_edits: dict[str, str] = Field(default_factory=dict, max_length=1000)
+
+
+class AssetDraftResponse(AssetDraftSave):
+    blocks: list[Any] | None = None
 
 
 class AssetThreadMessageResponse(BaseModel):

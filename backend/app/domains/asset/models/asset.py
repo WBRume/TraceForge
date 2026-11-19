@@ -145,6 +145,17 @@ class SddAssetVersion(Base):
     )
 
 
+class SddAssetDocumentDraft(Base):
+    __tablename__ = "sdd_asset_document_drafts"
+
+    asset_id = Column(String(36), ForeignKey("sdd_assets.id", ondelete="CASCADE"), primary_key=True)
+    author_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    base_version_id = Column(String(36), ForeignKey("sdd_asset_versions.id", ondelete="CASCADE"), nullable=False)
+    revision = Column(Integer, nullable=False)
+    text = Column(Text, nullable=True)
+    docx_edits = Column(JSON, nullable=False, default=dict)
+
+
 class SddAssetThread(Base):
     __tablename__ = "sdd_asset_threads"
 
@@ -320,6 +331,7 @@ class SddAssetThreadAnchorMapping(Base):
     selected_text = Column(Text, nullable=True)
     char_start = Column(Integer, nullable=True)
     char_end = Column(Integer, nullable=True)
+    unresolved_reason = Column(String(32), nullable=True)
     created_by = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=True)

@@ -8,6 +8,7 @@ from typing import Any
 
 from app.domains.asset.services.document import markdown_blocks
 from app.domains.asset.services.document.docx import parse_docx_payload
+from app.domains.asset.services.document.text_source import decode_source
 
 SUPPORTED_INLINE_REVIEW_EXTENSIONS = {".md", ".markdown", ".txt", ".docx"}
 
@@ -32,14 +33,7 @@ def guess_ext_and_mime(file_name: str | None) -> tuple[str, str]:
 
 
 def decode_text_bytes(raw: bytes) -> str:
-    if not raw:
-        return ""
-    for encoding in ("utf-8", "utf-8-sig", "gb18030", "latin-1"):
-        try:
-            return raw.decode(encoding)
-        except Exception:
-            continue
-    return raw.decode("utf-8", errors="ignore")
+    return decode_source(raw)[0]
 
 
 def parse_document_payload(file_name: str, raw: bytes) -> dict[str, Any]:

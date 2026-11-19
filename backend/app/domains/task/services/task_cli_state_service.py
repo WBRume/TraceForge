@@ -1028,7 +1028,25 @@ def mark_bootstrap_stale(
     spec_version_id: str | None = None,
     reason: str | None = None,
 ) -> dict[str, Any] | None:
-    """Invalidate an existing baseline without launching a worker."""
+    record = invalidate_bootstrap(
+        db, workspace_id=workspace_id, task_id=task_id, spec_version_id=spec_version_id, reason=reason
+    )
+    if not record:
+        return None
+    db.commit()
+    db.refresh(record)
+    return _serialize_bootstrap(record)
+
+
+def invalidate_bootstrap(
+    db: Session,
+    *,
+    workspace_id: str,
+    task_id: str,
+    spec_version_id: str | None = None,
+    reason: str | None = None,
+) -> SddTaskCliBootstrap | None:
+    """Invalidate an existing baseline within the caller's transaction."""
     record = (
         db.query(SddTaskCliBootstrap)
         .filter(
@@ -1049,9 +1067,7 @@ def mark_bootstrap_stale(
     if reason:
         record.message = reason
     record.error_message = None
-    db.commit()
-    db.refresh(record)
-    return _serialize_bootstrap(record)
+    return record
 
 
 async def mark_bootstrap_stale_async(

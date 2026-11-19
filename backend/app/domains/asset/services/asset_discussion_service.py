@@ -18,6 +18,7 @@ from app.domains.asset.models.asset import (
     SddAssetThreadMessage,
     SddAssetVersion,
 )
+from app.domains.asset.services.document.text_source import SOURCE_BLOCK_ID, review_source
 
 
 def list_threads(
@@ -94,6 +95,7 @@ def upsert_thread_anchor_mapping(
     char_start: int | None = None,
     char_end: int | None = None,
     actor_user_id: str | None = None,
+    unresolved_reason: str | None = None,
 ) -> SddAssetThreadAnchorMapping:
     resolved_block_id = str(block_id or "").strip() or str(thread.block_id or "").strip()
     if not resolved_block_id:
@@ -120,6 +122,7 @@ def upsert_thread_anchor_mapping(
             selected_text=(selected_text or "").strip() or None,
             char_start=char_start,
             char_end=char_end,
+            unresolved_reason=unresolved_reason,
             created_by=resolved_actor_id,
         )
         db.add(mapping)
@@ -128,6 +131,7 @@ def upsert_thread_anchor_mapping(
         mapping.selected_text = (selected_text or "").strip() or None
         mapping.char_start = char_start
         mapping.char_end = char_end
+        mapping.unresolved_reason = unresolved_reason
         mapping.created_by = resolved_actor_id
     db.flush()
     return mapping
@@ -161,6 +165,8 @@ def resolve_thread_anchor_for_version(
                 "char_end": mapping.char_end,
                 "source": "mapping",
             }
+            if mapping.unresolved_reason:
+                return {"anchor_status": "missing", "effective_anchor": {**anchor, "reason": mapping.unresolved_reason}}
 
     if not context_version:
         return {"anchor_status": "valid", "effective_anchor": anchor}
@@ -378,6 +384,9 @@ def set_thread_close_hint(
 
 
 def get_block_by_id(version: SddAssetVersion, block_id: str) -> dict[str, Any] | None:
+    if block_id == SOURCE_BLOCK_ID:
+        source = review_source(version)
+        return {"id": SOURCE_BLOCK_ID, "type": "paragraph", "text": source} if source is not None else None
     blocks = version.blocks_json or []
     if not isinstance(blocks, list):
         return None
@@ -388,6 +397,8 @@ def get_block_by_id(version: SddAssetVersion, block_id: str) -> dict[str, Any] |
 
 
 def get_block_context(version: SddAssetVersion, block_id: str, window: int = 1) -> dict[str, Any]:
+    if block_id == SOURCE_BLOCK_ID:
+        return {"selected": get_block_by_id(version, block_id), "neighbors": []}
     blocks = version.blocks_json or []
     if not isinstance(blocks, list):
         return {"selected": None, "neighbors": []}
@@ -424,6 +435,8 @@ def sync_docx_comments_to_threads(
     actor_user_id: str | None = None,
 ) -> int:
     render_json = version.render_json or {}
+    if render_json.get("docx_comments_inherited"):
+        return 0
     raw_comments = render_json.get("docx_comments")
     if not isinstance(raw_comments, list) or not raw_comments:
         return 0

@@ -21,11 +21,13 @@ type ThreadMessage = {
 
 type Thread = {
   id: string;
+  version_id?: string;
   block_id: string;
   selected_text?: string | null;
   status: "open" | "resolved" | "closed";
   close_hint_state?: "none" | "pending" | "no_close_needed";
   close_hint_reason?: string | null;
+  anchor_status?: "valid" | "missing";
   created_at: string;
   updated_at?: string | null;
   messages: ThreadMessage[];
@@ -53,6 +55,7 @@ const props = defineProps<{
   assistantJobMap: Record<string, ThreadAiJob>;
   proposalJobMap: Record<string, ThreadAiJob>;
   readonly?: boolean;
+  draftEditing?: boolean;
   canComment: boolean;
   canAiReply: boolean;
   aiAvailable?: boolean;
@@ -64,6 +67,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   "select-thread": [threadId: string];
+  "show-original": [versionId: string, threadId: string];
   "send-message": [threadId: string, content: string];
   "ask-ai": [threadId: string, prompt?: string];
   "cancel-ai-job": [jobId: string];
@@ -525,7 +529,7 @@ const resetCloseHintPending = () => {
           @click="emit('select-thread', thread.id)"
         >
           <div class="thread-item-head">
-            <strong>#{{ thread.block_id }}</strong>
+            <strong v-if="thread.block_id !== 'source-text'">#{{ thread.block_id }}</strong>
             <span
               class="status-pill"
               :class="`state-${thread.status}`"
@@ -535,6 +539,7 @@ const resetCloseHintPending = () => {
             </span>
           </div>
           <p>{{ thread.selected_text || t("doc_review.no_selected_text") }}</p>
+          <p v-if="thread.anchor_status === 'missing'" class="thread-hint">{{ t("doc_review.anchor_pending") }}</p>
           <p
             v-if="shouldShowAnchorCloseHint(thread)"
             class="thread-hint"
@@ -560,7 +565,7 @@ const resetCloseHintPending = () => {
             <ArrowLeft class="w-4 h-4" />
             {{ t("doc_review.back_to_list") }}
           </button>
-          <span class="block-anchor"
+          <span v-if="selectedThread.block_id !== 'source-text'" class="block-anchor"
             >{{ t("doc_review.anchor_prefix") }}: {{ selectedThread.block_id }}</span
           >
         </div>
@@ -587,6 +592,16 @@ const resetCloseHintPending = () => {
       </header>
 
       <div class="detail-scrollable custom-scrollbar">
+        <section v-if="selectedThread.anchor_status === 'missing'" class="section-panel anchor-hint-panel pending">
+          <header class="section-head">
+            <h4 class="section-title">{{ t("doc_review.anchor_pending") }}</h4>
+            <button v-if="selectedThread.version_id && !draftEditing" class="nav-action-btn"
+              @click="emit('show-original', selectedThread.version_id, selectedThread.id)">
+              {{ t("doc_review.anchor_open_original") }}
+            </button>
+          </header>
+          <p class="anchor-hint-text">{{ selectedThread.selected_text || t("doc_review.no_selected_text") }}</p>
+        </section>
         <section
           v-if="shouldShowAnchorCloseHint(selectedThread)"
           class="section-panel anchor-hint-panel"

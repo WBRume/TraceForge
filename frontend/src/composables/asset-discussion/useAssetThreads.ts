@@ -210,20 +210,6 @@ export function useAssetThreads(
     }, null)
   }
 
-  const manualEditBlock = async (blockId: string, newText: string) => {
-    return scope.run(null, (!blockId) ? undefined : scope.capture(), async (request) => {
-      const res = await api.post(
-        `${request.baseUrl}/document/blocks/${blockId}`,
-        { new_text: newText, context_version_id: activeVersionId.value || undefined },
-        { signal: request.signal },
-      )
-      if (!request.isCurrent()) return null
-      const version = res.data as AssetVersion
-      await refresh(version.id, request)
-      return request.isCurrent() ? version : null
-    }, null)
-  }
-
   const updateThreadCloseHint = async (
     threadId: string,
     action: 'mark_no_close_needed' | 'reset_pending',
@@ -270,7 +256,7 @@ export function useAssetThreads(
   return {
     threads, selectedThreadId, selectedThread, loadingThreads, setThread, fetchThread, loadThreads,
     createThread, sendThreadMessage, askAi, createResolutionProposal, rewriteResolutionProposal,
-    applyResolutionProposal, manualEditBlock, updateThreadCloseHint, updateThreadState, reset,
+    applyResolutionProposal, updateThreadCloseHint, updateThreadState, reset,
   }
 }
 

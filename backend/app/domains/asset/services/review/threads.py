@@ -11,6 +11,8 @@ from app.domains.asset.schemas.asset import AssetThreadCreateRequest, AssetThrea
 from app.domains.asset.services import asset_discussion_service, asset_service
 from app.domains.asset.services.document import repository as document_repository
 from app.domains.asset.services.document import versioning as document_versioning
+from app.domains.asset.services.document.text_source import SOURCE_BLOCK_ID
+from app.domains.asset.services.document.transactions import lock_asset
 from app.domains.asset.services.review import policy as asset_review_policy
 from app.domains.asset.services.review import serialization as asset_review_serialization
 from app.domains.asset.services.review.errors import ReviewError
@@ -32,14 +34,17 @@ def _create_asset_thread_sync(
     version = None
     if data.version_id:
         version = document_repository.get_asset_version(db, asset.id, data.version_id)
+        if not version:
+            raise ReviewError(status_code=404, detail="Document version not found")
     if not version:
         version = document_versioning.ensure_asset_has_version(db, asset)
         if version and asset.active_version_id != version.id:
             asset.active_version_id = version.id
     if not version:
         raise ReviewError(status_code=400, detail="Asset has no version to annotate")
+    lock_asset(db, asset)
     asset_review_policy._ensure_latest_context_version_for_mutation(asset, version.id)
-    if (version.original_ext or "").lower() == ".docx":
+    if (version.original_ext or "").lower() == ".docx" or data.block_id == SOURCE_BLOCK_ID:
         block = asset_discussion_service.get_block_by_id(version, data.block_id)
         text = str(block.get("text") or "") if block else ""
         start, end = data.char_start, data.char_end
@@ -50,7 +55,7 @@ def _create_asset_thread_sync(
             or not data.selected_text
             or text[start:end] != data.selected_text
         ):
-            raise ReviewError(status_code=422, detail="Selection does not match the DOCX version")
+            raise ReviewError(status_code=422, detail="Selection does not match the document version")
     try:
         thread = asset_discussion_service.create_thread(
             db,

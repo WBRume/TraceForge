@@ -309,6 +309,37 @@ def create_asset_version_from_normalized_content(
     )
 
 
+def create_asset_version_from_source(
+    db: Session,
+    asset: SddAsset,
+    base: SddAssetVersion,
+    file_content: bytes,
+    creator_id: str,
+    *,
+    change_note: str = "Published document draft",
+) -> SddAssetVersion:
+    """Publish a native-format document using the same version transaction as uploads."""
+    task = repository.task_for_asset(db, asset)
+    ext = base.original_ext or asset.source_ext
+    file_name = storage.normalize_filename(asset.source_file_name, fallback_ext=ext or ".md")
+    payload = parse_document_payload(file_name, file_content)
+    return _write_version(
+        db,
+        asset,
+        task=task,
+        base_version_id=base.id,
+        file_name=file_name,
+        file_content=file_content,
+        original_ext=ext,
+        original_mime=base.original_mime or payload["source_mime"],
+        normalized_markdown=payload["normalized_markdown"],
+        blocks_json=payload["blocks_json"],
+        render_json=payload["render_json"],
+        change_note=change_note,
+        creator_id=creator_id,
+    )
+
+
 def create_task_asset_version_from_bytes(
     db: Session,
     task: SddTask,

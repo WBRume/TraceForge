@@ -122,6 +122,7 @@ export type AssetDocumentCapabilities = {
 export type AssetDocumentPayload = {
   asset: AssetSummary
   active_version?: AssetVersion | null
+  source_text?: string | null
   blocks: any[]
   thread_markers: AssetThreadMarker[]
   capabilities: AssetDocumentCapabilities

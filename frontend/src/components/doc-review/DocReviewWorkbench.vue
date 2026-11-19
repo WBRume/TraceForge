@@ -16,8 +16,10 @@ import InlineSelectionPopover from "./InlineSelectionPopover.vue";
 import PdfCanvas from "./PdfCanvas.vue";
 import ProposalDraftModal from "./ProposalDraftModal.vue";
 import ResolutionDiffModal from "./ResolutionDiffModal.vue";
+import TextReviewCanvas from "./TextReviewCanvas.vue";
 import ThreadSidebar from "./ThreadSidebar.vue";
 import VersionSwitcher from "./VersionSwitcher.vue";
+import { useDocumentDraft } from "./useDocumentDraft";
 import ConfirmActionModal from "@/components/ConfirmActionModal.vue";
 import type { ResolutionDecisionPayload, ResolutionApplyPayload } from "@/composables/useAssetDiscussion";
 
@@ -105,6 +107,21 @@ const {
 const selectedAsset = computed(
   () => assets.value.find((item) => item.id === selectedAssetId.value) || null,
 );
+const draftUrl = computed(() => selectedAssetId.value
+  ? `/workspaces/${encodeURIComponent(props.wsId)}/assets/${encodeURIComponent(selectedAssetId.value)}/draft`
+  : "");
+const draftEditor = useDocumentDraft({
+  url: draftUrl, document: documentData, activeVersionId,
+  onPublished: (version) => discussion.refresh(version.id),
+});
+const {
+  draft, editing, busy: draftBusy, editingBlockId, source: draftText, stale: draftStale,
+  dirty: draftDirty, canPublish, confirm: draftConfirm,
+} = draftEditor;
+const formalText = computed(() => documentData.value?.source_text ?? null);
+const isMarkdown = computed(() =>
+  [".md", ".markdown"].includes(String(documentData.value?.active_version?.original_ext || "").toLowerCase()),
+);
 const DocxReviewCanvas = defineAsyncComponent(() => import("./DocxReviewCanvas.vue"));
 const docxSource = computed(() => {
   const version = documentData.value?.active_version;
@@ -112,9 +129,11 @@ const docxSource = computed(() => {
   if (ext?.toLowerCase() !== ".docx") return null;
   return {
     wsId: props.wsId, assetId: selectedAssetId.value, name: selectedAsset.value?.name || "",
-    versionId: version?.id === selectedVersionId.value ? version?.id : undefined,
+    versionId: editing.value ? draft.value?.base_version_id : version?.id,
+    draftRevision: editing.value ? draft.value?.revision : undefined,
   };
 });
+const visibleBlocks = computed(() => (editing.value && draft.value?.blocks) || documentData.value?.blocks || []);
 const isPdfAsset = computed(() => {
   const versionExt = String(documentData.value?.active_version?.original_ext || "").toLowerCase();
   const assetExt = String(selectedAsset.value?.source_ext || "").toLowerCase();
@@ -129,7 +148,7 @@ const noAssetHint = computed(() => {
 const readOnlyMode = computed(() => Boolean(props.readonly));
 const effectiveCapabilities = computed(() => {
   const base = capabilities.value;
-  if (!readOnlyMode.value) {
+  if (!readOnlyMode.value && !editing.value) {
     return base;
   }
   return {
@@ -217,54 +236,19 @@ const historicalVersionReadonly = computed(
     !effectiveCapabilities.value.can_comment &&
     String(effectiveCapabilities.value.ai_unavailable_reason || "") === "historical_version_readonly",
 );
-const editingBlockId = ref("");
-const savingBlockEdit = ref(false);
-const canManualEdit = computed(
-  () =>
-    !readOnlyMode.value &&
-    !isPdfAsset.value &&
-    Boolean(effectiveCapabilities.value.can_manual_edit),
-);
+const canOpenDraft = computed(() => !readOnlyMode.value && !!documentData.value?.active_version
+  && capabilities.value.can_manual_edit && (!!docxSource.value || formalText.value !== null));
 
 const startBlockEdit = (blockId: string) => {
-  if (!canManualEdit.value || !blockId) return;
+  if (!editing.value || !canOpenDraft.value || draftBusy.value || editingBlockId.value) return;
   editingBlockId.value = blockId;
 };
 
-const cancelBlockEdit = () => {
-  if (savingBlockEdit.value) return;
-  editingBlockId.value = "";
-};
-
-const saveBlockEdit = async (blockId: string, text: string) => {
-  if (!canManualEdit.value || savingBlockEdit.value) return;
-  const normalized = docxSource.value ? text : text.trim();
-  if (!normalized.trim()) {
-    ElMessage.warning(t("doc_review.manual_edit_empty"));
-    return;
-  }
-  const originalBlock = (documentData.value?.blocks || []).find(
-    (block: any) => String(block?.id || "") === blockId,
-  );
-  if (originalBlock && (docxSource.value ? originalBlock.text : String(originalBlock.text || "").trim()) === normalized) {
-    editingBlockId.value = "";
-    return;
-  }
-  savingBlockEdit.value = true;
-  try {
-    await discussion.manualEditBlock(blockId, normalized);
-    editingBlockId.value = "";
-  } catch (error: unknown) {
-    ElMessage.error(formatApiError(error, t("doc_review.manual_edit_save_failed"), t));
-    const status = (error as { response?: { status?: number } })?.response?.status;
-    if (status === 409) {
-      editingBlockId.value = "";
-      void discussion.refresh();
-    }
-  } finally {
-    savingBlockEdit.value = false;
-  }
-};
+watch(editing, () => {
+  selectionPayload.value = null;
+  pendingRelocation.value = null;
+  showAssetMenu.value = false;
+});
 
 const proposalThread = computed(
   () => threads.value.find((item) => item.id === proposalThreadId.value) || null,
@@ -781,6 +765,12 @@ const changeVersion = async (versionId: string) => {
   }
 };
 
+const showOriginal = async (versionId: string, threadId: string) => {
+  if (editing.value) return;
+  await changeVersion(versionId);
+  if (selectedVersionId.value === versionId) openThread(threadId);
+};
+
 watch(
   () => activeVersionId.value,
   (versionId) => {
@@ -846,16 +836,6 @@ watch(
   },
 );
 
-watch(
-  () => activeVersionId.value,
-  (_next, previous) => {
-    if (!previous) return;
-    if (!editingBlockId.value || savingBlockEdit.value) return;
-    editingBlockId.value = "";
-    ElMessage.info(t("doc_review.manual_edit_stale"));
-  },
-);
-
 onMounted(() => {
   void loadAssets();
 });
@@ -872,7 +852,7 @@ onMounted(() => {
           <slot name="header-prefix" />
         </div>
         <div class="stage-brand">
-          <div class="asset-selector" @click="showAssetMenu = !showAssetMenu">
+          <div class="asset-selector" @click="!editing && !draftBusy && (showAssetMenu = !showAssetMenu)">
             <h3>{{ selectedAsset?.name || t("doc_review.no_document_selected") }}</h3>
             <ChevronDown class="w-4 h-4 text-slate-500" />
 
@@ -940,16 +920,33 @@ onMounted(() => {
       </div>
       <div class="stage-actions">
         <VersionSwitcher
-          v-if="selectedAssetId"
+          v-if="selectedAssetId && !editing"
           v-model="selectedVersionId"
           :versions="versions"
           :loading="loadingVersions"
           class="stage-version-switcher"
           @update:model-value="changeVersion"
         />
+        <button v-if="canOpenDraft && !editing" class="btn-primary" :disabled="draftBusy" @click="draftEditor.begin">
+          {{ t("doc_review.draft_edit") }}
+        </button>
         <slot name="header-actions" />
       </div>
     </header>
+    <div v-if="editing" class="draft-toolbar glass-panel">
+      <span role="status">{{ t(draftStale ? "doc_review.draft_stale" : draftDirty || editingBlockId
+        ? "doc_review.draft_unsaved" : draft?.revision ? "doc_review.draft_saved" : "doc_review.draft_mode") }}</span>
+      <div class="draft-actions">
+        <button class="btn-secondary" :disabled="draftBusy" @click="draftEditor.leave">{{ t("doc_review.draft_back") }}</button>
+        <button class="btn-secondary" :disabled="draftBusy" @click="draftConfirm = 'discard'">{{ t("doc_review.draft_discard") }}</button>
+        <button v-if="draftText !== null" class="btn-secondary" :disabled="!draftDirty || draftBusy || !canOpenDraft" @click="draftEditor.saveSource">
+          {{ t("doc_review.draft_save") }}
+        </button>
+        <button class="btn-primary" :disabled="!canPublish || draftBusy || !canOpenDraft" @click="draftConfirm = 'publish'">
+          {{ t("doc_review.draft_publish") }}
+        </button>
+      </div>
+    </div>
     <div v-if="showBaselineStatus" class="baseline-status glass-panel" :class="{ busy: baselineBusy }">
       <div class="baseline-left">
         <strong>{{ t("doc_review.baseline_status_label") }}: {{ baselineStatusText }}</strong>
@@ -981,22 +978,44 @@ onMounted(() => {
             :asset-id="selectedAssetId || ''"
             :version-id="pdfVersionId"
           />
+          <textarea
+            v-else-if="editing && draftText !== null"
+            class="draft-source-editor"
+            :aria-label="t(isMarkdown ? 'doc_review.draft_markdown_source' : 'doc_review.draft_plain_source')"
+            :value="draftText"
+            :disabled="draftBusy || !canOpenDraft"
+            spellcheck="false"
+            wrap="off"
+            @input="draftEditor.updateSource"
+          />
+          <TextReviewCanvas
+            v-else-if="formalText !== null"
+            :source="formalText"
+            :markdown="isMarkdown"
+            :markers-by-block="markersByBlock"
+            :selected-thread-id="selectedThreadId"
+            :inline-review-enabled="inlineReviewEnabled"
+            @open-thread="openThread"
+            @select-range="handleSelectRange"
+            @clear-selection="selectionPayload = null"
+          />
           <component
             v-else
             :is="docxSource ? DocxReviewCanvas : DocumentCanvas"
             v-bind="docxSource || {}"
-            :blocks="documentData?.blocks || []"
-            :markers-by-block="markersByBlock"
+            :blocks="visibleBlocks"
+            :markers-by-block="editing ? {} : markersByBlock"
             :selected-thread-id="selectedThreadId"
             :inline-review-enabled="inlineReviewEnabled"
-            :can-manual-edit="canManualEdit"
+            :can-manual-edit="editing && canOpenDraft && !draftBusy && !editingBlockId"
+            :saving="draftBusy"
             :editing-block-id="editingBlockId"
             @open-thread="openThread"
             @select-range="handleSelectRange"
             @clear-selection="selectionPayload = null"
             @start-edit="startBlockEdit"
-            @save-block-edit="saveBlockEdit"
-            @cancel-block-edit="cancelBlockEdit"
+            @save-block-edit="draftEditor.saveBlock"
+            @cancel-block-edit="editingBlockId = ''"
           />
         </div>
 
@@ -1016,7 +1035,8 @@ onMounted(() => {
         :selected-thread-id="selectedThreadId"
         :assistant-job-map="assistantJobMap"
         :proposal-job-map="proposalJobMap"
-        :readonly="readOnlyMode || historicalVersionReadonly"
+        :readonly="readOnlyMode || historicalVersionReadonly || editing"
+        :draft-editing="editing"
         :can-comment="effectiveCapabilities.can_comment"
         :can-ai-reply="effectiveCapabilities.can_ai_reply"
         :ai-available="effectiveCapabilities.ai_available"
@@ -1026,6 +1046,7 @@ onMounted(() => {
         :ws-connected="wsConnected"
         @cancel-ai-job="cancelThreadAiJob"
         @select-thread="selectedThreadId = $event"
+        @show-original="showOriginal"
         @send-message="sendThreadMessage"
         @ask-ai="askThreadAi"
         @generate-proposal="openProposalModalForThread"
@@ -1060,6 +1081,19 @@ onMounted(() => {
   />
 
   <ConfirmActionModal
+    v-if="draftConfirm"
+    :show="true"
+    :title="t(`doc_review.draft_${draftConfirm}_title`)"
+    :message="t(`doc_review.draft_${draftConfirm}_message`)"
+    :cancel-text="t('common.cancel')"
+    :confirm-text="t(draftConfirm === 'leave' ? 'doc_review.draft_back' : `doc_review.draft_${draftConfirm}`)"
+    :tone="draftConfirm === 'publish' ? 'primary' : 'danger'"
+    :loading="draftBusy"
+    @cancel="draftConfirm = null"
+    @confirm="draftEditor.confirmAction"
+  />
+
+  <ConfirmActionModal
     :show="overwriteConfirmVisible"
     :title="t('doc_review.proposal_overwrite_title')"
     :message="t('doc_review.proposal_overwrite_message')"
@@ -1083,418 +1117,4 @@ onMounted(() => {
   />
 </template>
 
-<style scoped>
-.doc-review-workbench {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-  height: 100%;
-  min-height: 0;
-  width: 100%;
-}
-
-.workbench-body {
-  display: flex;
-  flex: 1;
-  gap: 1.5rem;
-  min-height: 0;
-}
-
-.baseline-status {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
-  border-radius: var(--radius-lg);
-  border: 1px solid rgba(14, 165, 233, 0.22);
-  background: rgba(239, 246, 255, 0.82);
-}
-
-.baseline-status.busy {
-  border-color: rgba(59, 130, 246, 0.3);
-  background: rgba(219, 234, 254, 0.78);
-}
-
-.baseline-left {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.baseline-left strong {
-  font-size: 13px;
-  color: #0f172a;
-}
-
-.baseline-left span {
-  font-size: 12px;
-  color: #475569;
-}
-
-.baseline-right {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: #0369a1;
-  font-weight: 600;
-  min-width: 52px;
-  text-align: right;
-}
-
-.baseline-trigger-btn {
-  padding: 3px 10px;
-  font-size: 12px;
-  line-height: 1.4;
-  border-radius: var(--radius-md);
-  border: 1px solid rgba(14, 165, 233, 0.35);
-  background: #ffffff;
-  color: #0369a1;
-  cursor: pointer;
-}
-
-.baseline-trigger-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.relocation-hint {
-  margin-bottom: 10px;
-  padding: 8px 12px;
-  border-radius: var(--radius-md);
-  border: 1px dashed rgba(249, 115, 22, 0.42);
-  background: rgba(255, 247, 237, 0.9);
-  color: #9a3412;
-  font-size: 12px;
-}
-
-@media (max-width: 1024px) {
-  .workbench-body {
-    flex-direction: column;
-  }
-
-  .stage-head {
-    flex-wrap: wrap;
-    align-items: stretch;
-  }
-
-  .stage-actions {
-    width: 100%;
-    justify-content: flex-start;
-    margin-left: 0;
-  }
-}
-
-.document-stage {
-  position: relative;
-  flex: 1;
-  min-width: 600px;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.stage-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  gap: 1rem;
-  padding: 0.75rem 1rem;
-  border-radius: var(--radius-xl);
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-  z-index: 10;
-}
-
-.stage-main {
-  min-width: min(100%, 300px);
-  flex: 1 1 420px;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.stage-head.with-external-title .stage-main {
-  gap: 0.6rem;
-}
-
-.header-prefix {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-}
-
-.stage-brand {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  min-width: 0;
-}
-
-.asset-selector {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  cursor: pointer;
-  padding: 0.25rem 0.5rem;
-  margin: -0.25rem -0.5rem;
-  border-radius: var(--radius-md);
-  transition: all 0.2s;
-}
-
-.asset-selector:hover {
-  background: rgba(14, 165, 233, 0.08);
-}
-
-.asset-selector .chevron-icon {
-  transition: transform 0.2s;
-}
-
-.asset-selector:hover .chevron-icon {
-  transform: translateY(1px);
-}
-
-.asset-selector h3 {
-  margin: 0;
-  font-family: var(--font-heading), "Poppins", sans-serif;
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: var(--color-text-title);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: min(100%, clamp(220px, 52vw, 860px));
-}
-
-.stage-actions {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.75rem;
-  flex: 1 1 340px;
-  min-width: min(100%, 280px);
-  max-width: 100%;
-  margin-left: auto;
-}
-
-.stage-version-switcher {
-  flex: 1 1 320px;
-  min-width: 0;
-  max-width: 100%;
-}
-
-.dropdown-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-}
-
-.asset-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  margin-top: 0.75rem;
-  width: 320px;
-  max-height: 400px;
-  display: flex;
-  flex-direction: column;
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: var(--glass-blur);
-  border-radius: var(--radius-lg);
-  border: 1px solid rgba(14, 165, 233, 0.15);
-  box-shadow: var(--shadow-xl);
-  z-index: 50;
-  overflow: hidden;
-}
-
-.dropdown-header {
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--color-text-muted);
-}
-
-.asset-list {
-  padding: 0.5rem;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.asset-item {
-  width: 100%;
-  text-align: left;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: transparent;
-  padding: 8px;
-  transition: all 0.1s var(--transition-fast);
-}
-
-.asset-item:hover {
-  background: rgba(255, 255, 255, 0.8);
-  border-color: rgba(14, 165, 233, 0.1);
-  transform: translateX(2px);
-}
-
-.asset-item.active {
-  background: rgba(255, 255, 255, 0.95);
-  border-color: rgba(14, 165, 233, 0.25);
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
-}
-
-.asset-item-main {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.icon-container {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  flex-shrink: 0;
-}
-
-.icon-container.blue {
-  background: rgba(14, 165, 233, 0.1);
-  color: #0ea5e9;
-}
-
-.asset-item-info {
-  min-width: 0;
-  flex: 1;
-}
-
-.asset-item strong {
-  display: block;
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--color-text-title);
-  margin-bottom: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.asset-item-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.type-tag {
-  font-size: 0.65rem;
-  font-weight: 700;
-  color: var(--color-primary-600);
-  background: rgba(14, 165, 233, 0.08);
-  padding: 1px 6px;
-  border-radius: 4px;
-  text-transform: uppercase;
-}
-
-.date-tag {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.7rem;
-  color: var(--color-text-muted);
-}
-
-.asset-empty {
-  padding: 1rem;
-  text-align: center;
-  color: var(--color-text-muted);
-  font-size: 0.875rem;
-}
-
-.asset-empty.error {
-  color: #ef4444;
-}
-
-.hints {
-  display: flex;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.hints p {
-  margin: 0;
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
-  min-width: 0;
-  overflow-wrap: anywhere;
-  line-break: anywhere;
-}
-
-.no-asset-hint {
-  color: #f59e0b !important;
-}
-.readonly-hint {
-  color: #0ea5e9 !important;
-  font-weight: 600;
-}
-.historical-readonly-hint {
-  color: #f59e0b !important;
-}
-
-.canvas-shell {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: 8px;
-  background: transparent;
-}
-
-.canvas-shell :deep(.pdf-stage),
-.pdf-stage {
-  flex: 1;
-  min-height: 0;
-}
-
-.discussion-stage {
-  flex: 0 0 clamp(400px, 35%, 650px);
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.fade-in {
-  animation: fadeIn 0.15s ease-out forwards;
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.w-4 {
-  width: 1rem;
-  height: 1rem;
-}
-.h-4 {
-  width: 1rem;
-  height: 1rem;
-}
-.text-slate-500 {
-  color: #64748b;
-}
-.ml-1 {
-  margin-left: 0.25rem;
-}
-</style>
+<style scoped src="./docReviewWorkbench.css"></style>

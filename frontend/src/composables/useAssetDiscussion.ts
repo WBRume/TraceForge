@@ -92,7 +92,6 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     createResolutionProposal: discussion.createResolutionProposal,
     rewriteResolutionProposal: discussion.rewriteResolutionProposal,
     applyResolutionProposal: discussion.applyResolutionProposal,
-    manualEditBlock: discussion.manualEditBlock,
     cancelAiJob: jobs.cancelAiJob,
     updateThreadCloseHint: discussion.updateThreadCloseHint,
     updateThreadState: discussion.updateThreadState,

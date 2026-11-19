@@ -6,8 +6,8 @@ import io
 import re
 import zipfile
 from bisect import bisect_right
-from collections.abc import Iterator
-from copy import copy
+from collections.abc import Iterator, Sequence
+from copy import copy, deepcopy
 from difflib import SequenceMatcher
 
 from lxml import etree
@@ -78,8 +78,11 @@ def _patch_text(paragraph: etree._Element, old_text: str, new_text: str) -> None
             nodes.append(node)
             texts.append(text)
             ends.append((ends[-1] if ends else 0) + len(text))
-    if not nodes or "".join(texts) != old_text:
+    if "".join(texts) != old_text:
         raise ValueError("The review paragraph no longer matches the source DOCX")
+    if not nodes:
+        _insert_text(paragraph, new_text)
+        return
 
     replacements: list[list[str | etree._Element]] = [[] for node in nodes]
     matcher = SequenceMatcher(a=old_text, b=new_text, autojunk=max(len(old_text), len(new_text)) > 2048)
@@ -101,8 +104,34 @@ def _patch_text(paragraph: etree._Element, old_text: str, new_text: str) -> None
         _replace_node_text(node, parts)
 
 
+def _insert_text(paragraph: etree._Element, text: str) -> None:
+    empty_text = paragraph.find("w:r/w:t", DOCX_NS_MAP)
+    if empty_text is None:
+        run = next(
+            (
+                run
+                for run in paragraph.findall("w:r", DOCX_NS_MAP)
+                if all(child.tag == xml_attr("rPr") for child in run)
+            ),
+            None,
+        )
+        if run is None:
+            run = etree.SubElement(paragraph, xml_attr("r"))
+            mark_properties = paragraph.find("w:pPr/w:rPr", DOCX_NS_MAP)
+            if mark_properties is not None:
+                run_properties = etree.SubElement(run, xml_attr("rPr"))
+                revision_tags = {xml_attr(tag) for tag in ("ins", "del", "moveFrom", "moveTo", "rPrChange")}
+                run_properties.extend(deepcopy(prop) for prop in mark_properties if prop.tag not in revision_tags)
+        empty_text = etree.SubElement(run, xml_attr("t"))
+    _replace_node_text(empty_text, [text])
+
+
 def edit_docx_paragraph(original_path: str, paragraph_index: int, old_text: str, new_text: str) -> bytes:
-    """Return a DOCX whose other package parts are byte-for-byte identical."""
+    return edit_docx_paragraphs(original_path, [(paragraph_index, old_text, new_text)])
+
+
+def edit_docx_paragraphs(original_path: str, edits: Sequence[tuple[int, str, str]]) -> bytes:
+    """Patch the requested source paragraphs and retain the rest of the package."""
     output = io.BytesIO()
     try:
         with zipfile.ZipFile(original_path) as source:
@@ -111,10 +140,10 @@ def edit_docx_paragraph(original_path: str, paragraph_index: int, old_text: str,
             )
             body = root.find("w:body", DOCX_NS_MAP)
             paragraphs = list(body.iter(xml_attr("p"))) if body is not None else []
-            if not 0 <= paragraph_index < len(paragraphs):
-                raise ValueError("The review paragraph was not found in the source DOCX")
-
-            _patch_text(paragraphs[paragraph_index], old_text, new_text)
+            for paragraph_index, old_text, new_text in edits:
+                if not 0 <= paragraph_index < len(paragraphs):
+                    raise ValueError("The review paragraph was not found in the source DOCX")
+                _patch_text(paragraphs[paragraph_index], old_text, new_text)
             document_xml = etree.tostring(root.getroottree(), encoding="UTF-8", xml_declaration=True)
             with zipfile.ZipFile(output, mode="w") as updated:
                 updated.comment = source.comment

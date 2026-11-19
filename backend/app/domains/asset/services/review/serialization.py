@@ -118,5 +118,9 @@ def _serialize_thread_with_context(
     payload["close_hint_reason"] = thread.close_hint_reason
     payload["close_hint_version_id"] = thread.close_hint_version_id
     payload["anchor_status"] = str(anchor_eval.get("anchor_status") or "valid")
-    payload["effective_anchor"] = anchor_eval.get("effective_anchor")
+    anchor = anchor_eval["effective_anchor"]
+    if anchor.get("block_id") == asset_discussion_service.SOURCE_BLOCK_ID:
+        # Source offsets refer to the complete document, already served by /document.
+        anchor = {key: value for key, value in anchor.items() if key != "block_text"}
+    payload["effective_anchor"] = anchor
     return AssetThreadResponse(**payload)

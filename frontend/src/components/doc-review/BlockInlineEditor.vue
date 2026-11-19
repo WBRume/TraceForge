@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 const props = defineProps<{
   initialText: string;
   disabled?: boolean;
   preserveWhitespace?: boolean;
+  allowEmpty?: boolean;
+  saveLabel?: string;
+  cancelLabel?: string;
 }>();
 
 const emit = defineEmits<{
@@ -37,8 +40,10 @@ const submitSave = () => {
   if (saved || cancelledByEsc || props.disabled) return;
   const el = editorRef.value;
   if (!el) return;
-  const normalized = normalizeText(el.innerText);
-  if (!normalized.trim()) {
+  // Chromium leaves a single placeholder break after the editor is cleared.
+  const emptyPlaceholder = el.childNodes.length === 1 && el.firstChild?.nodeName === "BR";
+  const normalized = normalizeText(emptyPlaceholder ? "" : el.innerText);
+  if (!props.allowEmpty && !normalized.trim()) {
     void focusAtEnd();
     return;
   }
@@ -53,7 +58,7 @@ const handleEsc = () => {
 };
 
 const handleBlur = () => {
-  if (cancelledByEsc || saved) return;
+  if (cancelledByEsc || saved || props.saveLabel) return;
   submitSave();
 };
 
@@ -62,6 +67,10 @@ const handlePaste = (event: ClipboardEvent) => {
   const plain = event.clipboardData?.getData("text/plain") || "";
   document.execCommand("insertText", false, props.preserveWhitespace ? plain : plain.replace(/\r?\n+/g, " "));
 };
+
+watch(() => props.disabled, (disabled) => {
+  if (!disabled) saved = false;
+});
 
 onMounted(() => {
   void focusAtEnd();
@@ -77,7 +86,7 @@ onBeforeUnmount(() => {
     ref="editorRef"
     class="doc-block-editor"
     :class="{ 'is-disabled': disabled }"
-    contenteditable="true"
+    :contenteditable="!disabled"
     spellcheck="false"
     @keydown.enter.prevent="submitSave"
     @keydown.esc.prevent="handleEsc"
@@ -85,6 +94,10 @@ onBeforeUnmount(() => {
     @input="saved = false"
     @paste="handlePaste"
   >{{ initialText }}</div>
+  <div v-if="saveLabel" class="doc-block-actions">
+    <button type="button" class="btn-secondary" :disabled="disabled" @click="handleEsc">{{ cancelLabel }}</button>
+    <button type="button" class="btn-primary" :disabled="disabled" @click="submitSave">{{ saveLabel }}</button>
+  </div>
 </template>
 
 <style scoped>
@@ -102,4 +115,5 @@ onBeforeUnmount(() => {
   pointer-events: none;
   opacity: 0.6;
 }
+.doc-block-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .75rem; }
 </style>

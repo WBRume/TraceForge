@@ -2,8 +2,8 @@
 
 from fastapi import APIRouter
 
-from app.domains.asset.routers.assets import catalog, documents, jobs, resolutions, threads
+from app.domains.asset.routers.assets import catalog, documents, drafts, jobs, resolutions, threads
 
 router = APIRouter(tags=["Assets"])
-for routes in (catalog, documents, threads, jobs, resolutions):
+for routes in (catalog, documents, drafts, threads, jobs, resolutions):
     router.include_router(routes.router, prefix="/workspaces/{ws_id}/assets")

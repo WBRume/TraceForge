@@ -8,6 +8,13 @@ export interface ReviewBlock {
   type: string
   text: string
   docx_spans?: Array<{ paragraph: number; start: number; end: number }>
+  docx_empty_paragraphs?: number[]
+}
+
+export interface DocxParagraphEdit {
+  id: string
+  text: string
+  inTable: boolean
 }
 
 export interface DocxParagraphAnchor {
@@ -17,6 +24,7 @@ export interface DocxParagraphAnchor {
   start: number
   end: number
   noteMarks: [start: string, end: string][]
+  edit?: DocxParagraphEdit
 }
 
 function preserveSectionBreaks(body: Element) {
@@ -66,7 +74,11 @@ export async function prepareDocxReview(bytes: ArrayBuffer, blocks: ReviewBlock[
   }
 
   for (const block of blocks) {
-    for (const span of block.docx_spans ?? []) {
+    const inTable = block.type === 'table'
+    const spans = block.docx_spans ?? []
+    const emptySpans = (block.docx_empty_paragraphs ?? []).map(paragraph => ({ paragraph, start: 0, end: 0 }))
+    const characters = Array.from(block.text)
+    for (const span of [...spans, ...emptySpans]) {
       const paragraph = paragraphs[span.paragraph]
       if (!paragraph) throw new Error('DOCX review positions do not match the version file')
       const startMark = `${prefix}_${span.paragraph}_s`
@@ -87,7 +99,12 @@ export async function prepareDocxReview(bytes: ArrayBuffer, blocks: ReviewBlock[
       const insertBefore = first?.localName === 'pPr' ? first.nextSibling : first
       for (const marker of makeBookmark(startMark)) paragraph.insertBefore(marker, insertBefore)
       paragraph.append(...makeBookmark(endMark))
-      anchors.push({ startMark, endMark, block, start: span.start, end: span.end, noteMarks })
+      const edit = inTable || spans.length === 1 ? {
+        id: inTable ? `${block.id}:${span.paragraph}` : block.id,
+        text: characters.slice(span.start, span.end).join(''),
+        inTable,
+      } : undefined
+      anchors.push({ startMark, endMark, block, start: span.start, end: span.end, noteMarks, edit })
     }
   }
 

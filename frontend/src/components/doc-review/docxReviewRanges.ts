@@ -1,7 +1,7 @@
-import type { DocxParagraphAnchor, ReviewBlock } from './docxReviewSource'
+import type { DocxParagraphAnchor, DocxParagraphEdit, ReviewBlock } from './docxReviewSource'
 
 type TextRange = { node: Text; start: number; end: number; block: ReviewBlock }
-type WordParagraph = { block: ReviewBlock; marker: HTMLElement }
+type WordParagraph = { block: ReviewBlock; marker: HTMLElement; hasTextRange: boolean; edit?: DocxParagraphEdit }
 type RenderedPiece = { node: Text | null; value: string; optional?: boolean }
 
 function renderedParagraphPieces(paragraph: HTMLElement, noteMarks: Map<string, boolean>): RenderedPiece[] {
@@ -70,7 +70,8 @@ export function indexDocxReview(content: HTMLElement, anchors: DocxParagraphAnch
     const marker = markerElements.get(anchor.startMark)
     const start = marker?.closest('p')
     const end = markerElements.get(anchor.endMark)?.closest('p')
-    if (!marker || !start || !end) continue
+    // Word preview retains the continuation cells of vertical merges as hidden elements.
+    if (!marker || !start || !end || start.closest('td[style*="display: none"]')) continue
     const first = paragraphIndices.get(start)
     const last = paragraphIndices.get(end)
     if (first === undefined || last === undefined || last < first) continue
@@ -80,10 +81,15 @@ export function indexDocxReview(content: HTMLElement, anchors: DocxParagraphAnch
     blockCharacters.set(block.id, characters)
     const fragments = elements.slice(first, last + 1)
     const ranges = mapParagraphs(fragments, anchor, characters)
+    if (anchor.edit) {
+      for (const paragraph of fragments) paragraph.dataset.reviewParagraph = anchor.edit.id
+    }
+    if (anchor.edit || ranges?.length) {
+      paragraphs.push({ block, marker, hasTextRange: Boolean(ranges?.length), edit: anchor.edit })
+    }
     if (!ranges?.length) continue
 
     fragments.forEach(paragraph => { paragraph.dataset.reviewBlock = block.id })
-    paragraphs.push({ block, marker })
     for (const range of ranges) indexedText.set(range.node, range)
     const current = blockRanges.get(block.id) ?? []
     current.push(...ranges)

@@ -8,10 +8,12 @@ from app.domains.asset.services.document import payload as document_payload
 from app.domains.asset.services.document import repair as document_repair
 from app.domains.asset.services.document import repository as document_repository
 from app.domains.asset.services.document import versioning as document_versioning
+from app.domains.asset.services.document.text_source import review_source
 from app.domains.asset.services.review import policy as asset_review_policy
 from app.domains.asset.services.review import serialization as asset_review_serialization
 from app.domains.asset.services.review.errors import ReviewError
 from app.domains.auth.models.user import User, WorkspacePermission
+from app.domains.task.models.task import TaskStatus
 from app.domains.task.services import task_cli_state_service
 from app.domains.workspace.services import workspace_service
 
@@ -77,7 +79,11 @@ def read_document(
         workspace_service.is_workspace_expert(db, ws_id, current_user.id) and is_latest_context_version
     )
     inline_review_enabled = document_payload.can_inline_review(asset.source_ext)
-    can_manual_edit = can_apply_resolution and inline_review_enabled
+    can_manual_edit = (
+        can_apply_resolution
+        and inline_review_enabled
+        and (asset.task is None or asset.task.status == TaskStatus.INITIALIZED)
+    )
     ai_available = True
     ai_unavailable_reason: str | None = None
     if not is_latest_context_version:
@@ -102,6 +108,7 @@ def read_document(
     return AssetDocumentResponse(
         asset=asset_review_serialization._serialize_asset(asset),
         active_version=asset_review_serialization._serialize_version(active_version) if active_version else None,
+        source_text=review_source(active_version) if active_version else None,
         blocks=blocks,
         thread_markers=markers,
         capabilities=AssetDocumentCapabilities(

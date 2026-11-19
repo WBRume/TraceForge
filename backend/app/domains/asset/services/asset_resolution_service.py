@@ -26,6 +26,7 @@ from app.domains.asset.services.document import payload as document_payload
 from app.domains.asset.services.document import repository as document_repository
 from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.asset.services.document.docx import apply_blocks_to_docx_inplace, edit_docx_paragraph
+from app.domains.asset.services.document.text_source import SOURCE_BLOCK_ID
 from app.domains.task.models.task import SddTask
 from app.domains.task.services import task_cli_state_service
 
@@ -1066,6 +1067,15 @@ def _create_applied_version(
     selected_text_for_apply,
     use_document_apply,
 ):
+    if not use_document_apply and len(next_blocks) == 1 and next_blocks[0].get("id") == SOURCE_BLOCK_ID:
+        return document_versioning.create_asset_version_from_source(
+            db,
+            asset,
+            base_version,
+            new_text.encode("utf-8"),
+            actor_user_id,
+            change_note=change_note or f"Applied thread {thread.id} resolution",
+        )
     output_bytes: bytes | None = None
     if (asset.source_ext or "").lower() == ".docx":
         if not use_document_apply:
@@ -1137,8 +1147,12 @@ def _apply_proposal_blocks(
         new_text = _runs_text(_normalize_runs(sanitized_block.get("runs"), str(sanitized_block.get("text") or "")))
         if not new_text.strip():
             raise ResolutionServiceError("Resulting block content cannot be empty", status_code=422)
-        next_blocks = _replace_block_ast(base_blocks, block_id=block_id, target_block=sanitized_block)
-        next_markdown = _blocks_to_markdown(next_blocks)
+        if block_id == SOURCE_BLOCK_ID:
+            next_blocks = [sanitized_block]
+            next_markdown = new_text
+        else:
+            next_blocks = _replace_block_ast(base_blocks, block_id=block_id, target_block=sanitized_block)
+            next_markdown = _blocks_to_markdown(next_blocks)
         patch["new_text"] = new_text
         patch["final_block_ast"] = copy.deepcopy(sanitized_block)
         patch["rewrite_scope"] = "anchor"

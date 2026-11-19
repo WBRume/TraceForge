@@ -248,7 +248,6 @@ describe('useAssetDiscussion resource ownership', () => {
     ['createResolutionProposal', (m: ReturnType<typeof useAssetDiscussion>) => m.createResolutionProposal('A-thread'), () => job()],
     ['rewriteResolutionProposal', (m: ReturnType<typeof useAssetDiscussion>) => m.rewriteResolutionProposal('A-thread', 'proposal', 'new'), () => job()],
     ['applyResolutionProposal', (m: ReturnType<typeof useAssetDiscussion>) => m.applyResolutionProposal('A-thread', 'proposal', { finalBlockAst: {} }), () => version()],
-    ['manualEditBlock', (m: ReturnType<typeof useAssetDiscussion>) => m.manualEditBlock('block', 'new'), () => version()],
     ['cancelAiJob', (m: ReturnType<typeof useAssetDiscussion>) => m.cancelAiJob('job'), () => job('A', 'CANCELLED')],
     ['updateThreadCloseHint', (m: ReturnType<typeof useAssetDiscussion>) => m.updateThreadCloseHint('A-thread', 'reset_pending'), () => thread()],
     ['updateThreadState', (m: ReturnType<typeof useAssetDiscussion>) => m.updateThreadState('A-thread', 'closed'), () => thread()],

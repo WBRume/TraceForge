@@ -37,6 +37,10 @@ def repair_docx_version_if_needed(db: Session, asset: SddAsset, version: SddAsse
         or _looks_like_binary_docx_dump(markdown)
         or render_format != "rich_doc"
         or (has_docx_comment_payload is False)
+        or any(
+            isinstance(block, dict) and block.get("type") == "table" and "docx_empty_paragraphs" not in block
+            for block in blocks
+        )
     )
 
     original_path = (version.original_path or "").strip()
@@ -82,6 +86,8 @@ def repair_docx_version_if_needed(db: Session, asset: SddAsset, version: SddAsse
         "block_count": len(repaired_blocks),
         "docx_comments": [],
     }
+    if render.get("docx_comments_inherited"):
+        version.render_json = {**version.render_json, "docx_comments_inherited": True}
 
     if asset.active_version_id == version.id:
         asset.content_text = repaired_markdown
