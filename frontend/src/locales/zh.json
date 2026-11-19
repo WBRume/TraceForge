@@ -919,7 +919,6 @@
     "plan_docs_save_failed": "保存 Markdown 文件失败",
     "verification_e2e_title": "全链路集成",
     "verification_unavailable_title": "架构图快捷验证暂未接入，暂不可用",
-    "verification_unavailable_badge": "暂不可用",
     "verification_tag": "高阶验证",
     "verification_prompt_ui": "请调度 Playwright MCP：直接在 Chrome 浏览器中模拟用户点击、输入、路由跳转，验证 UI 渲染与交互逻辑。注意：务必在测试结束后自行执行清理脏数据 (Teardown)。",
     "verification_prompt_api": "请调度 Postman MCP：远程执行自动化 API 脚本，验证 HTTP 状态码、响应 JSON 结构、数据持久化成果。注意：务必在测试结束后自行执行清理脏数据 (Teardown)。",

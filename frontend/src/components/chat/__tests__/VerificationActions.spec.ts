@@ -56,7 +56,7 @@ describe('VerificationActions & RunSummaryCard Integration', () => {
       expect(button.attributes('disabled')).toBeDefined()
       expect(button.attributes('aria-disabled')).toBe('true')
     })
-    expect(wrapper.text()).toContain('暂不可用')
+    expect(wrapper.text()).not.toContain('暂不可用')
 
     expect(wrapper.find('.actions-right').exists()).toBe(true)
     expect(wrapper.text()).not.toContain('任务状态分布')

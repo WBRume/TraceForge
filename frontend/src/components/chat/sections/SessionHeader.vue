@@ -411,11 +411,38 @@ onBeforeUnmount(() => {
   padding: 4px 12px;
   font-size: 0.75rem;
   cursor: pointer;
+  box-shadow: 0 0 0 rgba(15, 23, 42, 0);
+  transition:
+    background-color 0.18s ease,
+    color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mode-toggle-btn:hover {
+  color: var(--color-text-body);
+  transform: translateY(-1px);
 }
 .mode-toggle-btn.active {
   background: #ffffff;
   color: var(--color-primary-700);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+.mode-toggle-btn.active:hover {
+  color: var(--color-primary-700);
+  box-shadow: 0 4px 10px -4px rgba(15, 23, 42, 0.3), 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+.mode-toggle-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.1);
+}
+.mode-toggle-btn:focus-visible {
+  outline: 2px solid var(--color-primary-400, #38bdf8);
+  outline-offset: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mode-toggle-btn { transition: none; }
+  .mode-toggle-btn:hover,
+  .mode-toggle-btn:active { transform: none; }
 }
 .action-divider {
   width: 1px;

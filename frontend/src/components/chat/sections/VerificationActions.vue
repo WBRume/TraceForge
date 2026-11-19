@@ -36,7 +36,7 @@ const canShowStatusSummary = computed(() => (
     <div v-if="canShowActions" class="actions-left">
       <template v-if="!props.vm.hidePatchWorkflows">
         <span class="verify-label">{{ t('portal.architecture') }}:</span>
-        <!-- 架构图能力尚未接入：三个快捷验证按钮统一置灰，仅保留可见的可用性标记 -->
+        <!-- 架构图能力尚未接入：三个快捷验证按钮统一置灰 -->
         <button
           class="btn-micro is-unavailable"
           type="button"
@@ -64,7 +64,6 @@ const canShowStatusSummary = computed(() => (
         >
           <Sparkles class="w-3" /> E2E
         </button>
-        <span class="unavailable-badge">{{ t('chat.verification_unavailable_badge') }}</span>
       </template>
       <template v-else>
         <button
@@ -153,17 +152,6 @@ const canShowStatusSummary = computed(() => (
   border-color: #E2E8F0;
   box-shadow: none;
   cursor: not-allowed;
-}
-
-.unavailable-badge {
-  padding: 2px 8px;
-  border-radius: 9999px;
-  border: 1px dashed #E2E8F0;
-  background: #F8FAFC;
-  color: #94A3B8;
-  font-size: 0.6875rem;
-  line-height: 1.2;
-  white-space: nowrap;
 }
 
 @media (max-width: 760px) {

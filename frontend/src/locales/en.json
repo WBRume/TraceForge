@@ -919,7 +919,6 @@
     "plan_docs_save_failed": "Failed to save markdown file",
     "verification_e2e_title": "End-to-end integration",
     "verification_unavailable_title": "Architecture quick verification is not connected yet and is unavailable",
-    "verification_unavailable_badge": "Unavailable",
     "verification_tag": "Advanced Verification",
     "verification_prompt_ui": "Please orchestrate Playwright MCP: simulate user clicks, typing, and route transitions in Chrome to validate UI rendering and interaction logic. Important: run teardown and clean dirty data after testing.",
     "verification_prompt_api": "Please orchestrate Postman MCP: run automated API scripts remotely to verify HTTP status codes, JSON schema, and persistence outcomes. Important: run teardown and clean dirty data after testing.",
