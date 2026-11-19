@@ -186,6 +186,7 @@ export function useSkillEditorReview(options: UseSkillEditorReviewOptions) {
       comments.value = (res.data.items || []).map((item: SkillComment) => ({
         ...item,
         expert_avatar_svg: item.expert_avatar_svg || null,
+        expert_avatar_url: item.expert_avatar_url || null,
         char_start: item.char_start === null || item.char_start === undefined ? null : Number(item.char_start),
         char_end: item.char_end === null || item.char_end === undefined ? null : Number(item.char_end),
       })) as SkillComment[]

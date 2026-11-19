@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import UserAvatar from '@/components/user/UserAvatar.vue'
+import { getApiServerUrl } from '@/utils/api'
 
 const legacyAvatarSvg = (color: string) => (
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
@@ -37,5 +38,19 @@ describe('UserAvatar', () => {
     expect(gradientId).not.toBe('bg')
     expect(html).toContain(`url(#${gradientId})`)
     expect(html).not.toContain('url(#bg)')
+  })
+
+  it('loads a local photo from the configured backend and falls back when it fails', async () => {
+    const path = '/api/auth/avatars/u1/photo.webp'
+    const wrapper = mount(UserAvatar, { props: { displayName: 'Alice', avatarUrl: path } })
+    expect(wrapper.get('img').attributes('src')).toBe(`${getApiServerUrl()}${path}`)
+
+    await wrapper.get('img').trigger('error')
+    expect(wrapper.find('img').exists()).toBe(false)
+    expect(wrapper.text()).toBe('A')
+
+    await wrapper.setProps({ avatarUrl: path.replace('photo', 'new-photo') })
+    expect(wrapper.get('img').attributes('src')).toContain('new-photo.webp')
+    wrapper.unmount()
   })
 })

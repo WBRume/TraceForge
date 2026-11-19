@@ -175,18 +175,16 @@ def _to_version_response(version) -> SkillVersionResponse:
 
 
 def _to_comment_response(comment) -> SkillReviewCommentResponse:
-    expert_avatar_svg = None
-    if comment.expert:
-        expert_avatar_svg = auth_service.resolve_user_avatar_svg(comment.expert)
-
+    expert = comment.expert
     return SkillReviewCommentResponse(
         id=comment.id,
         skill_id=comment.skill_id,
         workspace_id=comment.workspace_id,
         version_id=comment.version_id,
         expert_user_id=comment.expert_user_id,
-        expert_display_name=comment.expert.display_name if comment.expert else None,
-        expert_avatar_svg=expert_avatar_svg,
+        expert_display_name=expert.display_name if expert else None,
+        expert_avatar_svg=auth_service.resolve_user_avatar_svg(expert) if expert else None,
+        expert_avatar_url=expert.avatar_url if expert else None,
         file_path=comment.file_path,
         body=comment.body,
         selected_text=comment.selected_text,
@@ -206,15 +204,13 @@ def _to_analysis_response(analysis) -> SkillAnalysisResponse:
 
 
 def _to_rating_item(rating) -> SkillRatingItem:
-    expert_avatar_svg = None
-    if rating.expert:
-        expert_avatar_svg = auth_service.resolve_user_avatar_svg(rating.expert)
-
+    expert = rating.expert
     return SkillRatingItem(
         id=rating.id,
         expert_user_id=rating.expert_user_id,
-        expert_display_name=rating.expert.display_name if rating.expert else None,
-        expert_avatar_svg=expert_avatar_svg,
+        expert_display_name=expert.display_name if expert else None,
+        expert_avatar_svg=auth_service.resolve_user_avatar_svg(expert) if expert else None,
+        expert_avatar_url=expert.avatar_url if expert else None,
         score=rating.score,
         note=rating.note,
         version_no=rating.version.version_no if rating.version else None,

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, shallowRef, watch } from 'vue'
+import { getApiServerUrl } from '@/utils/api'
 import { scopeAvatarSvgIds } from '@/utils/avatar'
 
 type AvatarSize = 'xs' | 'sm' | 'md' | 'lg'
@@ -41,8 +42,18 @@ const avatarSvgContent = computed(() => {
   if (!raw) return ''
   return scopeAvatarSvgIds(normalizeSvgMarkup(raw))
 })
-const avatarUrlContent = computed(() => props.avatarUrl?.trim() || '')
-const showFallbackInitial = computed(() => !avatarSvgContent.value && !avatarUrlContent.value)
+const rawAvatarUrl = computed(() => props.avatarUrl?.trim() || '')
+const isLocalPhoto = computed(() => rawAvatarUrl.value.startsWith('/api/auth/avatars/'))
+const resolvedAvatarUrl = computed(() => (
+  isLocalPhoto.value ? `${getApiServerUrl()}${rawAvatarUrl.value}` : rawAvatarUrl.value
+))
+const failedUrl = shallowRef('')
+watch(resolvedAvatarUrl, () => { failedUrl.value = '' })
+const imageUrl = computed(() => {
+  if (resolvedAvatarUrl.value === failedUrl.value) return ''
+  return isLocalPhoto.value || !avatarSvgContent.value ? resolvedAvatarUrl.value : ''
+})
+const showFallbackInitial = computed(() => !avatarSvgContent.value && !imageUrl.value)
 
 const avatarStyle = computed(() => {
   if (!showFallbackInitial.value || !props.accentColor) return undefined
@@ -60,8 +71,8 @@ const avatarStyle = computed(() => {
     :title="title || fallbackName"
     :style="avatarStyle"
   >
-    <span v-if="avatarSvgContent" class="avatar-svg" v-html="avatarSvgContent"></span>
-    <img v-else-if="avatarUrlContent" class="avatar-image" :src="avatarUrlContent" :alt="fallbackName">
+    <img v-if="imageUrl" :key="imageUrl" class="avatar-image" :src="imageUrl" :alt="fallbackName" @error="failedUrl = imageUrl">
+    <span v-else-if="avatarSvgContent" class="avatar-svg" v-html="avatarSvgContent"></span>
     <span v-else>{{ initial }}</span>
   </span>
 </template>

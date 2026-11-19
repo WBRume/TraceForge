@@ -2,7 +2,10 @@
 Auth & User API Routers
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
@@ -15,7 +18,7 @@ from app.domains.auth.schemas.auth import (
     UserRegister,
     UserResponse,
 )
-from app.domains.auth.services import auth_service
+from app.domains.auth.services import auth_service, avatar_image
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 logger = get_logger(__name__)
@@ -92,3 +95,38 @@ def update_my_avatar(
         return auth_service.update_user_avatar(db, current_user, payload.avatar_svg)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/me/avatar/image", response_model=UserResponse)
+async def upload_my_avatar_image(
+    request: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    """Save a cropped PNG or WebP from the avatar editor."""
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type not in avatar_image.AVATAR_UPLOAD_FORMATS:
+        raise HTTPException(status_code=415, detail="Expected a WebP or PNG avatar image")
+
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > avatar_image.AVATAR_MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Avatar image exceeds the upload limit")
+        raw.extend(chunk)
+
+    try:
+        return await run_in_threadpool(auth_service.update_user_avatar_image, db, current_user, bytes(raw), media_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/avatars/{user_id}/{revision}.webp", response_class=Response)
+def get_avatar_image(user_id: str, revision: UUID, db: Session = Depends(get_db)) -> Response:
+    """Serve a profile photo to image tags using its versioned URL."""
+    image = auth_service.read_user_avatar_image(db, user_id, str(revision))
+    if image is None:
+        raise HTTPException(status_code=404, detail="Avatar image not found")
+
+    return Response(
+        image,
+        media_type="image/webp",
+        headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
+    )

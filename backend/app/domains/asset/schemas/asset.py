@@ -107,6 +107,7 @@ class AssetThreadMessageResponse(BaseModel):
     creator_id: str | None = None
     creator_display_name: str | None = None
     creator_avatar_svg: str | None = None
+    creator_avatar_url: str | None = None
     metadata_json: Any | None = None
     created_at: datetime
 
@@ -137,6 +138,7 @@ class AssetThreadResponse(BaseModel):
     creator_id: str
     creator_display_name: str | None = None
     creator_avatar_svg: str | None = None
+    creator_avatar_url: str | None = None
     resolved_by: str | None = None
     resolved_at: datetime | None = None
     resolved_version_id: str | None = None

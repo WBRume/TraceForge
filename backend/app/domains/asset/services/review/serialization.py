@@ -49,6 +49,7 @@ def _serialize_message(message) -> AssetThreadMessageResponse:
         creator_id=message.creator_id,
         creator_display_name=creator_display_name,
         creator_avatar_svg=creator_avatar_svg,
+        creator_avatar_url=message.creator.avatar_url if message.creator else None,
         metadata_json=message.metadata_json,
         created_at=message.created_at,
     )
@@ -89,6 +90,7 @@ def _serialize_thread(thread) -> AssetThreadResponse:
         creator_id=thread.creator_id,
         creator_display_name=creator_display_name,
         creator_avatar_svg=creator_avatar_svg,
+        creator_avatar_url=thread.creator.avatar_url if thread.creator else None,
         resolved_by=thread.resolved_by,
         resolved_at=thread.resolved_at,
         resolved_version_id=thread.resolved_version_id,

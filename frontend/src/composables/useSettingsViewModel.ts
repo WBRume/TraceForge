@@ -6,8 +6,6 @@ import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { isDesktop } from '@/utils/runtime'
 import { useAuthStore } from '@/stores/auth'
-import { buildAvatarSvg, isSvgText } from '@/utils/avatar'
-import type { AvatarTemplateStyle } from '@/utils/avatar'
 import { createEmptyPermissions, defaultPermissionsByRole, type PermissionFlags, type PermissionKey } from '@/utils/settingsPermissions'
 
 export type SettingsViewModelOptions = {
@@ -109,15 +107,6 @@ export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
   const removingMemberId = ref('')
   const showRemoveConfirm = ref(false)
   const memberToRemove = ref<WorkspaceMember | null>(null)
-  const avatarMode = ref<'template' | 'upload'>('template')
-  const avatarTemplateStyle = ref<AvatarTemplateStyle>('classic')
-  const avatarTemplateColor = ref('#0ea5e9')
-  const uploadedSvg = ref('')
-  const uploadedSvgPreviewUrl = ref('')
-  const uploadedFileName = ref('')
-  const avatarSaving = ref(false)
-  const appearanceError = ref('')
-  const appearanceSuccess = ref('')
   
   const batchAddInput = ref('')
   const batchAddRole = ref<'DEVELOPER' | 'VIEWER'>('DEVELOPER')
@@ -232,11 +221,6 @@ export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
   const totalMemberCount = computed(() => memberTotal.value + (ownerMember.value ? 1 : 0))
   const totalMemberPages = computed(() => Math.max(1, Math.ceil(memberTotal.value / MEMBER_PAGE_SIZE)))
   const permissionOptionCount = computed(() => permissionOptions.value.length)
-  const avatarTemplateOptions = computed(() => [
-    { value: 'classic' as AvatarTemplateStyle, label: t('settings.appearance.style_classic') },
-    { value: 'soft' as AvatarTemplateStyle, label: t('settings.appearance.style_soft') },
-    { value: 'split' as AvatarTemplateStyle, label: t('settings.appearance.style_split') },
-  ])
   const memberRoleOptions = computed<{ value: 'DEVELOPER' | 'VIEWER'; label: string }[]>(() => [
     { value: 'DEVELOPER', label: t('settings.members.role_developer') },
     { value: 'VIEWER', label: t('settings.members.role_viewer') },
@@ -323,40 +307,10 @@ export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
   const batchAddEnabledCount = computed(() => (
     permissionOptions.value.reduce((total, option) => total + (batchAddPermissions.value[option.key] ? 1 : 0), 0)
   ))
-  const previewAvatarSvg = computed(() => {
-    const templateSvg = buildAvatarSvg({
-      displayName: authStore.user?.display_name || '',
-      email: authStore.user?.email || '',
-      userId: authStore.user?.id || '',
-      color: avatarTemplateColor.value,
-      style: avatarTemplateStyle.value,
-    })
-    if (avatarMode.value === 'upload') {
-      if (uploadedSvgPreviewUrl.value) {
-        return ''
-      }
-      return authStore.user?.avatar_svg || templateSvg
-    }
-    return templateSvg
-  })
-  const previewAvatarUrl = computed(() => (
-    avatarMode.value === 'upload' ? uploadedSvgPreviewUrl.value : ''
-  ))
-  
   const changeLanguage = (lang: string) => {
     currentLang.value = lang
     locale.value = lang
     localStorage.setItem('sdd_lang', lang)
-  }
-  
-  const clearAppearanceMessage = () => {
-    appearanceError.value = ''
-    appearanceSuccess.value = ''
-  }
-  
-  const isAvatarSvgValidationError = (error: unknown) => {
-    const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
-    return typeof detail === 'string' && detail.toLowerCase().includes('svg')
   }
   
   const roleTag = (role: string) => {
@@ -588,80 +542,6 @@ export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
     const draft = memberDrafts.value[memberId]
     if (!draft) return
     draft.permissions = defaultPermissionsByRole(draft.role)
-  }
-  
-  const loadAppearanceStateFromUser = () => {
-    if (!authStore.user) return
-    const savedSvg = authStore.user.avatar_svg?.trim() || ''
-    if (!savedSvg) return
-    uploadedSvg.value = savedSvg
-    avatarMode.value = 'upload'
-  }
-  
-  const handleAvatarFileChange = async (event: Event) => {
-    const input = event.target as HTMLInputElement | null
-    const file = input?.files?.[0]
-    if (!file) return
-  
-    clearAppearanceMessage()
-    const lowerName = file.name.toLowerCase()
-    if (!(file.type === 'image/svg+xml' || lowerName.endsWith('.svg'))) {
-      appearanceError.value = t('settings.appearance.invalid_file')
-      return
-    }
-  
-    try {
-      const text = (await file.text()).trim()
-      if (!isSvgText(text)) {
-        appearanceError.value = t('settings.appearance.invalid_svg')
-        return
-      }
-      uploadedSvg.value = text
-      uploadedSvgPreviewUrl.value = `data:image/svg+xml;utf8,${encodeURIComponent(text)}`
-      uploadedFileName.value = file.name
-      avatarMode.value = 'upload'
-    } catch {
-      appearanceError.value = t('settings.appearance.invalid_svg')
-    }
-  }
-  
-  const saveAvatarPreference = async () => {
-    clearAppearanceMessage()
-    if (!authStore.user) {
-      await authStore.fetchCurrentUser()
-    }
-  
-    const avatarSvg = avatarMode.value === 'upload'
-      ? uploadedSvg.value.trim()
-      : buildAvatarSvg({
-        displayName: authStore.user?.display_name || '',
-        email: authStore.user?.email || '',
-        userId: authStore.user?.id || '',
-        color: avatarTemplateColor.value,
-        style: avatarTemplateStyle.value,
-      }).trim()
-  
-    if (!avatarSvg || !isSvgText(avatarSvg)) {
-      appearanceError.value = t('settings.appearance.invalid_svg')
-      return
-    }
-  
-    avatarSaving.value = true
-    try {
-      const res = await api.put('/auth/me/avatar', { avatar_svg: avatarSvg })
-      authStore.setUser(res.data)
-      uploadedSvg.value = res.data.avatar_svg || avatarSvg
-      uploadedSvgPreviewUrl.value = ''
-      appearanceSuccess.value = t('settings.appearance.save_success')
-    } catch (error) {
-      if (isAvatarSvgValidationError(error)) {
-        appearanceError.value = t('settings.appearance.invalid_svg')
-      } else {
-        appearanceError.value = formatApiError(error, t('settings.appearance.save_failed'), t)
-      }
-    } finally {
-      avatarSaving.value = false
-    }
   }
   
   const loadMembers = async (options?: { page?: number; keyword?: string }) => {
@@ -923,7 +803,6 @@ export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
     if (!authStore.user) {
       await authStore.fetchCurrentUser()
     }
-    loadAppearanceStateFromUser()
     await loadMembers()
   })
   
@@ -935,13 +814,6 @@ export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
     await loadMembers()
   })
   
-  watch(() => authStore.user?.avatar_svg, (next) => {
-    if (!next?.trim()) return
-    if (!uploadedSvg.value.trim()) {
-      uploadedSvg.value = next
-    }
-  })
-
   return {
     activeSection,
     allFilteredSelected,
@@ -949,17 +821,10 @@ export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
     addModalTab,
     applyBatchExpert,
     applyBatchRole,
-    appearanceError,
-    appearanceSuccess,
     applyDraftRoleDefaults,
     askRemoveMember,
     askRemoveSelectedMembers,
     authStore,
-    avatarMode,
-    avatarSaving,
-    avatarTemplateColor,
-    avatarTemplateOptions,
-    avatarTemplateStyle,
     batchAddBlockedCount,    batchAddDone,
     batchAddEmails,
     batchAddExpert,
@@ -977,7 +842,6 @@ export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
     canManageMembers,
     cancelEditMember,
     changeLanguage,
-    clearAppearanceMessage,
     clearMemberSearch,
     clearMemberSelection,
     closeAddModal,
@@ -995,18 +859,15 @@ export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
     enabledPermissionCount,
     filteredConsoleMembers,
     getDraft,
-    handleAvatarFileChange,
     inviteLinkCreating,
     inviteLinkError,
     inviteLinkForm,
     inviteLinkJustCreated,
     inviteLinks,
     inviteLinksLoading,
-    isAvatarSvgValidationError,
     isMemberSelected,
     isEditingMember,
     isPermissionExpanded,
-    loadAppearanceStateFromUser,
     loadingMembers,
     loadMembers,
     locale,
@@ -1029,8 +890,6 @@ export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
     ownerMember,
     permissionOptionCount,
     permissionOptions,
-    previewAvatarSvg,
-    previewAvatarUrl,
     prevMemberPage,
     removingMemberId,
     resetBatchAdd,
@@ -1040,7 +899,6 @@ export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
     route,
     runBatchAdd,
     runMemberSearch,
-    saveAvatarPreference,
     saveMember,
     savingMemberId,
     seedMemberDrafts,
@@ -1060,9 +918,6 @@ export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
     toggleSelectAllFiltered,
     totalMemberCount,
     totalMemberPages,
-    uploadedFileName,
-    uploadedSvg,
-    uploadedSvgPreviewUrl,
     workspaceId,
   }
 }

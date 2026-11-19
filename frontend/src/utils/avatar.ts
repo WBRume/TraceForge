@@ -109,8 +109,6 @@ export const buildAvatarSvg = ({
   )
 }
 
-export const isSvgText = (value: string) => /<\s*svg[\s>]/i.test(value)
-
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 let avatarScopeSeq = 0

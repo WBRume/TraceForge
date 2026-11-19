@@ -276,6 +276,7 @@ class SkillReviewCommentResponse(BaseModel):
     expert_user_id: str
     expert_display_name: str | None = None
     expert_avatar_svg: str | None = None
+    expert_avatar_url: str | None = None
     file_path: str
     body: str
     selected_text: str | None = None
@@ -312,6 +313,7 @@ class SkillRatingItem(BaseModel):
     expert_user_id: str
     expert_display_name: str | None = None
     expert_avatar_svg: str | None = None
+    expert_avatar_url: str | None = None
     score: int
     note: str | None = None
     version_no: int | None = None

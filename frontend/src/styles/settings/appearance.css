@@ -2,7 +2,7 @@
   display: flex;
   align-items: center;
   gap: 1.25rem;
-  margin-bottom: 1.5rem;
+  margin-bottom: 0.75rem;
 }
 .icon-circle {
   width: 52px;
@@ -29,7 +29,7 @@
 .appearance-section {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 0.75rem;
 }
 .title-gradient-sm {
   font-size: 1.5rem;
@@ -42,7 +42,7 @@
 }
 .appearance-layout {
   display: grid;
-  grid-template-columns: 1fr 340px;
+  grid-template-columns: minmax(0, 1fr) minmax(14rem, 28%);
   gap: 2rem;
   align-items: stretch;
 }
@@ -53,13 +53,13 @@
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.5);
   border-radius: 1.5rem;
-  padding: 2.5rem;
+  padding: clamp(1rem, 2vw, 2rem);
   box-shadow: 
     0 4px 6px -1px rgba(0, 0, 0, 0.05),
     inset 0 0 0 1px rgba(255, 255, 255, 0.5);
 }
 .pill-switcher-wrap {
-  margin-bottom: 2rem;
+  margin-bottom: 1rem;
 }
 .pill-switcher {
   display: inline-flex;
@@ -115,7 +115,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  padding: 1.5rem;
+  padding: clamp(0.75rem, 1.3vw, 1.25rem);
   background: rgba(14, 165, 233, 0.03);
   border: 2px dashed rgba(14, 165, 233, 0.2);
   border-radius: 1rem;
@@ -140,24 +140,7 @@
   text-align: center;
   gap: 1.5rem;
 }
-.profile-avatar-glow {
-  position: relative;
-  display: inline-flex;
-}
-.profile-avatar-glow::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 120%;
-  height: 120%;
-  background: radial-gradient(circle, rgba(14, 165, 233, 0.2) 0%, transparent 70%);
-  z-index: 0;
-}
 .preview-avatar-wrap {
-  position: relative;
-  z-index: 1;
   padding: 6px;
   background: white;
   border-radius: 50%;
@@ -244,7 +227,7 @@
 }
 @media (max-width: 1024px) {
   .appearance-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 .member-toolbar .btn-primary {

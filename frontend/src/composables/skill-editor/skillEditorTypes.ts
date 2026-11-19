@@ -43,6 +43,7 @@ export type SkillRatingItem = {
   expert_user_id: string
   expert_display_name: string | null
   expert_avatar_svg: string | null
+  expert_avatar_url?: string | null
   score: number
   note: string | null
   version_no: number | null
@@ -58,6 +59,7 @@ export type SkillComment = {
   expert_user_id: string
   expert_display_name: string | null
   expert_avatar_svg: string | null
+  expert_avatar_url?: string | null
   file_path: string
   body: string
   selected_text: string | null
@@ -91,6 +93,7 @@ export type ReviewerGroup = {
   userId: string
   displayName: string
   avatarSvg: string | null
+  avatarUrl: string | null
   colorIndex: number
   comments: SkillComment[]
 }

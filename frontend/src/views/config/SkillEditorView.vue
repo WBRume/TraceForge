@@ -171,7 +171,12 @@ const vm = proxyRefs(rawVm)
             <div v-for="item in vm.ratingNotes" :key="item.id" class="rating-note-card">
               <div class="rating-note-header">
                 <div class="expert-info">
-                  <UserAvatar size="sm" :avatar-svg="item.expert_avatar_svg" :display-name="item.expert_display_name" />
+                  <UserAvatar
+                    size="sm"
+                    :avatar-svg="item.expert_avatar_svg"
+                    :avatar-url="item.expert_avatar_url"
+                    :display-name="item.expert_display_name"
+                  />
                   <span class="expert-name">{{ item.expert_display_name || 'Unknown' }}</span>
                 </div>
                 <div class="note-score">

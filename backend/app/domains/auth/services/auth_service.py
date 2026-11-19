@@ -3,15 +3,18 @@
 """
 
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import bcrypt
 from jose import JWTError, jwt
+from sqlalchemy import case, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.domains.auth.errors import RegisterEmailNotAllowedError
 from app.domains.auth.models.user import User
 from app.domains.auth.schemas.auth import TokenResponse
+from app.domains.auth.services import avatar_image
 from app.domains.task.services import avatar_service
 
 # SERVER_BOOT_ID = str(uuid.uuid4())
@@ -134,47 +137,71 @@ def authenticate_user(db: Session, email: str, password: str) -> User | None:
 
 
 def ensure_user_avatar_svg(db: Session, user: User) -> User:
-    """
-    Backfill avatar_svg on first profile read to support older accounts.
-    """
-    if user.avatar_svg and user.avatar_svg.strip():
-        try:
-            normalized_svg = avatar_service.sanitize_avatar_svg(user.avatar_svg)
-        except ValueError:
-            normalized_svg = avatar_service.build_default_avatar_svg(
-                user.display_name,
-                user.email,
-                user.id,
-            )
-
-        if normalized_svg != user.avatar_svg:
-            user.avatar_svg = normalized_svg
-            db.add(user)
-            db.commit()
-            db.refresh(user)
+    """Normalize legacy SVG avatars and backfill defaults on profile reads."""
+    if avatar_service.is_avatar_image_url(user.avatar_url):
         return user
 
-    user.avatar_svg = avatar_service.build_default_avatar_svg(
-        user.display_name,
-        user.email,
-        user.id,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    normalized_svg = resolve_user_avatar_svg(user)
+    if normalized_svg != user.avatar_svg:
+        # Compare with the loaded avatar before repairing it, in case a save just committed.
+        db.execute(
+            update(User)
+            .where(
+                User.id == user.id,
+                User.avatar_svg.is_not_distinct_from(user.avatar_svg),
+                User.avatar_url.is_not_distinct_from(user.avatar_url),
+            )
+            .values(avatar_svg=normalized_svg)
+        )
+        db.commit()
+        db.refresh(user)
     return user
 
 
 def update_user_avatar(db: Session, user: User, avatar_svg: str) -> User:
+    """Save an SVG avatar and clear any previous local photo in the same write."""
     sanitized_svg = avatar_service.sanitize_avatar_svg(avatar_svg)
-    user.avatar_svg = sanitized_svg
-    db.add(user)
+    db.execute(
+        update(User)
+        .where(User.id == user.id)
+        .values(
+            avatar_svg=sanitized_svg,
+            avatar_image=None,
+            avatar_url=case(
+                (User.avatar_url.startswith(avatar_service.AVATAR_IMAGE_URL_PREFIX, autoescape=True), None),
+                else_=User.avatar_url,
+            ),
+        )
+    )
     db.commit()
     db.refresh(user)
     return user
 
 
-def resolve_user_avatar_svg(user: User) -> str:
+def update_user_avatar_image(db: Session, user: User, raw: bytes, media_type: str) -> User:
+    """Replace the current avatar with a versioned profile photo."""
+    image = avatar_image.encode_avatar_image(raw, media_type)
+    avatar_url = _avatar_image_url(user.id, str(uuid4()))
+    db.execute(
+        update(User).where(User.id == user.id).values(avatar_svg=None, avatar_url=avatar_url, avatar_image=image)
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def _avatar_image_url(user_id: str, revision: str) -> str:
+    return f"{avatar_service.AVATAR_IMAGE_URL_PREFIX}{user_id}/{revision}.webp"
+
+
+def read_user_avatar_image(db: Session, user_id: str, revision: str) -> bytes | None:
+    """Retrieve the image if the opaque revision is still current."""
+    return db.scalar(
+        select(User.avatar_image).where(User.id == user_id, User.avatar_url == _avatar_image_url(user_id, revision))
+    )
+
+
+def resolve_user_avatar_svg(user: User) -> str | None:
     return avatar_service.resolve_avatar_svg(
         user.avatar_svg,
         user.avatar_url,

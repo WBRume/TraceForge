@@ -161,12 +161,16 @@ export function useSkillEditorMonaco(options: UseSkillEditorMonacoOptions) {
         if (!existing.avatarSvg && comment.expert_avatar_svg) {
           existing.avatarSvg = comment.expert_avatar_svg
         }
+        if (!existing.avatarUrl && comment.expert_avatar_url) {
+          existing.avatarUrl = comment.expert_avatar_url
+        }
         return
       }
       reviewersByLine.set(key, {
         userId: key,
         displayName: reviewerDisplayName(comment),
         avatarSvg: comment.expert_avatar_svg || null,
+        avatarUrl: comment.expert_avatar_url || null,
         colorIndex: reviewerColorIndex(key),
         comments: [comment],
       })
@@ -212,6 +216,7 @@ export function useSkillEditorMonaco(options: UseSkillEditorMonacoOptions) {
 
   const popoverReviewerName = computed(() => popoverActiveReviewer.value?.displayName || '')
   const popoverReviewerAvatarSvg = computed(() => popoverActiveReviewer.value?.avatarSvg || null)
+  const popoverReviewerAvatarUrl = computed(() => popoverActiveReviewer.value?.avatarUrl || null)
   const popoverReviewerColor = computed(() => (
     popoverActiveReviewer.value?.userId ? reviewerColor(popoverActiveReviewer.value.userId) : ''
   ))
@@ -704,6 +709,7 @@ export function useSkillEditorMonaco(options: UseSkillEditorMonacoOptions) {
     activePopoverComments,
     popoverReviewerName,
     popoverReviewerAvatarSvg,
+    popoverReviewerAvatarUrl,
     popoverReviewerColor,
     closeAvatarPopover,
     clearSelectedRange,

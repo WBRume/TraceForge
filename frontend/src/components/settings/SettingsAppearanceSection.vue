@@ -1,23 +1,41 @@
 <script setup lang="ts">
-import { ref, proxyRefs } from 'vue'
-import { Loader2, Palette, Save, UploadCloud, CheckCircle2, Info } from '@/components/icons'
+import { proxyRefs, useId, useTemplateRef, watchPostEffect } from 'vue'
 import BaseSelect from '@/components/BaseSelect.vue'
+import { Loader2, Palette, Save, UploadCloud } from '@/components/icons'
+import AvatarImageCrop from '@/components/settings/AvatarImageCrop.vue'
 import UserAvatar from '@/components/user/UserAvatar.vue'
-import type { SettingsViewModel } from '@/composables/useSettingsViewModel'
+import type { AvatarPreference } from '@/composables/useAvatarPreference'
+import { AVATAR_FILE_ACCEPT, AVATAR_SOURCE_LIMIT_MB, drawAvatarCrop } from '@/utils/avatarImage'
 
-const props = defineProps<{ vm: SettingsViewModel }>()
-const vm = proxyRefs(props.vm)
+const props = defineProps<{ preference: AvatarPreference }>()
+const avatar = proxyRefs(props.preference)
+const fileInput = useTemplateRef<HTMLInputElement>('fileInput')
+const preview = useTemplateRef<HTMLCanvasElement>('preview')
+const previewTitle = useId()
+const colorInput = useId()
 
-const fileInput = ref<HTMLInputElement | null>(null)
-const triggerFileUpload = () => {
-  fileInput.value?.click()
+watchPostEffect(() => {
+  const draft = avatar.editing
+  if (preview.value && draft) drawAvatarCrop(preview.value, draft.image, draft.crop)
+})
+
+function handleFileChange(event: Event) {
+  const input = event.currentTarget as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (file) void avatar.selectFile(file)
+}
+
+function handleFileDrop(event: DragEvent) {
+  const file = event.dataTransfer?.files[0]
+  if (file) void avatar.selectFile(file)
 }
 </script>
 
 <template>
   <section class="settings-section appearance-section">
     <div class="section-header">
-      <div class="icon-circle appearance-icon">
+      <div class="icon-circle">
         <Palette class="w-6 h-6" />
       </div>
       <div class="section-title-group">
@@ -31,97 +49,107 @@ const triggerFileUpload = () => {
         <div class="pill-switcher-wrap">
           <div class="pill-switcher">
             <button
+              type="button"
               class="pill-btn"
-              :class="{ active: vm.avatarMode === 'template' }"
-              @click="vm.avatarMode = 'template'"
+              :class="{ active: avatar.mode === 'template' }"
+              :aria-pressed="avatar.mode === 'template'"
+              :disabled="avatar.busy"
+              @click="avatar.changeMode('template')"
             >
               {{ $t('settings.appearance.mode_template') }}
             </button>
             <button
+              type="button"
               class="pill-btn"
-              :class="{ active: vm.avatarMode === 'upload' }"
-              @click="vm.avatarMode = 'upload'"
+              :class="{ active: avatar.mode === 'upload' }"
+              :aria-pressed="avatar.mode === 'upload'"
+              :disabled="avatar.busy"
+              @click="avatar.changeMode('upload')"
             >
               {{ $t('settings.appearance.mode_upload') }}
             </button>
           </div>
         </div>
 
-        <div v-if="vm.avatarMode === 'template'" class="appearance-form-grid">
+        <div v-if="avatar.mode === 'template'" class="appearance-form-grid">
           <div class="form-group">
             <label>{{ $t('settings.appearance.template_style') }}</label>
             <BaseSelect
-              v-model="vm.avatarTemplateStyle"
-              :options="vm.avatarTemplateOptions"
+              v-model="avatar.style"
+              :options="avatar.templateOptions"
+              :disabled="avatar.saving"
+              :aria-label="$t('settings.appearance.template_style')"
               size="lg"
             />
           </div>
           <div class="form-group">
-            <label>{{ $t('settings.appearance.theme_color') }}</label>
+            <label :for="colorInput">{{ $t('settings.appearance.theme_color') }}</label>
             <div class="color-field">
-              <input v-model="vm.avatarTemplateColor" class="color-input" type="color">
-              <span>{{ vm.avatarTemplateColor }}</span>
+              <input :id="colorInput" v-model="avatar.color" class="color-input" type="color" :disabled="avatar.saving">
+              <span>{{ avatar.color }}</span>
             </div>
           </div>
         </div>
 
-        <div v-else class="appearance-upload">
-          <label>{{ $t('settings.appearance.upload_label') }}</label>
-          
-          <div class="selection-prompt" @click="triggerFileUpload">
-            <div class="prompt-icon pulse-animation">
-              <UploadCloud class="w-8 h-8" />
+        <div
+          v-else
+          class="appearance-upload"
+          :aria-busy="avatar.loading"
+          @dragover.prevent
+          @drop.prevent="handleFileDrop"
+        >
+          <template v-if="avatar.editing">
+            <div class="selected-image">
+              <span class="file-name" :title="avatar.editing.fileName" dir="auto">{{ avatar.editing.fileName }}</span>
+              <button type="button" class="replace-image" :disabled="avatar.busy" @click="fileInput?.click()">
+                {{ $t(avatar.loading ? 'settings.appearance.reading_image' : 'settings.appearance.change_image') }}
+              </button>
             </div>
-            <h3 class="mt-2 font-bold text-base text-primary-900">{{ $t('settings.appearance.mode_upload') }}</h3>
-            <p class="text-xs text-muted mt-1 text-center max-w-sm">{{ $t('settings.appearance.upload_hint') }}</p>
-            
-            <div v-if="vm.uploadedFileName" class="interactive-tip mt-4">
-              <CheckCircle2 class="w-4 h-4 text-emerald-500" />
-              <span class="truncate max-w-[180px]">{{ vm.uploadedFileName }}</span>
-            </div>
-            <div v-else class="interactive-tip mt-4">
-              <Info class="w-3.5 h-3.5" />
-              <span>选择 SVG 文件</span>
-            </div>
-          </div>
-
-          <input
-            ref="fileInput"
-            class="hidden-input"
-            type="file"
-            accept=".svg,image/svg+xml"
-            @change="vm.handleAvatarFileChange"
-          >
+            <AvatarImageCrop
+              :image="avatar.editing.image"
+              :model-value="avatar.editing.crop"
+              :disabled="avatar.busy"
+              @update:model-value="avatar.updateCrop"
+            />
+          </template>
+          <button v-else type="button" class="select-image" :disabled="avatar.busy" @click="fileInput?.click()">
+            <Loader2 v-if="avatar.loading" class="upload-icon spin" />
+            <UploadCloud v-else class="upload-icon" />
+            <strong>{{ $t(avatar.loading ? 'settings.appearance.reading_image' : 'settings.appearance.choose_image') }}</strong>
+            <span class="upload-hint">{{ $t('settings.appearance.upload_hint', { size: AVATAR_SOURCE_LIMIT_MB }) }}</span>
+          </button>
+          <input ref="fileInput" type="file" hidden :accept="AVATAR_FILE_ACCEPT" @change="handleFileChange">
         </div>
 
-        <div v-if="vm.appearanceError" class="error-banner mt-sm">{{ vm.appearanceError }}</div>
-        <div v-if="vm.appearanceSuccess" class="success-banner mt-sm">{{ vm.appearanceSuccess }}</div>
+        <div v-if="avatar.error" class="error-banner mt-sm" role="alert">{{ avatar.error }}</div>
+        <div v-if="avatar.success" class="success-banner mt-sm" role="status">{{ avatar.success }}</div>
 
-        <button class="btn-primary mt-sm" :disabled="vm.avatarSaving" @click="vm.saveAvatarPreference">
-          <Loader2 v-if="vm.avatarSaving" class="w-4 h-4 spin" />
+        <button type="button" class="btn-primary mt-sm" :disabled="!avatar.canSave" @click="avatar.save">
+          <Loader2 v-if="avatar.saving" class="w-4 h-4 spin" />
           <Save v-else class="w-4 h-4" />
-          {{ vm.avatarSaving ? $t('settings.appearance.saving') : $t('settings.appearance.save_avatar') }}
+          {{ $t(avatar.saving ? 'settings.appearance.saving' : 'settings.appearance.save_avatar') }}
         </button>
       </div>
 
-      <aside class="appearance-preview">
+      <aside class="appearance-preview" :aria-labelledby="previewTitle">
         <div class="profile-card">
           <div class="profile-card-inner">
-            <div class="profile-avatar-glow">
-              <div class="preview-avatar-wrap">
-                <UserAvatar
-                  :display-name="vm.authStore.user?.display_name"
-                  :email="vm.authStore.user?.email"
-                  :user-id="vm.authStore.user?.id"
-                  :avatar-svg="vm.previewAvatarSvg"
-                  :avatar-url="vm.previewAvatarUrl"
-                  size="lg"
-                />
-              </div>
+            <h3 :id="previewTitle" class="preview-title">{{ $t('settings.appearance.preview') }}</h3>
+            <div class="preview-avatar-wrap">
+              <canvas v-if="avatar.editing" ref="preview" class="crop-preview" width="256" height="256" aria-hidden="true" />
+              <UserAvatar
+                v-else
+                :display-name="avatar.user?.display_name"
+                :email="avatar.user?.email"
+                :user-id="avatar.user?.id"
+                :avatar-svg="avatar.previewSvg"
+                :avatar-url="avatar.previewUrl"
+                size="lg"
+              />
             </div>
             <div class="profile-info">
-              <h3 class="profile-name">{{ vm.authStore.user?.display_name || vm.authStore.user?.email || '-' }}</h3>
-              <p class="profile-meta">{{ vm.authStore.user?.email }}</p>
+              <p class="profile-name">{{ avatar.user?.display_name || avatar.user?.email || '-' }}</p>
+              <p class="profile-meta">{{ avatar.user?.email }}</p>
             </div>
           </div>
         </div>
@@ -134,113 +162,137 @@ const triggerFileUpload = () => {
 
 <style scoped>
 .appearance-upload {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+  min-width: 0;
 }
 
-.selection-prompt {
+.select-image {
   display: flex;
+  width: 100%;
+  min-height: 10rem;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 0.625rem;
+  border: 1px dashed #94a3b8;
+  border-radius: 0.75rem;
   padding: 1.25rem 1rem;
-  border: 2px dashed #cbd5e1;
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.6);
+  background: #f8fafc;
+  color: #0f172a;
+  font: inherit;
   cursor: pointer;
-  transition: all 0.3s ease;
-  margin-top: 0.25rem;
 }
 
-.selection-prompt:hover {
-  border-color: #0ea5e9;
+.select-image:hover:not(:disabled) {
+  border-color: #0284c7;
   background: #f0f9ff;
-  transform: translateY(-2px);
-  box-shadow: 0 10px 25px -5px rgba(14, 165, 233, 0.1);
 }
 
-.selection-prompt:hover .prompt-icon {
-  color: #0ea5e9;
-  transform: scale(1.05);
+.upload-icon {
+  width: 1.75rem;
+  height: 1.75rem;
+  color: #0284c7;
 }
 
-.prompt-icon {
-  color: #94a3b8;
-  transition: all 0.3s ease;
+.upload-hint {
+  max-width: 28rem;
+  color: #475569;
+  font-size: 0.8125rem;
 }
 
-.interactive-tip {
+.selected-image {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.35rem 0.65rem;
-  background: rgba(15, 23, 42, 0.04);
-  border-radius: 20px;
-  color: #64748b;
-  font-size: 0.7rem;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.8125rem;
 }
 
-.hidden-input {
-  display: none;
+.file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #475569;
 }
 
-.text-primary-900 {
-  color: #0f172a;
+.replace-image {
+  flex-shrink: 0;
+  border: 1px solid #bae6fd;
+  border-radius: 0.5rem;
+  padding: 0.375rem 0.625rem;
+  background: white;
+  color: #0369a1;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
 }
 
-.text-muted {
-  color: #64748b;
+.replace-image:hover:not(:disabled) {
+  background: #e0f2fe;
 }
 
-.font-bold {
-  font-weight: 700;
+.select-image:disabled,
+.replace-image:disabled,
+.pill-btn:disabled {
+  cursor: default;
 }
 
-.text-lg {
-  font-size: 1.125rem;
-}
-
-.text-sm {
+.preview-title {
+  margin: 0;
+  color: #475569;
   font-size: 0.875rem;
+  font-weight: 600;
 }
 
-.mt-1 {
-  margin-top: 0.25rem;
+.preview-avatar-wrap {
+  display: inline-flex;
+  max-width: 100%;
 }
 
-.mt-2 {
-  margin-top: 0.5rem;
+.preview-avatar-wrap :deep(.user-avatar),
+.crop-preview {
+  width: 6.5rem;
+  height: 6.5rem;
+  border: 1px solid #93c5fd;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
+  font-size: 2.5rem;
 }
 
-.mt-4 {
-  margin-top: 1rem;
+.profile-info {
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
-.text-center {
-  text-align: center;
-}
+@media (max-width: 640px) {
+  .profile-card-inner {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.375rem 1rem;
+    padding: 1rem;
+    text-align: left;
+  }
 
-.max-w-sm {
-  max-width: 24rem;
-}
+  .preview-title {
+    grid-column: 2;
+    align-self: end;
+  }
 
-.text-base {
-  font-size: 1rem;
-}
+  .preview-avatar-wrap {
+    grid-column: 1;
+    grid-row: 1 / 3;
+  }
 
-.text-xs {
-  font-size: 0.75rem;
-}
+  .preview-avatar-wrap :deep(.user-avatar),
+  .crop-preview {
+    width: 4rem;
+    height: 4rem;
+    font-size: 1.5rem;
+  }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.8; transform: scale(0.98); }
-}
-
-.pulse-animation {
-  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  .profile-info {
+    grid-column: 2;
+    align-self: start;
+  }
 }
 </style>
-
-

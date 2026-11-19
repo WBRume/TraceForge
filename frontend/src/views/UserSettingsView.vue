@@ -8,6 +8,7 @@ import SettingsConnectedAccountsSection from '@/components/settings/SettingsConn
 import SettingsGeneralSection from '@/components/settings/SettingsGeneralSection.vue'
 import SettingsSidebarNav from '@/components/settings/SettingsSidebarNav.vue'
 import WebhookSettingsSection from '@/components/settings/WebhookSettingsSection.vue'
+import { useAvatarPreference } from '@/composables/useAvatarPreference'
 import { useSettingsViewModel } from '@/composables/useSettingsViewModel'
 
 const USER_SECTION_IDS = ['general', 'connected_accounts', 'appearance', 'webhook_personal']
@@ -17,6 +18,7 @@ const rawVm = useSettingsViewModel({
   defaultSection: 'general',
 })
 const vm = proxyRefs(rawVm)
+const avatarPreference = useAvatarPreference()
 const router = useRouter()
 const { t } = useI18n()
 
@@ -58,7 +60,7 @@ const goBack = () => {
             <transition name="fade-slide" mode="out-in">
               <SettingsGeneralSection v-if="vm.activeSection === 'general'" key="general" :vm="rawVm" />
               <SettingsConnectedAccountsSection v-else-if="vm.activeSection === 'connected_accounts'" key="connected_accounts" />
-              <SettingsAppearanceSection v-else-if="vm.activeSection === 'appearance'" key="appearance" :vm="rawVm" />
+              <SettingsAppearanceSection v-else-if="vm.activeSection === 'appearance'" key="appearance" :preference="avatarPreference" />
               <WebhookSettingsSection v-else-if="vm.activeSection === 'webhook_personal'" key="webhook_personal" scope="personal" />
             </transition>
           </main>
@@ -110,9 +112,36 @@ const goBack = () => {
   background: #f0f9ff;
 }
 
+@media (max-width: 1024px) {
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 640px) {
   .user-settings-topbar {
     padding: 1rem 1rem 0;
+  }
+
+  .settings-layout :deep(.sidebar-nav) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .settings-layout :deep(.group-title) {
+    grid-column: 1 / -1;
+  }
+
+  .settings-layout :deep(.nav-item) {
+    gap: 0.5rem;
+    padding: 0.5rem;
+  }
+
+  .settings-layout :deep(.nav-item-icon) {
+    width: 1.75rem;
+    height: 1.75rem;
+    flex-shrink: 0;
   }
 }
 </style>

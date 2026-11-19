@@ -44,6 +44,7 @@ export type AssetThreadMessage = {
   creator_id?: string | null
   creator_display_name?: string | null
   creator_avatar_svg?: string | null
+  creator_avatar_url?: string | null
   metadata_json?: any
   created_at: string
 }
@@ -104,6 +105,7 @@ export type AssetThread = {
   creator_id: string
   creator_display_name?: string | null
   creator_avatar_svg?: string | null
+  creator_avatar_url?: string | null
   resolved_by?: string | null
   resolved_at?: string | null
   resolved_version_id?: string | null

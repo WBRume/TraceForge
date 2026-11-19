@@ -82,6 +82,7 @@ onBeforeUnmount(() => {
                       :display-name="reviewer.displayName"
                       :user-id="reviewer.userId"
                       :avatar-svg="reviewer.avatarSvg"
+                      :avatar-url="reviewer.avatarUrl"
                       size="xs"
                       :accent-color="vm.reviewerColor(reviewer.userId)"
                     />
@@ -134,6 +135,7 @@ onBeforeUnmount(() => {
               :display-name="vm.popoverReviewerName"
               :user-id="vm.avatarPopover.userId"
               :avatar-svg="vm.popoverReviewerAvatarSvg"
+              :avatar-url="vm.popoverReviewerAvatarUrl"
               size="sm"
               :accent-color="vm.popoverReviewerColor"
             />
@@ -158,6 +160,7 @@ onBeforeUnmount(() => {
               :display-name="reviewer.displayName"
               :user-id="reviewer.userId"
               :avatar-svg="reviewer.avatarSvg"
+              :avatar-url="reviewer.avatarUrl"
               size="xs"
               :accent-color="vm.reviewerColor(reviewer.userId)"
             />

@@ -1,10 +1,11 @@
 """
-Avatar SVG utilities.
+Avatar utilities.
 
 This module keeps all avatar-related logic centralized:
 - generate deterministic default SVG avatars
 - sanitize uploaded SVG content
 - decode legacy data-url SVG avatars
+- recognize local raster avatar URLs
 """
 
 from __future__ import annotations
@@ -293,6 +294,14 @@ def svg_from_data_url(data_url: str) -> str | None:
         return None
 
 
+AVATAR_IMAGE_URL_PREFIX = "/api/auth/avatars/"
+
+
+def is_avatar_image_url(avatar_url: str | None) -> bool:
+    """Identify a locally stored profile photo."""
+    return bool(avatar_url and avatar_url.startswith(AVATAR_IMAGE_URL_PREFIX))
+
+
 def resolve_avatar_svg(
     avatar_svg: str | None,
     avatar_url: str | None,
@@ -300,7 +309,10 @@ def resolve_avatar_svg(
     display_name: str,
     email: str,
     user_id: str,
-) -> str:
+) -> str | None:
+    if is_avatar_image_url(avatar_url):
+        return None
+
     if avatar_svg and avatar_svg.strip():
         try:
             return sanitize_avatar_svg(avatar_svg)
