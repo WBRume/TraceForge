@@ -1,7 +1,7 @@
 import api from '@/utils/api'
 
 export type FeatureId = 'speech' | 'search' | 'diagnosis' | 'oauth' | 'agent'
-export type CapabilityStatus = 'READY' | 'DEGRADED' | 'NOT_CONFIGURED' | 'DISABLED'
+export type CapabilityStatus = 'READY' | 'DEGRADED' | 'UNAVAILABLE' | 'NOT_CONFIGURED' | 'DISABLED'
 export type ConfigValue = string | number | boolean
 export interface FeatureField {
   key: string

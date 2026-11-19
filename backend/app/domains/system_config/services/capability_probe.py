@@ -380,6 +380,14 @@ async def probe(feature, values, app, *, draft=False):
             return await PROBES[feature](values, app, draft)
     except Exception:
         mode = str(values.get("mode", values.get("backend", values.get("enforcement", "github"))))
+        if feature == "agent":
+            return result(
+                feature,
+                "UNAVAILABLE",
+                mode,
+                "Agent 服务不可用：连接或协议校验失败",
+                "检查所选 Agent 的服务地址、启动状态与网络连通性；探针不会返回上游错误内容",
+            )
         return result(
             feature,
             "DEGRADED",

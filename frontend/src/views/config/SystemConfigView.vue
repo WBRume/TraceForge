@@ -22,8 +22,8 @@ const systemConfigStore = useSystemConfigStore()
 
 const { services, loading, error, readyCount, refresh } = useServiceCapabilities()
 
-const degradedCount = computed(() => {
-  return services.value.filter(item => item.capability?.status === 'DEGRADED').length
+const attentionCount = computed(() => {
+  return services.value.filter(item => ['DEGRADED', 'UNAVAILABLE'].includes(item.capability?.status ?? '')).length
 })
 
 const getServiceIcon = (feature: (typeof serviceFeatures)[number]) => {
@@ -51,7 +51,6 @@ onMounted(() => {
     <div class="mgmt-page-header">
       <div>
         <h2>{{ $t('system_config.title') }}</h2>
-        <p class="mgmt-subtitle">{{ $t('feature_config.subtitle') }}</p>
       </div>
       <div class="header-actions">
         <button type="button" class="btn-refresh-hub" :disabled="loading" @click="refresh(true)">
@@ -80,11 +79,11 @@ onMounted(() => {
         </div>
         <div class="metric-card">
           <div class="metric-info">
-            <span class="metric-indicator-dot warning" :class="{ active: degradedCount > 0 }" />
-            <span class="metric-lbl">{{ $t('feature_config.status_DEGRADED') }}</span>
+            <span class="metric-indicator-dot warning" :class="{ active: attentionCount > 0 }" />
+            <span class="metric-lbl">{{ $t('feature_config.attention') }}</span>
           </div>
-          <div class="metric-val" :class="{ 'text-amber': degradedCount > 0 }">
-            {{ degradedCount }} <small>项降级</small>
+          <div class="metric-val" :class="{ 'text-amber': attentionCount > 0 }">
+            {{ attentionCount }} <small>项异常</small>
           </div>
         </div>
         <div class="metric-card">
@@ -124,10 +123,7 @@ onMounted(() => {
                   <div class="card-icon-box">
                     <component :is="getServiceIcon(item.feature)" class="card-icon" />
                   </div>
-                  <div>
-                    <h4 class="card-name">{{ item.title }}</h4>
-                    <span class="card-id">{{ item.feature }}</span>
-                  </div>
+                  <h4 class="card-name">{{ item.title }}</h4>
                 </div>
 
                 <span v-if="item.capability" class="card-status-pill" :class="item.capability.status">
@@ -195,10 +191,7 @@ onMounted(() => {
                   <div class="card-icon-box neutral">
                     <AdjustmentsHorizontalIcon class="card-icon" />
                   </div>
-                  <div>
-                    <h4 class="card-name">{{ $t('system_config.tab_mgmt_selection') }}</h4>
-                    <span class="card-id">project-product-mgmt</span>
-                  </div>
+                  <h4 class="card-name">{{ $t('system_config.tab_mgmt_selection') }}</h4>
                 </div>
                 <span class="card-status-pill" :class="systemConfigStore.projectProductManagementEnabled ? 'READY' : 'DEGRADED'">
                   <i />
@@ -243,10 +236,7 @@ onMounted(() => {
                   <div class="card-icon-box neutral">
                     <FolderIcon class="card-icon" />
                   </div>
-                  <div>
-                    <h4 class="card-name">{{ $t('system_config.tab_workspace_root') }}</h4>
-                    <span class="card-id">WORKSPACE_ROOT_DIR</span>
-                  </div>
+                  <h4 class="card-name">{{ $t('system_config.tab_workspace_root') }}</h4>
                 </div>
                 <span class="card-status-pill READY">
                   <i />
@@ -527,13 +517,6 @@ onMounted(() => {
   color: #0f172a;
 }
 
-.card-id {
-  display: block;
-  font-size: 11px;
-  color: #94a3b8;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-
 .card-status-pill {
   display: inline-flex;
   align-items: center;
@@ -564,6 +547,13 @@ onMounted(() => {
   border: 1px solid #fde68a;
 }
 .card-status-pill.DEGRADED i { background: #f59e0b; }
+
+.card-status-pill.UNAVAILABLE {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+.card-status-pill.UNAVAILABLE i { background: #ef4444; }
 
 .card-status-pill.NOT_CONFIGURED {
   background: #fef2f2;

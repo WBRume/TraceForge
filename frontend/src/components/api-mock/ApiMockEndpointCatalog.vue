@@ -44,10 +44,7 @@ defineExpose({
 <template>
   <aside class="catalog glass-panel">
     <div class="catalog-head">
-      <div>
-        <span class="catalog-kicker">{{ $t('api_mock.endpoint_tree') }}</span>
-        <h2>{{ $t('api_mock.endpoint_overview') }}</h2>
-      </div>
+      <span class="catalog-kicker">{{ $t('api_mock.endpoint_tree') }}</span>
       <div style="display: flex; gap: 8px; align-items: center">
         <button v-if="canView" type="button" class="btn-primary mini" style="padding: 4px 8px; gap: 4px; border-radius: 8px;" @click="emit('create-global-entity')">
           <FolderTree class="w-3.5 h-3.5" /> {{ $t('api_mock.new_entity') || 'Entity' }}
@@ -70,7 +67,6 @@ defineExpose({
 
     <div v-if="groupedEndpoints.length === 0" class="catalog-empty">
       <FolderTree class="w-5 h-5" />
-      <strong>{{ $t('api_mock.no_endpoint') }}</strong>
       <p>{{ $t('api_mock.catalog_empty_hint') }}</p>
     </div>
 
@@ -133,11 +129,6 @@ defineExpose({
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-}
-
-.catalog-head h2 {
-  margin: 0.35rem 0 0;
-  font-size: 1.1rem;
 }
 
 .catalog-search {
@@ -292,10 +283,6 @@ defineExpose({
   gap: 0.5rem;
   padding: 1rem;
   text-align: center;
-}
-
-.catalog-empty strong {
-  color: #0f172a;
 }
 
 .catalog-empty p {

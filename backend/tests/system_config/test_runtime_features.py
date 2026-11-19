@@ -501,6 +501,25 @@ def test_probe_upstream_error_is_redacted(monkeypatch):
     assert "secret-upstream-response" not in str(response)
 
 
+def test_unreachable_agent_is_reported_as_unavailable(monkeypatch):
+    async def failed(values, app, draft):
+        raise RuntimeError("secret-agent-response")
+
+    monkeypatch.setitem(probes.PROBES, "agent", failed)
+    response = asyncio.run(probes.probe("agent", {"backend": "opencode"}, SimpleNamespace()))
+    assert response["status"] == "UNAVAILABLE"
+    assert response["mode"] == "opencode"
+    assert "secret-agent-response" not in str(response)
+
+
+def test_agent_settings_are_visible_only_for_the_selected_backend(db):
+    fields = {field["key"]: field for field in configs.public(db, "agent")["fields"]}
+    assert list(fields["opencode_url"]["visible_when"]["backend"]) == ["opencode"]
+    assert list(fields["opencode_password"]["visible_when"]["backend"]) == ["opencode"]
+    assert list(fields["dsh_url"]["visible_when"]["backend"]) == ["dsh"]
+    assert list(fields["dsh_browser_cookie"]["visible_when"]["backend"]) == ["dsh"]
+
+
 def test_speech_probe_identifies_rate_limiter_failure_without_upstream_secret_echo(monkeypatch):
     monkeypatch.setattr(probes, "get_redis_client", AsyncMock(side_effect=ConnectionError("private-redis-connection")))
     response = asyncio.run(probes.probe("speech", {"mode": "api", "api_key": "private-key"}, SimpleNamespace()))

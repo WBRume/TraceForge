@@ -119,7 +119,7 @@ const targetTitle = computed(() => {
 const targetDescription = computed(() => {
   if (currentTarget.value === 'mgmt') return t('system_config.mgmt_selection_desc')
   if (currentTarget.value === 'root') return t('system_config.workspace_root_desc')
-  return t('feature_config.subtitle')
+  return ''
 })
 
 const targetCategory = computed(() => {
@@ -200,7 +200,7 @@ watch(() => route.params.feature, () => {
               </template>
               <span v-else class="source-tag db">{{ $t('feature_config.workspace_settings') }}</span>
             </div>
-            <p class="header-desc">{{ targetDescription }}</p>
+            <p v-if="targetDescription" class="header-desc">{{ targetDescription }}</p>
           </div>
         </div>
 
@@ -607,6 +607,16 @@ watch(() => route.params.feature, () => {
   background: #f59e0b;
 }
 
+.status-pill.UNAVAILABLE {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.status-pill.UNAVAILABLE i {
+  background: #ef4444;
+}
+
 .status-pill.NOT_CONFIGURED {
   background: #fef2f2;
   color: #991b1b;
@@ -910,6 +920,11 @@ watch(() => route.params.feature, () => {
   border: 1px solid #fde68a;
 }
 
+.diag-box.UNAVAILABLE {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+}
+
 .diag-box.NOT_CONFIGURED {
   background: #fef2f2;
   border: 1px solid #fecaca;
@@ -931,6 +946,7 @@ watch(() => route.params.feature, () => {
 
 .diag-box.READY .diag-status-name { color: #065f46; }
 .diag-box.DEGRADED .diag-status-name { color: #92400e; }
+.diag-box.UNAVAILABLE .diag-status-name { color: #991b1b; }
 .diag-box.NOT_CONFIGURED .diag-status-name { color: #991b1b; }
 .diag-box.neutral .diag-status-name { color: #334155; }
 

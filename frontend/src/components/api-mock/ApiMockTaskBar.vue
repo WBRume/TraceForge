@@ -77,7 +77,6 @@ const jobLabel = computed(() => {
   <header class="task-bar glass-panel">
     <div class="task-bar-main">
       <div class="task-bar-copy">
-        <span class="task-bar-kicker">API MOCK</span>
         <h1>{{ $t('api_mock.title') }}</h1>
         <p>{{ $t('api_mock.subtitle') }}</p>
       </div>
@@ -169,18 +168,6 @@ const jobLabel = computed(() => {
 
 .task-bar-copy {
   min-width: 0;
-}
-
-.task-bar-kicker {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.28rem 0.72rem;
-  border-radius: 999px;
-  background: #f1f5f9;
-  color: #0369a1;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
 }
 
 .task-bar-copy h1 {

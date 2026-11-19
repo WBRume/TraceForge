@@ -126,6 +126,32 @@ it('tests and saves PostgreSQL full-text mode with a hidden vector draft', async
   }
 })
 
+it('shows only the settings for the selected Agent backend', async () => {
+  const config: FeatureConfig = {
+    ...configuration,
+    feature: 'agent',
+    fields: [
+      { ...field('backend', '默认 Agent 后端', '', 'opencode'), kind: 'select', options: ['claude-code', 'opencode', 'dsh'] },
+      { ...field('opencode_url', 'OpenCode 服务地址', '', 'http://localhost:4096'), visible_when: { backend: ['opencode'] } },
+      { ...field('dsh_url', 'DSH Web Host 地址', '', 'http://localhost:3080'), visible_when: { backend: ['dsh'] } },
+    ],
+  }
+  const wrapper = mount(FeatureConfigForm, {
+    props: { config },
+    global: { plugins: [i18n], stubs: { teleport: true, 'el-tooltip': true } },
+  })
+  try {
+    expect(wrapper.find('#feature-agent-opencode_url').exists()).toBe(true)
+    expect(wrapper.find('#feature-agent-dsh_url').exists()).toBe(false)
+    wrapper.getComponent(BaseSelect).vm.$emit('update:modelValue', 'dsh')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('#feature-agent-opencode_url').exists()).toBe(false)
+    expect(wrapper.find('#feature-agent-dsh_url').exists()).toBe(true)
+  } finally {
+    wrapper.unmount()
+  }
+})
+
 it('saves a changed Agent address only after confirmation in the shared dialog', async () => {
   const config: FeatureConfig = {
     ...configuration,

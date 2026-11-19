@@ -435,8 +435,6 @@ defineExpose({
   <section class="workspace glass-panel">
     <div v-if="!endpoint" class="workspace-empty">
       <div class="empty-copy">
-        <span class="empty-kicker">{{ $t('api_mock.endpoint_editor') }}</span>
-        <h2>{{ $t('api_mock.select_endpoint_hint') }}</h2>
         <p>{{ $t('api_mock.workspace_empty_hint') }}</p>
       </div>
     </div>
@@ -746,7 +744,6 @@ defineExpose({
   text-align: center;
 }
 
-.empty-kicker,
 .editor-card-head span {
   color: #0369a1;
   font-size: 0.72rem;
@@ -755,7 +752,6 @@ defineExpose({
   text-transform: uppercase;
 }
 
-.empty-copy h2,
 .editor-card-head h3 {
   margin: 0.36rem 0 0;
 }

@@ -313,10 +313,12 @@ const confirmSave = async () => {
 }
 .probe-result.READY { border-color: #a7f3d0; background: #ecfdf5; }
 .probe-result.DEGRADED { border-color: #fde68a; background: #fffbeb; }
+.probe-result.UNAVAILABLE { border-color: #fecaca; background: #fef2f2; }
 .probe-result.NOT_CONFIGURED { border-color: #fecaca; background: #fef2f2; }
 .probe-result strong { display: block; font-size: 14px; margin-bottom: 4px; }
 .probe-result.READY strong { color: #065f46; }
 .probe-result.DEGRADED strong { color: #92400e; }
+.probe-result.UNAVAILABLE strong { color: #991b1b; }
 .probe-result.NOT_CONFIGURED strong { color: #991b1b; }
 .probe-result p { margin: 4px 0 0; line-height: 1.6; color: #334155; }
 .probe-guidance { color: #64748b; }
