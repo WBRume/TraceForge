@@ -240,10 +240,24 @@ const proposalThread = computed(
 const versionNumbers = computed(() => Object.fromEntries(versions.value.map(item => [item.id, item.version_no])));
 const proposalSourceOptions = computed(() => threads.value.filter(thread => thread.status === "resolved").map(thread => {
   const number = versionNumbers.value[thread.version_id];
+  const messages = thread.messages || [];
   return {
     id: thread.id,
     quote: thread.selected_text || thread.block_id,
     version: number ? t("doc_review.annotation_original_version", { version: number }) : "",
+    blockId: thread.block_id === "source-text" ? "" : thread.block_id,
+    creator: thread.creator_display_name || "",
+    messageCount: messages.length,
+    charStart: thread.char_start ?? null,
+    charEnd: thread.char_end ?? null,
+    anchorStatus: thread.anchor_status || "valid",
+    messages: messages.map(message => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      creator: message.creator_display_name || "",
+      createdAt: message.created_at,
+    })),
   };
 }));
 const hasProposalSources = (proposal: AssetResolutionProposal, ids: string[]) => {
