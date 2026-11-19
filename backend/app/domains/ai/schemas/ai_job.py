@@ -28,6 +28,7 @@ class AiJobResponse(JobSnapshotFields):
     error_message: str | None = None
     session_id: str | None = None
     interrupt_reason: str | None = None
+    cancel_requested_at: datetime | None = None
     interrupted_by_id: str | None = None
     interrupted_at: datetime | None = None
     creator_id: str

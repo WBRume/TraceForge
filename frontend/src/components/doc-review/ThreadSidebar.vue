@@ -8,28 +8,14 @@ import ThreadTimeline from "./ThreadTimeline.vue";
 
 type Thread = AssetThread;
 
-type ThreadAiJob = {
-  id: string;
-  thread_id?: string | null;
-  status:
-    | "PENDING"
-    | "RUNNING"
-    | "WAITING_HITL"
-    | "SUCCESS"
-    | "FAILED"
-    | "CANCELLED";
-  progress: number;
-  message?: string | null;
-  error_message?: string | null;
-};
+type ThreadAiJob = Pick<AssetAiJob, 'id' | 'thread_id' | 'status' | 'progress' | 'message' | 'error_message'>;
 
 const props = defineProps<{
   threads: Thread[];
   selectedThreadId: string;
   assistantJobMap: Record<string, ThreadAiJob>;
-  proposalJobMap: Record<string, AssetAiJob>;
+  pendingRevisions: AssetAiJob[];
   versionNumbers: Record<string, number>;
-  contextVersionId?: string;
   requestingProposal?: boolean;
   readonly?: boolean;
   draftEditing?: boolean;
@@ -49,7 +35,7 @@ const emit = defineEmits<{
   "ask-ai": [threadId: string, prompt?: string];
   "cancel-ai-job": [jobId: string];
   "generate-proposal": [];
-  "resume-proposal": [job: AssetAiJob];
+  "resume-proposal": [jobId: string];
   "open-proposal": [proposalId: string];
   "update-state": [threadId: string, status: "open" | "resolved" | "closed"];
   "close-hint-action": [
@@ -432,9 +418,8 @@ const resetCloseHintPending = () => {
 
       <ConclusionProposals
         :threads="threads"
-        :jobs="proposalJobMap"
+        :pending="pendingRevisions"
         :version-numbers="versionNumbers"
-        :context-version-id="contextVersionId"
         :show-generate="!readonly && canComment"
         :can-generate="canAiReply && aiAvailable !== false && !requestingProposal"
         :disabled-reason="!canAiReply ? aiUnavailableText : undefined"

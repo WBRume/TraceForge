@@ -206,11 +206,6 @@ class AssetManualEditBlockRequest(BaseModel):
         return value
 
 
-class AssetResolutionProposalCreateRequest(BaseModel):
-    overwrite_existing_draft: bool = False
-    context_version_id: str | None = None
-
-
 class AssetJointProposalCreateRequest(BaseModel):
     thread_ids: list[str] = Field(min_length=1)
     context_version_id: str = Field(min_length=1)

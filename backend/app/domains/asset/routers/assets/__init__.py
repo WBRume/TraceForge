@@ -7,3 +7,4 @@ from app.domains.asset.routers.assets import catalog, documents, drafts, jobs, r
 router = APIRouter(tags=["Assets"])
 for routes in (catalog, documents, drafts, threads, jobs, resolutions):
     router.include_router(routes.router, prefix="/workspaces/{ws_id}/assets")
+router.include_router(resolutions.background_router)

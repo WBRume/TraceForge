@@ -3,6 +3,8 @@ import { computed, ref, watch } from 'vue'
 import api from '@/utils/api'
 import { acceptsJobSnapshot } from '@/utils/jobSnapshot'
 import type { RequirementImportBatch } from '@/types/workspaceAssets'
+import type { AssetAiJob } from '@/composables/asset-discussion/types'
+import { domainMilestones } from '@/utils/domainMilestones'
 
 type PendingTaskSpecUpload = {
   workspaceId: string
@@ -20,7 +22,7 @@ type PendingTaskDocsUpload = {
 export type ProvisionJobStatus = import('@/types/queue').QueueStatus
 
 /** 浮窗跟踪的作业种类：任务创建 / Requirement AI 拆分预览 / AI 导入预览 */
-export type ProvisionJobKind = 'provision' | 'requirement_split_preview' | 'requirement_import_preview' | 'playbook_promotion' | 'skill_analysis'
+export type ProvisionJobKind = 'provision' | 'requirement_split_preview' | 'requirement_import_preview' | 'playbook_promotion' | 'skill_analysis' | 'document_revision'
 
 export type ProvisionJobView = {
   version?: number
@@ -55,6 +57,7 @@ export type ProvisionJobView = {
   handedOver: boolean
   promotionPayload?: RequirementPreviewJobApiPayload
   reviewRequired?: boolean
+  revisionJob?: AssetAiJob
 }
 
 type ProvisionJobApiPayload = {
@@ -125,6 +128,9 @@ export const useProvisioningStore = defineStore('provisioning', () => {
   const taskListRefreshToken = ref(0)
   const restored = ref(false)
   const dismissedPromotions = new Set<string>()
+  let revisionJobOwner = ''
+  let revisionRestoreVersion = 0
+  let rememberedRevisionIds = new Set<string>()
 
   let timer: number | null = null
   const inFlight = new Set<string>()
@@ -252,6 +258,88 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     }
     jobs.value = { ...jobs.value, [jobId]: view }
     return view
+  }
+
+  const revisionStorageKey = (userId: string) => `documentRevisionJobs:${userId}`
+
+  const rememberRevisionJob = (id: string, keep: boolean) => {
+    if (!revisionJobOwner || rememberedRevisionIds.has(id) === keep) return
+    if (keep) rememberedRevisionIds.add(id)
+    else rememberedRevisionIds.delete(id)
+    try {
+      localStorage.setItem(revisionStorageKey(revisionJobOwner), JSON.stringify([...rememberedRevisionIds].slice(-40)))
+    } catch { /* The live job remains available if browser storage is unavailable. */ }
+  }
+
+  const ingestRevisionJob = (job: AssetAiJob, handedOver = true): ProvisionJobView | null => {
+    if (!revisionJobOwner || job.creator_id !== revisionJobOwner || !job.id || !job.task_id || !job.asset_id || !job.thread_id) return null
+    const existing = jobs.value[job.id]
+    if (!acceptsJobSnapshot(existing, job)) return existing
+    const view: ProvisionJobView = {
+      jobId: job.id,
+      version: job.version,
+      taskId: job.task_id,
+      workspaceId: job.workspace_id,
+      taskName: '',
+      kind: 'document_revision',
+      status: job.status,
+      stage: '',
+      progress: job.progress,
+      message: job.message || '',
+      errorMessage: job.error_message || '',
+      cancelRequested: Boolean(job.cancel_requested_at) || job.status === 'TERMINATING',
+      ready: false,
+      terminal: PREVIEW_FINAL_STATUSES.has(job.status) || job.status === 'INTERRUPTED',
+      requirementId: '',
+      requirementTitle: '',
+      batch: null,
+      viewed: existing?.viewed ?? false,
+      handedOver: existing?.handedOver ?? handedOver,
+      domain_milestones: domainMilestones(job.context_json?.domain_milestones),
+      revisionJob: job,
+    }
+    jobs.value = { ...jobs.value, [job.id]: view }
+    rememberRevisionJob(job.id, !view.viewed && job.status !== 'CANCELLED')
+    if (job.status === 'CANCELLED' && view.handedOver) {
+      dismiss(job.id)
+      return null
+    }
+    if (!view.terminal) ensureTimer()
+    else stopTimerIfIdle()
+    return view
+  }
+
+  const restoreRevisionJobs = async (userId: string) => {
+    if (userId === revisionJobOwner) return
+    const restoreVersion = ++revisionRestoreVersion
+    // Keep the previous user's remembered jobs available on their next sign-in.
+    revisionJobOwner = ''
+    for (const job of jobList.value) {
+      if (job.kind === 'document_revision') dismiss(job.jobId)
+    }
+    revisionJobOwner = userId
+    rememberedRevisionIds = new Set()
+    if (!userId) return
+    try {
+      const stored: unknown = JSON.parse(localStorage.getItem(revisionStorageKey(userId)) || '[]')
+      if (Array.isArray(stored)) rememberedRevisionIds = new Set(stored.filter(id => typeof id === 'string').slice(-40))
+    } catch { /* Keep recovery from the server available. */ }
+    try {
+      const { data } = await api.get<AssetAiJob[]>('/document-revision-jobs', {
+        params: { job_ids: [...rememberedRevisionIds].join(',') },
+      })
+      if (restoreVersion !== revisionRestoreVersion || !Array.isArray(data)) return
+      for (const job of data) ingestRevisionJob(job)
+    } catch (err) {
+      console.warn('Failed to restore document revision jobs', err)
+    }
+  }
+
+  const showRevisionJobInDialog = (jobId: string) => {
+    const job = jobs.value[jobId]
+    if (job?.kind === 'document_revision') {
+      jobs.value = { ...jobs.value, [jobId]: { ...job, handedOver: false } }
+    }
   }
 
   const ensureTimer = () => {
@@ -480,7 +568,7 @@ export const useProvisioningStore = defineStore('provisioning', () => {
   }
 
   /** 弹窗点「缩小」：预览作业收起到右下角浮窗（展开面板承接弹窗上下文） */
-  const minimizePreviewJob = (jobId: string) => {
+  const minimizePreviewJob = (jobId: string, expandPanel = true) => {
     const normalizedJobId = asJobId(jobId)
     const current = jobs.value[normalizedJobId]
     if (!current || current.kind === 'provision') return
@@ -488,7 +576,7 @@ export const useProvisioningStore = defineStore('provisioning', () => {
       ...jobs.value,
       [normalizedJobId]: { ...current, handedOver: true, viewed: false },
     }
-    expanded.value = true
+    if (expandPanel) expanded.value = true
   }
 
   /** 已完成但尚未查看的预览结果（同需求重复发起「拆分」时直接回绑，免重跑 CLI） */
@@ -538,14 +626,18 @@ export const useProvisioningStore = defineStore('provisioning', () => {
         ingestPromotionJob(data)
         return true
       }
-      await api.post(`/workspaces/${job.workspaceId}/ai-jobs/${normalizedJobId}/cancel`)
+      const { data } = await api.post(`/workspaces/${job.workspaceId}/ai-jobs/${normalizedJobId}/cancel`)
+      if (job.kind === 'document_revision') {
+        ingestRevisionJob(data)
+        return true
+      }
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
       if (status === 404) {
         dismiss(normalizedJobId)
         return true
       }
-      if (job.kind !== 'playbook_promotion') markCancelling()
+      if (job.kind !== 'playbook_promotion' && job.kind !== 'document_revision') markCancelling()
       return false
     }
     markCancelling()
@@ -623,6 +715,7 @@ export const useProvisioningStore = defineStore('provisioning', () => {
       ...jobs.value,
       [normalizedJobId]: { ...current, viewed: true },
     }
+    if (current.kind === 'document_revision') rememberRevisionJob(normalizedJobId, false)
   }
 
   /** 按 jobId 查浮窗中跟踪的作业（视图绑定预览弹窗用） */
@@ -653,14 +746,17 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     if (!current || current.kind === 'provision' || current.kind === 'playbook_promotion') return
     inFlight.add(normalizedJobId)
     try {
-      const res = await api.get(
-        `/workspaces/${current.workspaceId}/workspace-assets/requirements/preview-jobs/${normalizedJobId}`,
-      )
-      const view = upsertPreviewJobFromPayload(res.data as RequirementPreviewJobApiPayload)
+      const revision = current.kind === 'document_revision'
+      const url = revision
+        ? `/document-revision-jobs/${normalizedJobId}`
+        : `/workspaces/${current.workspaceId}/workspace-assets/requirements/preview-jobs/${normalizedJobId}`
+      const { data } = await api.get(url)
+      if (revision && !jobs.value[normalizedJobId]) return
+      const view = revision ? ingestRevisionJob(data) : upsertPreviewJobFromPayload(data)
       fetchErrors.delete(normalizedJobId)
       if (!view) return
       if (
-        view.terminal
+        !revision && view.terminal
         && (view.status === 'CANCELLED' || view.status === 'ORPHANED' || view.status === 'REVERTED')
       ) {
         // 取消已收敛 / reaper 回收敛死：预览作业没有可查看的结果，自动移除
@@ -794,6 +890,7 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     jobs.value = next
     fetchErrors.delete(normalizedJobId)
     clearPendingUploads(normalizedJobId)
+    if (dismissed?.kind === 'document_revision') rememberRevisionJob(normalizedJobId, false)
     // 仅任务创建作业影响任务列表；预览作业的 dismiss 不触发无关刷新
     if (dismissed?.kind === 'provision') {
       taskListRefreshToken.value += 1
@@ -820,6 +917,9 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     findLatestPreviewResult,
     cancelPreviewJob,
     ingestPreviewJobPayload,
+    ingestRevisionJob,
+    restoreRevisionJobs,
+    showRevisionJobInDialog,
     ingestPromotionJob,
     refreshPromotionJobs,
     markPreviewJobViewed,

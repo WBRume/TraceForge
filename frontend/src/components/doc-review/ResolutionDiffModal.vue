@@ -3,22 +3,8 @@ import DomainMilestones from "@/components/ai/DomainMilestones.vue";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Loader2 } from '@/components/icons';
+import type { ProvisionJobView } from '@/stores/provisioning';
 import DecisionInlineFields from "./DecisionInlineFields.vue";
-
-type ThreadAiJob = {
-  id: string;
-  status:
-    | "PENDING"
-    | "RUNNING"
-    | "WAITING_HITL"
-    | "SUCCESS"
-    | "FAILED"
-    | "CANCELLED";
-  progress: number;
-  message?: string | null;
-  error_message?: string | null;
-  context_json?: Record<string, any> | null;
-};
 
 type ProposalPatch = {
   block_id?: string;
@@ -78,7 +64,10 @@ type ResolutionDecisionDraft = {
 const props = defineProps<{
   visible: boolean;
   proposal: Proposal | null;
-  proposalJob?: ThreadAiJob | null;
+  job?: ProvisionJobView | null;
+  resultError?: string;
+  submitting?: boolean;
+  cancelling?: boolean;
   canApply?: boolean;
   canRewrite?: boolean;
   rewriteDisabledReason?: string | null;
@@ -87,6 +76,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: [];
+  minimize: [];
+  retryResult: [];
   apply: [
     proposalId: string,
     payload: { finalBlockAst?: any; finalBlocksAst?: any[] },
@@ -250,56 +241,25 @@ const rewriteScope = computed(() =>
     .trim()
     .toLowerCase(),
 );
-const isJobBusy = computed(() => {
-  const status = props.proposalJob?.status;
-  return status === "PENDING" || status === "RUNNING" || status === "WAITING_HITL";
-});
-
-const proposalJobStatusText = computed(() => {
-  const status = props.proposalJob?.status;
-  if (status === "PENDING") return t("doc_review.ai_status_pending");
-  if (status === "RUNNING") return t("doc_review.ai_status_running");
-  if (status === "WAITING_HITL") return t("doc_review.ai_status_waiting_hitl");
-  if (status === "FAILED") return t("doc_review.ai_status_failed");
+const isJobBusy = computed(() => Boolean(props.job && !props.job.terminal));
+const isWaitingForResult = computed(() => isJobBusy.value || (props.job?.status === "SUCCESS" && !props.resultError));
+const jobProgress = computed(() => Math.min(100, Math.max(0, props.job?.progress ?? 0)));
+const jobStatusText = computed(() => {
+  const status = props.job?.status;
+  if (status === "SUCCESS") return t("doc_review.revision_loading_result");
   if (status === "CANCELLED") return t("doc_review.ai_status_cancelled");
-  if (status === "SUCCESS") return t("doc_review.ai_status_success");
-  return t("doc_review.proposal_waiting");
+  if (status === "ORPHANED" || status === "INTERRUPTED") return t("doc_review.revision_job_stopped");
+  if (status === "FAILED") return t("doc_review.ai_status_failed");
+  if (props.job?.cancelRequested) return t("provisioning.preview_stage_cancelling");
+  if (status === "PENDING") return t("doc_review.ai_status_pending");
+  if (status === "WAITING_HITL") return t("doc_review.ai_status_waiting_hitl");
+  return t("doc_review.proposal_generating");
 });
-
-const proposalProgress = computed(() => {
-  const value = Number(props.proposalJob?.progress || 0);
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(100, value));
-});
-
-const isRevisionWaiting = computed(() => {
-  const status = props.proposalJob?.status;
-  if (status === "FAILED" || status === "CANCELLED") {
-    return false;
-  }
-  if (isJobBusy.value) {
-    return true;
-  }
-  return !!props.proposal && props.proposal.status === "draft" && !isRewriteReady.value;
-});
-const hasRenderableRevision = computed(() => localBlocks.value.length > 0);
-const revisionReady = computed(
-  () => hasRenderableRevision.value && !isRevisionWaiting.value && isRewriteReady.value,
-);
-const revisionEmptyTitle = computed(() => {
-  if (isRevisionWaiting.value) return proposalJobStatusText.value;
-  if (rewriteStatus.value === "ready" || props.proposalJob?.status === "SUCCESS") {
-    return t("doc_review.revision_ready_no_structured_title");
-  }
-  return t("doc_review.revision_unavailable_title");
-});
-const revisionEmptyHint = computed(() => {
-  if (isRevisionWaiting.value) return t("doc_review.revision_waiting_hint");
-  if (rewriteStatus.value === "ready" || props.proposalJob?.status === "SUCCESS") {
-    return t("doc_review.revision_ready_no_structured_hint");
-  }
-  return t("doc_review.revision_unavailable_hint");
-});
+const revisionReady = computed(() => localBlocks.value.length > 0 && isRewriteReady.value);
+const revisionEmptyTitle = computed(() => t(isRewriteReady.value
+  ? "doc_review.revision_ready_no_structured_title" : "doc_review.revision_unavailable_title"));
+const revisionEmptyHint = computed(() => t(isRewriteReady.value
+  ? "doc_review.revision_ready_no_structured_hint" : "doc_review.revision_unavailable_hint"));
 
 const pendingChanges = computed<ChangeItem[]>(() => {
   const map = new Map<string, ChangeItem>();
@@ -352,7 +312,7 @@ const canApplyNow = computed(
     !!props.proposal &&
     props.proposal.status === "draft" &&
     !isEditingDocument.value &&
-    !isRevisionWaiting.value &&
+    !props.submitting &&
     !hasPendingChanges.value &&
     !hasEmptyContentForApply.value &&
     localBlocks.value.length > 0 &&
@@ -360,7 +320,6 @@ const canApplyNow = computed(
 );
 const revisionPrimaryText = computed(() => {
   if (props.applying) return t("doc_review.proposal_modal_applying");
-  if (isRevisionWaiting.value) return `${proposalJobStatusText.value}...`;
   return t("doc_review.revision_apply");
 });
 const proposalRewriteText = computed(() => {
@@ -376,13 +335,11 @@ const canRegenerateNow = computed(
     !!props.proposal &&
     props.proposal.status === "draft" &&
     !!proposalRewriteText.value &&
-    !isJobBusy.value &&
+    !props.submitting &&
     !props.applying,
 );
-const regenerateActionText = computed(() => {
-  if (isJobBusy.value) return `${proposalJobStatusText.value}...`;
-  return t("doc_review.revision_regenerate");
-});
+const regenerateActionText = computed(() => t(props.submitting
+  ? "doc_review.proposal_generating" : "doc_review.revision_regenerate"));
 
 const proposalMetaText = computed(() => {
   const patch = props.proposal?.proposed_patch_json;
@@ -603,10 +560,6 @@ const doApply = () => {
 
 const doRegenerate = () => {
   if (!props.proposal) return;
-  localBlocks.value = [];
-  activeChangeId.value = "";
-  isEditingDocument.value = false;
-  editingDocumentDraft.value = "";
   const normalizedScope =
     String(props.proposal.proposed_patch_json?.rewrite_scope || "anchor")
       .trim()
@@ -620,31 +573,35 @@ const doRegenerate = () => {
 </script>
 
 <template>
-  <div v-if="visible" class="modal-overlay" @click.self="emit('close')">
-    <div class="modal-card glass-panel">
+  <div v-if="visible" class="modal-overlay" @click.self="!isJobBusy && emit('close')">
+    <div class="modal-card glass-panel" role="dialog" aria-modal="true"
+      :aria-label="t('doc_review.revision_modal_title')">
       <header class="modal-head">
         <div class="title-wrap">
           <h3>{{ t("doc_review.revision_modal_title") }}</h3>
           <p>{{ t("doc_review.revision_modal_subtitle") }}</p>
         </div>
-        <button class="close-btn" @click="emit('close')">×</button>
+        <button type="button" class="close-btn" :disabled="applying || submitting || cancelling"
+          :aria-label="t(isJobBusy && !job?.cancelRequested ? 'common.cancel' : 'common.close')"
+          @click="emit('close')">×</button>
       </header>
 
-      <template v-if="proposal">
-        <p v-if="proposalMetaText" class="proposal-meta">{{ proposalMetaText }}</p>
+      <template v-if="proposal || job">
+        <p v-if="!job && proposalMetaText" class="proposal-meta">{{ proposalMetaText }}</p>
         <div class="workspace-grid">
           <section class="document-pane">
-            <div v-if="isRevisionWaiting" class="revision-waiting">
-              <Loader2 class="waiting-spinner" />
-              <strong>{{ proposalJobStatusText }}</strong>
-              <DomainMilestones :active="isJobBusy" :events="proposalJob?.context_json?.domain_milestones" />
-              <div class="progress-wrap">
-                <div class="progress-track">
-                  <div class="progress-fill" :style="{ width: `${proposalProgress}%` }"></div>
+            <div v-if="job" class="revision-waiting">
+              <Loader2 v-if="isWaitingForResult" class="waiting-spinner" aria-hidden="true" />
+              <strong role="status">{{ resultError || jobStatusText }}</strong>
+              <DomainMilestones :active="isJobBusy" :events="job.domain_milestones" />
+              <div v-if="isJobBusy" class="progress-wrap">
+                <div class="progress-track" role="progressbar" :aria-label="t('doc_review.revision_generate')"
+                  aria-valuemin="0" aria-valuemax="100" :aria-valuenow="jobProgress">
+                  <div class="progress-fill" :style="{ width: `${jobProgress}%` }"></div>
                 </div>
-                <span class="progress-text">{{ proposalProgress }}%</span>
+                <span class="progress-text" aria-hidden="true">{{ jobProgress }}%</span>
               </div>
-              <p class="hint">{{ t("doc_review.revision_waiting_hint") }}</p>
+              <p v-if="job.errorMessage" class="error">{{ job.errorMessage }}</p>
             </div>
             <template v-else-if="revisionReady">
               <div class="document-edit-toolbar">
@@ -745,14 +702,14 @@ const doRegenerate = () => {
               <div class="batch-actions">
                 <button
                   class="btn-secondary small-btn"
-                  :disabled="!hasPendingChanges"
+                  :disabled="!!job || !hasPendingChanges"
                   @click="acceptAll"
                 >
                   {{ t("doc_review.revision_accept_all") }}
                 </button>
                 <button
                   class="btn-secondary small-btn danger"
-                  :disabled="!hasPendingChanges"
+                  :disabled="!!job || !hasPendingChanges"
                   @click="rejectAll"
                 >
                   {{ t("doc_review.revision_reject_all") }}
@@ -761,8 +718,8 @@ const doRegenerate = () => {
             </header>
 
             <div class="changes-list custom-scrollbar">
-              <div v-if="isRevisionWaiting" class="changes-empty">
-                <Loader2 class="waiting-spinner mini" />
+              <div v-if="isWaitingForResult" class="changes-empty">
+                <Loader2 class="waiting-spinner mini" aria-hidden="true" />
                 {{ t("doc_review.revision_waiting_hint") }}
               </div>
               <div v-else-if="!pendingChanges.length" class="changes-empty">
@@ -804,11 +761,24 @@ const doRegenerate = () => {
         </div>
 
         <DecisionInlineFields
+          v-if="proposal && !job"
           v-model="decisionDraft"
           :title-invalid="decisionTitleInvalid"
         />
 
-        <footer class="modal-actions">
+        <footer v-if="job" class="modal-actions">
+          <button v-if="isJobBusy" type="button" class="btn-secondary" :disabled="cancelling"
+            @click="emit('minimize')">
+            {{ t("provisioning.minimize") }}
+          </button>
+          <button v-if="resultError" type="button" class="btn-primary" @click="emit('retryResult')">
+            {{ t("common.retry") }}
+          </button>
+          <button type="button" class="btn-secondary" :disabled="cancelling" @click="emit('close')">
+            {{ t(isJobBusy && !job.cancelRequested ? "common.cancel" : "common.close") }}
+          </button>
+        </footer>
+        <footer v-else class="modal-actions">
           <button class="btn-secondary" @click="emit('close')">
             {{ t("doc_review.proposal_modal_close") }}
           </button>
@@ -831,24 +801,6 @@ const doRegenerate = () => {
         </footer>
       </template>
 
-      <template v-else>
-        <div class="empty-stage">
-          <strong>{{ isJobBusy ? proposalJobStatusText : t("doc_review.revision_unavailable_title") }}</strong>
-          <DomainMilestones :active="isJobBusy" :events="proposalJob?.context_json?.domain_milestones" />
-          <p v-if="proposalJob?.progress">{{ proposalJob.progress }}%</p>
-          <p v-if="proposalJob?.error_message" class="error">
-            {{ proposalJob.error_message }}
-          </p>
-          <p v-else class="hint">
-            {{ isJobBusy ? t("doc_review.revision_waiting_hint") : t("doc_review.revision_unavailable_hint") }}
-          </p>
-        </div>
-        <footer class="modal-actions">
-          <button class="btn-secondary" @click="emit('close')">
-            {{ t("doc_review.proposal_modal_close") }}
-          </button>
-        </footer>
-      </template>
     </div>
   </div>
 </template>
@@ -1287,28 +1239,11 @@ const doRegenerate = () => {
   gap: 8px;
 }
 
-.empty-stage {
-  min-height: 260px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 8px;
-  border-radius: var(--radius-lg);
-  border: 1px solid rgba(148, 163, 184, 0.25);
-  background: rgba(248, 250, 252, 0.74);
-}
-
-.empty-stage .hint {
-  margin: 0;
-  color: #64748b;
-  font-size: 13px;
-}
-
-.empty-stage .error {
+.revision-waiting .error {
   margin: 0;
   color: #b91c1c;
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 1080px) {

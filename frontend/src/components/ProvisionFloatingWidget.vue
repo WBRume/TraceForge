@@ -36,7 +36,11 @@ const pillVisible = computed(() => jobs.value.length > 0)
 
 // ── Requirement AI 预览作业（拆分/导入）分支 ──
 const isPreviewJob = (job: ProvisionJobView) => job.kind !== 'provision' && job.kind !== 'skill_analysis'
-const isPreviewSuccess = (job: ProvisionJobView) => isPreviewJob(job) && job.kind !== 'playbook_promotion' && job.terminal && job.status === 'SUCCESS'
+const isPreviewSuccess = (job: ProvisionJobView) => isPreviewJob(job)
+  && job.kind !== 'playbook_promotion' && job.kind !== 'document_revision' && job.terminal && job.status === 'SUCCESS'
+const canOpenRevision = (job: ProvisionJobView) => job.kind === 'document_revision' && (
+  (!job.terminal && !job.cancelRequested) || (job.status === 'SUCCESS' && Boolean(job.revisionJob?.result_json?.proposal_id))
+)
 
 const previewStageText = (job: ProvisionJobView) => {
   if (job.reviewRequired) return '待确认'
@@ -44,6 +48,10 @@ const previewStageText = (job: ProvisionJobView) => {
   const status = String(job.status || '').toUpperCase()
   // 终态优先于取消中：FAILED/ORPHANED 不得被 cancelRequested 覆盖成"正在取消"
   if (status === 'SUCCESS') return t('provisioning.preview_stage_completed')
+  if (job.kind === 'document_revision') {
+    if (status === 'CANCELLED') return t('provisioning.stage_cancelled')
+    if (status === 'ORPHANED' || status === 'INTERRUPTED') return t('doc_review.revision_job_stopped')
+  }
   if (['FAILED', 'CANCELLED', 'ORPHANED', 'REVERTED'].includes(status)) {
     return t('provisioning.preview_stage_failed')
   }
@@ -53,6 +61,10 @@ const previewStageText = (job: ProvisionJobView) => {
 }
 
 const previewTitle = (job: ProvisionJobView) => {
+  if (job.kind === 'document_revision') {
+    const name = job.revisionJob?.context_json?.document_name
+    return name ? t('provisioning.revision_document_title', { name }) : t('provisioning.revision_title')
+  }
   const name = String(job.requirementTitle || '').trim()
   if (name) return name
   return t(
@@ -66,7 +78,9 @@ const previewTitle = (job: ProvisionJobView) => {
 const handleOpenPreview = (job: ProvisionJobView) => {
   const workspaceId = String(job.workspaceId || '').trim()
   if (!workspaceId) return
-  if (job.kind === 'playbook_promotion') {
+  if (job.kind === 'document_revision') {
+    router.push({ name: 'taskSpec', params: { wsId: workspaceId, taskId: job.taskId }, query: { revisionJob: job.jobId } })
+  } else if (job.kind === 'playbook_promotion') {
     if (!job.reviewRequired) return
     router.push({ name: 'workspaceCasePromotionReview', params: { wsId: workspaceId, jobId: job.jobId } })
   } else if (job.kind === 'requirement_split_preview' && job.requirementId) {
@@ -293,6 +307,10 @@ const openSkillAnalysis = (job: ProvisionJobView) => {
             <CheckCircle2 class="w-4 h-4 widget-ok" />
             <span>技能审阅已完成</span>
           </div>
+          <div v-else-if="job.kind === 'document_revision' && job.status === 'SUCCESS'" class="widget-job-success">
+            <CheckCircle2 class="w-4 h-4 widget-ok" />
+            <span>{{ t('provisioning.revision_success_hint') }}</span>
+          </div>
           <div v-else-if="job.ready || isPreviewSuccess(job)" class="widget-job-success">
             <CheckCircle2 class="w-4 h-4 widget-ok" />
             <span>{{ isPreviewJob(job)
@@ -302,7 +320,8 @@ const openSkillAnalysis = (job: ProvisionJobView) => {
 
           <div v-else class="widget-job-error-box">
             <AlertTriangle class="w-4 h-4 widget-alert-icon" />
-            <span>{{ jobErrorText(job) || t('provisioning.failed_fallback') }}</span>
+            <span>{{ jobErrorText(job) || (job.status === 'CANCELLED' && job.kind === 'document_revision'
+              ? t('provisioning.stage_cancelled') : t('provisioning.failed_fallback')) }}</span>
           </div>
 
           <div class="widget-job-actions">
@@ -311,7 +330,11 @@ const openSkillAnalysis = (job: ProvisionJobView) => {
               type="button" class="widget-btn-primary" @click="openSkillAnalysis(job)"
             >查看审阅结果</button>
             <button
-              v-if="isPreviewSuccess(job) || job.reviewRequired"
+              v-if="canOpenRevision(job)"
+              type="button" class="widget-btn-primary" @click="handleOpenPreview(job)"
+            >{{ t(job.terminal ? 'doc_review.revision_open' : 'provisioning.revision_open_progress') }}</button>
+            <button
+              v-else-if="isPreviewSuccess(job) || job.reviewRequired"
               type="button"
               class="widget-btn-primary"
               @click="handleOpenPreview(job)"
@@ -337,12 +360,12 @@ const openSkillAnalysis = (job: ProvisionJobView) => {
               {{ job.cancelRequested ? t('provisioning.cancelling') : t('common.cancel') }}
             </button>
             <button
-              v-if="job.kind === 'playbook_promotion' && !job.terminal"
+              v-if="(job.kind === 'playbook_promotion' || job.kind === 'document_revision') && !job.terminal"
               type="button" class="widget-btn-secondary" :disabled="cancellingPreviewId === job.jobId || job.cancelRequested"
               @click="handleDismiss(job)"
             >{{ job.cancelRequested ? t('provisioning.cancelling') : t('common.cancel') }}</button>
             <button
-              v-if="job.terminal || (isPreviewJob(job) && !job.reviewRequired)"
+              v-if="job.terminal || (isPreviewJob(job) && job.kind !== 'document_revision' && !job.reviewRequired)"
               type="button"
               class="widget-icon-btn"
               :title="job.kind === 'playbook_promotion' ? (job.reviewRequired ? '放弃草案并关闭' : !job.terminal ? '取消任务' : t('common.close')) : t('common.close')"

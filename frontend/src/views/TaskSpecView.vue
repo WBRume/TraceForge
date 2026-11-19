@@ -12,6 +12,14 @@ const router = useRouter()
 const { t } = useI18n()
 const wsId = computed(() => String(route.params.wsId || ''))
 const taskId = computed(() => String(route.params.taskId || ''))
+const revisionJobId = computed(() => typeof route.query.revisionJob === 'string' ? route.query.revisionJob : '')
+
+const clearRevisionJob = (jobId: string) => {
+  if (revisionJobId.value !== jobId) return
+  const query = { ...route.query }
+  delete query.revisionJob
+  void router.replace({ query })
+}
 
 const specBootstrapFeed = useTaskSpecBootstrapFeed({ wsId, taskId })
 
@@ -28,11 +36,15 @@ const loadTaskStatus = async () => {
     taskStatus.value = ''
     return
   }
+  const workspaceId = wsId.value
+  const currentTaskId = taskId.value
+  const current = () => wsId.value === workspaceId && taskId.value === currentTaskId
+  taskStatus.value = ''
   try {
-    const res = await api.get(`/workspaces/${wsId.value}/tasks/${taskId.value}`)
-    taskStatus.value = String(res.data?.status || '')
+    const res = await api.get(`/workspaces/${workspaceId}/tasks/${currentTaskId}`)
+    if (current()) taskStatus.value = String(res.data?.status || '')
   } catch {
-    taskStatus.value = ''
+    if (current()) taskStatus.value = ''
   }
 }
 
@@ -65,7 +77,9 @@ const backToChat = () => {
         :task-id="taskId"
         :readonly="docReadonly"
         :bootstrap-status="specBootstrapFeed.bootstrap.value"
+        :revision-job-id="revisionJobId"
         compact
+        @revision-job-opened="clearRevisionJob"
       >
         <template #header-prefix>
           <button class="btn-secondary btn-back" @click="backToChat">

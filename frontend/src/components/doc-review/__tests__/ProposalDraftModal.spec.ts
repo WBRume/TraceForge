@@ -137,7 +137,7 @@ describe("ProposalDraftModal source picker", () => {
     expect(wrapper.findAll(".picker-item.selected")).toHaveLength(2);
     expect(wrapper.find(".actions-status").text()).toContain("已选 2 条讨论");
 
-    const generate = wrapper.findAll("button").find(button => button.text().includes("联合生成"));
+    const generate = wrapper.findAll("button").find(button => button.text() === "生成修订稿");
     await generate!.trigger("click");
     expect(wrapper.emitted("generate")?.[0]).toEqual([["thread-a", "thread-c"]]);
   });
@@ -202,7 +202,7 @@ describe("ProposalDraftModal source picker", () => {
     const wrapper = mountPicker(duplicateSources);
     await wrapper.findAll<HTMLInputElement>(".picker-input")[1].setValue(true);
 
-    const generate = wrapper.findAll("button").find(button => button.text().includes("联合生成"));
+    const generate = wrapper.findAll("button").find(button => button.text() === "生成修订稿");
     await generate!.trigger("click");
     expect(wrapper.emitted("generate")?.[0]).toEqual([["thread-dup-2"]]);
   });

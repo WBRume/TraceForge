@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import BaseSelect from "@/components/BaseSelect.vue";
-import DomainMilestones from "@/components/ai/DomainMilestones.vue";
 import {
   ChatBubbleLeftRightIcon,
   CheckIcon,
@@ -11,21 +10,6 @@ import {
   SparklesIcon,
   XMarkIcon,
 } from "@/components/icons";
-
-type ThreadAiJob = {
-  id: string;
-  status:
-    | "PENDING"
-    | "RUNNING"
-    | "WAITING_HITL"
-    | "SUCCESS"
-    | "FAILED"
-    | "CANCELLED";
-  progress: number;
-  message?: string | null;
-  error_message?: string | null;
-  context_json?: Record<string, any> | null;
-};
 
 type ProposalPatch = {
   proposal_text?: string;
@@ -66,7 +50,7 @@ type SourceOption = {
 const props = defineProps<{
   visible: boolean;
   proposal: Proposal | null;
-  proposalJob?: ThreadAiJob | null;
+  submitting?: boolean;
   canRewrite?: boolean;
   rewriteDisabledReason?: string | null;
   selectingSources?: boolean;
@@ -75,7 +59,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: [];
-  "cancel-job": [jobId: string];
   "generate": [threadIds: string[]];
   rewrite: [
     proposalId: string,
@@ -202,35 +185,12 @@ watch(
   { immediate: true, deep: true },
 );
 
-const proposalJobStatusText = computed(() => {
-  const status = props.proposalJob?.status;
-  if (status === "PENDING") return t("doc_review.ai_status_pending");
-  if (status === "RUNNING") return t("doc_review.ai_status_running");
-  if (status === "WAITING_HITL") return t("doc_review.ai_status_waiting_hitl");
-  if (status === "FAILED") return t("doc_review.ai_status_failed");
-  if (status === "CANCELLED") return t("doc_review.ai_status_cancelled");
-  if (status === "SUCCESS") return t("doc_review.ai_status_success");
-  return t("doc_review.proposal_waiting");
-});
-
-const isProposalJobBusy = computed(() => {
-  const status = props.proposalJob?.status;
-  return status === "PENDING" || status === "RUNNING" || status === "WAITING_HITL";
-});
-
-const canRewriteNow = computed(
-  () =>
-    props.canRewrite !== false &&
-    !!props.proposal &&
-    props.proposal.status === "draft" &&
-    !!proposalDraft.value.trim() &&
-    !isProposalJobBusy.value,
+const canRewriteNow = computed(() =>
+  props.canRewrite !== false &&
+  props.proposal?.status === "draft" &&
+  !!proposalDraft.value.trim() &&
+  !props.submitting,
 );
-
-const rewriteActionText = computed(() => {
-  if (!isProposalJobBusy.value) return t("doc_review.proposal_rewrite_action");
-  return `${proposalJobStatusText.value}...`;
-});
 
 const proposalMetaText = computed(() => {
   const patch = props.proposal?.proposed_patch_json;
@@ -322,10 +282,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
           <SparklesIcon v-else />
         </span>
         <div class="title-wrap">
-          <h3 :id="titleId">{{ t("doc_review.proposal_modal_title") }}</h3>
+          <h3 :id="titleId">{{ t(selectingSources ? "doc_review.revision_generate" : "doc_review.proposal_modal_title") }}</h3>
           <p>{{ t(selectingSources ? "doc_review.proposal_select_resolved" : "doc_review.proposal_modal_subtitle") }}</p>
         </div>
-        <button type="button" class="close-btn" :aria-label="t('doc_review.proposal_modal_close')" @click="emit('close')">
+        <button type="button" class="close-btn" :disabled="submitting" :aria-label="t('doc_review.proposal_modal_close')" @click="emit('close')">
           <XMarkIcon />
         </button>
       </header>
@@ -437,9 +397,6 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         <section class="proposal-editor-panel">
           <header class="proposal-editor-head">
             <strong>{{ t("doc_review.proposal_editor_title") }}</strong>
-            <span v-if="isProposalJobBusy" class="editor-state">
-              {{ rewriteActionText }}
-            </span>
           </header>
           <div class="rewrite-scope-row">
             <span class="rewrite-scope-label">{{
@@ -451,7 +408,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
               v-model="rewriteScope"
               :options="rewriteScopeOptions"
               size="sm"
-              :disabled="isProposalJobBusy"
+              :disabled="submitting"
               class="rewrite-scope-select"
             />
           </div>
@@ -465,23 +422,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             v-model="proposalDraft"
             class="proposal-editor custom-scrollbar"
             :placeholder="t('doc_review.proposal_editor_placeholder')"
-            :disabled="isProposalJobBusy || props.canRewrite === false"
+            :disabled="submitting || props.canRewrite === false"
           />
         </section>
-      </template>
-
-      <template v-else>
-        <div class="empty-stage">
-          <strong>{{ proposalJobStatusText }}</strong>
-          <DomainMilestones :active="isProposalJobBusy" :events="proposalJob?.context_json?.domain_milestones" />
-          <p v-if="proposalJob?.progress">{{ proposalJob.progress }}%</p>
-          <p v-if="proposalJob?.error_message" class="error">
-            {{ proposalJob.error_message }}
-          </p>
-          <p v-else class="hint">
-            {{ t("doc_review.proposal_waiting_hint") }}
-          </p>
-        </div>
       </template>
 
       <footer class="modal-actions">
@@ -492,25 +435,21 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
           </template>
         </div>
         <div class="actions-buttons">
-          <button v-if="proposalJob && isProposalJobBusy && canRewrite" class="btn-secondary"
-            @click="emit('cancel-job', proposalJob.id)">
-            {{ t("doc_review.ai_cancel_action") }}
-          </button>
-          <button class="btn-secondary" @click="emit('close')">
+          <button class="btn-secondary" :disabled="submitting" @click="emit('close')">
             {{ t("doc_review.proposal_modal_close") }}
           </button>
           <button
             v-if="selectingSources"
             class="btn-primary"
-            :disabled="!selection.length || canRewrite === false"
+            :disabled="!selection.length || canRewrite === false || submitting"
             :title="generateDisabledReason"
             @click="emit('generate', selection)"
           >
             <SparklesIcon aria-hidden="true" />
-            {{ t("doc_review.proposal_generate_joint") }}
+            {{ t(submitting ? "doc_review.proposal_generating" : "doc_review.revision_generate") }}
           </button>
           <button v-else-if="proposal" class="btn-primary" :disabled="!canRewriteNow" @click="doRewrite">
-            {{ rewriteActionText }}
+            {{ t(submitting ? "doc_review.proposal_generating" : "doc_review.revision_generate") }}
           </button>
         </div>
       </footer>
@@ -1108,11 +1047,6 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
   color: #0f172a;
 }
 
-.editor-state {
-  font-size: 12px;
-  color: #0284c7;
-}
-
 .proposal-editor-hint {
   margin: 0;
   font-size: 12px;
@@ -1158,30 +1092,6 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
   outline: none;
   border-color: #0ea5e9;
   box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.15);
-}
-
-.empty-stage {
-  min-height: 260px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 8px;
-  border-radius: var(--radius-lg);
-  border: 1px solid rgba(148, 163, 184, 0.25);
-  background: rgba(248, 250, 252, 0.74);
-}
-
-.empty-stage .hint {
-  margin: 0;
-  color: #64748b;
-  font-size: 13px;
-}
-
-.empty-stage .error {
-  margin: 0;
-  color: #b91c1c;
-  font-size: 13px;
 }
 
 /* ---------- 底部操作区 ---------- */

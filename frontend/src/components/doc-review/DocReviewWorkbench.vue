@@ -5,12 +5,7 @@ import { ElMessage } from "element-plus";
 import { ChevronDown, FileText, Clock } from '@/components/icons';
 import api from "@/utils/api";
 import { formatApiError } from "@/utils/error";
-import {
-  useAssetDiscussion,
-  type AssetAiJob,
-  type AssetResolutionProposal,
-  type AssetSummary,
-} from "@/composables/useAssetDiscussion";
+import { useAssetDiscussion, type AssetSummary } from "@/composables/useAssetDiscussion";
 import DocumentCanvas from "./DocumentCanvas.vue";
 import InlineSelectionPopover from "./InlineSelectionPopover.vue";
 import PdfCanvas from "./PdfCanvas.vue";
@@ -21,8 +16,8 @@ import ThreadSidebar from "./ThreadSidebar.vue";
 import SpecBaselineStatus from "./SpecBaselineStatus.vue";
 import VersionSwitcher from "./VersionSwitcher.vue";
 import { useDocumentDraft } from "./useDocumentDraft";
+import { useResolutionReview } from "./useResolutionReview";
 import ConfirmActionModal from "@/components/ConfirmActionModal.vue";
-import type { ResolutionDecisionPayload, ResolutionApplyPayload } from "@/composables/useAssetDiscussion";
 import type { TaskSpecBootstrapProgress } from "@/composables/chat/types";
 
 const showAssetMenu = ref(false);
@@ -35,9 +30,12 @@ const props = defineProps<{
   compact?: boolean;
   initialAssetId?: string;
   readonly?: boolean;
+  revisionJobId?: string;
   /** Spec 基线状态由宿主注入：会话内复用 vm.specBootstrap（WS 推送），独立页接 useTaskSpecBootstrapFeed */
   bootstrapStatus?: TaskSpecBootstrapProgress | null;
 }>();
+
+const emit = defineEmits<{ revisionJobOpened: [jobId: string] }>();
 
 const loadingAssets = ref(false);
 const loadAssetsError = ref("");
@@ -52,20 +50,6 @@ const selectionPayload = ref<{
   anchor: { top: number; left: number };
 } | null>(null);
 
-const proposalDraftModalVisible = ref(false);
-const revisionModalVisible = ref(false);
-const modalProposalId = ref("");
-const proposalThreadId = ref("");
-const proposalSources = ref<string[]>([]);
-const requestingProposal = ref(false);
-const selectingProposalSources = ref(false);
-const applyingProposal = ref(false);
-const proposalDraftSnapshot = ref<AssetResolutionProposal | null>(null);
-const revisionSnapshot = ref<AssetResolutionProposal | null>(null);
-const forceRevisionSnapshot = ref(false);
-const overwriteConfirmVisible = ref(false);
-const overwriteTargetSources = ref<string[]>([]);
-const overwriteTargetDraftId = ref("");
 const bootstrapTriggering = ref(false);
 const showBootstrapConfirm = ref(false);
 
@@ -74,14 +58,7 @@ const confirmBootstrapBuild = async () => {
   showBootstrapConfirm.value = false;
   await triggerBootstrap();
 };
-const pendingRelocation = ref<{
-  threadId: string;
-  proposalId: string;
-  proposalText: string;
-  rewriteScope: "anchor" | "document";
-} | null>(null);
 const ASSET_PAGE_SIZE = 100;
-const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
 const discussion = useAssetDiscussion({
   wsId: computed(() => props.wsId),
@@ -99,7 +76,6 @@ const {
   onlineUsers,
   wsConnected,
   assistantJobMap,
-  proposalJobMap,
   cancelAiJob,
   updateThreadCloseHint,
 } = discussion;
@@ -203,6 +179,25 @@ const triggerBootstrap = async () => {
     bootstrapTriggering.value = false;
   }
 };
+const revisions = useResolutionReview({
+  workspaceId: computed(() => props.wsId),
+  assetId: selectedAssetId,
+  versionId: computed(() => selectedVersionId.value || activeVersionId.value),
+  canGenerate: aiAvailableNow,
+  canApply: computed(() => effectiveCapabilities.value.can_apply_resolution),
+  unavailableReason: aiUnavailableReasonText,
+  requestedJobId: () => discussion.initialized.value && !loadingAssets.value && selectedAsset.value?.task_id === props.taskId
+    && documentData.value?.asset.id === selectedAssetId.value && selectedVersionId.value === activeVersionId.value
+    ? props.revisionJobId : undefined,
+  onJobOpened: (jobId) => emit("revisionJobOpened", jobId),
+  discussion,
+});
+const {
+  showPicker, legacyProposal, comparison, dialogJob: revisionJob, pendingJobs: pendingRevisions,
+  overwriteRequest, relocation: pendingRelocation, submitting: requestingComparison,
+  applying: applyingRevision, cancelling: cancellingRevision, resultError: revisionResultError,
+  blockedReason: revisionBlockedReason,
+} = revisions;
 const isRelocationPending = computed(() => !!pendingRelocation.value);
 const relocationHintText = computed(() =>
   t("doc_review.anchor_relocation_pick_hint"),
@@ -234,9 +229,6 @@ watch(editing, () => {
   showAssetMenu.value = false;
 });
 
-const proposalThread = computed(
-  () => threads.value.find((item) => item.id === proposalThreadId.value) || null,
-);
 const versionNumbers = computed(() => Object.fromEntries(versions.value.map(item => [item.id, item.version_no])));
 const proposalSourceOptions = computed(() => threads.value.filter(thread => thread.status === "resolved").map(thread => {
   const number = versionNumbers.value[thread.version_id];
@@ -260,70 +252,6 @@ const proposalSourceOptions = computed(() => threads.value.filter(thread => thre
     })),
   };
 }));
-const hasProposalSources = (proposal: AssetResolutionProposal, ids: string[]) => {
-  const existing = proposal.proposed_patch_json?.source_thread_ids;
-  return Array.isArray(existing) && existing.length === ids.length && ids.every(id => existing.includes(id));
-};
-const proposalJob = computed<AssetAiJob | null>(() => {
-  if (!proposalThreadId.value) return null;
-  return proposalJobMap.value[proposalThreadId.value] || null;
-});
-const isProposalGenerating = computed(() => {
-  const status = proposalJob.value?.status;
-  return status === "PENDING" || status === "RUNNING" || status === "WAITING_HITL";
-});
-const findActiveModalProposal = () => {
-  if (modalProposalId.value) {
-    for (const thread of threads.value) {
-      const proposal = thread.proposals.find((item) => item.id === modalProposalId.value);
-      if (proposal) return proposal;
-    }
-    return null;
-  }
-  if (proposalSources.value.length) {
-    return proposalThread.value?.proposals.find(item =>
-      item.base_version_id === (selectedVersionId.value || activeVersionId.value)
-      && hasProposalSources(item, proposalSources.value)) || null;
-  }
-  return proposalThread.value?.proposals?.[0] || null;
-};
-const jointProposalBlockedReason = computed(() => {
-  const proposal = findActiveModalProposal();
-  const sources = proposal?.proposed_patch_json?.source_thread_ids;
-  if (!proposal || !Array.isArray(sources) || !sources.length) return "";
-  if (proposal.base_version_id !== (selectedVersionId.value || activeVersionId.value)) {
-    return t("doc_review.joint_proposal_version_changed");
-  }
-  if (sources.some(id => !threads.value.some(thread => thread.id === id && thread.status === "resolved"))) {
-    return t("doc_review.joint_proposal_sources_changed");
-  }
-  return "";
-});
-const proposalForDraftModal = computed<AssetResolutionProposal | null>(() => {
-  if (!proposalDraftModalVisible.value) return null;
-  if (isProposalGenerating.value && !modalProposalId.value && !proposalDraftSnapshot.value) {
-    return null;
-  }
-  return findActiveModalProposal() || proposalDraftSnapshot.value || null;
-});
-const proposalForRevisionModal = computed<AssetResolutionProposal | null>(() => {
-  if (!revisionModalVisible.value) return null;
-  if (forceRevisionSnapshot.value && revisionSnapshot.value) {
-    return revisionSnapshot.value;
-  }
-  return findActiveModalProposal() || revisionSnapshot.value || null;
-});
-
-const hasMergedRevisionDraft = (proposal: AssetResolutionProposal | null) => {
-  if (!proposal?.proposed_patch_json || typeof proposal.proposed_patch_json !== "object") {
-    return false;
-  }
-  const patch = proposal.proposed_patch_json as Record<string, any>;
-  if (Array.isArray(patch.merged_blocks_ast) && patch.merged_blocks_ast.length > 0) {
-    return true;
-  }
-  return !!patch.merged_block_ast && typeof patch.merged_block_ast === "object";
-};
 
 const fetchAssets = async (params: Record<string, any>) => {
   const res = await api.get(`/workspaces/${props.wsId}/assets`, { params });
@@ -342,8 +270,11 @@ const fetchAssetById = async (assetId: string) => {
   return res.data as AssetSummary;
 };
 
+let assetLoadGeneration = 0;
 const loadAssets = async () => {
   if (!props.wsId) return;
+  const generation = ++assetLoadGeneration;
+  const current = () => generation === assetLoadGeneration;
   loadingAssets.value = true;
   loadAssetsError.value = "";
   try {
@@ -382,6 +313,7 @@ const loadAssets = async () => {
       }
     }
 
+    if (!current()) return;
     assets.value = scopedAssets;
 
     const preferredId = props.initialAssetId || selectedAssetId.value;
@@ -393,11 +325,12 @@ const loadAssets = async () => {
     const firstSpec = assets.value.find((item) => item.asset_type === "SPEC");
     selectedAssetId.value = firstSpec?.id || assets.value[0]?.id || "";
   } catch (err: any) {
+    if (!current()) return;
     loadAssetsError.value = err?.response?.data?.detail || t("doc_review.assets_load_failed");
     assets.value = [];
     selectedAssetId.value = "";
   } finally {
-    loadingAssets.value = false;
+    if (current()) loadingAssets.value = false;
   }
 };
 
@@ -416,34 +349,7 @@ const handleSelectRange = async (payload: {
   anchor: { top: number; left: number };
 }) => {
   if (pendingRelocation.value) {
-    const relocation = pendingRelocation.value;
-    pendingRelocation.value = null;
-    proposalThreadId.value = relocation.threadId;
-    modalProposalId.value = relocation.proposalId;
-    forceRevisionSnapshot.value = true;
-    proposalDraftModalVisible.value = false;
-    revisionModalVisible.value = true;
-    try {
-      await discussion.rewriteResolutionProposal(
-        relocation.threadId,
-        relocation.proposalId,
-        relocation.proposalText,
-        relocation.rewriteScope,
-        selectedVersionId.value || activeVersionId.value || undefined,
-        {
-          block_id: payload.block_id,
-          selected_text: payload.selected_text,
-          char_start: payload.char_start ?? null,
-          char_end: payload.char_end ?? null,
-        },
-      );
-      ElMessage.success(t("doc_review.anchor_relocation_applied"));
-    } catch (error: unknown) {
-      ElMessage.error(formatApiError(error, t("doc_review.proposal_rewrite_failed"), t));
-      forceRevisionSnapshot.value = false;
-      revisionModalVisible.value = false;
-      proposalDraftModalVisible.value = true;
-    }
+    await revisions.relocate(payload);
     return;
   }
   if (!effectiveCapabilities.value.can_comment) return;
@@ -505,292 +411,6 @@ const cancelThreadAiJob = async (jobId: string) => {
   }
 };
 
-const findProposalThread = (proposalId: string) =>
-  threads.value.find((item) =>
-    item.proposals.some((proposal) => proposal.id === proposalId),
-  );
-
-const clearModalContext = () => {
-  modalProposalId.value = "";
-  proposalThreadId.value = "";
-  proposalSources.value = [];
-  selectingProposalSources.value = false;
-};
-
-const closeProposalDraftModal = (force = false) => {
-  if (!force && applyingProposal.value) return;
-  proposalDraftModalVisible.value = false;
-  selectingProposalSources.value = false;
-  proposalDraftSnapshot.value = null;
-  if (!revisionModalVisible.value) {
-    forceRevisionSnapshot.value = false;
-    revisionSnapshot.value = null;
-    clearModalContext();
-  }
-};
-
-const closeRevisionModal = (force = false) => {
-  if (!force && applyingProposal.value) return;
-  revisionModalVisible.value = false;
-  forceRevisionSnapshot.value = false;
-  revisionSnapshot.value = null;
-  if (!proposalDraftModalVisible.value) {
-    proposalDraftSnapshot.value = null;
-    clearModalContext();
-  }
-};
-
-const openProposalById = (proposalId: string) => {
-  const thread = findProposalThread(proposalId);
-  if (!thread) return;
-  const proposal = thread.proposals.find((item) => item.id === proposalId) || null;
-  proposalSources.value = [];
-  selectingProposalSources.value = false;
-  forceRevisionSnapshot.value = false;
-  proposalThreadId.value = thread.id;
-  modalProposalId.value = proposalId;
-  proposalDraftSnapshot.value = proposal;
-  revisionSnapshot.value = proposal;
-  if (hasMergedRevisionDraft(proposal)) {
-    proposalDraftModalVisible.value = false;
-    revisionModalVisible.value = true;
-    return;
-  }
-  revisionModalVisible.value = false;
-  proposalDraftModalVisible.value = true;
-};
-
-const clearOverwriteConfirmState = () => {
-  overwriteConfirmVisible.value = false;
-  overwriteTargetSources.value = [];
-  overwriteTargetDraftId.value = "";
-};
-
-const openOverwriteConfirm = (threadIds: string[], draftId: string) => {
-  overwriteTargetSources.value = threadIds;
-  overwriteTargetDraftId.value = draftId;
-  overwriteConfirmVisible.value = true;
-};
-
-const runCreateResolutionProposal = async (
-  threadIds: string[],
-  existingDraft: AssetResolutionProposal | null,
-  overwriteExistingDraft: boolean,
-) => {
-  const versionId = selectedVersionId.value || activeVersionId.value;
-  const assetId = selectedAssetId.value;
-  if (!versionId || requestingProposal.value) return;
-  requestingProposal.value = true;
-  selectingProposalSources.value = false;
-  proposalSources.value = threadIds;
-  proposalThreadId.value = threadIds[0] || "";
-  modalProposalId.value = existingDraft?.id || "";
-  proposalDraftSnapshot.value = existingDraft || null;
-  revisionSnapshot.value = null;
-  revisionModalVisible.value = false;
-  proposalDraftModalVisible.value = true;
-  try {
-    await discussion.createJointResolutionProposal(threadIds, versionId, overwriteExistingDraft);
-  } catch (error: unknown) {
-    if (assetId !== selectedAssetId.value) return;
-    const status = (error as { response?: { status?: number } })?.response?.status;
-    if (status === 409) {
-      const detail = (error as { response?: { data?: { detail?: any } } })?.response?.data?.detail;
-      const existingDraftId =
-        detail && typeof detail === "object"
-          ? String((detail as Record<string, any>).existing_draft_id || "").trim()
-          : "";
-      if (existingDraftId) {
-        ElMessage.warning(t("doc_review.proposal_draft_exists_opened"));
-        await discussion.loadThreads(versionId);
-        openProposalById(existingDraftId);
-        return;
-      }
-      ElMessage.warning(formatApiError(error, t("doc_review.proposal_create_failed"), t));
-      closeProposalDraftModal(true);
-      return;
-    }
-    ElMessage.error(formatApiError(error, t("doc_review.proposal_create_failed"), t));
-    closeProposalDraftModal(true);
-  } finally {
-    requestingProposal.value = false;
-  }
-};
-
-const openJointProposal = async (selected: string[]) => {
-  if (!effectiveCapabilities.value.can_comment) return;
-  if (!aiAvailableNow.value) {
-    ElMessage.warning(aiUnavailableReasonText.value);
-    return;
-  }
-  const threadIds = [...new Set(selected)].sort();
-  if (!threadIds.length) return;
-  const thread = threads.value.find((item) => item.id === threadIds[0]);
-  const versionId = selectedVersionId.value || activeVersionId.value;
-  const existingDraft = thread?.proposals.find(item =>
-    item.status === "draft" && item.base_version_id === versionId && hasProposalSources(item, threadIds));
-  if (existingDraft) {
-    openOverwriteConfirm(threadIds, existingDraft.id);
-    return;
-  }
-  await runCreateResolutionProposal(threadIds, null, false);
-};
-
-const selectJointProposalSources = () => {
-  clearModalContext();
-  proposalDraftSnapshot.value = null;
-  revisionSnapshot.value = null;
-  revisionModalVisible.value = false;
-  selectingProposalSources.value = true;
-  proposalDraftModalVisible.value = true;
-};
-
-const resumeJointProposal = (job: AssetAiJob) => {
-  const sources = job.context_json?.source_thread_ids;
-  if (!job.thread_id || !Array.isArray(sources)) return;
-  proposalThreadId.value = job.thread_id;
-  proposalSources.value = sources;
-  selectingProposalSources.value = false;
-  modalProposalId.value = "";
-  proposalDraftSnapshot.value = null;
-  revisionModalVisible.value = false;
-  proposalDraftModalVisible.value = true;
-};
-
-const keepCurrentProposalDraft = () => {
-  const targetDraftId = overwriteTargetDraftId.value;
-  clearOverwriteConfirmState();
-  if (targetDraftId) {
-    openProposalById(targetDraftId);
-  }
-};
-
-const overwriteCurrentProposalDraft = async () => {
-  const sources = overwriteTargetSources.value;
-  const targetDraftId = overwriteTargetDraftId.value;
-  clearOverwriteConfirmState();
-  if (!sources.length) return;
-  const thread = threads.value.find((item) => item.id === sources[0]);
-  const existingDraft = thread?.proposals.find((item) => item.id === targetDraftId) || null;
-  await runCreateResolutionProposal(sources, existingDraft, true);
-};
-
-const applyProposal = async (
-  threadId: string,
-  proposalId: string,
-  payload: ResolutionApplyPayload,
-  decision?: ResolutionDecisionPayload | null,
-) => {
-  if (!effectiveCapabilities.value.can_apply_resolution) return;
-  applyingProposal.value = true;
-  try {
-    await discussion.applyResolutionProposal(threadId, proposalId, payload, undefined, decision);
-    closeRevisionModal(true);
-  } catch (error: unknown) {
-    ElMessage.error(formatApiError(error, t("doc_review.proposal_apply_failed"), t));
-  } finally {
-    applyingProposal.value = false;
-  }
-};
-
-const applyProposalFromModal = async (
-  proposalId: string,
-  payload: ResolutionApplyPayload,
-  decision?: ResolutionDecisionPayload | null,
-) => {
-  const thread = findProposalThread(proposalId);
-  if (!thread) return;
-  await applyProposal(thread.id, proposalId, payload, decision);
-};
-
-const regenerateRevisionFromModal = async (
-  proposalId: string,
-  proposalText: string,
-  rewriteScope: "anchor" | "document",
-) => {
-  const normalized = String(proposalText || "").trim();
-  if (!normalized) {
-    ElMessage.warning(t("doc_review.proposal_rewrite_missing_text"));
-    return;
-  }
-  await rewriteProposalFromDraft(proposalId, normalized, rewriteScope);
-};
-
-const rewriteProposalFromDraft = async (
-  proposalId: string,
-  proposalText: string,
-  rewriteScope: "anchor" | "document",
-) => {
-  const thread = findProposalThread(proposalId);
-  if (!thread) return;
-  if (!aiAvailableNow.value) {
-    ElMessage.warning(aiUnavailableReasonText.value);
-    return;
-  }
-  proposalThreadId.value = thread.id;
-  modalProposalId.value = proposalId;
-  const snapshot = thread.proposals.find((item) => item.id === proposalId) || null;
-  proposalDraftSnapshot.value = snapshot || proposalDraftSnapshot.value;
-  const baseSnapshot = snapshot || proposalDraftSnapshot.value || revisionSnapshot.value;
-  if (baseSnapshot) {
-    const nextSnapshot = clone(baseSnapshot);
-    const patch: Record<string, any> = {
-      ...((nextSnapshot.proposed_patch_json || {}) as Record<string, any>),
-      rewrite_status: "running",
-    };
-    delete patch.merged_block_ast;
-    delete patch.merged_blocks_ast;
-    delete patch.final_block_ast;
-    delete patch.final_blocks_ast;
-    delete patch.new_block_ast;
-    delete patch.new_blocks_ast;
-    nextSnapshot.proposed_patch_json = patch;
-    revisionSnapshot.value = nextSnapshot;
-  } else {
-    revisionSnapshot.value = null;
-  }
-  if (rewriteScope === "anchor") {
-    if (String(thread.anchor_status || "valid") === "missing") {
-      pendingRelocation.value = {
-        threadId: thread.id,
-        proposalId,
-        proposalText,
-        rewriteScope,
-      };
-      proposalDraftModalVisible.value = false;
-      revisionModalVisible.value = false;
-      selectionPayload.value = null;
-      ElMessage.warning(t("doc_review.anchor_relocation_required"));
-      return;
-    }
-  }
-  forceRevisionSnapshot.value = true;
-  proposalDraftModalVisible.value = false;
-  revisionModalVisible.value = true;
-  try {
-    await discussion.rewriteResolutionProposal(
-      thread.id,
-      proposalId,
-      proposalText,
-      rewriteScope,
-      selectedVersionId.value || activeVersionId.value || undefined,
-    );
-  } catch (error: unknown) {
-    const status = (error as { response?: { status?: number } })?.response?.status;
-    if (status === 409) {
-      ElMessage.warning(t("doc_review.ai_job_bootstrap_not_ready"));
-      forceRevisionSnapshot.value = false;
-      revisionModalVisible.value = false;
-      proposalDraftModalVisible.value = true;
-      return;
-    }
-    ElMessage.error(formatApiError(error, t("doc_review.proposal_rewrite_failed"), t));
-    forceRevisionSnapshot.value = false;
-    revisionModalVisible.value = false;
-    proposalDraftModalVisible.value = true;
-  }
-};
-
 const updateThreadState = async (
   threadId: string,
   status: "open" | "resolved" | "closed",
@@ -818,12 +438,6 @@ const changeVersion = async (versionId: string) => {
   if (selectedVersionId.value !== versionId) return;
   selectedThreadId.value = "";
   pendingRelocation.value = null;
-  if (proposalDraftModalVisible.value) {
-    closeProposalDraftModal(true);
-  }
-  if (revisionModalVisible.value) {
-    closeRevisionModal(true);
-  }
 };
 
 const showOriginal = async (versionId: string, threadId: string) => {
@@ -844,45 +458,9 @@ watch(
 );
 
 watch(
-  () => findActiveModalProposal(),
-  (proposal) => {
-    if (!proposal) return;
-    if (proposalDraftModalVisible.value) {
-      proposalDraftSnapshot.value = proposal;
-    }
-    if (revisionModalVisible.value && !forceRevisionSnapshot.value) {
-      revisionSnapshot.value = proposal;
-    }
-  },
-);
-
-watch(
-  () => [
-    revisionModalVisible.value,
-    proposalJob.value?.status || "",
-    String(findActiveModalProposal()?.proposed_patch_json?.rewrite_status || "")
-      .trim()
-      .toLowerCase(),
-  ] as const,
-  ([visible, jobStatus, rewriteStatus]) => {
-    if (!visible) {
-      forceRevisionSnapshot.value = false;
-      return;
-    }
-    if (!forceRevisionSnapshot.value) return;
-    if (
-      jobStatus === "FAILED" ||
-      jobStatus === "CANCELLED" ||
-      rewriteStatus === "ready"
-    ) {
-      forceRevisionSnapshot.value = false;
-    }
-  },
-);
-
-watch(
   () => [props.wsId, props.taskId, props.initialAssetId] as const,
   () => {
+    revisions.reset();
     void loadAssets();
   },
 );
@@ -1096,10 +674,9 @@ onMounted(() => {
         :threads="threads"
         :selected-thread-id="selectedThreadId"
         :assistant-job-map="assistantJobMap"
-        :proposal-job-map="proposalJobMap"
+        :pending-revisions="pendingRevisions"
         :version-numbers="versionNumbers"
-        :context-version-id="selectedVersionId"
-        :requesting-proposal="requestingProposal"
+        :requesting-proposal="requestingComparison"
         :readonly="readOnlyMode || historicalVersionReadonly || editing"
         :draft-editing="editing"
         :can-comment="effectiveCapabilities.can_comment"
@@ -1114,9 +691,9 @@ onMounted(() => {
         @show-original="showOriginal"
         @send-message="sendThreadMessage"
         @ask-ai="askThreadAi"
-        @generate-proposal="selectJointProposalSources"
-        @resume-proposal="resumeJointProposal"
-        @open-proposal="openProposalById"
+        @generate-proposal="revisions.selectSources"
+        @resume-proposal="revisions.openJob"
+        @open-proposal="revisions.openProposal"
         @update-state="updateThreadState"
         @close-hint-action="handleThreadCloseHintAction"
       />
@@ -1124,30 +701,34 @@ onMounted(() => {
   </div>
 
   <ProposalDraftModal
-    :visible="proposalDraftModalVisible"
-    :proposal="proposalForDraftModal"
-    :proposal-job="proposalJob"
-    :selecting-sources="selectingProposalSources"
+    :visible="showPicker || !!legacyProposal"
+    :proposal="legacyProposal"
+    :selecting-sources="showPicker"
     :source-options="proposalSourceOptions"
-    :can-rewrite="aiAvailableNow && !jointProposalBlockedReason"
-    :rewrite-disabled-reason="jointProposalBlockedReason || aiUnavailableReasonText"
-    @close="closeProposalDraftModal"
-    @cancel-job="cancelThreadAiJob"
-    @generate="openJointProposal"
-    @rewrite="rewriteProposalFromDraft"
+    :submitting="requestingComparison"
+    :can-rewrite="aiAvailableNow && (showPicker || !revisionBlockedReason)"
+    :rewrite-disabled-reason="(showPicker ? '' : revisionBlockedReason) || aiUnavailableReasonText"
+    @close="revisions.closeSources"
+    @generate="revisions.generate"
+    @rewrite="revisions.rewrite"
   />
 
   <ResolutionDiffModal
-    :visible="revisionModalVisible"
-    :proposal="proposalForRevisionModal"
-    :proposal-job="proposalJob"
-    :can-apply="effectiveCapabilities.can_apply_resolution && !jointProposalBlockedReason"
-    :can-rewrite="aiAvailableNow && !jointProposalBlockedReason"
-    :rewrite-disabled-reason="jointProposalBlockedReason || aiUnavailableReasonText"
-    :applying="applyingProposal"
-    @close="closeRevisionModal"
-    @regenerate="regenerateRevisionFromModal"
-    @apply="applyProposalFromModal"
+    :visible="!!revisionJob || !!comparison"
+    :proposal="comparison"
+    :job="revisionJob"
+    :result-error="revisionResultError"
+    :can-apply="effectiveCapabilities.can_apply_resolution && !revisionBlockedReason"
+    :can-rewrite="aiAvailableNow && !revisionBlockedReason"
+    :rewrite-disabled-reason="revisionBlockedReason || aiUnavailableReasonText"
+    :applying="applyingRevision"
+    :submitting="requestingComparison"
+    :cancelling="cancellingRevision"
+    @close="revisions.closeRevision"
+    @minimize="revisions.minimize"
+    @retry-result="revisions.loadResult"
+    @regenerate="revisions.regenerate"
+    @apply="revisions.apply"
   />
 
   <ConfirmActionModal
@@ -1164,14 +745,14 @@ onMounted(() => {
   />
 
   <ConfirmActionModal
-    :show="overwriteConfirmVisible"
+    :show="!!overwriteRequest"
     :title="t('doc_review.proposal_overwrite_title')"
     :message="t('doc_review.proposal_overwrite_message')"
     :cancel-text="t('doc_review.proposal_overwrite_keep_action')"
     :confirm-text="t('doc_review.proposal_overwrite_confirm_action')"
     tone="danger"
-    @cancel="keepCurrentProposalDraft"
-    @confirm="overwriteCurrentProposalDraft"
+    @cancel="revisions.keepDraft"
+    @confirm="revisions.overwriteDraft"
   />
 
   <ConfirmActionModal

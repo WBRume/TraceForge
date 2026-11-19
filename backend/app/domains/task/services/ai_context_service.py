@@ -75,38 +75,6 @@ def build_asset_thread_prompt(
     ).strip()
 
 
-def build_resolution_proposal_prompt(
-    *,
-    task_name: str,
-    document_name: str,
-    document_version_label: str,
-    block_id: str,
-    thread_id: str,
-    anchor_text: str,
-    block_context_text: str,
-    discussion_lines: list[str],
-) -> str:
-    history_text = "\n".join(discussion_lines).strip() if discussion_lines else "(暂无有效讨论内容)"
-
-    return (
-        "你是 SDD 规范落地提案助手。当前会话已通过 --resume 继承文档上下文。\n"
-        "你的任务是：基于当前讨论串中的成员对话与 AI 回复，产出可直接用于文档回写的提案正文。\n\n"
-        "硬性规则（必须遵守）:\n"
-        "1) 仅可依据已提供的锚点文本与讨论内容，不得猜测，不得补充未讨论的新需求。\n"
-        "2) 不要输出“我将读取/我先查阅”这类过程语句。\n"
-        "3) 不要罗列成员会话，不要输出分析过程、不要输出标题、不要输出代码块。\n"
-        "4) 调用 submit_review_proposal，提交问题分析、改动依据和提案正文。\n"
-        "5) 若证据不足，在 analysis 中说明不确定性和风险，不得编造结论。\n"
-        "6) 禁止向用户提问。\n\n"
-        f"任务名称:\n{task_name or '(未命名任务)'}\n\n"
-        f"文档:\n- 名称: {document_name or '(未知)'}\n- 版本: {document_version_label or '(未知)'}\n"
-        f"- 线程: {thread_id or '(未知)'}\n- 锚点块: {block_id or '(未知)'}\n\n"
-        f"锚点选中文本（必须以此为准）:\n{anchor_text or '(空)'}\n\n"
-        f"所在块全文（仅上下文）:\n{block_context_text or '(无)'}\n\n"
-        f"讨论记录（仅供提炼，不要原样复述）:\n{history_text}\n"
-    ).strip()
-
-
 def build_resolution_anchor_rewrite_prompt(
     *,
     task_name: str,

@@ -17,6 +17,7 @@ useTaskAwarenessHost()
 watch(() => [authStore.token, authStore.user?.id] as const, ([token, userId]) => {
   notificationStore.reset()
   if (token && userId) notificationStore.start()
+  void provisioningStore.restoreRevisionJobs(token && userId ? userId : '')
 }, { immediate: true })
 onUnmounted(() => notificationStore.stop())
 

@@ -12,12 +12,13 @@ export const resolveThreadJobKind = (job: AssetAiJob): ThreadJobKind => {
   return kind === 'RESOLUTION_REWRITE' || kind === 'RESOLUTION_PROPOSAL' ? kind : 'THREAD_AI_REPLY'
 }
 
+const isActiveReply = (job: AssetAiJob) => resolveThreadJobKind(job) === 'THREAD_AI_REPLY' && isThreadJobActive(job.status)
+
 export function useAssetThreadJobs(
   scope: AssetRequestScope,
   fetchThread: (threadId: string, owner: AssetRequestOwner) => Promise<unknown>,
 ) {
   const assistantJobMap = ref<Record<string, AssetAiJob>>({})
-  const proposalJobMap = ref<Record<string, AssetAiJob>>({})
   const polls = new Map<string, { timer?: number; controller: AbortController; owner: AssetRequestOwner }>()
 
   const stopPolling = (threadId: string) => {
@@ -28,9 +29,8 @@ export function useAssetThreadJobs(
     poll.controller.abort()
   }
 
-  const clearJobMaps = (threadId: string) => {
+  const clearThreadJob = (threadId: string) => {
     delete assistantJobMap.value[threadId]
-    delete proposalJobMap.value[threadId]
   }
 
   const schedulePolling = (threadId: string) => {
@@ -54,10 +54,8 @@ export function useAssetThreadJobs(
       try {
         const items = await loadThreadJobs(threadId, true, owner, true)
         if (!owner.isCurrent()) return
-        if (items && !items.some(item => isThreadJobActive(item.status))) {
-          if (!items.length) {
-            try { await fetchThread(threadId, owner) } catch { /* Retry through later synchronization. */ }
-          }
+        if (items && !items.some(isActiveReply)) {
+          try { await fetchThread(threadId, owner) } catch { /* Retry through later synchronization. */ }
           if (owner.isCurrent()) stopPolling(threadId)
           return
         }
@@ -72,18 +70,11 @@ export function useAssetThreadJobs(
 
   const setThreadJob = (job: AssetAiJob, owner = scope.capture(), trackPolling = true) => {
     if (!owner?.isCurrent() || !job.thread_id || job.workspace_id !== owner.wsId || job.asset_id !== owner.assetId) return
-    const target = resolveThreadJobKind(job) === 'THREAD_AI_REPLY' ? assistantJobMap : proposalJobMap
-    target.value[job.thread_id] = job
+    if (resolveThreadJobKind(job) !== 'THREAD_AI_REPLY') return
+    assistantJobMap.value[job.thread_id] = job
     if (!trackPolling) return
-    const active = [assistantJobMap.value[job.thread_id], proposalJobMap.value[job.thread_id]]
-      .some(item => isThreadJobActive(item?.status))
-    if (active) schedulePolling(job.thread_id)
+    if (isThreadJobActive(job.status)) schedulePolling(job.thread_id)
     else stopPolling(job.thread_id)
-  }
-
-  const clearThreadJobByKind = (threadId: string, kind: ThreadJobKind) => {
-    const target = kind === 'THREAD_AI_REPLY' ? assistantJobMap : proposalJobMap
-    delete target.value[threadId]
   }
 
   const loadThreadJobs = (threadId: string, activeOnly = true, owner = scope.capture(), fromPoll = false) => (
@@ -95,10 +86,10 @@ export function useAssetThreadJobs(
       const items = ((res.data?.items || []) as AssetAiJob[]).filter(item => (
         item.workspace_id === request.wsId && item.asset_id === request.assetId && item.thread_id === threadId
       ))
-      if (activeOnly) clearJobMaps(threadId)
+      if (activeOnly) clearThreadJob(threadId)
       for (const item of items) setThreadJob(item, owner, false)
       if (!fromPoll) {
-        if (items.some(item => isThreadJobActive(item.status))) schedulePolling(threadId)
+        if (items.some(isActiveReply)) schedulePolling(threadId)
         else stopPolling(threadId)
       }
       return items
@@ -124,11 +115,10 @@ export function useAssetThreadJobs(
   const reset = () => {
     for (const threadId of polls.keys()) stopPolling(threadId)
     assistantJobMap.value = {}
-    proposalJobMap.value = {}
   }
 
   return {
-    assistantJobMap, proposalJobMap, setThreadJob, clearThreadJobByKind,
+    assistantJobMap, setThreadJob, clearThreadJob,
     loadThreadJobs, refreshThreadJobs, cancelAiJob, reset,
   }
 }

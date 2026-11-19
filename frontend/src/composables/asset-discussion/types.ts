@@ -136,13 +136,15 @@ export type AssetAiJob = {
   thread_id?: string | null
   channel: 'ASSET_THREAD' | 'TASK_CHAT'
   queue_key: string
-  status: 'PENDING' | 'RUNNING' | 'WAITING_HITL' | 'SUCCESS' | 'FAILED' | 'CANCELLED'
+  status: import('@/types/queue').QueueStatus
+  version?: number
   progress: number
   message?: string | null
   prompt_text?: string | null
   context_json?: Record<string, any> | null
   result_json?: Record<string, any> | null
   error_message?: string | null
+  cancel_requested_at?: string | null
   session_id?: string | null
   creator_id: string
   started_at?: string | null

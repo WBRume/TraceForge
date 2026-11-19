@@ -21,12 +21,6 @@ class DiagnosisSubmission(DiagnosisResultPayload):
     fix_steps: list[Text] = Field(min_length=1, max_length=50)
 
 
-class ReviewProposal(Artifact):
-    analysis: Text
-    rationale: Text
-    proposal_text: Text
-
-
 class DocumentRewrite(Artifact):
     scope: Literal["anchor", "document"]
     anchor_text: str = Field(default="", max_length=100000)

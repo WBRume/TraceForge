@@ -1272,7 +1272,7 @@ def apply_resolution_proposal(
         db,
         thread=thread,
         role=AssetThreadMessageRole.SYSTEM,
-        content=f"已应用提案并生成文档版本 v{version.version_no}",
+        content=f"已应用修订稿，文档已更新至 v{version.version_no}",
         creator_id=actor_user_id,
         metadata_json={"applied_version_id": version.id, "proposal_id": proposal.id},
     )

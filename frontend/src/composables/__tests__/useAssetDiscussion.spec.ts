@@ -245,8 +245,6 @@ describe('useAssetDiscussion resource ownership', () => {
     ['createThread', (m: ReturnType<typeof useAssetDiscussion>) => m.createThread({ block_id: 'block', body: 'hello' }), () => thread()],
     ['sendThreadMessage', (m: ReturnType<typeof useAssetDiscussion>) => m.sendThreadMessage('A-thread', 'hello'), () => ({ id: 'message', thread_id: 'A-thread' })],
     ['askAi', (m: ReturnType<typeof useAssetDiscussion>) => m.askAi('A-thread'), () => job()],
-    ['createResolutionProposal', (m: ReturnType<typeof useAssetDiscussion>) => m.createResolutionProposal('A-thread'), () => job()],
-    ['rewriteResolutionProposal', (m: ReturnType<typeof useAssetDiscussion>) => m.rewriteResolutionProposal('A-thread', 'proposal', 'new'), () => job()],
     ['applyResolutionProposal', (m: ReturnType<typeof useAssetDiscussion>) => m.applyResolutionProposal('A-thread', 'proposal', { finalBlockAst: {} }), () => version()],
     ['cancelAiJob', (m: ReturnType<typeof useAssetDiscussion>) => m.cancelAiJob('job'), () => job('A', 'CANCELLED')],
     ['updateThreadCloseHint', (m: ReturnType<typeof useAssetDiscussion>) => m.updateThreadCloseHint('A-thread', 'reset_pending'), () => thread()],
@@ -269,7 +267,6 @@ describe('useAssetDiscussion resource ownership', () => {
     expect(model.documentData.value?.asset.id).toBe('B')
     expect(model.threads.value).toEqual([])
     expect(model.assistantJobMap.value).toEqual({})
-    expect(model.proposalJobMap.value).toEqual({})
     expect(apiMock.get).toHaveBeenCalledTimes(calls)
     expect(vi.getTimerCount()).toBe(0)
   })

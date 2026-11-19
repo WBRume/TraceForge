@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.core.offload import run_db_txn
 from app.dependencies import get_current_user, get_db
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.schemas.ai_job import AiJobResponse
 from app.domains.ai.services.jobs import constants as ai_job_constants
 from app.domains.ai.services.jobs import publishing as ai_job_publishing
+from app.domains.ai.services.jobs.store import serialize_job
 from app.domains.asset.models.asset import AssetResolutionProposalStatus, SddAssetResolutionProposal
 from app.domains.asset.routers.assets import transport as asset_assets_transport
 from app.domains.asset.routers.assets.transport import ReviewRoute
@@ -18,7 +21,6 @@ from app.domains.asset.schemas.asset import (
     AssetResolutionAnchorPrecheckRequest,
     AssetResolutionAnchorPrecheckResponse,
     AssetResolutionApplyRequest,
-    AssetResolutionProposalCreateRequest,
     AssetResolutionProposalRewriteRequest,
     AssetVersionResponse,
 )
@@ -30,14 +32,65 @@ from app.domains.asset.services.review import policy as asset_review_policy
 from app.domains.asset.services.review import proposal_sources
 from app.domains.asset.services.review import resolutions as resolution_commands
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
-from app.domains.auth.models.user import User
+from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.task.services import task_cli_state_service
+from app.domains.workspace.services import workspace_service
 
 router = APIRouter(route_class=ReviewRoute)
+background_router = APIRouter(prefix="/document-revision-jobs", route_class=ReviewRoute)
+
+
+def _owned_revision_jobs(db: Session, user_id: str):
+    kind = SddAiJob.context_json["job_kind"].as_string()
+    return db.query(SddAiJob).filter(
+        SddAiJob.creator_id == user_id,
+        SddAiJob.channel == AiJobChannel.ASSET_THREAD,
+        SddAiJob.task_id.is_not(None),
+        SddAiJob.asset_id.is_not(None),
+        SddAiJob.thread_id.is_not(None),
+        or_(
+            kind == ai_job_constants.JOB_KIND_RESOLUTION_REWRITE,
+            and_(
+                kind == ai_job_constants.JOB_KIND_RESOLUTION_PROPOSAL,
+                SddAiJob.context_json["source_thread_ids"].as_string().is_not(None),
+            ),
+        ),
+    )
+
+
+@background_router.get("", response_model=list[AiJobResponse])
+def list_revision_jobs(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    job_ids: str = Query(default="", max_length=2000),
+):
+    tracked_ids = [job_id for job_id in job_ids.split(",") if job_id]
+    in_progress = ai_job_constants.ACTIVE_STATUSES - {AiJobStatus.INTERRUPTED, AiJobStatus.ORPHANED}
+    jobs = (
+        _owned_revision_jobs(db, current_user.id)
+        .filter(or_(SddAiJob.status.in_(in_progress), SddAiJob.id.in_(tracked_ids)))
+        .order_by(SddAiJob.created_at.desc())
+        .all()
+    )
+    accessible_workspaces = {
+        workspace_id
+        for workspace_id in {job.workspace_id for job in jobs}
+        if workspace_service.user_has_permission(db, workspace_id, current_user.id, WorkspacePermission.VIEW_ASSETS)
+    }
+    return [serialize_job(job) for job in jobs if job.workspace_id in accessible_workspaces]
+
+
+@background_router.get("/{job_id}", response_model=AiJobResponse)
+def get_revision_job(job_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    job = _owned_revision_jobs(db, current_user.id).filter(SddAiJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Document revision job not found")
+    asset_review_policy._verify_comment_permission(job.workspace_id, current_user, db)
+    return serialize_job(job)
 
 
 @router.post("/{asset_id}/resolution/proposals", response_model=AiJobResponse)
-async def create_joint_resolution_proposal(
+async def generate_resolution_comparison(
     ws_id: str,
     asset_id: str,
     data: AssetJointProposalCreateRequest,
@@ -50,7 +103,7 @@ async def create_joint_resolution_proposal(
         result = await asset_assets_transport._run_asset_route_db_txn(
             db,
             db_bind,
-            lambda session: asset_review_jobs.create_joint_proposal_job(
+            lambda session: asset_review_jobs.create_joint_comparison_job(
                 session, ws_id=ws_id, asset_id=asset_id, user_id=user_id, data=data
             ),
         )
@@ -60,68 +113,6 @@ async def create_joint_resolution_proposal(
     if result["created"]:
         await ai_job_publishing.enqueue_asset_thread_job(result["payload"]["id"])
     return AiJobResponse(**result["payload"])
-
-
-@router.post("/{asset_id}/threads/{thread_id}/resolution/proposals", response_model=AiJobResponse)
-async def create_thread_resolution_proposal(
-    ws_id: str,
-    asset_id: str,
-    thread_id: str,
-    data: AssetResolutionProposalCreateRequest | None = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    request_data = data or AssetResolutionProposalCreateRequest()
-    overwrite_existing_draft = bool(request_data.overwrite_existing_draft)
-    context_version_id = str(request_data.context_version_id or "").strip() or None
-    db_bind = asset_assets_transport._get_db_bind(db)
-    context = await asset_assets_transport._run_asset_route_db_txn(
-        db,
-        db_bind,
-        lambda session: asset_review_policy._load_asset_thread_action_context_sync(
-            session,
-            ws_id=ws_id,
-            asset_id=asset_id,
-            thread_id=thread_id,
-            user_id=current_user.id,
-            context_version_id=context_version_id,
-        ),
-    )
-    db.close()
-    resolved_task_id = context["task_id"]
-    try:
-        await task_cli_state_service.ensure_thread_session(
-            thread_id,
-            require_ready=True,
-        )
-    except task_cli_state_service.BootstrapNotReadyError as exc:
-        await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    try:
-        created = await asset_assets_transport._run_asset_route_db_txn(
-            db,
-            db_bind,
-            lambda session: asset_review_jobs._create_asset_resolution_job_sync(
-                session,
-                ws_id=ws_id,
-                asset_id=asset_id,
-                thread_id=thread_id,
-                creator_id=current_user.id,
-                job_kind=ai_job_constants.JOB_KIND_RESOLUTION_PROPOSAL,
-                overwrite_existing_draft=overwrite_existing_draft,
-                context_json={
-                    "overwrite_existing_draft": overwrite_existing_draft,
-                    "context_version_id": context_version_id,
-                },
-            ),
-        )
-    except task_cli_state_service.BootstrapNotReadyError as exc:
-        await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    payload = created["payload"]
-    await ai_job_publishing.enqueue_asset_thread_job(payload["id"])
-    return AiJobResponse(**payload)
 
 
 @router.post(
@@ -248,13 +239,12 @@ async def rewrite_thread_resolution_proposal(
         created = await asset_assets_transport._run_asset_route_db_txn(
             db,
             db_bind,
-            lambda session: asset_review_jobs._create_asset_resolution_job_sync(
+            lambda session: asset_review_jobs.create_resolution_rewrite_job(
                 session,
                 ws_id=ws_id,
                 asset_id=asset_id,
                 thread_id=thread_id,
                 creator_id=current_user.id,
-                job_kind=ai_job_constants.JOB_KIND_RESOLUTION_REWRITE,
                 context_json={
                     "proposal_id": proposal_id,
                     "proposal_text": proposal_text,

@@ -13,7 +13,7 @@ from app.domains.asset.models.asset import (
     SddAssetVersion,
 )
 from app.domains.asset.services.review.errors import ReviewError
-from app.domains.asset.services.review.jobs import _create_asset_resolution_job_sync
+from app.domains.asset.services.review.jobs import create_resolution_rewrite_job
 from app.domains.task.services import task_cli_state_service
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace
 
@@ -50,13 +50,12 @@ def review(monkeypatch):
 
 
 def rewrite(db):
-    return _create_asset_resolution_job_sync(
+    return create_resolution_rewrite_job(
         db,
         ws_id="ws-1",
         asset_id="asset",
         thread_id="thread",
         creator_id="user-1",
-        job_kind=JOB_KIND_RESOLUTION_REWRITE,
         context_json={"proposal_id": "proposal", "context_version_id": "version", "proposal_text": "Clarify"},
     )["payload"]
 

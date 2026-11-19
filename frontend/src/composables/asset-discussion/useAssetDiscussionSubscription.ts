@@ -76,7 +76,7 @@ export function useAssetDiscussionSubscription(
       }
       if (!owner.isCurrent()) return
       if (message.role === 'ai') {
-        jobs.clearThreadJobByKind(threadId, 'THREAD_AI_REPLY')
+        jobs.clearThreadJob(threadId)
       }
       return
     }
@@ -92,8 +92,6 @@ export function useAssetDiscussionSubscription(
           thread.proposals.unshift(proposal)
         }
       }
-      jobs.clearThreadJobByKind(threadId, 'RESOLUTION_PROPOSAL')
-      jobs.clearThreadJobByKind(threadId, 'RESOLUTION_REWRITE')
       return
     }
     if (eventType === 'version_applied' && eventData.version?.id) {

@@ -5,9 +5,8 @@ import type { AssetAiJob, AssetResolutionProposal, AssetThread } from '@/composa
 
 const props = defineProps<{
   threads: AssetThread[]
-  jobs: Record<string, AssetAiJob>
+  pending: AssetAiJob[]
   versionNumbers: Record<string, number>
-  contextVersionId?: string
   canGenerate: boolean
   showGenerate: boolean
   disabledReason?: string
@@ -15,17 +14,11 @@ const props = defineProps<{
 const emit = defineEmits<{
   generate: []
   open: [proposalId: string]
-  resume: [job: AssetAiJob]
+  resume: [jobId: string]
 }>()
 const { t } = useI18n()
 const proposals = computed(() => props.threads.flatMap(thread => thread.proposals)
   .sort((a, b) => Date.parse(b.updated_at || b.created_at) - Date.parse(a.updated_at || a.created_at)))
-const pending = computed(() => Object.values(props.jobs).filter(job =>
-  job.context_json?.job_kind === 'RESOLUTION_PROPOSAL'
-  && Array.isArray(job.context_json?.source_thread_ids)
-  && job.context_json?.context_version_id === props.contextVersionId
-  && ['PENDING', 'RUNNING', 'WAITING_HITL'].includes(job.status),
-))
 const sources = (proposal: AssetResolutionProposal) => {
   const ids = proposal.proposed_patch_json?.source_thread_ids
   return Array.isArray(ids) ? ids.length : 1
@@ -47,10 +40,10 @@ const versionLabel = (id: string) => {
         :disabled="!canGenerate"
         :title="disabledReason || undefined"
         @click="emit('generate')"
-      >{{ t('doc_review.proposal_generate') }}</button>
+      >{{ t('doc_review.revision_generate') }}</button>
     </div>
-    <button v-for="job in pending" :key="job.id" type="button" class="btn-secondary" @click="emit('resume', job)">
-      {{ t('doc_review.proposal_generating') }}
+    <button v-for="job in pending" :key="job.id" type="button" class="btn-secondary" @click="emit('resume', job.id)">
+      {{ t(job.status === 'TERMINATING' ? 'provisioning.preview_stage_cancelling' : 'doc_review.proposal_generating') }}
     </button>
     <details v-if="proposals.length">
       <summary>{{ t('doc_review.proposal_count', { count: proposals.length }) }}</summary>
@@ -65,7 +58,7 @@ const versionLabel = (id: string) => {
             </small>
           </span>
           <button type="button" class="btn-secondary" @click="emit('open', proposal.id)">
-            {{ t('doc_review.proposal_open') }}
+            {{ t(proposal.proposed_patch_json?.rewrite_status === 'ready' ? 'doc_review.revision_open' : 'doc_review.proposal_open') }}
           </button>
         </li>
       </ul>

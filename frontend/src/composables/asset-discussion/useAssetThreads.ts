@@ -114,80 +114,6 @@ export function useAssetThreads(
     }, null)
   }
 
-  const createResolutionProposal = async (
-    threadId: string,
-    overwriteExistingDraft = false,
-    contextVersionId?: string,
-  ) => {
-    return scope.run(null, (!threadId) ? undefined : scope.capture(), async (request) => {
-      const res = await api.post(
-        `${request.baseUrl}/threads/${threadId}/resolution/proposals`,
-        {
-          overwrite_existing_draft: overwriteExistingDraft,
-          context_version_id: contextVersionId || undefined,
-        },
-        { signal: request.signal },
-      )
-      if (!request.isCurrent()) return null
-      const job = res.data as AssetAiJob
-      jobs.setThreadJob(job, request)
-      return job
-    }, null)
-  }
-
-  const createJointResolutionProposal = (
-    threadIds: string[], contextVersionId: string, overwriteExistingDraft: boolean,
-  ) => scope.run(null, (!threadIds.length || !contextVersionId) ? undefined : scope.capture(), async (request) => {
-    const { data } = await api.post<AssetAiJob>(`${request.baseUrl}/resolution/proposals`, {
-      thread_ids: threadIds,
-      context_version_id: contextVersionId,
-      overwrite_existing_draft: overwriteExistingDraft,
-    }, { signal: request.signal })
-    if (!request.isCurrent()) return null
-    jobs.setThreadJob(data, request)
-    return data
-  }, null)
-
-  const rewriteResolutionProposal = async (
-    threadId: string,
-    proposalId: string,
-    proposalText: string,
-    rewriteScope: 'anchor' | 'document' = 'anchor',
-    contextVersionId?: string,
-    relocatedAnchor?: {
-      block_id: string
-      selected_text?: string
-      char_start?: number | null
-      char_end?: number | null
-    },
-  ) => {
-    return scope.run(null, (!threadId || !proposalId) ? undefined : scope.capture(), async (request) => {
-      const normalized = proposalText.trim()
-      const normalizedScope = rewriteScope === 'document' ? 'document' : 'anchor'
-      const res = await api.post(
-        `${request.baseUrl}/threads/${threadId}/resolution/proposals/${proposalId}/rewrite`,
-        {
-          proposal_text: normalized,
-          rewrite_scope: normalizedScope,
-          context_version_id: contextVersionId || undefined,
-          relocated_anchor: relocatedAnchor
-            ? {
-              block_id: relocatedAnchor.block_id,
-              selected_text: relocatedAnchor.selected_text || undefined,
-              char_start: relocatedAnchor.char_start ?? undefined,
-              char_end: relocatedAnchor.char_end ?? undefined,
-            }
-            : undefined,
-        },
-        { signal: request.signal },
-      )
-      if (!request.isCurrent()) return null
-      const job = res.data as AssetAiJob
-      jobs.setThreadJob(job, request)
-      return job
-    }, null)
-  }
-
   const applyResolutionProposal = async (
     threadId: string,
     proposalId: string,
@@ -268,7 +194,7 @@ export function useAssetThreads(
 
   return {
     threads, selectedThreadId, selectedThread, loadingThreads, setThread, fetchThread, loadThreads,
-    createThread, sendThreadMessage, askAi, createResolutionProposal, createJointResolutionProposal, rewriteResolutionProposal,
+    createThread, sendThreadMessage, askAi,
     applyResolutionProposal, updateThreadCloseHint, updateThreadState, reset,
   }
 }

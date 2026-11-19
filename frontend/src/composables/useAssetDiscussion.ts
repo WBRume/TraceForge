@@ -1,4 +1,4 @@
-import { computed, onScopeDispose, toValue, watch, type MaybeRefOrGetter } from 'vue'
+import { computed, onScopeDispose, shallowRef, toValue, watch, type MaybeRefOrGetter } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { createAssetRequestScope, type AssetRequestOwner } from './asset-discussion/requestScope'
@@ -20,6 +20,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
   const wsId = computed(() => String(toValue(options.wsId) || ''))
   const assetId = computed(() => String(toValue(options.assetId) || ''))
   const scope = createAssetRequestScope()
+  const initialized = shallowRef(false)
   const document = useAssetDocument(scope, () => t('doc_review.document_load_failed'))
   const jobs = useAssetThreadJobs(scope, (threadId, owner) => discussion.fetchThread(threadId, owner))
   const discussion = useAssetThreads(scope, document, jobs, refresh)
@@ -27,12 +28,17 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
 
   async function refresh(versionId?: string, owner = scope.capture()): Promise<void> {
     await scope.run('refresh', owner, async (request) => {
-      const data = await document.loadDocument(versionId, request)
-      if (!request.isCurrent() || !data || document.documentData.value !== data) return
-      await Promise.all([
-        document.loadVersions(request),
-        discussion.loadThreads(versionId || data.active_version?.id || undefined, request),
-      ])
+      initialized.value = false
+      try {
+        const data = await document.loadDocument(versionId, request)
+        if (!request.isCurrent() || !data || document.documentData.value !== data) return
+        await Promise.all([
+          document.loadVersions(request),
+          discussion.loadThreads(versionId || data.active_version?.id || undefined, request),
+        ])
+      } finally {
+        if (request.isCurrent()) initialized.value = true
+      }
     }, undefined)
   }
 
@@ -44,6 +50,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
 
   watch([wsId, assetId], ([workspaceId, documentId], _previous, onCleanup) => {
     cleanup()
+    initialized.value = false
     document.reset()
     discussion.reset()
     const owner = scope.activate(workspaceId, documentId)
@@ -65,6 +72,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
 
   return {
     documentData: document.documentData,
+    initialized,
     versions: document.versions,
     threads: discussion.threads,
     selectedThreadId: discussion.selectedThreadId,
@@ -78,7 +86,6 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     onlineUsers: subscription.onlineUsers,
     wsConnected: subscription.wsConnected,
     assistantJobMap: jobs.assistantJobMap,
-    proposalJobMap: jobs.proposalJobMap,
     error: document.error,
     clearError: document.clearError,
     loadDocument: document.loadDocument,
@@ -89,9 +96,6 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     createThread: discussion.createThread,
     sendThreadMessage: discussion.sendThreadMessage,
     askAi: discussion.askAi,
-    createResolutionProposal: discussion.createResolutionProposal,
-    createJointResolutionProposal: discussion.createJointResolutionProposal,
-    rewriteResolutionProposal: discussion.rewriteResolutionProposal,
     applyResolutionProposal: discussion.applyResolutionProposal,
     cancelAiJob: jobs.cancelAiJob,
     updateThreadCloseHint: discussion.updateThreadCloseHint,
