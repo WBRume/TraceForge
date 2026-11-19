@@ -12,6 +12,16 @@ from app.domains.task.models.task import SddTask
 logger = get_logger(__name__)
 
 
+def document_display_name(file_name: str | None, fallback_ext: str = ".md") -> str:
+    """Keep the upload's basename for display, independent of its storage name."""
+    base = (file_name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    base = re.sub(r"[\x00-\x1f\x7f]", "", base).strip()
+    if not base or base in {".", ".."}:
+        return f"document{fallback_ext}"
+    stem, ext = os.path.splitext(base)
+    return stem[: 255 - len(ext)] + ext if len(ext) < 255 else base[:255]
+
+
 def normalize_filename(file_name: str | None, fallback_ext: str = ".md") -> str:
     base = os.path.basename(file_name or "").strip()
     if not base:

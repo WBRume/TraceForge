@@ -34,10 +34,8 @@ def upload_task_spec(
 
     ensure_supported_spec_ext(file_name)
 
-    from app.domains.asset.services.document.storage import normalize_filename
     from app.domains.local_resource.service import is_local, materialize_file
 
-    file_name = normalize_filename(file_name)
     asset, version = document_versioning.create_asset_version_from_upload(
         db,
         task,
@@ -47,7 +45,8 @@ def upload_task_spec(
         change_note="Uploaded task specification",
     )
     if is_local(task):
-        task.spec_doc_path = materialize_file(task, f".sdd/spec/{version.id}/{file_name}", file_content)
+        safe_name = os.path.basename(version.original_path)
+        task.spec_doc_path = materialize_file(task, f".sdd/spec/{version.id}/{safe_name}", file_content)
     else:
         task.spec_doc_path = os.path.abspath(version.original_path)
     asset_discussion_service.sync_docx_comments_to_threads(

@@ -38,7 +38,7 @@ const onSelect = (value: string) => {
 </script>
 
 <template>
-  <div class="version-switcher glass-panel">
+  <div class="version-switcher">
     <label class="switcher-label">{{ t('doc_review.version_label') }}</label>
     <BaseSelect
       class="switcher-select"
@@ -56,9 +56,7 @@ const onSelect = (value: string) => {
   display: inline-flex;
   align-items: center;
   flex-wrap: nowrap;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: 12px;
+  gap: .4rem;
   min-width: 0;
   max-width: 100%;
 }
@@ -72,8 +70,8 @@ const onSelect = (value: string) => {
 }
 
 .switcher-select {
-  min-width: 180px;
-  width: clamp(180px, 32vw, 420px);
+  min-width: 0;
+  width: clamp(9rem, 17vw, 15rem);
   max-width: 100%;
   flex: 1 1 auto;
 }

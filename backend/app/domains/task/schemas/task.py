@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, PlainSerializer, model_validator
 
+from app.agents.domain_tools.runtime import Milestone
 from app.agents.model_selection import ModelSelection
 from app.core.timestamps import UtcTimestamp
 from app.domains.local_resource.schemas import TaskExecutionInput
@@ -274,6 +275,7 @@ class TaskCliBootstrapResponse(BaseModel):
     status: str
     progress: int
     message: str | None = None
+    domain_milestones: list[Milestone] = Field(default_factory=list)
     baseline_dir: str | None = None
     baseline_session_id: str | None = None
     error_message: str | None = None

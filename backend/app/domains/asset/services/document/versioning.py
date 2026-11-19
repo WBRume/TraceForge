@@ -155,6 +155,7 @@ def create_asset_version_from_upload(
     file_content: bytes,
     change_note: str | None = None,
 ) -> tuple[SddAsset, SddAssetVersion]:
+    file_name = storage.document_display_name(file_name)
     payload = parse_document_payload(file_name, file_content)
     asset = _upsert_spec_asset(db, task, creator_id, file_name, payload)
     version = _write_version(
@@ -162,7 +163,7 @@ def create_asset_version_from_upload(
         asset,
         task=task,
         base_version_id=asset.active_version_id,
-        file_name=payload.get("source_file_name") or storage.normalize_filename(file_name),
+        file_name=file_name,
         file_content=file_content,
         original_ext=payload.get("source_ext"),
         original_mime=payload.get("source_mime"),
@@ -269,7 +270,7 @@ def create_asset_version_from_normalized_content(
     blocks = blocks_json if blocks_json is not None else markdown_blocks.markdown_to_blocks(effective_markdown)
     render_json: dict[str, Any] = {"format": "markdown", "block_count": len(blocks)}
     filename = output_file_name or asset.source_file_name or f"spec{ext}"
-    file_name = storage.normalize_filename(filename, fallback_ext=ext or ".md")
+    file_name = storage.document_display_name(filename, fallback_ext=ext or ".md")
     file_bytes = output_file_bytes
     if file_bytes is None:
         file_bytes = effective_markdown.encode("utf-8")
@@ -321,7 +322,7 @@ def create_asset_version_from_source(
     """Publish a native-format document using the same version transaction as uploads."""
     task = repository.task_for_asset(db, asset)
     ext = base.original_ext or asset.source_ext
-    file_name = storage.normalize_filename(asset.source_file_name, fallback_ext=ext or ".md")
+    file_name = storage.document_display_name(asset.source_file_name or asset.name, fallback_ext=ext or ".md")
     payload = parse_document_payload(file_name, file_content)
     return _write_version(
         db,

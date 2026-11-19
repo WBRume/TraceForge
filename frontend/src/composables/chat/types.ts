@@ -38,9 +38,14 @@ export type TaskSpecBootstrap = {
   progress: number
   message?: string | null
   baseline_session_id?: string | null
+  domain_milestones?: import('@/utils/domainMilestones').DomainMilestone[]
   error_message?: string | null
   updated_at?: string | null
 }
+
+export type TaskSpecBootstrapProgress = Pick<
+  TaskSpecBootstrap, 'status' | 'progress' | 'error_message' | 'domain_milestones'
+>
 
 export type SpecDrawerLevel = 0 | 1 | 2 | 3
 export type OpenSpecDrawerLevel = 1 | 2 | 3

@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { domainMilestones } from '@/utils/domainMilestones'
 
-const props = defineProps<{ events?: unknown; active: boolean }>()
+const props = defineProps<{ events?: unknown; active: boolean; compact?: boolean }>()
 const current = computed(() => {
   if (!props.active) return null
   const events = domainMilestones(props.events)
@@ -12,10 +12,10 @@ const current = computed(() => {
 </script>
 
 <template>
-  <div v-if="current" class="domain-milestones" role="status" aria-label="执行进度" aria-live="polite">
+  <div v-if="current" class="domain-milestones" :class="{ compact }" role="status" aria-label="执行进度" aria-live="polite">
     <div class="current-stage" :data-stage="current.stage">
       <span class="milestone-dot" aria-hidden="true" />
-      <span>{{ current.message }}</span>
+      <span class="milestone-message" :title="compact ? current.message : undefined">{{ current.message }}</span>
       <details v-if="current.issues.length">
         <summary>查看校验详情</summary>
         <p v-for="(issue, index) in current.issues" :key="index">{{ issue }}</p>
@@ -32,4 +32,9 @@ const current = computed(() => {
 .domain-milestones details { flex-basis: 100%; margin-left: 13px; overflow-wrap: anywhere; }
 .domain-milestones summary { cursor: pointer; }
 .domain-milestones p { margin: 4px 0; }
+.compact { display: inline-flex; min-width: 0; margin: 0; }
+.compact .current-stage { flex-wrap: nowrap; align-items: center; min-width: 0; }
+.compact .milestone-dot { display: none; }
+.compact .milestone-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compact details { flex-basis: auto; flex-shrink: 0; margin: 0; }
 </style>

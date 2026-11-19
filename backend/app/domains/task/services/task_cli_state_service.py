@@ -45,6 +45,7 @@ from app.domains.task.models.task_cli_bootstrap import (
 from app.domains.task.services.bootstrap_state import (
     MESSAGE_UNSET as _MESSAGE_UNSET,
 )
+from app.domains.task.services.bootstrap_state import BootstrapPhase
 from app.domains.task.services.bootstrap_state import (
     report_execution as _report_bootstrap_execution,
 )
@@ -145,6 +146,7 @@ async def _update_bootstrap_state(
     expected_input_revision: str | None = None,
     status: TaskCliBootstrapStatus | None = None,
     progress: int | None = None,
+    phase: BootstrapPhase | None = None,
     message: Any = _MESSAGE_UNSET,
     baseline_dir: str | None = None,
     baseline_session_id: str | None = None,
@@ -167,6 +169,7 @@ async def _update_bootstrap_state(
             expected_input_revision=expected_input_revision,
             status=status,
             progress=progress,
+            phase=phase,
             message=message,
             baseline_dir=baseline_dir,
             baseline_session_id=baseline_session_id,
@@ -189,6 +192,7 @@ def _update_bootstrap_state_sync(
     expected_input_revision: str | None = None,
     status: TaskCliBootstrapStatus | None = None,
     progress: int | None = None,
+    phase: BootstrapPhase | None = None,
     message: Any = _MESSAGE_UNSET,
     baseline_dir: str | None = None,
     baseline_session_id: str | None = None,
@@ -210,7 +214,9 @@ def _update_bootstrap_state_sync(
             # The specification changed while this CLI attempt was running.
             # Its late progress/result must not overwrite the newer revision.
             return _serialize_bootstrap(record)
-        if not _report_bootstrap_execution(db, record, status, progress, message, error_message, baseline_session_id):
+        if not _report_bootstrap_execution(
+            db, record, status, progress, message, error_message, baseline_session_id, phase=phase
+        ):
             return _serialize_bootstrap(record)
         if status is not None:
             record.status = status
@@ -503,7 +509,7 @@ def _bootstrap_event_handler(task_id, expected_input_revision, provider_events=N
                             expected_input_revision=expected_input_revision,
                             status=TaskCliBootstrapStatus.RUNNING,
                             progress=72,
-                            message="CLI is digesting specification context",
+                            phase=BootstrapPhase.ANALYZE,
                         )
                         break
 
@@ -650,16 +656,16 @@ async def _finalize_bootstrap_attempt(
 async def _prepare_bootstrap_spec(
     task_id, expected_input_revision, baseline_dir, context, task_spec_doc_path, version_original_path
 ):
-    await run_db(_refresh_task_skill_context, task_id)
     await _update_bootstrap_state(
         task_id,
         expected_input_revision=expected_input_revision,
         status=TaskCliBootstrapStatus.RUNNING,
         progress=8,
-        message="Preparing baseline in task directory",
+        phase=BootstrapPhase.PREPARE,
         baseline_dir=baseline_dir,
         error_message=None,
     )
+    await run_db(_refresh_task_skill_context, task_id)
     return (
         task_spec_doc_path
         if context.get("execution_location") == "LOCAL"
@@ -714,6 +720,13 @@ async def _complete_bootstrap(
     if not final_session_id:
         raise RuntimeError("CLI bootstrap completed without session id")
 
+    await _update_bootstrap_state(
+        task_id,
+        expected_input_revision=expected_input_revision,
+        status=TaskCliBootstrapStatus.RUNNING,
+        progress=90,
+        phase=BootstrapPhase.VERIFY,
+    )
     if session_snapshot_backend:
         await _verify_baseline_snapshot(baseline_dir, final_session_id)
 
@@ -821,11 +834,7 @@ async def _run_bootstrap(
                                 status=TaskCliBootstrapStatus.RUNNING,
                                 progress=40,
                                 refresh_mode=refresh_mode,
-                                message=(
-                                    "Refreshing baseline context with incremental update"
-                                    if refresh_mode == "DELTA"
-                                    else "Reading specification with CLI baseline session"
-                                ),
+                                phase=BootstrapPhase.REFRESH if refresh_mode == "DELTA" else BootstrapPhase.READ,
                             )
 
                             bridge = create_legacy_bridge(agent_backend, task_id=task_id)

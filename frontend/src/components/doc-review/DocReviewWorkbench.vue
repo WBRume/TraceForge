@@ -18,10 +18,12 @@ import ProposalDraftModal from "./ProposalDraftModal.vue";
 import ResolutionDiffModal from "./ResolutionDiffModal.vue";
 import TextReviewCanvas from "./TextReviewCanvas.vue";
 import ThreadSidebar from "./ThreadSidebar.vue";
+import SpecBaselineStatus from "./SpecBaselineStatus.vue";
 import VersionSwitcher from "./VersionSwitcher.vue";
 import { useDocumentDraft } from "./useDocumentDraft";
 import ConfirmActionModal from "@/components/ConfirmActionModal.vue";
 import type { ResolutionDecisionPayload, ResolutionApplyPayload } from "@/composables/useAssetDiscussion";
+import type { TaskSpecBootstrapProgress } from "@/composables/chat/types";
 
 const showAssetMenu = ref(false);
 const { t } = useI18n();
@@ -34,12 +36,7 @@ const props = defineProps<{
   initialAssetId?: string;
   readonly?: boolean;
   /** Spec 基线状态由宿主注入：会话内复用 vm.specBootstrap（WS 推送），独立页接 useTaskSpecBootstrapFeed */
-  bootstrapStatus?: {
-    status: string;
-    progress: number;
-    message?: string | null;
-    error_message?: string | null;
-  } | null;
+  bootstrapStatus?: TaskSpecBootstrapProgress | null;
 }>();
 
 const loadingAssets = ref(false);
@@ -169,26 +166,10 @@ const aiUnavailableReasonText = computed(() => {
   if (!aiUnavailableReason.value) return t("doc_review.ai_unavailable_label");
   return t(`doc_review.${aiUnavailableReason.value}`);
 });
-const baselineStatusText = computed(() => {
-  const status = String(props.bootstrapStatus?.status || "").toUpperCase();
-  if (!status) return t("doc_review.baseline_status_unknown");
-  if (status === "PENDING") return t("chat.spec_bootstrap_status_pending");
-  if (status === "RUNNING") return t("chat.spec_bootstrap_status_running");
-  if (status === "READY") return t("chat.spec_bootstrap_status_ready");
-  if (status === "FAILED") return t("chat.spec_bootstrap_status_failed");
-  if (status === "STALE") return t("chat.spec_bootstrap_status_stale");
-  return status;
-});
-const baselineBusy = computed(() => {
-  const status = String(props.bootstrapStatus?.status || "").toUpperCase();
-  return status === "PENDING" || status === "RUNNING";
-});
-const showBaselineStatus = computed(() => {
-  if (isPdfAsset.value) return false;
-  if (!props.taskId) return false;
-  const status = String(props.bootstrapStatus?.status || "").toUpperCase();
-  if (!status) return false;
-  return status !== "READY";
+const draftStatusText = computed(() => {
+  if (draftStale.value) return t("doc_review.draft_stale_short");
+  if (draftDirty.value || editingBlockId.value) return t("doc_review.draft_unsaved");
+  return t(draft.value?.revision ? "doc_review.draft_saved" : "doc_review.draft_mode");
 });
 const bootstrapStatusCode = computed(() =>
   String(props.bootstrapStatus?.status || "").toUpperCase(),
@@ -843,18 +824,33 @@ onMounted(() => {
 
 <template>
   <div class="doc-review-workbench compact">
-    <header
-      class="workbench-header stage-head glass-panel"
-      :class="{ 'with-external-title': hasHeaderPrefixSlot }"
-    >
+    <header class="workbench-header stage-head glass-panel">
       <div class="stage-main">
         <div v-if="hasHeaderPrefixSlot" class="header-prefix">
           <slot name="header-prefix" />
         </div>
         <div class="stage-brand">
-          <div class="asset-selector" @click="!editing && !draftBusy && (showAssetMenu = !showAssetMenu)">
-            <h3>{{ selectedAsset?.name || t("doc_review.no_document_selected") }}</h3>
-            <ChevronDown class="w-4 h-4 text-slate-500" />
+          <div class="asset-selector">
+            <h3>
+              <button
+                type="button"
+                class="asset-selector-toggle"
+                :title="selectedAsset?.name"
+                :disabled="editing || draftBusy"
+                :aria-expanded="showAssetMenu"
+                @click="showAssetMenu = !showAssetMenu"
+              >
+                <span>{{ selectedAsset?.name || t("doc_review.no_document_selected") }}</span>
+                <ChevronDown v-if="!editing" class="w-4 h-4 text-slate-500" aria-hidden="true" />
+              </button>
+            </h3>
+            <span
+              v-if="editing"
+              class="draft-status"
+              :class="{ stale: draftStale }"
+              :title="draftStale ? t('doc_review.draft_stale') : undefined"
+              role="status"
+            >{{ draftStatusText }}</span>
 
             <div
               v-if="showAssetMenu"
@@ -884,7 +880,7 @@ onMounted(() => {
                       <FileText :size="14" :stroke-width="2.5" />
                     </div>
                     <div class="asset-item-info">
-                      <strong>{{ asset.name }}</strong>
+                      <strong :title="asset.name">{{ asset.name }}</strong>
                       <div class="asset-item-meta">
                         <span class="type-tag">{{ asset.asset_type }}</span>
                         <span class="date-tag">
@@ -905,6 +901,13 @@ onMounted(() => {
             </div>
           </div>
           <div class="hints">
+            <SpecBaselineStatus
+              v-if="props.taskId && props.bootstrapStatus && !isPdfAsset"
+              :snapshot="props.bootstrapStatus"
+              :can-build="canTriggerBootstrap"
+              :building="bootstrapTriggering"
+              @build="showBootstrapConfirm = true"
+            />
             <p v-if="selectedAsset">
               {{ t("doc_review.asset_id_prefix") }}: {{ selectedAsset.id }}
             </p>
@@ -930,40 +933,19 @@ onMounted(() => {
         <button v-if="canOpenDraft && !editing" class="btn-primary" :disabled="draftBusy" @click="draftEditor.begin">
           {{ t("doc_review.draft_edit") }}
         </button>
+        <template v-if="editing">
+          <button class="btn-secondary" :disabled="draftBusy" @click="draftEditor.leave">{{ t("doc_review.draft_back") }}</button>
+          <button class="btn-secondary" :disabled="draftBusy" @click="draftConfirm = 'discard'">{{ t("doc_review.draft_discard") }}</button>
+          <button v-if="draftText !== null" class="btn-secondary" :disabled="!draftDirty || draftBusy || !canOpenDraft" @click="draftEditor.saveSource">
+            {{ t("doc_review.draft_save") }}
+          </button>
+          <button class="btn-primary" :disabled="!canPublish || draftBusy || !canOpenDraft" @click="draftConfirm = 'publish'">
+            {{ t("doc_review.draft_publish") }}
+          </button>
+        </template>
         <slot name="header-actions" />
       </div>
     </header>
-    <div v-if="editing" class="draft-toolbar glass-panel">
-      <span role="status">{{ t(draftStale ? "doc_review.draft_stale" : draftDirty || editingBlockId
-        ? "doc_review.draft_unsaved" : draft?.revision ? "doc_review.draft_saved" : "doc_review.draft_mode") }}</span>
-      <div class="draft-actions">
-        <button class="btn-secondary" :disabled="draftBusy" @click="draftEditor.leave">{{ t("doc_review.draft_back") }}</button>
-        <button class="btn-secondary" :disabled="draftBusy" @click="draftConfirm = 'discard'">{{ t("doc_review.draft_discard") }}</button>
-        <button v-if="draftText !== null" class="btn-secondary" :disabled="!draftDirty || draftBusy || !canOpenDraft" @click="draftEditor.saveSource">
-          {{ t("doc_review.draft_save") }}
-        </button>
-        <button class="btn-primary" :disabled="!canPublish || draftBusy || !canOpenDraft" @click="draftConfirm = 'publish'">
-          {{ t("doc_review.draft_publish") }}
-        </button>
-      </div>
-    </div>
-    <div v-if="showBaselineStatus" class="baseline-status glass-panel" :class="{ busy: baselineBusy }">
-      <div class="baseline-left">
-        <strong>{{ t("doc_review.baseline_status_label") }}: {{ baselineStatusText }}</strong>
-        <span v-if="props.bootstrapStatus?.message">{{ props.bootstrapStatus.message }}</span>
-      </div>
-      <div class="baseline-right">
-        <button
-          v-if="canTriggerBootstrap"
-          class="baseline-trigger-btn"
-          :disabled="bootstrapTriggering"
-          @click="showBootstrapConfirm = true"
-        >
-          {{ t("chat.spec_bootstrap_action_build") }}
-        </button>
-        <span>{{ Number(props.bootstrapStatus?.progress || 0) }}%</span>
-      </div>
-    </div>
 
     <div class="workbench-body">
       <section class="document-stage">
