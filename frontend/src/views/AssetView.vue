@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import WorkspaceAssetsShell from '@/components/workspace-assets/WorkspaceAssetsShell.vue'
 
-type WorkspaceAssetsSection = 'requirements' | 'tasks' | 'workload' | 'knowledgeBase'
+type WorkspaceAssetsSection = 'requirements' | 'tasks' | 'knowledgeBase'
 
 const route = useRoute()
 
@@ -13,8 +13,6 @@ const section = computed<WorkspaceAssetsSection>(() => {
       return 'requirements'
     case 'workspaceAssetsTasks':
       return 'tasks'
-    case 'workspaceAssetsWorkload':
-      return 'workload'
     case 'workspaceAssetsKnowledgeBase':
       return 'knowledgeBase'
     default:

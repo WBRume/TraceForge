@@ -34,6 +34,12 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 
+const reportRouteName = computed(() => (
+  route.name === 'knowledgeCases' || route.name === 'knowledgeCasesWorkspace'
+    ? 'knowledgeCaseDetail'
+    : 'workspaceCaseDetail'
+))
+
 const activeWorkspaceId = computed(() => {
   if (props.workspaceId !== undefined) return String(props.workspaceId || '')
   return String(route.params.wsId || '')
@@ -75,11 +81,7 @@ const applySort = (sort: CaseSort) => {
 const goToReport = (caseId: string, item?: { workspace_id?: string }) => {
   const wsId = String(item?.workspace_id || route.params.wsId || '')
   if (!wsId) return
-  router.push(
-    props.embedded
-      ? { name: 'knowledgeCaseDetail', params: { wsId, caseId } }
-      : { name: 'workspaceCaseDetail', params: { wsId, caseId } },
-  )
+  router.push({ name: reportRouteName.value, params: { wsId, caseId } })
 }
 
 const handleOpenCase = (item: { id: string; workspace_id?: string }) => {
@@ -93,11 +95,7 @@ const redirectQueryCase = () => {
   const target = vm.items.find((item) => item.id === caseId)
   const wsId = String(target?.workspace_id || route.params.wsId || '')
   if (!wsId) return
-  router.replace(
-    props.embedded
-      ? { name: 'knowledgeCaseDetail', params: { wsId, caseId } }
-      : { name: 'workspaceCaseDetail', params: { wsId, caseId } },
-  )
+  router.replace({ name: reportRouteName.value, params: { wsId, caseId } })
 }
 
 onMounted(async () => {

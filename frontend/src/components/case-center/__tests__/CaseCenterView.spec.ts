@@ -3,11 +3,12 @@ import { flushPromises, mount } from '@vue/test-utils'
 import CaseCenterView from '../CaseCenterView.vue'
 import api from '@/utils/api'
 const pushMock = vi.hoisted(() => vi.fn())
+const routeMock = vi.hoisted(() => ({ name: 'knowledgeCasesWorkspace', params: { wsId: 'ws' }, query: {} }))
 
 vi.mock('@/utils/api', () => ({ default: { get: vi.fn() } }))
 vi.mock('vue-router', async () => ({
   ...await vi.importActual('vue-router'),
-  useRoute: () => ({ params: { wsId: 'ws' }, query: {} }),
+  useRoute: () => routeMock,
   useRouter: () => ({ push: pushMock, replace: vi.fn() }),
 }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
@@ -20,6 +21,7 @@ const mountList = () => mount(CaseCenterView, {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  routeMock.name = 'knowledgeCasesWorkspace'
   vi.mocked(api.get).mockImplementation(async (_url, options) => {
     const page = options?.params.page || 1
     return { data: { items: [{
@@ -175,12 +177,16 @@ it('selects only eligible cases in one workspace and supports partial and cleare
   wrapper.unmount()
 })
 
-it('opens the report from the title and details action', async () => {
+it.each([
+  ['knowledgeCasesWorkspace', 'knowledgeCaseDetail'],
+  ['workspaceCases', 'workspaceCaseDetail'],
+])('opens the report from the title and details action in %s', async (listRoute, reportRoute) => {
+  routeMock.name = listRoute
   const wrapper = mountList()
   await flushPromises()
   await wrapper.get('.case-title-link').trigger('click')
   await wrapper.get('.detail-action').trigger('click')
   expect(pushMock).toHaveBeenCalledTimes(2)
-  expect(pushMock).toHaveBeenLastCalledWith({ name: 'knowledgeCaseDetail', params: { wsId: 'ws', caseId: 'case-1' } })
+  expect(pushMock).toHaveBeenLastCalledWith({ name: reportRoute, params: { wsId: 'ws', caseId: 'case-1' } })
   wrapper.unmount()
 })

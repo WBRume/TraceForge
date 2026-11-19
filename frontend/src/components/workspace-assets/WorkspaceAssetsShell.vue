@@ -7,15 +7,14 @@ import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
 import RequirementsWorkbench from '@/components/workspace-assets/requirements/RequirementsWorkbench.vue'
 import TaskTableWorkbench from '@/components/workspace-assets/tasks/TaskTableWorkbench.vue'
 import WorkspaceAssetsUnderConstruction from '@/components/workspace-assets/WorkspaceAssetsUnderConstruction.vue'
-import MemberWorkloadWorkbench from '@/components/workspace-assets/workload/MemberWorkloadWorkbench.vue'
 import {
+  BookMarked,
   Database,
   FileText,
-  Users,
   MessageSquare,
 } from '@/components/icons'
 
-type WorkspaceAssetsSection = 'requirements' | 'tasks' | 'workload' | 'knowledgeBase'
+type WorkspaceAssetsSection = 'requirements' | 'tasks' | 'cases' | 'knowledgeBase'
 
 type NavItem = {
   key: WorkspaceAssetsSection
@@ -54,10 +53,10 @@ const navItems = computed<NavItem[]>(() => [
     icon: MessageSquare,
   },
   {
-    key: 'workload',
-    label: t('workspace_assets.workload.title'),
-    to: `/workspaces/${wsId.value}/assets/workload`,
-    icon: Users,
+    key: 'cases',
+    label: t('layout.case_center'),
+    to: `/workspaces/${wsId.value}/assets/cases`,
+    icon: BookMarked,
   },
   {
     key: 'knowledgeBase',
@@ -134,8 +133,8 @@ watch(
             />
         </section>
 
-        <section v-else-if="section === 'workload'" class="structured-page">
-          <MemberWorkloadWorkbench :workspace-id="wsId" />
+        <section v-else-if="section === 'cases'" class="structured-page">
+          <slot />
         </section>
 
         <section v-else class="structured-page">

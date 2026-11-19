@@ -5,7 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useLocalAgentStore } from '@/stores/localAgent'
-import { LayoutDashboard, MessageSquare, Box, BookMarked, Settings, Network } from '@/components/icons'
+import { LayoutDashboard, MessageSquare, Box, Users, Settings, Network } from '@/components/icons'
 import AppSidebar from '@/components/AppSidebar.vue'
 import NotificationBell from '@/components/notification/NotificationBell.vue'
 import WorkspaceRepoSetupDialog from '@/components/local-agent/WorkspaceRepoSetupDialog.vue'
@@ -78,7 +78,10 @@ const goBack = () => router.push('/workspaces')
 const sidebarNavItems = computed(() => {
   const wsId = route.params.wsId as string
   const routeName = String(route.name ?? '')
-  const assetsActive = routeName.startsWith('workspaceAssets') || routeName === 'workspaceAssetTaskDetail'
+  const assetsActive = routeName.startsWith('workspaceAssets')
+    || routeName === 'workspaceAssetTaskDetail'
+    || routeName.startsWith('workspaceCase')
+    || routeName === 'workspacePlaybookDetail'
   return [
     {
       key: 'dashboard',
@@ -95,11 +98,11 @@ const sidebarNavItems = computed(() => {
       active: routeName === 'chat' || routeName === 'taskChat' || routeName === 'taskSpec',
     },
     {
-      key: 'cases',
-      label: t('layout.case_center'),
-      icon: BookMarked,
-      to: `/workspaces/${wsId}/cases`,
-      active: routeName === 'workspaceCases' || routeName === 'workspaceCaseDetail',
+      key: 'workload',
+      label: t('workspace_assets.workload.title'),
+      icon: Users,
+      to: `/workspaces/${wsId}/workload`,
+      active: routeName === 'workspaceMemberWorkload',
     },
     {
       key: 'assets',

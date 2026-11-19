@@ -351,34 +351,42 @@ const router = createRouter({
           component: () => import('../views/DeltaWorkbenchView.vue')
         },
         {
+          path: 'workload',
+          name: 'workspaceMemberWorkload',
+          component: () => import('../views/WorkspaceMemberWorkloadView.vue')
+        },
+        {
           path: 'assets/workload',
           name: 'workspaceAssetsWorkload',
-          component: () => import('../views/AssetView.vue')
+          redirect: { name: 'workspaceMemberWorkload' },
         },
         {
           path: 'assets/traceability',
           name: 'workspaceAssetsTraceability',
-          redirect: to => ({ name: 'workspaceAssetsWorkload', params: { wsId: to.params.wsId } }),
+          redirect: { name: 'workspaceMemberWorkload' },
         },
         {
-          path: 'cases',
+          path: 'assets/cases',
           name: 'workspaceCases',
+          alias: 'cases',
           component: () => import('../views/CaseCenterView.vue')
         },
         {
-          path: 'cases/:caseId',
+          path: 'assets/cases/:caseId',
           name: 'workspaceCaseDetail',
+          alias: 'cases/:caseId',
           component: () => import('../views/CaseReportView.vue')
         },
         {
-          path: 'cases/playbooks/:playbookId',
+          path: 'assets/cases/playbooks/:playbookId',
           name: 'workspacePlaybookDetail',
-          alias: 'playbooks/:playbookId',
+          alias: ['cases/playbooks/:playbookId', 'playbooks/:playbookId'],
           component: () => import('../views/PlaybookDetailView.vue')
         },
         {
-          path: 'cases/promotions/:jobId',
+          path: 'assets/cases/promotions/:jobId',
           name: 'workspaceCasePromotionReview',
+          alias: 'cases/promotions/:jobId',
           component: () => import('../views/CasePromotionReviewView.vue')
         },
         {
