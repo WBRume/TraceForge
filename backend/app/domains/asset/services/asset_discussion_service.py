@@ -32,6 +32,7 @@ def list_threads(
         .options(
             joinedload(SddAssetThread.creator),
             joinedload(SddAssetThread.resolver),
+            joinedload(SddAssetThread.version).load_only(SddAssetVersion.version_no),
             joinedload(SddAssetThread.messages).joinedload(SddAssetThreadMessage.creator),
             joinedload(SddAssetThread.proposals),
         )
@@ -167,6 +168,11 @@ def resolve_thread_anchor_for_version(
             }
             if mapping.unresolved_reason:
                 return {"anchor_status": "missing", "effective_anchor": {**anchor, "reason": mapping.unresolved_reason}}
+        else:
+            original_no = getattr(getattr(thread, "version", None), "version_no", None)
+            context_no = getattr(context_version, "version_no", None)
+            if original_no is not None and context_no is not None and context_no < original_no:
+                return {"anchor_status": "missing", "effective_anchor": anchor}
 
     if not context_version:
         return {"anchor_status": "valid", "effective_anchor": anchor}

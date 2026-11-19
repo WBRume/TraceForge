@@ -2,37 +2,11 @@
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ArrowLeft } from '@/components/icons';
+import type { AssetAiJob, AssetThread } from '@/composables/asset-discussion/types';
+import ConclusionProposals from "./ConclusionProposals.vue";
 import ThreadTimeline from "./ThreadTimeline.vue";
 
-type ThreadProposal = {
-  id: string;
-  status: "draft" | "applied" | "discarded";
-  diff_text?: string | null;
-  created_at: string;
-};
-
-type ThreadMessage = {
-  id: string;
-  role: "user" | "ai" | "system";
-  content: string;
-  creator_display_name?: string | null;
-  created_at: string;
-};
-
-type Thread = {
-  id: string;
-  version_id?: string;
-  block_id: string;
-  selected_text?: string | null;
-  status: "open" | "resolved" | "closed";
-  close_hint_state?: "none" | "pending" | "no_close_needed";
-  close_hint_reason?: string | null;
-  anchor_status?: "valid" | "missing";
-  created_at: string;
-  updated_at?: string | null;
-  messages: ThreadMessage[];
-  proposals: ThreadProposal[];
-};
+type Thread = AssetThread;
 
 type ThreadAiJob = {
   id: string;
@@ -53,7 +27,10 @@ const props = defineProps<{
   threads: Thread[];
   selectedThreadId: string;
   assistantJobMap: Record<string, ThreadAiJob>;
-  proposalJobMap: Record<string, ThreadAiJob>;
+  proposalJobMap: Record<string, AssetAiJob>;
+  versionNumbers: Record<string, number>;
+  contextVersionId?: string;
+  requestingProposal?: boolean;
   readonly?: boolean;
   draftEditing?: boolean;
   canComment: boolean;
@@ -71,7 +48,8 @@ const emit = defineEmits<{
   "send-message": [threadId: string, content: string];
   "ask-ai": [threadId: string, prompt?: string];
   "cancel-ai-job": [jobId: string];
-  "generate-proposal": [threadId: string];
+  "generate-proposal": [];
+  "resume-proposal": [job: AssetAiJob];
   "open-proposal": [proposalId: string];
   "update-state": [threadId: string, status: "open" | "resolved" | "closed"];
   "close-hint-action": [
@@ -81,6 +59,10 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+const originalVersion = (thread: Thread) => {
+  const no = props.versionNumbers[thread.version_id];
+  return no ? t("doc_review.annotation_original_version", { version: no }) : t("doc_review.annotation_original");
+};
 
 const messageDraft = ref("");
 const aiPrompt = ref("");
@@ -283,12 +265,13 @@ const shouldShowAnchorCloseHint = (thread: Thread | null | undefined): boolean =
 
 const sortedThreads = computed<Thread[]>(() => {
   const rank = (thread: Thread) => {
-    if (shouldShowAnchorCloseHint(thread) && thread.close_hint_state === "pending") return 0;
-    if (thread.status === "open") return 1;
-    if (thread.status === "resolved") return 2;
-    return 3;
+    if (thread.status === "open") return 0;
+    if (thread.status === "resolved") return 1;
+    return 2;
   };
   return [...props.threads].sort((a, b) => {
+    const versionDiff = Number(a.anchor_status === "missing") - Number(b.anchor_status === "missing");
+    if (versionDiff) return versionDiff;
     const rankDiff = rank(a) - rank(b);
     if (rankDiff !== 0) return rankDiff;
     const aTime = new Date(a.updated_at || a.created_at).getTime();
@@ -300,20 +283,6 @@ const selectedThreadJob = computed<ThreadAiJob | null>(() => {
   if (!selectedThread.value) return null;
   return props.assistantJobMap[selectedThread.value.id] || null;
 });
-const selectedProposalJob = computed<ThreadAiJob | null>(() => {
-  if (!selectedThread.value) return null;
-  return props.proposalJobMap[selectedThread.value.id] || null;
-});
-const isProposalGenerating = computed(
-  () => {
-    const status = selectedProposalJob.value?.status;
-    return (
-      status === "PENDING" ||
-      status === "RUNNING" ||
-      status === "WAITING_HITL"
-    );
-  },
-);
 const isSelectedThreadOpen = computed(() => selectedThread.value?.status === "open");
 const canUseAiFeatures = computed(
   () =>
@@ -354,33 +323,12 @@ const cancelAssistantJob = () => {
   emit("cancel-ai-job", selectedThreadJob.value.id);
 };
 
-const generateProposal = () => {
-  if (!selectedThread.value) return;
-  if (!canUseAiFeatures.value) return;
-  emit("generate-proposal", selectedThread.value.id);
-};
-
-const cancelProposalJob = () => {
-  if (!selectedProposalJob.value?.id) return;
-  emit("cancel-ai-job", selectedProposalJob.value.id);
-};
-
 const statusLabel = (status: string) =>
   status === "resolved"
     ? t("doc_review.thread_status_resolved")
     : status === "closed"
       ? t("doc_review.thread_status_closed")
       : t("doc_review.thread_status_open");
-
-const proposalStatusLabel = (status: ThreadProposal["status"]) => {
-  if (status === "applied") {
-    return t("doc_review.proposal_status_applied");
-  }
-  if (status === "discarded") {
-    return t("doc_review.proposal_status_discarded");
-  }
-  return t("doc_review.proposal_status_draft");
-};
 
 const isAiBusy = computed(() => {
   const status = selectedThreadJob.value?.status;
@@ -396,14 +344,6 @@ const canCancelAssistantJob = computed(
       isAiBusy.value,
     ),
 );
-const canCancelProposalJob = computed(
-  () =>
-    Boolean(
-      props.canComment &&
-      selectedProposalJob.value?.id &&
-      isProposalGenerating.value,
-    ),
-);
 const aiStatusText = computed(() => {
   const status = selectedThreadJob.value?.status;
   if (status === "PENDING") return t("doc_review.ai_status_pending");
@@ -414,16 +354,6 @@ const aiStatusText = computed(() => {
   if (status === "SUCCESS") return t("doc_review.ai_status_success");
   return "";
 });
-
-const hasProposalOnSelectedThread = computed(
-  () => (selectedThread.value?.proposals.length || 0) > 0,
-);
-
-const resolveConfirmMessage = computed(() =>
-  hasProposalOnSelectedThread.value
-    ? t("doc_review.resolve_confirm_with_proposal")
-    : t("doc_review.resolve_confirm_without_proposal"),
-);
 
 const aiActionText = computed(() =>
   isAiBusy.value
@@ -437,22 +367,6 @@ const messageCountText = computed(() =>
     count: selectedThread.value?.messages.length || 0,
   }),
 );
-const proposalCountText = computed(() =>
-  t("doc_review.proposal_count", {
-    count: selectedThread.value?.proposals.length || 0,
-  }),
-);
-const proposalPanelMeta = computed(() => {
-  const status = selectedProposalJob.value?.status;
-  if (!status) return proposalCountText.value;
-  if (status === "PENDING") return t("doc_review.ai_status_pending");
-  if (status === "RUNNING") return t("doc_review.ai_status_running");
-  if (status === "WAITING_HITL") return t("doc_review.ai_status_waiting_hitl");
-  if (status === "FAILED") return t("doc_review.ai_status_failed");
-  if (status === "CANCELLED") return t("doc_review.ai_status_cancelled");
-  if (status === "SUCCESS") return t("doc_review.ai_status_success");
-  return proposalCountText.value;
-});
 const aiPanelMeta = computed(() =>
   selectedThreadJob.value?.status
     ? aiStatusText.value
@@ -516,6 +430,19 @@ const resetCloseHintPending = () => {
         </div>
       </header>
 
+      <ConclusionProposals
+        :threads="threads"
+        :jobs="proposalJobMap"
+        :version-numbers="versionNumbers"
+        :context-version-id="contextVersionId"
+        :show-generate="!readonly && canComment"
+        :can-generate="canAiReply && aiAvailable !== false && !requestingProposal"
+        :disabled-reason="!canAiReply ? aiUnavailableText : undefined"
+        @generate="emit('generate-proposal')"
+        @open="emit('open-proposal', $event)"
+        @resume="emit('resume-proposal', $event)"
+      />
+
       <div class="thread-list custom-scrollbar">
         <button
           v-for="thread in sortedThreads"
@@ -526,6 +453,7 @@ const resetCloseHintPending = () => {
             `state-${thread.status}`,
           ]"
           :style="threadCardStyle(thread)"
+          type="button"
           @click="emit('select-thread', thread.id)"
         >
           <div class="thread-item-head">
@@ -539,9 +467,9 @@ const resetCloseHintPending = () => {
             </span>
           </div>
           <p>{{ thread.selected_text || t("doc_review.no_selected_text") }}</p>
-          <p v-if="thread.anchor_status === 'missing'" class="thread-hint">{{ t("doc_review.anchor_pending") }}</p>
+          <p v-if="thread.anchor_status === 'missing'" class="thread-version">{{ originalVersion(thread) }}</p>
           <p
-            v-if="shouldShowAnchorCloseHint(thread)"
+            v-else-if="shouldShowAnchorCloseHint(thread)"
             class="thread-hint"
           >
             {{
@@ -594,7 +522,7 @@ const resetCloseHintPending = () => {
       <div class="detail-scrollable custom-scrollbar">
         <section v-if="selectedThread.anchor_status === 'missing'" class="section-panel anchor-hint-panel pending">
           <header class="section-head">
-            <h4 class="section-title">{{ t("doc_review.anchor_pending") }}</h4>
+            <h4 class="section-title">{{ originalVersion(selectedThread) }}</h4>
             <button v-if="selectedThread.version_id && !draftEditing" class="nav-action-btn"
               @click="emit('show-original', selectedThread.version_id, selectedThread.id)">
               {{ t("doc_review.anchor_open_original") }}
@@ -729,75 +657,17 @@ const resetCloseHintPending = () => {
           </div>
         </section>
 
-        <section v-if="!readonly" class="section-panel proposal-panel">
-          <header class="section-head">
-            <h4 class="section-title">
-              {{ t("doc_review.proposal_section_title") }}
-            </h4>
-            <span class="section-meta">
-              <span class="pulse-dot amber"></span>
-              {{ proposalPanelMeta }}
-            </span>
-          </header>
-          <p v-if="selectedProposalJob?.error_message" class="ai-job-error">
-            {{ selectedProposalJob.error_message }}
-          </p>
-          <div class="ai-actions-row">
-            <button
-              class="btn-primary ai-submit"
-              :disabled="!canUseAiFeatures || isProposalGenerating"
-              @click="generateProposal"
-            >
-              {{
-                isProposalGenerating
-                  ? t("doc_review.proposal_generating")
-                  : t("doc_review.proposal_generate")
-              }}
-            </button>
-            <button
-              v-if="canCancelProposalJob"
-              class="btn-secondary ai-submit ai-cancel-button"
-              @click="cancelProposalJob"
-            >
-              {{ t("doc_review.ai_cancel_action") }}
-            </button>
-          </div>
-
-          <div v-if="selectedThread.proposals.length" class="proposal-list">
-            <div
-              v-for="proposal in selectedThread.proposals"
-              :key="proposal.id"
-              class="proposal-item"
-            >
-              <div>
-                <strong>{{ proposalStatusLabel(proposal.status) }}</strong>
-                <small>{{
-                  new Date(proposal.created_at).toLocaleString()
-                }}</small>
-              </div>
-              <div class="proposal-actions">
-                <button
-                  class="btn-secondary small-btn"
-                  @click="emit('open-proposal', proposal.id)"
-                >
-                  {{ t("doc_review.proposal_open") }}
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
       </div>
     </div>
 
     <div
       v-if="!readonly && resolveConfirmVisible"
       class="confirm-overlay"
-      :class="{ warning: !hasProposalOnSelectedThread }"
       @click.self="cancelResolveConfirm"
     >
-      <div class="confirm-card glass-panel" :class="{ warning: !hasProposalOnSelectedThread }">
+      <div class="confirm-card glass-panel">
         <h4>{{ t("doc_review.resolve_confirm_title") }}</h4>
-        <p>{{ resolveConfirmMessage }}</p>
+        <p>{{ t('doc_review.resolve_confirm_for_joint_proposal') }}</p>
         <div class="confirm-actions">
           <button class="btn-secondary" @click="cancelResolveConfirm">
             {{ t("common.cancel") }}
@@ -922,6 +792,17 @@ const resetCloseHintPending = () => {
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   box-shadow: var(--shadow-sm);
 }
+
+.thread-item p.thread-version {
+  display: inline-block;
+  margin-top: 0;
+  padding: .15rem .45rem;
+  border-radius: .4rem;
+  background: #edf2f7;
+  color: #475569;
+  font-size: .75rem;
+}
+.thread-item .thread-version + small { display: block; }
 
 .thread-item:hover {
   transform: translateY(-2px);
@@ -1267,19 +1148,6 @@ const resetCloseHintPending = () => {
   -webkit-text-fill-color: transparent;
 }
 
-.proposal-panel {
-  background: linear-gradient(
-    180deg,
-    rgba(255, 251, 235, 0.5) 0%,
-    rgba(255, 255, 255, 0.65) 100%
-  );
-  border-color: rgba(253, 230, 138, 0.7);
-}
-
-.proposal-panel .section-title {
-  color: #b45309;
-}
-
 .ai-input {
   width: 100%;
   border: 1px solid rgba(203, 213, 225, 0.7);
@@ -1360,59 +1228,6 @@ const resetCloseHintPending = () => {
   background: rgba(254, 226, 226, 0.5);
   padding: 6px 10px;
   border-radius: 6px;
-}
-
-.proposal-list {
-  display: grid;
-  gap: 8px;
-}
-
-.proposal-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.75rem;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.88);
-  padding: 0.75rem;
-  box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.04);
-  backdrop-filter: blur(12px);
-  transition: border-color 0.2s;
-}
-
-.proposal-item:hover {
-  border-color: rgba(14, 165, 233, 0.4);
-}
-
-.proposal-item strong {
-  display: block;
-  font-size: 13px;
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.proposal-item small {
-  color: var(--color-text-muted);
-  font-size: 11px;
-}
-
-.proposal-actions {
-  display: inline-flex;
-  gap: 8px;
-}
-
-.proposal-actions .small-btn {
-  background: rgba(240, 249, 255, 0.9);
-  border: 1px solid rgba(14, 165, 233, 0.3);
-  color: #0284c7;
-  border-radius: 6px;
-  font-weight: 500;
-}
-
-.proposal-actions .small-btn:hover {
-  background: #e0f2fe;
-  border-color: #0284c7;
 }
 
 .small-btn {

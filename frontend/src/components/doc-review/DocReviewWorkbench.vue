@@ -56,12 +56,15 @@ const proposalDraftModalVisible = ref(false);
 const revisionModalVisible = ref(false);
 const modalProposalId = ref("");
 const proposalThreadId = ref("");
+const proposalSources = ref<string[]>([]);
+const requestingProposal = ref(false);
+const selectingProposalSources = ref(false);
 const applyingProposal = ref(false);
 const proposalDraftSnapshot = ref<AssetResolutionProposal | null>(null);
 const revisionSnapshot = ref<AssetResolutionProposal | null>(null);
 const forceRevisionSnapshot = ref(false);
 const overwriteConfirmVisible = ref(false);
-const overwriteTargetThreadId = ref("");
+const overwriteTargetSources = ref<string[]>([]);
 const overwriteTargetDraftId = ref("");
 const bootstrapTriggering = ref(false);
 const showBootstrapConfirm = ref(false);
@@ -234,6 +237,19 @@ watch(editing, () => {
 const proposalThread = computed(
   () => threads.value.find((item) => item.id === proposalThreadId.value) || null,
 );
+const versionNumbers = computed(() => Object.fromEntries(versions.value.map(item => [item.id, item.version_no])));
+const proposalSourceOptions = computed(() => threads.value.filter(thread => thread.status === "resolved").map(thread => {
+  const number = versionNumbers.value[thread.version_id];
+  return {
+    id: thread.id,
+    quote: thread.selected_text || thread.block_id,
+    version: number ? t("doc_review.annotation_original_version", { version: number }) : "",
+  };
+}));
+const hasProposalSources = (proposal: AssetResolutionProposal, ids: string[]) => {
+  const existing = proposal.proposed_patch_json?.source_thread_ids;
+  return Array.isArray(existing) && existing.length === ids.length && ids.every(id => existing.includes(id));
+};
 const proposalJob = computed<AssetAiJob | null>(() => {
   if (!proposalThreadId.value) return null;
   return proposalJobMap.value[proposalThreadId.value] || null;
@@ -250,8 +266,25 @@ const findActiveModalProposal = () => {
     }
     return null;
   }
+  if (proposalSources.value.length) {
+    return proposalThread.value?.proposals.find(item =>
+      item.base_version_id === (selectedVersionId.value || activeVersionId.value)
+      && hasProposalSources(item, proposalSources.value)) || null;
+  }
   return proposalThread.value?.proposals?.[0] || null;
 };
+const jointProposalBlockedReason = computed(() => {
+  const proposal = findActiveModalProposal();
+  const sources = proposal?.proposed_patch_json?.source_thread_ids;
+  if (!proposal || !Array.isArray(sources) || !sources.length) return "";
+  if (proposal.base_version_id !== (selectedVersionId.value || activeVersionId.value)) {
+    return t("doc_review.joint_proposal_version_changed");
+  }
+  if (sources.some(id => !threads.value.some(thread => thread.id === id && thread.status === "resolved"))) {
+    return t("doc_review.joint_proposal_sources_changed");
+  }
+  return "";
+});
 const proposalForDraftModal = computed<AssetResolutionProposal | null>(() => {
   if (!proposalDraftModalVisible.value) return null;
   if (isProposalGenerating.value && !modalProposalId.value && !proposalDraftSnapshot.value) {
@@ -466,11 +499,14 @@ const findProposalThread = (proposalId: string) =>
 const clearModalContext = () => {
   modalProposalId.value = "";
   proposalThreadId.value = "";
+  proposalSources.value = [];
+  selectingProposalSources.value = false;
 };
 
 const closeProposalDraftModal = (force = false) => {
   if (!force && applyingProposal.value) return;
   proposalDraftModalVisible.value = false;
+  selectingProposalSources.value = false;
   proposalDraftSnapshot.value = null;
   if (!revisionModalVisible.value) {
     forceRevisionSnapshot.value = false;
@@ -494,6 +530,8 @@ const openProposalById = (proposalId: string) => {
   const thread = findProposalThread(proposalId);
   if (!thread) return;
   const proposal = thread.proposals.find((item) => item.id === proposalId) || null;
+  proposalSources.value = [];
+  selectingProposalSources.value = false;
   forceRevisionSnapshot.value = false;
   proposalThreadId.value = thread.id;
   modalProposalId.value = proposalId;
@@ -510,34 +548,37 @@ const openProposalById = (proposalId: string) => {
 
 const clearOverwriteConfirmState = () => {
   overwriteConfirmVisible.value = false;
-  overwriteTargetThreadId.value = "";
+  overwriteTargetSources.value = [];
   overwriteTargetDraftId.value = "";
 };
 
-const openOverwriteConfirm = (threadId: string, draftId: string) => {
-  overwriteTargetThreadId.value = threadId;
+const openOverwriteConfirm = (threadIds: string[], draftId: string) => {
+  overwriteTargetSources.value = threadIds;
   overwriteTargetDraftId.value = draftId;
   overwriteConfirmVisible.value = true;
 };
 
 const runCreateResolutionProposal = async (
-  threadId: string,
+  threadIds: string[],
   existingDraft: AssetResolutionProposal | null,
   overwriteExistingDraft: boolean,
 ) => {
-  proposalThreadId.value = threadId;
+  const versionId = selectedVersionId.value || activeVersionId.value;
+  const assetId = selectedAssetId.value;
+  if (!versionId || requestingProposal.value) return;
+  requestingProposal.value = true;
+  selectingProposalSources.value = false;
+  proposalSources.value = threadIds;
+  proposalThreadId.value = threadIds[0] || "";
   modalProposalId.value = existingDraft?.id || "";
   proposalDraftSnapshot.value = existingDraft || null;
   revisionSnapshot.value = null;
   revisionModalVisible.value = false;
   proposalDraftModalVisible.value = true;
   try {
-    await discussion.createResolutionProposal(
-      threadId,
-      overwriteExistingDraft,
-      selectedVersionId.value || activeVersionId.value || undefined,
-    );
+    await discussion.createJointResolutionProposal(threadIds, versionId, overwriteExistingDraft);
   } catch (error: unknown) {
+    if (assetId !== selectedAssetId.value) return;
     const status = (error as { response?: { status?: number } })?.response?.status;
     if (status === 409) {
       const detail = (error as { response?: { data?: { detail?: any } } })?.response?.data?.detail;
@@ -547,31 +588,59 @@ const runCreateResolutionProposal = async (
           : "";
       if (existingDraftId) {
         ElMessage.warning(t("doc_review.proposal_draft_exists_opened"));
+        await discussion.loadThreads(versionId);
         openProposalById(existingDraftId);
         return;
       }
-      ElMessage.warning(t("doc_review.ai_job_bootstrap_not_ready"));
+      ElMessage.warning(formatApiError(error, t("doc_review.proposal_create_failed"), t));
       closeProposalDraftModal(true);
       return;
     }
     ElMessage.error(formatApiError(error, t("doc_review.proposal_create_failed"), t));
     closeProposalDraftModal(true);
+  } finally {
+    requestingProposal.value = false;
   }
 };
 
-const openProposalModalForThread = async (threadId: string) => {
+const openJointProposal = async (selected: string[]) => {
   if (!effectiveCapabilities.value.can_comment) return;
   if (!aiAvailableNow.value) {
     ElMessage.warning(aiUnavailableReasonText.value);
     return;
   }
-  const thread = threads.value.find((item) => item.id === threadId) || null;
-  const existingDraft = thread?.proposals.find((item) => item.status === "draft") || null;
+  const threadIds = [...new Set(selected)].sort();
+  if (!threadIds.length) return;
+  const thread = threads.value.find((item) => item.id === threadIds[0]);
+  const versionId = selectedVersionId.value || activeVersionId.value;
+  const existingDraft = thread?.proposals.find(item =>
+    item.status === "draft" && item.base_version_id === versionId && hasProposalSources(item, threadIds));
   if (existingDraft) {
-    openOverwriteConfirm(threadId, existingDraft.id);
+    openOverwriteConfirm(threadIds, existingDraft.id);
     return;
   }
-  await runCreateResolutionProposal(threadId, null, false);
+  await runCreateResolutionProposal(threadIds, null, false);
+};
+
+const selectJointProposalSources = () => {
+  clearModalContext();
+  proposalDraftSnapshot.value = null;
+  revisionSnapshot.value = null;
+  revisionModalVisible.value = false;
+  selectingProposalSources.value = true;
+  proposalDraftModalVisible.value = true;
+};
+
+const resumeJointProposal = (job: AssetAiJob) => {
+  const sources = job.context_json?.source_thread_ids;
+  if (!job.thread_id || !Array.isArray(sources)) return;
+  proposalThreadId.value = job.thread_id;
+  proposalSources.value = sources;
+  selectingProposalSources.value = false;
+  modalProposalId.value = "";
+  proposalDraftSnapshot.value = null;
+  revisionModalVisible.value = false;
+  proposalDraftModalVisible.value = true;
 };
 
 const keepCurrentProposalDraft = () => {
@@ -583,16 +652,13 @@ const keepCurrentProposalDraft = () => {
 };
 
 const overwriteCurrentProposalDraft = async () => {
-  const targetThreadId = overwriteTargetThreadId.value;
+  const sources = overwriteTargetSources.value;
   const targetDraftId = overwriteTargetDraftId.value;
   clearOverwriteConfirmState();
-  if (!targetThreadId) return;
-  const thread = threads.value.find((item) => item.id === targetThreadId) || null;
-  const existingDraft =
-    thread?.proposals.find((item) => item.id === targetDraftId) ||
-    thread?.proposals.find((item) => item.status === "draft") ||
-    null;
-  await runCreateResolutionProposal(targetThreadId, existingDraft, true);
+  if (!sources.length) return;
+  const thread = threads.value.find((item) => item.id === sources[0]);
+  const existingDraft = thread?.proposals.find((item) => item.id === targetDraftId) || null;
+  await runCreateResolutionProposal(sources, existingDraft, true);
 };
 
 const applyProposal = async (
@@ -1017,6 +1083,9 @@ onMounted(() => {
         :selected-thread-id="selectedThreadId"
         :assistant-job-map="assistantJobMap"
         :proposal-job-map="proposalJobMap"
+        :version-numbers="versionNumbers"
+        :context-version-id="selectedVersionId"
+        :requesting-proposal="requestingProposal"
         :readonly="readOnlyMode || historicalVersionReadonly || editing"
         :draft-editing="editing"
         :can-comment="effectiveCapabilities.can_comment"
@@ -1031,7 +1100,8 @@ onMounted(() => {
         @show-original="showOriginal"
         @send-message="sendThreadMessage"
         @ask-ai="askThreadAi"
-        @generate-proposal="openProposalModalForThread"
+        @generate-proposal="selectJointProposalSources"
+        @resume-proposal="resumeJointProposal"
         @open-proposal="openProposalById"
         @update-state="updateThreadState"
         @close-hint-action="handleThreadCloseHintAction"
@@ -1043,9 +1113,13 @@ onMounted(() => {
     :visible="proposalDraftModalVisible"
     :proposal="proposalForDraftModal"
     :proposal-job="proposalJob"
-    :can-rewrite="aiAvailableNow"
-    :rewrite-disabled-reason="aiUnavailableReasonText"
+    :selecting-sources="selectingProposalSources"
+    :source-options="proposalSourceOptions"
+    :can-rewrite="aiAvailableNow && !jointProposalBlockedReason"
+    :rewrite-disabled-reason="jointProposalBlockedReason || aiUnavailableReasonText"
     @close="closeProposalDraftModal"
+    @cancel-job="cancelThreadAiJob"
+    @generate="openJointProposal"
     @rewrite="rewriteProposalFromDraft"
   />
 
@@ -1053,9 +1127,9 @@ onMounted(() => {
     :visible="revisionModalVisible"
     :proposal="proposalForRevisionModal"
     :proposal-job="proposalJob"
-    :can-apply="effectiveCapabilities.can_apply_resolution"
-    :can-rewrite="aiAvailableNow"
-    :rewrite-disabled-reason="aiUnavailableReasonText"
+    :can-apply="effectiveCapabilities.can_apply_resolution && !jointProposalBlockedReason"
+    :can-rewrite="aiAvailableNow && !jointProposalBlockedReason"
+    :rewrite-disabled-reason="jointProposalBlockedReason || aiUnavailableReasonText"
     :applying="applyingProposal"
     @close="closeRevisionModal"
     @regenerate="regenerateRevisionFromModal"

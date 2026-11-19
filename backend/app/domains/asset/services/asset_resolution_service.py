@@ -27,6 +27,7 @@ from app.domains.asset.services.document import repository as document_repositor
 from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.asset.services.document.docx import apply_blocks_to_docx_inplace, edit_docx_paragraph
 from app.domains.asset.services.document.text_source import SOURCE_BLOCK_ID
+from app.domains.asset.services.review import proposal_sources
 from app.domains.task.models.task import SddTask
 from app.domains.task.services import task_cli_state_service
 
@@ -581,6 +582,7 @@ def create_resolution_proposal(
     source_message_ids: list[str] | None = None,
     version: SddAssetVersion | None = None,
     effective_anchor: dict[str, Any] | None = None,
+    source_thread_ids: tuple[str, ...] = (),
 ) -> SddAssetResolutionProposal:
     version = version or thread.version
     if not version:
@@ -626,16 +628,9 @@ def create_resolution_proposal(
     ids = source_message_ids or _collect_source_message_ids(thread)
     if ids:
         patch_json["source_message_ids"] = [str(item).strip() for item in ids if str(item).strip()]
-
-    existing_drafts = (
-        db.query(SddAssetResolutionProposal)
-        .filter(
-            SddAssetResolutionProposal.thread_id == thread.id,
-            SddAssetResolutionProposal.status == AssetResolutionProposalStatus.DRAFT,
-        )
-        .order_by(SddAssetResolutionProposal.updated_at.desc(), SddAssetResolutionProposal.created_at.desc())
-        .all()
-    )
+    if source_thread_ids:
+        patch_json.update(source_thread_ids=list(source_thread_ids), rewrite_scope="document")
+    existing_drafts = proposal_sources.matching_drafts(db, thread.id, source_thread_ids, version.id)
     if existing_drafts:
         if not overwrite_existing_draft:
             raise ResolutionServiceError("Draft proposal already exists", status_code=409)
@@ -1188,6 +1183,15 @@ def apply_resolution_proposal(
         raise ResolutionServiceError("Proposal base version not found")
 
     patch = copy.deepcopy(proposal.proposed_patch_json) if isinstance(proposal.proposed_patch_json, dict) else {}
+    sources = proposal_sources.source_ids(patch)
+    if sources and (
+        active_version_id != proposal_version_id
+        or patch.get("rewrite_status") != "ready"
+        or patch.get("rewrite_scope") != "document"
+    ):
+        raise ResolutionServiceError(
+            "Rewrite the joint proposal on its base version before applying it", status_code=409
+        )
     base_blocks = base_version.blocks_json or []
     if not isinstance(base_blocks, list):
         raise ResolutionServiceError("Base version blocks are invalid")
@@ -1226,9 +1230,11 @@ def apply_resolution_proposal(
         use_document_apply,
     )
 
-    effective_block_id, effective_selected_text = _refresh_applied_anchor(
-        db, thread, version, patch, block_id, actor_user_id
-    )
+    effective_block_id, effective_selected_text = (block_id, None)
+    if not sources:
+        effective_block_id, effective_selected_text = _refresh_applied_anchor(
+            db, thread, version, patch, block_id, actor_user_id
+        )
 
     if thread.task_id:
         refresh_mode = "DELTA" if str(patch.get("rewrite_scope") or "anchor").strip().lower() == "anchor" else "FULL"
@@ -1255,7 +1261,11 @@ def apply_resolution_proposal(
     for item in list(thread.proposals or []):
         if item.id == proposal.id:
             continue
-        if item.status == AssetResolutionProposalStatus.DRAFT:
+        if (
+            item.status == AssetResolutionProposalStatus.DRAFT
+            and proposal_sources.source_ids(item.proposed_patch_json) == sources
+            and (not sources or item.base_version_id == proposal_version_id)
+        ):
             item.status = AssetResolutionProposalStatus.DISCARDED
 
     asset_discussion_service.add_thread_message(

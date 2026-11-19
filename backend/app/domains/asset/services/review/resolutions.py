@@ -7,6 +7,7 @@ from app.domains.asset.schemas.asset import AssetManualEditBlockRequest, AssetRe
 from app.domains.asset.services import asset_discussion_service, asset_resolution_service, asset_service
 from app.domains.asset.services.document.transactions import DocumentVersionConflict
 from app.domains.asset.services.review import policy as asset_review_policy
+from app.domains.asset.services.review import proposal_sources
 from app.domains.asset.services.review import serialization as asset_review_serialization
 from app.domains.asset.services.review.errors import ReviewError
 from app.domains.workspace_asset.schemas.workspace_asset import DecisionCreateRequest
@@ -25,7 +26,6 @@ def apply_resolution(
     thread = asset_discussion_service.get_thread(db, asset_id=asset.id, thread_id=thread_id)
     if not thread:
         raise ReviewError(status_code=404, detail="Thread not found")
-    asset_review_policy._ensure_thread_open(thread)
 
     proposal = (
         db.query(SddAssetResolutionProposal)
@@ -37,6 +37,11 @@ def apply_resolution(
     )
     if not proposal:
         raise ReviewError(status_code=404, detail="Resolution proposal not found")
+    sources = proposal_sources.source_ids(proposal.proposed_patch_json)
+    if sources:
+        proposal_sources.validate_sources(db, asset, sources, proposal.base_version_id)
+    else:
+        asset_review_policy._ensure_thread_open(thread)
 
     try:
         version = asset_resolution_service.apply_resolution_proposal(
@@ -79,6 +84,7 @@ def apply_resolution(
                         else str(asset.asset_type),
                         "asset_name": asset.name,
                         "thread_block_id": thread.block_id,
+                        **({"source_thread_ids": list(sources)} if sources else {}),
                         "resolution_applied": True,
                     },
                     change_reason="Recorded from Spec / Plan resolution apply.",

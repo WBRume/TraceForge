@@ -47,13 +47,13 @@ export function useAssetDiscussionSubscription(
       onlineUsers.value = Array.isArray(eventData.online_users) ? eventData.online_users : []
       return
     }
-    if (eventType === 'thread_created' && eventData.thread) {
-      discussion.setThread(eventData.thread as AssetThread, owner)
-      await document.loadDocument(document.activeVersionId.value || undefined, owner)
-      return
-    }
-    if (eventType === 'thread_updated' && eventData.thread) {
-      discussion.setThread(eventData.thread as AssetThread, owner)
+    if ((eventType === 'thread_created' || eventType === 'thread_updated') && eventData.thread) {
+      const thread = eventData.thread as AssetThread
+      if (document.capabilities.value.ai_unavailable_reason === 'historical_version_readonly') {
+        await discussion.fetchThread(thread.id, owner)
+      } else {
+        discussion.setThread(thread, owner)
+      }
       await document.loadDocument(document.activeVersionId.value || undefined, owner)
       return
     }

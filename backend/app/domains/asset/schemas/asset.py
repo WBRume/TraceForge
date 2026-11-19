@@ -211,6 +211,12 @@ class AssetResolutionProposalCreateRequest(BaseModel):
     context_version_id: str | None = None
 
 
+class AssetJointProposalCreateRequest(BaseModel):
+    thread_ids: list[str] = Field(min_length=1)
+    context_version_id: str = Field(min_length=1)
+    overwrite_existing_draft: bool = False
+
+
 class AssetResolutionProposalRewriteRequest(BaseModel):
     proposal_text: str = Field(..., min_length=1, max_length=50000)
     rewrite_scope: Literal["anchor", "document"] = "anchor"

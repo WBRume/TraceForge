@@ -1183,17 +1183,18 @@ def _load_thread_session_inputs_sync(
     thread_id: str,
     *,
     require_ready: bool = True,
+    independent: bool = False,
 ) -> dict[str, Any]:
     """Load only detached primitives before any async fork/network work."""
     db = SessionLocal()
     try:
         thread, record = _load_thread_fork_inputs(db, thread_id, require_ready=require_ready)
-        existing = str(thread.cli_session_id or "").strip()
+        existing = "" if independent else str(thread.cli_session_id or "").strip()
         backend = normalize_backend_name(record.agent_backend) or resolve_workspace_backend(db, thread.workspace_id)
         if existing:
             return {"plan": ThreadSessionPlan(backend=backend, session_id=existing)}
 
-        latest = get_latest_thread_session_id(db, thread.id)
+        latest = None if independent else get_latest_thread_session_id(db, thread.id)
         if latest:
             thread.cli_session_id = latest
             db.commit()
@@ -1255,6 +1256,7 @@ async def ensure_thread_session(
     thread_id: str,
     *,
     require_ready: bool = True,
+    independent: bool = False,
 ) -> ThreadSessionPlan:
     """确保评审线程有自己的 CLI 会话（由 baseline fork 而来）。
 
@@ -1274,6 +1276,7 @@ async def ensure_thread_session(
                     _load_thread_session_inputs_sync,
                     thread_id,
                     require_ready=require_ready,
+                    independent=independent,
                 )
                 plan = inputs["plan"]
                 task_dir = str(inputs.get("task_dir") or "")
@@ -1329,7 +1332,8 @@ async def ensure_thread_session(
                     )
                     return plan
 
-                await record_thread_session_id_async(thread_id, new_session_id)
+                if not independent:
+                    await record_thread_session_id_async(thread_id, new_session_id)
                 plan.session_id = new_session_id
                 return plan
     except LockAcquireTimeout as caught_error:
@@ -1367,6 +1371,7 @@ def get_latest_thread_session_id(db: Session, thread_id: str) -> str | None:
             SddAiJob.channel == AiJobChannel.ASSET_THREAD,
             SddAiJob.status == AiJobStatus.SUCCESS,
             SddAiJob.session_id.isnot(None),
+            SddAiJob.context_json["source_thread_ids"].as_string().is_(None),
         )
         .order_by(SddAiJob.created_at.desc())
         .first()

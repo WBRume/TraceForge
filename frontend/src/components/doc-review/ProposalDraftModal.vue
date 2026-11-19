@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, useId, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import BaseSelect from "@/components/BaseSelect.vue";
 import DomainMilestones from "@/components/ai/DomainMilestones.vue";
@@ -24,6 +24,7 @@ type ProposalPatch = {
   new_text?: string;
   display_new_text?: string;
   source_message_ids?: string[];
+  source_thread_ids?: string[];
   rewrite_scope?: "anchor" | "document";
 };
 
@@ -39,10 +40,14 @@ const props = defineProps<{
   proposalJob?: ThreadAiJob | null;
   canRewrite?: boolean;
   rewriteDisabledReason?: string | null;
+  selectingSources?: boolean;
+  sourceOptions?: Array<{ id: string; quote: string; version: string }>;
 }>();
 
 const emit = defineEmits<{
   close: [];
+  "cancel-job": [jobId: string];
+  "generate": [threadIds: string[]];
   rewrite: [
     proposalId: string,
     proposalText: string,
@@ -51,9 +56,17 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+const titleId = useId();
+const checkedSources = ref<string[]>([]);
+const selection = computed(() => (props.sourceOptions || [])
+  .filter(source => checkedSources.value.includes(source.id)).map(source => source.id));
+watch(() => props.selectingSources, selecting => {
+  if (selecting) checkedSources.value = [];
+});
 
 const proposalDraft = ref("");
 const rewriteScope = ref<"anchor" | "document">("anchor");
+const isJoint = computed(() => !!props.proposal?.proposed_patch_json?.source_thread_ids?.length);
 const rewriteScopeOptions = computed(() => [
   { label: t("doc_review.proposal_rewrite_scope_anchor"), value: "anchor" },
   { label: t("doc_review.proposal_rewrite_scope_document"), value: "document" },
@@ -67,7 +80,7 @@ watch(
       patch.proposal_text || patch.new_text || patch.display_new_text || "",
     );
     const scope = String(patch.rewrite_scope || "anchor").toLowerCase();
-    rewriteScope.value = scope === "document" ? "document" : "anchor";
+    rewriteScope.value = isJoint.value || scope === "document" ? "document" : "anchor";
   },
   { immediate: true, deep: true },
 );
@@ -115,22 +128,33 @@ const doRewrite = () => {
   if (!props.proposal) return;
   const text = proposalDraft.value.trim();
   if (!text) return;
-  emit("rewrite", props.proposal.id, text, rewriteScope.value);
+  emit("rewrite", props.proposal.id, text, isJoint.value ? "document" : rewriteScope.value);
 };
 </script>
 
 <template>
   <div v-if="visible" class="modal-overlay" @click.self="emit('close')">
-    <div class="modal-card glass-panel">
+    <div class="modal-card glass-panel" role="dialog" aria-modal="true" :aria-labelledby="titleId">
       <header class="modal-head">
         <div class="title-wrap">
-          <h3>{{ t("doc_review.proposal_modal_title") }}</h3>
-          <p>{{ t("doc_review.proposal_modal_subtitle") }}</p>
+          <h3 :id="titleId">{{ t("doc_review.proposal_modal_title") }}</h3>
+          <p>{{ t(selectingSources ? "doc_review.proposal_select_resolved" : "doc_review.proposal_modal_subtitle") }}</p>
         </div>
         <button class="close-btn" @click="emit('close')">×</button>
       </header>
 
-      <template v-if="proposal">
+      <section v-if="selectingSources" class="proposal-source-picker">
+        <p v-if="!sourceOptions?.length">{{ t("doc_review.proposal_no_resolved_threads") }}</p>
+        <div v-else class="proposal-source-list custom-scrollbar">
+          <label v-for="source in sourceOptions" :key="source.id" class="proposal-source">
+            <input v-model="checkedSources" type="checkbox" :value="source.id"
+              :aria-label="t('doc_review.proposal_select_thread', { quote: source.quote })" />
+            <span>{{ source.quote }}</span>
+            <small v-if="source.version">{{ source.version }}</small>
+          </label>
+        </div>
+      </section>
+      <template v-else-if="proposal">
         <p v-if="proposalMetaText" class="proposal-meta">{{ proposalMetaText }}</p>
         <section class="proposal-editor-panel">
           <header class="proposal-editor-head">
@@ -143,7 +167,9 @@ const doRewrite = () => {
             <span class="rewrite-scope-label">{{
               t("doc_review.proposal_rewrite_scope_label")
             }}</span>
+            <strong v-if="isJoint" class="rewrite-scope-label">{{ t("doc_review.proposal_rewrite_scope_document") }}</strong>
             <BaseSelect
+              v-else
               v-model="rewriteScope"
               :options="rewriteScopeOptions"
               size="sm"
@@ -164,14 +190,6 @@ const doRewrite = () => {
             :disabled="isProposalJobBusy || props.canRewrite === false"
           />
         </section>
-        <footer class="modal-actions">
-          <button class="btn-secondary" @click="emit('close')">
-            {{ t("doc_review.proposal_modal_close") }}
-          </button>
-          <button class="btn-primary" :disabled="!canRewriteNow" @click="doRewrite">
-            {{ rewriteActionText }}
-          </button>
-        </footer>
       </template>
 
       <template v-else>
@@ -186,17 +204,49 @@ const doRewrite = () => {
             {{ t("doc_review.proposal_waiting_hint") }}
           </p>
         </div>
-        <footer class="modal-actions">
-          <button class="btn-secondary" @click="emit('close')">
-            {{ t("doc_review.proposal_modal_close") }}
-          </button>
-        </footer>
       </template>
+      <footer class="modal-actions">
+        <span v-if="selectingSources && selection.length" class="proposal-source-count" aria-live="polite">
+          {{ t("doc_review.proposal_selected_threads", { count: selection.length }) }}
+        </span>
+        <button v-if="proposalJob && isProposalJobBusy && canRewrite" class="btn-secondary"
+          @click="emit('cancel-job', proposalJob.id)">
+          {{ t("doc_review.ai_cancel_action") }}
+        </button>
+        <button class="btn-secondary" @click="emit('close')">
+          {{ t("doc_review.proposal_modal_close") }}
+        </button>
+        <button v-if="selectingSources" class="btn-primary" :disabled="!selection.length || canRewrite === false"
+          @click="emit('generate', selection)">
+          {{ t("doc_review.proposal_generate_joint") }}
+        </button>
+        <button v-else-if="proposal" class="btn-primary" :disabled="!canRewriteNow" @click="doRewrite">
+          {{ rewriteActionText }}
+        </button>
+      </footer>
     </div>
   </div>
 </template>
 
 <style scoped>
+.proposal-source-picker { min-height: 5rem; color: var(--color-text-muted); }
+.proposal-source-list { display: grid; gap: .45rem; max-height: min(52vh, 25rem); overflow-y: auto; }
+.proposal-source {
+  display: flex;
+  align-items: flex-start;
+  gap: .65rem;
+  padding: .65rem .8rem;
+  border: 1px solid #dbe6ef;
+  border-radius: .65rem;
+  background: #f8fafc;
+  color: var(--color-text-body);
+  cursor: pointer;
+}
+.proposal-source:has(input:checked) { border-color: #7dd3fc; background: #f0f9ff; }
+.proposal-source input { margin-top: .2rem; accent-color: #0284c7; }
+.proposal-source span { flex: 1; overflow-wrap: anywhere; }
+.proposal-source small { flex-shrink: 0; padding-top: .15rem; color: var(--color-text-muted); }
+.proposal-source-count { margin-right: auto; align-self: center; color: var(--color-text-muted); font-size: .8rem; }
 .modal-overlay {
   position: fixed;
   inset: 0;

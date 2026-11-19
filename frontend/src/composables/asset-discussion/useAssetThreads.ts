@@ -135,6 +135,19 @@ export function useAssetThreads(
     }, null)
   }
 
+  const createJointResolutionProposal = (
+    threadIds: string[], contextVersionId: string, overwriteExistingDraft: boolean,
+  ) => scope.run(null, (!threadIds.length || !contextVersionId) ? undefined : scope.capture(), async (request) => {
+    const { data } = await api.post<AssetAiJob>(`${request.baseUrl}/resolution/proposals`, {
+      thread_ids: threadIds,
+      context_version_id: contextVersionId,
+      overwrite_existing_draft: overwriteExistingDraft,
+    }, { signal: request.signal })
+    if (!request.isCurrent()) return null
+    jobs.setThreadJob(data, request)
+    return data
+  }, null)
+
   const rewriteResolutionProposal = async (
     threadId: string,
     proposalId: string,
@@ -255,7 +268,7 @@ export function useAssetThreads(
 
   return {
     threads, selectedThreadId, selectedThread, loadingThreads, setThread, fetchThread, loadThreads,
-    createThread, sendThreadMessage, askAi, createResolutionProposal, rewriteResolutionProposal,
+    createThread, sendThreadMessage, askAi, createResolutionProposal, createJointResolutionProposal, rewriteResolutionProposal,
     applyResolutionProposal, updateThreadCloseHint, updateThreadState, reset,
   }
 }

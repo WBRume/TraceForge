@@ -90,6 +90,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     sendThreadMessage: discussion.sendThreadMessage,
     askAi: discussion.askAi,
     createResolutionProposal: discussion.createResolutionProposal,
+    createJointResolutionProposal: discussion.createJointResolutionProposal,
     rewriteResolutionProposal: discussion.rewriteResolutionProposal,
     applyResolutionProposal: discussion.applyResolutionProposal,
     cancelAiJob: jobs.cancelAiJob,

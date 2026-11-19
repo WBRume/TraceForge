@@ -14,6 +14,7 @@ from app.domains.asset.models.asset import AssetResolutionProposalStatus, SddAss
 from app.domains.asset.routers.assets import transport as asset_assets_transport
 from app.domains.asset.routers.assets.transport import ReviewRoute
 from app.domains.asset.schemas.asset import (
+    AssetJointProposalCreateRequest,
     AssetResolutionAnchorPrecheckRequest,
     AssetResolutionAnchorPrecheckResponse,
     AssetResolutionApplyRequest,
@@ -26,12 +27,39 @@ from app.domains.asset.services.document import repository as document_repositor
 from app.domains.asset.services.review import documents as asset_review_documents
 from app.domains.asset.services.review import jobs as asset_review_jobs
 from app.domains.asset.services.review import policy as asset_review_policy
+from app.domains.asset.services.review import proposal_sources
 from app.domains.asset.services.review import resolutions as resolution_commands
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
 from app.domains.auth.models.user import User
 from app.domains.task.services import task_cli_state_service
 
 router = APIRouter(route_class=ReviewRoute)
+
+
+@router.post("/{asset_id}/resolution/proposals", response_model=AiJobResponse)
+async def create_joint_resolution_proposal(
+    ws_id: str,
+    asset_id: str,
+    data: AssetJointProposalCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    db_bind = asset_assets_transport._get_db_bind(db)
+    user_id = current_user.id
+    try:
+        result = await asset_assets_transport._run_asset_route_db_txn(
+            db,
+            db_bind,
+            lambda session: asset_review_jobs.create_joint_proposal_job(
+                session, ws_id=ws_id, asset_id=asset_id, user_id=user_id, data=data
+            ),
+        )
+    except task_cli_state_service.BootstrapNotReadyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    db.close()
+    if result["created"]:
+        await ai_job_publishing.enqueue_asset_thread_job(result["payload"]["id"])
+    return AiJobResponse(**result["payload"])
 
 
 @router.post("/{asset_id}/threads/{thread_id}/resolution/proposals", response_model=AiJobResponse)
@@ -116,7 +144,6 @@ def precheck_thread_resolution_anchor(
     thread = asset_discussion_service.get_thread(db, asset_id=asset.id, thread_id=thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
-    asset_review_policy._ensure_thread_open(thread)
     proposal = (
         db.query(SddAssetResolutionProposal)
         .filter(
@@ -131,6 +158,11 @@ def precheck_thread_resolution_anchor(
         raise HTTPException(status_code=409, detail="Only draft proposals can be checked")
 
     rewrite_scope = str(data.rewrite_scope or "anchor").strip().lower()
+    if proposal_sources.source_ids(proposal.proposed_patch_json):
+        if rewrite_scope != "document":
+            raise HTTPException(status_code=409, detail="Joint proposals use document-level rewrite")
+    else:
+        asset_review_policy._ensure_thread_open(thread)
     if rewrite_scope != "anchor":
         return AssetResolutionAnchorPrecheckResponse(
             ok=True,
@@ -198,6 +230,7 @@ async def rewrite_thread_resolution_proposal(
             user_id=current_user.id,
             context_version_id=context_version_id,
             proposal_id=proposal_id,
+            ensure_open=False,
         ),
     )
     db.close()
@@ -205,10 +238,8 @@ async def rewrite_thread_resolution_proposal(
     context_version_id = context["context_version_id"]
 
     try:
-        await task_cli_state_service.ensure_thread_session(
-            thread_id,
-            require_ready=True,
-        )
+        if not context.get("source_thread_ids"):
+            await task_cli_state_service.ensure_thread_session(thread_id, require_ready=True)
     except task_cli_state_service.BootstrapNotReadyError as exc:
         await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
         raise HTTPException(status_code=409, detail=str(exc)) from exc

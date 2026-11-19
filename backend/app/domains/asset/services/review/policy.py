@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.domains.asset.models.asset import AssetResolutionProposalStatus, AssetThreadStatus, SddAssetResolutionProposal
 from app.domains.asset.services import asset_discussion_service, asset_service
 from app.domains.asset.services.document import repository as document_repository
+from app.domains.asset.services.review import proposal_sources
 from app.domains.asset.services.review.errors import ReviewError
 from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.task.models.task import TaskStatus
@@ -122,6 +123,7 @@ def _load_asset_thread_action_context_sync(
             asset,
             context_version.id if context_version else resolved_context_id,
         )
+    sources: tuple[str, ...] = ()
     if proposal_id:
         proposal = (
             db.query(SddAssetResolutionProposal)
@@ -135,10 +137,17 @@ def _load_asset_thread_action_context_sync(
             raise ReviewError(status_code=404, detail="Resolution proposal not found")
         if proposal.status != AssetResolutionProposalStatus.DRAFT:
             raise ReviewError(status_code=409, detail="Only draft proposals can be rewritten")
+        sources = proposal_sources.source_ids(proposal.proposed_patch_json)
+        if not ensure_open:
+            if sources:
+                proposal_sources.validate_sources(db, asset, sources, proposal.base_version_id)
+            else:
+                _ensure_thread_open(thread)
     return {
         "asset_id": str(asset.id),
         "thread_id": str(thread.id),
         "task_id": str(thread.task_id),
         "active_version_id": str(asset.active_version_id or "") or None,
         "context_version_id": str(context_version.id if context_version else resolved_context_id or "") or None,
+        "source_thread_ids": list(sources),
     }

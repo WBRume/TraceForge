@@ -65,6 +65,7 @@ from app.domains.asset.models.asset import (
     SddAssetThread,
 )
 from app.domains.asset.services import asset_discussion_service, asset_resolution_service
+from app.domains.asset.services.review import proposal_sources
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
 from app.domains.task.services import task_cli_state_service
 from app.domains.task.services.ai_context_service import (
@@ -137,8 +138,75 @@ def _prepare_asset_thread_context_sync(
     }
 
 
+def _joint_context(db, thread, base):
+    context = base["context_json"]
+    sources = proposal_sources.source_ids(context)
+    version_id = context["context_version_id"]
+    if base["bootstrap_version_id"] != version_id:
+        raise ValueError("The baseline belongs to another version of the document")
+    version, threads = proposal_sources.validate_sources(db, thread.asset, sources, version_id)
+    lines: list[str] = []
+    message_ids: list[str] = []
+    for source in threads:
+        anchor = asset_discussion_service.resolve_thread_anchor_for_version(db, thread=source, context_version=version)
+        original = f"v{source.version.version_no}" if source.version else source.version_id
+        lines.extend(
+            [
+                f"讨论 {source.id}（已解决，原引用 {original}）",
+                f"原文：{source.selected_text or source.block_id}",
+            ]
+        )
+        if source.version:
+            original_block = asset_discussion_service.get_block_by_id(source.version, source.block_id)
+            location = describe_docx_selection(source, original_block)
+            if location:
+                lines.append(location)
+        if anchor["anchor_status"] == "valid":
+            effective = anchor["effective_anchor"]
+            lines.append(f"当前版本位置：{effective['block_id']}，引用：{effective.get('selected_text') or ''}")
+            start, end = effective.get("char_start"), effective.get("char_end")
+            text = effective.get("block_text") or ""
+            if start is not None and end is not None:
+                lines.append(f"当前字符范围 [{start}, {end})：{text[max(0, start - 80) : end + 80]}")
+        for message in source.messages:
+            metadata = message.metadata_json
+            if isinstance(metadata, dict) and metadata.get("source") == "docx_comment_import":
+                lines.append(f"[DOCX 批注] {message.content}")
+                message_ids.append(message.id)
+        lines.extend(proposal_discussion_lines(source))
+        message_ids.extend(proposal_source_message_ids(source)[-28:])
+    return version, sources, lines, message_ids
+
+
+def _build_joint_proposal_run(db, base, thread, run_state):
+    version, sources, lines, messages = _joint_context(db, thread, base)
+    first = next((block for block in version.blocks_json or [] if extract_block_text(block)), None)
+    if not first:
+        raise ValueError("The published document has no content for a joint proposal")
+    prompt = (
+        f"为需求文档「{base['document_name']}」当前正式版本 v{version.version_no} 生成一份结论提案。\n"
+        "请综合下列每条已解决讨论最后确认的结论，逐项说明影响位置、建议修改和验收条件。"
+        "合并重复结论，明确指出尚存冲突和需要确认的事项。保留所有相关讨论的来源，不要把多处修改压到一个选区。\n\n"
+        + "\n".join(lines)
+    )
+    run_state.update(
+        prompt=prompt,
+        overwrite_existing_draft=bool(base["context_json"].get("overwrite_existing_draft")),
+        source_thread_ids=list(sources),
+        source_message_ids=messages,
+        effective_anchor={"block_id": first["id"], "char_start": None, "char_end": None},
+        context_version_id=version.id,
+        anchor_text="",
+        block_text="",
+        discussion_lines_tail=[],
+    )
+    return run_state
+
+
 def _build_proposal_run(db, base, thread, task, version, run_state):
     context_json = base.get("context_json") or {}
+    if proposal_sources.source_ids(context_json):
+        return _build_joint_proposal_run(db, base, thread, run_state)
     overwrite_existing_draft = bool(context_json.get("overwrite_existing_draft"))
     context_version = resolve_context_version(
         db,
@@ -226,18 +294,27 @@ def _build_rewrite_run(db, base, thread, task, version, run_state):
     requested_scope = str(context_json.get("rewrite_scope") or "").strip().lower()
     if requested_scope not in {"anchor", "document"}:
         requested_scope = "anchor"
-    context_version = resolve_context_version(
-        db,
-        thread=thread,
-        requested_version_id=str(context_json.get("context_version_id") or "").strip() or proposal.base_version_id,
-    )
+    sources = proposal_sources.source_ids(proposal.proposed_patch_json)
+    group_lines: list[str] = []
+    if sources:
+        context_version, _, group_lines, _ = _joint_context(db, thread, base)
+    else:
+        context_version = resolve_context_version(
+            db,
+            thread=thread,
+            requested_version_id=str(context_json.get("context_version_id") or "").strip() or proposal.base_version_id,
+        )
     anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
         db,
         thread=thread,
         context_version=context_version,
     )
     effective_anchor = anchor_eval.get("effective_anchor") if isinstance(anchor_eval, dict) else {}
-    relocated_anchor = normalize_relocated_anchor(context_json.get("relocated_anchor"))
+    relocated_anchor = (
+        (proposal.proposed_patch_json or {}).get("effective_anchor")
+        if sources
+        else normalize_relocated_anchor(context_json.get("relocated_anchor"))
+    )
     if relocated_anchor:
         effective_anchor = relocated_anchor
     effective_block_id = (
@@ -268,6 +345,8 @@ def _build_rewrite_run(db, base, thread, task, version, run_state):
         rewrite_scope=requested_scope,
         selection_mode=selection_mode,
     )
+    if sources:
+        prompt += "\n\n联合提案的讨论来源：\n" + "\n".join(group_lines)
     run_state.update(
         {
             "prompt": prompt,
@@ -276,6 +355,7 @@ def _build_rewrite_run(db, base, thread, task, version, run_state):
             "rewrite_scope": requested_scope,
             "selection_mode": selection_mode,
             "effective_anchor": effective_anchor,
+            "source_thread_ids": list(sources),
             "context_version_id": context_version.id if context_version else None,
             "anchor_text": anchor_meta["anchor_text"],
             "block_text": anchor_meta["block_text"],
@@ -301,7 +381,7 @@ def _build_asset_thread_run_sync(
     thread_backend = session_plan.backend
     resume_session_id = session_plan.session_id
     fork_first_turn = session_plan.fork_first_turn
-    if not fork_first_turn:
+    if not fork_first_turn and not proposal_sources.source_ids(base.get("context_json")):
         resume_session_id = task_cli_state_service.get_latest_thread_session_id(db, thread.id) or resume_session_id
     # 线程执行目录 = 任务目录（含 git worktree），评审答疑可直接读仓库内容
 
@@ -387,11 +467,17 @@ def _persist_asset_proposal_sync(
     thread = asset_discussion_service.get_thread(db, asset_id=base["asset_id"], thread_id=base["thread_id"])
     if not thread:
         raise ValueError("Thread disappeared during proposal generation")
-    context_version = resolve_context_version(
-        db,
-        thread=thread,
-        requested_version_id=base.get("context_version_id"),
-    )
+    sources = proposal_sources.source_ids(base)
+    if sources:
+        context_version, _ = proposal_sources.validate_sources(
+            db, thread.asset, sources, base["context_version_id"], lock=True
+        )
+    else:
+        context_version = resolve_context_version(
+            db,
+            thread=thread,
+            requested_version_id=base.get("context_version_id"),
+        )
     proposal = asset_resolution_service.create_resolution_proposal(
         db,
         thread=thread,
@@ -401,13 +487,14 @@ def _persist_asset_proposal_sync(
         source_message_ids=base.get("source_message_ids") or [],
         version=context_version,
         effective_anchor=base.get("effective_anchor") if isinstance(base.get("effective_anchor"), dict) else None,
+        source_thread_ids=sources,
     )
     proposal.proposed_patch_json = {
         **(proposal.proposed_patch_json or {}),
         "analysis": analysis,
         "rationale": rationale,
     }
-    if provider_session_id:
+    if provider_session_id and not sources:
         thread.cli_session_id = provider_session_id
     db.flush()
     return {
@@ -445,6 +532,9 @@ def _persist_asset_rewrite_sync(
     )
     if not proposal:
         raise ValueError("Resolution proposal not found after rewrite")
+    sources = proposal_sources.source_ids(proposal.proposed_patch_json)
+    if sources:
+        proposal_sources.validate_sources(db, thread.asset, sources, proposal.base_version_id, lock=True)
 
     proposal = asset_resolution_service.update_resolution_proposal_rewrite(
         db,
@@ -474,7 +564,7 @@ def _persist_asset_rewrite_sync(
         db.rollback()
         return {}
     proposal.proposed_patch_json = {**proposal_patch, "change_summary": change_summary}
-    if provider_session_id:
+    if provider_session_id and not sources:
         thread.cli_session_id = provider_session_id
     db.flush()
     return {
@@ -806,6 +896,7 @@ async def execute_asset_thread_job(job_id: str) -> bool | None:
             session_plan = await task_cli_state_service.ensure_thread_session(
                 base["thread_id"],
                 require_ready=True,
+                **({"independent": True} if proposal_sources.source_ids(base.get("context_json")) else {}),
             )
             # 准备段 B：prompt 构建 + 执行参数（线程内，无长持 session）
             run_state = await run_db_txn(
