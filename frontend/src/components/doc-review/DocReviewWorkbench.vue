@@ -716,6 +716,10 @@ onMounted(() => {
   <ResolutionDiffModal
     :visible="!!revisionJob || !!comparison"
     :proposal="comparison"
+    :ws-id="wsId"
+    :asset-id="selectedAssetId"
+    :asset-name="selectedAsset?.name"
+    :markdown="isMarkdown"
     :job="revisionJob"
     :result-error="revisionResultError"
     :can-apply="effectiveCapabilities.can_apply_resolution && !revisionBlockedReason"

@@ -151,6 +151,12 @@ watch(() => [props.aiHunks, props.humanHunks], () => {
   }
 })
 
+defineExpose({
+  revealOriginalLine(line: number) {
+    diffEditorRef.value?.getOriginalEditor().revealLineInCenter(line)
+  },
+})
+
 onBeforeUnmount(() => {
   annotations?.dismiss()
   disposables.forEach(item => item.dispose())

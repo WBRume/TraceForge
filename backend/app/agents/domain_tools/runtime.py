@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from app.agents.tools import AgentToolDefinition, AgentToolResult
 from app.protocols.tools import SUBMISSION_REPLY, WORKSPACE_REPLY, FieldIssue, SubmissionAccepted, ToolFailure
@@ -41,18 +41,31 @@ class Milestone(BaseModel):
 
 
 @dataclass(frozen=True)
+class DomainToolLookup(Generic[T]):
+    response_model: type[BaseModel]
+    read: Callable[[T], BaseModel | None]
+
+
+@dataclass(frozen=True)
 class DomainTool(Generic[T]):
     name: str
     description: str
     input_model: type[T]
     validate: Callable[[T], Awaitable[None] | None] | None = None
+    lookup: DomainToolLookup[T] | None = None
 
     def definition(self) -> AgentToolDefinition:
+        if self.lookup:
+            description = " 可先读取上下文；提交修改成功后结束本回合。"
+            schema = TypeAdapter(SubmissionAccepted | ToolFailure | self.lookup.response_model).json_schema()
+        else:
+            description = " 成功后本次提交结束；校验失败时依据工具错误修正并再次调用。"
+            schema = SUBMISSION_REPLY.json_schema()
         return AgentToolDefinition(
             self.name,
-            self.description + " 成功后本次提交结束；校验失败时依据工具错误修正并再次调用。",
+            self.description + description,
             self.input_model.model_json_schema(),
-            SUBMISSION_REPLY.json_schema(),
+            schema,
         )
 
 
@@ -149,26 +162,9 @@ class DomainToolRun(Generic[T]):
                     return reply
                 if name != self.tool.name:
                     raise DomainToolError("UNKNOWN_DOMAIN_TOOL")
-                if self._receipt:
-                    if digest == self._digest:
-                        self._calls[call_id] = digest, self._receipt
-                        return self._receipt
-                    return self.failure_reply("DOMAIN_RESULT_ALREADY_ACCEPTED", "conflict", "stop", call_id)
-                await self.emit("validating", "正在校验业务产物", call_id=call_id)
-                value = self.tool.input_model.model_validate(arguments, strict=True)
-                if self.tool.validate:
-                    checked = self.tool.validate(value)
-                    if inspect.isawaitable(checked):
-                        await checked
-                self.ensure_active()
-                self.value = value
-                self._digest = digest
-                self._receipt = tool_reply(
-                    SubmissionAccepted(run_id=self.run_id, call_id=call_id, receipt_id=uuid.uuid4().hex)
-                )
-                self._calls[call_id] = digest, self._receipt
-                await self.emit("accepted", "业务产物已通过校验，等待保存", call_id=call_id)
-                return self._receipt
+                reply = await self._invoke_submission(arguments, call_id, digest)
+                self._calls[call_id] = digest, reply
+                return reply
             except DomainRunUnavailable as exc:
                 return self.failure_reply(str(exc), "revoked", "stop", call_id)
             except (ValidationError, DomainToolError) as exc:
@@ -181,6 +177,30 @@ class DomainToolRun(Generic[T]):
                 self.failure = exc
                 await self.emit("failed", "业务工具执行失败", call_id=call_id)
                 return self.failure_reply("DOMAIN_EXECUTION_FAILED", "internal", "report_defect", call_id)
+
+    async def _invoke_submission(self, arguments: dict, call_id: str, digest: str) -> AgentToolResult:
+        if self._receipt:
+            if digest == self._digest:
+                return self._receipt
+            return self.failure_reply("DOMAIN_RESULT_ALREADY_ACCEPTED", "conflict", "stop", call_id)
+        if not self.tool.lookup or arguments.get("action") != "read":
+            await self.emit("validating", "正在校验业务产物", call_id=call_id)
+        value = self.tool.input_model.model_validate(arguments, strict=True)
+        if self.tool.lookup:
+            context = self.tool.lookup.read(value)
+            if context is not None:
+                self.ensure_active()
+                return tool_reply(context)
+        if self.tool.validate:
+            checked = self.tool.validate(value)
+            if inspect.isawaitable(checked):
+                await checked
+        self.ensure_active()
+        self.value = value
+        self._digest = digest
+        self._receipt = tool_reply(SubmissionAccepted(run_id=self.run_id, call_id=call_id, receipt_id=uuid.uuid4().hex))
+        await self.emit("accepted", "业务产物已通过校验，等待保存", call_id=call_id)
+        return self._receipt
 
     @staticmethod
     def call_digest(name, arguments):

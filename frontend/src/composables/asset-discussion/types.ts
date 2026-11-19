@@ -63,7 +63,24 @@ export type AssetResolutionProposal = {
 export type ResolutionApplyPayload = {
   finalBlockAst?: any
   finalBlocksAst?: any[]
+  acceptedChangeIds?: string[]
+  revisionId?: string
+  finalSourceText?: string
 }
+
+export type RevisionChange = {
+  id: string
+  before: string
+  after: string
+}
+
+export type TextRevisionChange = RevisionChange & { start: number; end: number; line: number }
+export type DocxRevisionChange = RevisionChange & { kind: 'replace' | 'append'; title?: string }
+
+export type NativeDocumentRevision = { id: string } & (
+  | { kind: 'text'; original: string; changes: TextRevisionChange[] }
+  | { kind: 'docx'; changes: DocxRevisionChange[] }
+)
 
 export type ResolutionDecisionPayload = {
   title: string

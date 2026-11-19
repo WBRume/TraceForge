@@ -7,6 +7,7 @@ import WordPreview from '@/components/file-preview/WordPreview.vue'
 import BlockInlineEditor from './BlockInlineEditor.vue'
 import { prepareDocxReview, type ReviewBlock } from './docxReviewSource'
 import { indexDocxReview } from './docxReviewRanges'
+import { addDocxRevisionHighlights, type DocxRevisionMarker, type DocxRevisionPoint } from './docxRevisionHighlights'
 
 const props = defineProps<{
   wsId: string
@@ -21,6 +22,9 @@ const props = defineProps<{
   canManualEdit: boolean
   editingBlockId: string
   saving?: boolean
+  previewBytes?: ArrayBuffer
+  revisionMarkers?: DocxRevisionMarker[]
+  revisionNames?: Record<string, string>
 }>()
 const emit = defineEmits<{
   'select-range': [selection: {
@@ -32,6 +36,9 @@ const emit = defineEmits<{
   'start-edit': [blockId: string]
   'save-block-edit': [blockId: string, text: string]
   'cancel-block-edit': []
+  'revision-hover': [point: DocxRevisionPoint | null]
+  'revision-open': [point: DocxRevisionPoint]
+  'preview-rendered': []
 }>()
 const { t } = useI18n()
 const source = shallowRef<Awaited<ReturnType<typeof prepareDocxReview>>>()
@@ -48,6 +55,12 @@ const iframeStyles = `
   ::highlight(traceforge-review-open) {background:#fde5a5;color:inherit}
   ::highlight(traceforge-review-closed) {background:#dce6ed;color:inherit}
   ::highlight(traceforge-review-selected) {background:#ffbd62;color:inherit}
+  ::highlight(traceforge-revision) {background:#d3eddc;color:inherit}
+  .tf-revision-markers {display:inline-block;position:relative;width:0;height:0;vertical-align:baseline;white-space:nowrap}
+  .tf-revision-marker {
+    margin-inline-start:3px;border:0;border-radius:4px;padding:0 4px;
+    color:#075340;background:#d3eddc;font:12px system-ui;cursor:pointer;
+  }
   .tf-review-controls {position:relative}
   .tf-review-controls > span {
     position:absolute;inset-inline-end:0;top:0;z-index:1;
@@ -64,8 +77,8 @@ const iframeStyles = `
   .tf-review-controls button[data-edit]:focus-visible {opacity:1;pointer-events:auto}
 `
 
-watch(() => [props.wsId, props.assetId, props.versionId, props.draftRevision] as const, async (
-  [wsId, assetId, versionId, draftRevision], _, cleanup,
+watch(() => [props.wsId, props.assetId, props.versionId, props.draftRevision, props.previewBytes] as const, async (
+  [wsId, assetId, versionId, draftRevision, previewBytes], _, cleanup,
 ) => {
   const request = new AbortController()
   cleanup(() => request.abort())
@@ -74,21 +87,21 @@ watch(() => [props.wsId, props.assetId, props.versionId, props.draftRevision] as
   editAnchor.value = undefined
   failed.value = false
   emit('clear-selection')
-  if (!versionId) return
+  if (!versionId && !previewBytes) return
 
   const blocks = props.blocks
   try {
     const root = `/workspaces/${encodeURIComponent(wsId)}/assets/${encodeURIComponent(assetId)}`
-    const response = await api.get<ArrayBuffer>(
+    const bytes = previewBytes ?? (await api.get<ArrayBuffer>(
       draftRevision ? `${root}/draft/file` : `${root}/file`,
       {
         responseType: 'arraybuffer',
         params: draftRevision ? { revision: draftRevision } : { version_id: versionId },
         signal: request.signal,
       },
-    )
+    )).data
     if (request.signal.aborted) return
-    const prepared = await prepareDocxReview(response.data, blocks)
+    const prepared = await prepareDocxReview(bytes, blocks)
     if (!request.signal.aborted) source.value = prepared
   } catch {
     if (!request.signal.aborted) failed.value = true
@@ -101,6 +114,7 @@ function onRendered(frame: HTMLIFrameElement, content: HTMLElement) {
   style.textContent = iframeStyles
   content.append(style)
   surface.value = { frame, content, index: indexDocxReview(content, source.value.anchors) }
+  emit('preview-rendered')
 }
 
 function viewportAnchor(frame: HTMLIFrameElement, rect: DOMRect) {
@@ -212,6 +226,21 @@ watch(() => [surface.value, props.selectedThreadId] as const, ([current, selecte
   const rect = range.getBoundingClientRect()
   if (rect.top < 0 || rect.bottom > win.innerHeight) win.scrollBy(0, rect.top - win.innerHeight / 3)
 }, { flush: 'post' })
+watch(() => [surface.value, props.revisionMarkers, props.revisionNames] as const, ([current, markers, names], _, cleanup) => {
+  if (!current || !markers?.length || !names) return
+  cleanup(addDocxRevisionHighlights(current.frame, current.content, current.index, markers, names, {
+    hover: point => emit('revision-hover', point),
+    open: point => emit('revision-open', point),
+  }))
+}, { flush: 'post' })
+
+defineExpose({
+  revealRevision(id: string) {
+    const buttons = surface.value?.content.querySelectorAll<HTMLButtonElement>('[data-docx-revision]')
+    const button = [...(buttons ?? [])].find(item => item.dataset.docxRevision === id)
+    button?.scrollIntoView({ block: 'center' })
+  },
+})
 </script>
 
 <template>

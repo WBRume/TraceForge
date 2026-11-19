@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
@@ -24,6 +24,7 @@ from app.domains.asset.schemas.asset import (
     AssetResolutionProposalRewriteRequest,
     AssetVersionResponse,
 )
+from app.domains.asset.schemas.revision import RevisionSelection
 from app.domains.asset.services import asset_discussion_service, asset_resolution_service, asset_service
 from app.domains.asset.services.document import repository as document_repository
 from app.domains.asset.services.review import documents as asset_review_documents
@@ -260,6 +261,32 @@ async def rewrite_thread_resolution_proposal(
     payload = created["payload"]
     await ai_job_publishing.enqueue_asset_thread_job(payload["id"])
     return AiJobResponse(**payload)
+
+
+@router.post("/{asset_id}/threads/{thread_id}/resolution/proposals/{proposal_id}/docx-preview")
+async def preview_resolution_docx(
+    ws_id: str,
+    asset_id: str,
+    thread_id: str,
+    proposal_id: str,
+    data: RevisionSelection,
+    response: Response,
+    current_user: User = Depends(get_current_user),
+):
+    result = await run_db_txn(
+        lambda db: resolution_commands.preview_docx_resolution(
+            db,
+            ws_id=ws_id,
+            asset_id=asset_id,
+            thread_id=thread_id,
+            proposal_id=proposal_id,
+            user_id=current_user.id,
+            revision_id=data.revision_id,
+            change_ids=data.change_ids,
+        )
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return result
 
 
 @router.post("/{asset_id}/threads/{thread_id}/resolution/apply", response_model=AssetVersionResponse)

@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import DomainMilestones from "@/components/ai/DomainMilestones.vue";
-import { computed, ref, watch } from "vue";
+import { computed, defineAsyncComponent, ref, shallowRef, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Loader2 } from '@/components/icons';
 import type { ProvisionJobView } from '@/stores/provisioning';
 import DecisionInlineFields from "./DecisionInlineFields.vue";
+import type { NativeDocumentRevision, ResolutionApplyPayload } from "@/composables/asset-discussion/types";
+
+const NativeResolutionReview = defineAsyncComponent(() => import("./NativeResolutionReview.vue"));
 
 type ProposalPatch = {
   block_id?: string;
@@ -17,10 +20,13 @@ type ProposalPatch = {
   merged_blocks_ast?: any[];
   source_message_ids?: string[];
   change_stats?: Record<string, any>;
+  native_revision?: NativeDocumentRevision;
+  accepted_change_ids?: string[];
 };
 
 type Proposal = {
   id: string;
+  thread_id?: string;
   status: "draft" | "applied" | "discarded";
   proposed_patch_json?: ProposalPatch;
 };
@@ -64,6 +70,10 @@ type ResolutionDecisionDraft = {
 const props = defineProps<{
   visible: boolean;
   proposal: Proposal | null;
+  wsId?: string;
+  assetId?: string;
+  assetName?: string;
+  markdown?: boolean;
   job?: ProvisionJobView | null;
   resultError?: string;
   submitting?: boolean;
@@ -80,7 +90,7 @@ const emit = defineEmits<{
   retryResult: [];
   apply: [
     proposalId: string,
-    payload: { finalBlockAst?: any; finalBlocksAst?: any[] },
+    payload: ResolutionApplyPayload,
     decision?: {
       title: string;
       body?: string | null;
@@ -97,6 +107,8 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 
+const nativeRevision = computed(() => props.proposal?.proposed_patch_json?.native_revision);
+const nativeSelection = shallowRef<ResolutionApplyPayload | null>(null);
 const localBlocks = ref<any[]>([]);
 const activeChangeId = ref("");
 const isEditingDocument = ref(false);
@@ -210,6 +222,7 @@ const resetDecisionDraft = (proposal: Proposal | null) => {
 watch(
   () => props.proposal,
   (proposal) => {
+    nativeSelection.value = null;
     loadBlocksFromProposal(proposal);
     resetDecisionDraft(proposal);
     isEditingDocument.value = false;
@@ -301,6 +314,7 @@ const hasEmptyContentForApply = computed(() => {
   return !String(block.text || "").trim();
 });
 const applyDisabledReason = computed(() => {
+  if (nativeRevision.value) return "";
   if (isEditingDocument.value) return t("doc_review.revision_apply_while_editing");
   if (hasPendingChanges.value) return "";
   if (hasEmptyContentForApply.value) return t("doc_review.revision_apply_empty_block");
@@ -313,9 +327,9 @@ const canApplyNow = computed(
     props.proposal.status === "draft" &&
     !isEditingDocument.value &&
     !props.submitting &&
-    !hasPendingChanges.value &&
-    !hasEmptyContentForApply.value &&
-    localBlocks.value.length > 0 &&
+    (nativeRevision.value
+      ? !!nativeSelection.value
+      : !hasPendingChanges.value && !hasEmptyContentForApply.value && localBlocks.value.length > 0) &&
     !props.applying,
 );
 const revisionPrimaryText = computed(() => {
@@ -530,7 +544,7 @@ const saveEditDocument = () => {
 };
 
 const doApply = () => {
-  if (!props.proposal || !localBlocks.value.length) return;
+  if (!props.proposal || !canApplyNow.value) return;
   let decision:
     | {
         title: string;
@@ -549,6 +563,10 @@ const doApply = () => {
       impact_scope: decisionDraft.value.impact_scope.trim() || null,
       promote_candidate: decisionDraft.value.promote_candidate,
     };
+  }
+  if (nativeRevision.value && nativeSelection.value) {
+    emit("apply", props.proposal.id, { ...nativeSelection.value, revisionId: nativeRevision.value.id }, decision);
+    return;
   }
   syncLocalText();
   if (rewriteScope.value === "document" || localBlocks.value.length > 1) {
@@ -587,8 +605,14 @@ const doRegenerate = () => {
       </header>
 
       <template v-if="proposal || job">
-        <p v-if="!job && proposalMetaText" class="proposal-meta">{{ proposalMetaText }}</p>
-        <div class="workspace-grid">
+        <p v-if="!job && !nativeRevision && proposalMetaText" class="proposal-meta">{{ proposalMetaText }}</p>
+        <NativeResolutionReview
+          v-if="!job && nativeRevision && proposal?.thread_id && wsId && assetId"
+          :key="nativeRevision.id" :revision="nativeRevision" :proposal="proposal"
+          :ws-id="wsId" :asset-id="assetId" :asset-name="assetName || ''" :markdown="markdown"
+          :busy="applying || submitting" @ready="nativeSelection = $event"
+        />
+        <div v-else class="workspace-grid">
           <section class="document-pane">
             <div v-if="job" class="revision-waiting">
               <Loader2 v-if="isWaitingForResult" class="waiting-spinner" aria-hidden="true" />

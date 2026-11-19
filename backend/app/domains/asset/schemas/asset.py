@@ -189,6 +189,9 @@ class AssetResolutionApplyRequest(BaseModel):
     proposal_id: str = Field(..., min_length=1)
     final_block_ast: Any | None = None
     final_blocks_ast: list[Any] | None = None
+    accepted_change_ids: list[str] | None = Field(default=None, max_length=10_000)
+    revision_id: str | None = Field(default=None, max_length=36)
+    final_source_text: str | None = Field(default=None, max_length=1_000_000)
     change_note: str | None = None
     decision: AssetResolutionDecisionRequest | None = None
 

@@ -15,7 +15,7 @@ type ComparisonRequest = { threadIds: string[]; draftId: string }
 
 function hasComparison(proposal: AssetResolutionProposal) {
   const patch = proposal.proposed_patch_json
-  return Boolean(patch?.merged_blocks_ast?.length || patch?.merged_block_ast)
+  return Boolean(patch?.native_revision || patch?.merged_blocks_ast?.length || patch?.merged_block_ast)
 }
 
 export function useResolutionReview(options: {
@@ -61,8 +61,10 @@ export function useResolutionReview(options: {
   const blockedReason = computed(() => {
     const proposal = selectedProposal.value
     const sources = proposal?.proposed_patch_json?.source_thread_ids
-    if (!proposal || !Array.isArray(sources) || !sources.length) return ''
-    if (proposal.base_version_id !== versionId.value) return t('doc_review.joint_proposal_version_changed')
+    if (!proposal) return ''
+    if ((proposal.proposed_patch_json?.native_revision || sources?.length)
+        && proposal.base_version_id !== versionId.value) return t('doc_review.joint_proposal_version_changed')
+    if (!Array.isArray(sources) || !sources.length) return ''
     if (sources.some(id => !discussion.threads.value.some(thread => thread.id === id && thread.status === 'resolved'))) {
       return t('doc_review.joint_proposal_sources_changed')
     }

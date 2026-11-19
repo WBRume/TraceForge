@@ -25,12 +25,12 @@ from app.domains.asset.services import (
 )
 from app.domains.asset.services.asset_resolution_service import (
     ResolutionServiceError,
-    manual_edit_block,
 )
 from app.domains.asset.services.document.versioning import (
     create_asset_version_from_normalized_content,
     create_asset_version_from_upload,
 )
+from app.domains.asset.services.review.manual_edit import manual_edit_block
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session
 
 SPEC_MD = "# Requirement\n\nLogin must work.\n\n- item one\n\nSecond paragraph.\n"

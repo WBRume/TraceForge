@@ -1,13 +1,16 @@
 """Apply document resolutions and decision records in the same database transaction."""
 
+from base64 import b64encode
+
 from sqlalchemy.orm import Session
 
 from app.domains.asset.models.asset import SddAssetResolutionProposal
 from app.domains.asset.schemas.asset import AssetManualEditBlockRequest, AssetResolutionApplyRequest
 from app.domains.asset.services import asset_discussion_service, asset_resolution_service, asset_service
+from app.domains.asset.services.document import repository
 from app.domains.asset.services.document.transactions import DocumentVersionConflict
+from app.domains.asset.services.review import manual_edit, native_revision, proposal_sources
 from app.domains.asset.services.review import policy as asset_review_policy
-from app.domains.asset.services.review import proposal_sources
 from app.domains.asset.services.review import serialization as asset_review_serialization
 from app.domains.asset.services.review.errors import ReviewError
 from app.domains.workspace_asset.schemas.workspace_asset import DecisionCreateRequest
@@ -52,6 +55,9 @@ def apply_resolution(
             actor_user_id=user_id,
             final_block_ast=data.final_block_ast,
             final_blocks_ast=data.final_blocks_ast,
+            accepted_change_ids=data.accepted_change_ids,
+            revision_id=data.revision_id,
+            final_source_text=data.final_source_text,
             change_note=data.change_note,
         )
     except (asset_resolution_service.ResolutionServiceError, DocumentVersionConflict) as exc:
@@ -107,6 +113,37 @@ def apply_resolution(
     }
 
 
+def preview_docx_resolution(
+    db: Session,
+    *,
+    ws_id: str,
+    asset_id: str,
+    thread_id: str,
+    proposal_id: str,
+    user_id: str,
+    revision_id: str,
+    change_ids: list[str],
+) -> dict:
+    asset_review_policy._verify_comment_permission_by_id(ws_id, user_id, db)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
+    thread = asset_discussion_service.get_thread(db, asset_id=asset_id, thread_id=thread_id) if asset else None
+    proposal = next((item for item in thread.proposals if item.id == proposal_id), None) if thread else None
+    revision = (proposal.proposed_patch_json or {}).get("native_revision") if proposal else None
+    if not revision or revision.get("kind") != "docx":
+        raise ReviewError(404, "DOCX revision not found")
+    if revision.get("id") != revision_id:
+        raise ReviewError(409, "The revision draft changed. Reopen it to review the latest draft.")
+    version = repository.get_asset_version(db, asset.id, proposal.base_version_id)
+    if not version:
+        raise ReviewError(404, "The base DOCX version is unavailable")
+    try:
+        changes = native_revision.selected_changes(revision, change_ids)
+        content, blocks, markers = native_revision.render_docx_revision(version, changes, preview=True)
+    except (OSError, ValueError) as exc:
+        raise ReviewError(422, str(exc)) from exc
+    return {"content_base64": b64encode(content).decode("ascii"), "blocks": blocks, "markers": markers}
+
+
 def edit_document_block(
     db: Session, *, ws_id: str, asset_id: str, block_id: str, data: AssetManualEditBlockRequest, user_id: str
 ):
@@ -117,7 +154,7 @@ def edit_document_block(
     asset_review_policy._ensure_spec_editable(asset)
     asset_review_policy._ensure_latest_context_version_for_mutation(asset, data.context_version_id)
     try:
-        version, affected_threads = asset_resolution_service.manual_edit_block(
+        version, affected_threads = manual_edit.manual_edit_block(
             db,
             asset=asset,
             block_id=block_id,

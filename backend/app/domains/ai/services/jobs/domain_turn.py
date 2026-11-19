@@ -61,9 +61,10 @@ async def run_domain_turn(
             )
 
     run = DomainToolRun(tool, on_milestone=publish, should_cancel=kwargs.get("should_cancel"))
+    completion = "提交修改成功后结束本回合。" if tool.lookup else "成功后结束本回合。"
     instructions = (
         prompt + f"\n\n必须调用 {tool.name} 工具提交业务产物。聊天文本不作为提交结果。"
-        "工具会返回具体校验错误，请在当前会话中修正参数后重新调用；成功后结束本回合。"
+        "工具会返回具体校验错误，请在当前会话中修正参数后重新调用。" + completion
     )
     kwargs.pop("max_attempts", None)
 

@@ -9,7 +9,7 @@ from app.domains.asset.schemas.asset import AssetDraftResponse, AssetDraftSave, 
 from app.domains.asset.services import asset_discussion_service, asset_service
 from app.domains.asset.services.document import repository, transactions, versioning
 from app.domains.asset.services.document.docx import parse_docx_payload
-from app.domains.asset.services.document.docx.paragraph_edit import edit_docx_paragraphs
+from app.domains.asset.services.document.docx.paragraph_edit import docx_edit_regions, edit_docx_paragraphs
 from app.domains.asset.services.document.inheritance import inherit_anchors
 from app.domains.asset.services.document.text_source import TEXT_EXTENSIONS, decode_source, read_original
 from app.domains.asset.services.review import policy
@@ -43,22 +43,6 @@ def _check_state(draft: SddAssetDocumentDraft | None, state: AssetDraftState) ->
         return
     if draft is None or draft.revision != state.revision or draft.base_version_id != state.base_version_id:
         raise ReviewError(409, "This draft changed. Reopen it to load the latest saved changes")
-
-
-def _docx_edit_targets(base: SddAssetVersion) -> dict[str, tuple[int, str, bool]]:
-    targets: dict[str, tuple[int, str, bool]] = {}
-    for block in base.blocks_json or []:
-        spans = block.get("docx_spans") or []
-        block_id, text = block["id"], block["text"]
-        if block.get("type") == "table":
-            for span in spans:
-                ordinal = span["paragraph"]
-                targets[f"{block_id}:{ordinal}"] = (ordinal, text[span["start"] : span["end"]], True)
-            for ordinal in block.get("docx_empty_paragraphs", []):
-                targets[f"{block_id}:{ordinal}"] = (ordinal, "", True)
-        elif len(spans) == 1:
-            targets[block_id] = (spans[0]["paragraph"], text, False)
-    return targets
 
 
 def _response(base: SddAssetVersion, draft: SddAssetDocumentDraft, source: bytes | None = None) -> AssetDraftResponse:
@@ -96,14 +80,14 @@ def _prepare_source(
 
         if ext != ".docx" or text is not None:
             raise ValueError("Unsupported draft format")
-        targets = _docx_edit_targets(base)
+        targets = docx_edit_regions(base.blocks_json or [])
         changes: dict[str, str] = {}
         patches: list[tuple[int, str, str]] = []
         for block_id, value in edits.items():
             target = targets.get(block_id)
             if target is None:
                 raise ValueError("The block has no editable source DOCX paragraph")
-            ordinal, old, in_table = target
+            ordinal, old, in_table = target.paragraph, target.text, target.in_table
             value = value.replace("\r\n", "\n").replace("\r", "\n")
             if len(value) > 100_000:
                 raise ValueError("Edited paragraphs must contain at most 100,000 characters")

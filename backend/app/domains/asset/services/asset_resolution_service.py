@@ -9,6 +9,7 @@ import difflib
 import io
 import os
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -21,13 +22,16 @@ from app.domains.asset.models.asset import (
     SddAssetThread,
     SddAssetVersion,
 )
+from app.domains.asset.schemas.revision import DocxRevisionRequest
 from app.domains.asset.services import asset_discussion_service
 from app.domains.asset.services.document import payload as document_payload
 from app.domains.asset.services.document import repository as document_repository
+from app.domains.asset.services.document import transactions
 from app.domains.asset.services.document import versioning as document_versioning
-from app.domains.asset.services.document.docx import apply_blocks_to_docx_inplace, edit_docx_paragraph
-from app.domains.asset.services.document.text_source import SOURCE_BLOCK_ID
-from app.domains.asset.services.review import proposal_sources
+from app.domains.asset.services.document.docx import apply_blocks_to_docx_inplace
+from app.domains.asset.services.document.docx.paragraph_edit import docx_edit_regions
+from app.domains.asset.services.document.text_source import SOURCE_BLOCK_ID, decode_source, read_original
+from app.domains.asset.services.review import native_revision, proposal_sources
 from app.domains.task.models.task import SddTask
 from app.domains.task.services import task_cli_state_service
 
@@ -747,6 +751,63 @@ def _update_rewrite_anchor(patch, relocated, thread, old_text, block_id, version
     return selected_text_for_patch, char_start, char_end
 
 
+def _build_native_revision(version, patch, scope, selection_mode, docx_request, rewritten_source):
+    block_id = patch["block_id"]
+    char_start, char_end = patch["char_start"], patch["char_end"]
+    if docx_request is not None:
+        revision = native_revision.build_docx_revision(version, docx_request)
+        if scope == "anchor":
+            regions = docx_edit_regions(version.blocks_json or [])
+            for change in revision["changes"]:
+                region = regions.get(change.get("region_id"))
+                if region is None or region.block_id != block_id:
+                    raise ValueError("Anchor revision changes must stay in the selected DOCX block")
+                if (
+                    selection_mode
+                    and char_start is not None
+                    and char_end is not None
+                    and (
+                        region.block_start + change["start"] < char_start
+                        or region.block_start + change["end"] > char_end
+                    )
+                ):
+                    raise ValueError("Anchor revision changes must stay inside the selected text")
+        return revision, None
+
+    original = decode_source(read_original(version))[0]
+    candidate = rewritten_source if rewritten_source is not None else original
+    if scope == "anchor" and block_id == SOURCE_BLOCK_ID and selection_mode:
+        candidate = _apply_patch_to_block_text(
+            original,
+            selected_text=patch["selected_text"],
+            char_start=char_start,
+            char_end=char_end,
+            replacement_text=candidate,
+        )
+    revision = native_revision.build_text_revision(original, candidate)
+    native_revision.render_text_revision(version, revision, revision["changes"])
+    return revision, _build_diff(original, candidate)
+
+
+def _store_native_proposal(db, proposal, patch, version, scope, proposal_text, selection_mode, request, source):
+    try:
+        revision, diff = _build_native_revision(version, patch, scope, selection_mode, request, source)
+    except (OSError, ValueError) as exc:
+        raise ResolutionServiceError(str(exc), status_code=422) from exc
+    patch.update(
+        native_revision={**revision, "id": uuid4().hex},
+        rewrite_scope=scope,
+        rewrite_status="ready",
+        proposal_text=proposal_text,
+    )
+    patch.pop("accepted_change_ids", None)
+    proposal.base_version_id = version.id
+    proposal.proposed_patch_json = patch
+    proposal.diff_text = diff
+    db.flush()
+    return proposal
+
+
 def update_resolution_proposal_rewrite(
     db: Session,
     *,
@@ -759,6 +820,8 @@ def update_resolution_proposal_rewrite(
     selection_mode: bool = False,
     context_version_id: str | None = None,
     relocated_anchor: dict[str, Any] | None = None,
+    docx_request: DocxRevisionRequest | None = None,
+    rewritten_source: str | None = None,
 ) -> SddAssetResolutionProposal:
     if proposal.status != AssetResolutionProposalStatus.DRAFT:
         raise ResolutionServiceError("Only draft proposals can be rewritten", status_code=409)
@@ -793,6 +856,20 @@ def update_resolution_proposal_rewrite(
     )
 
     normalized_scope = str(rewrite_scope or "anchor").strip().lower()
+    if docx_request is not None or rewritten_source is not None:
+        return _store_native_proposal(
+            db,
+            proposal,
+            patch,
+            version,
+            normalized_scope,
+            proposal_text,
+            selection_mode,
+            docx_request,
+            rewritten_source,
+        )
+    patch.pop("native_revision", None)
+    patch.pop("accepted_change_ids", None)
     if normalized_scope == "document":
         return _rewrite_document_proposal(
             db, proposal, proposal_text, rewritten_markdown, base_blocks, block_id, old_text, block, old_runs, patch
@@ -1155,6 +1232,37 @@ def _apply_proposal_blocks(
     return use_document_apply, next_blocks, next_markdown, new_text
 
 
+def _publish_native_resolution(db, asset, base, creator_id, revision, change_ids, change_note):
+    if not change_ids:
+        raise ResolutionServiceError("Select at least one native revision to publish", status_code=422)
+    try:
+        changes = native_revision.selected_changes(revision, change_ids)
+        if revision["kind"] == "docx":
+            content, _, _ = native_revision.render_docx_revision(base, changes)
+        else:
+            content = native_revision.render_text_revision(base, revision, changes)
+    except (OSError, ValueError) as exc:
+        raise ResolutionServiceError(str(exc), status_code=422) from exc
+    return document_versioning.create_asset_version_from_source(
+        db,
+        asset,
+        base,
+        content,
+        creator_id,
+        change_note=change_note,
+    )
+
+
+def _edited_source_revision(revision: dict, final_text: str) -> tuple[dict, list[str]]:
+    if revision["kind"] != "text" or not final_text.strip():
+        raise ResolutionServiceError("Provide non-empty source text for a Markdown or text revision", status_code=422)
+    try:
+        edited = native_revision.build_text_revision(revision["original"], final_text)
+    except ValueError as exc:
+        raise ResolutionServiceError(str(exc), status_code=422) from exc
+    return {**edited, "id": revision["id"]}, [change["id"] for change in edited["changes"]]
+
+
 def apply_resolution_proposal(
     db: Session,
     *,
@@ -1164,8 +1272,15 @@ def apply_resolution_proposal(
     actor_user_id: str,
     final_block_ast: Any,
     final_blocks_ast: list[Any] | None = None,
+    accepted_change_ids: list[str] | None = None,
+    revision_id: str | None = None,
+    final_source_text: str | None = None,
     change_note: str | None = None,
 ) -> SddAssetVersion:
+    if revision_id is not None:
+        transactions.lock_task_for_document_write(db, document_repository.task_for_asset(db, asset))
+        transactions.lock_asset(db, asset)
+        db.refresh(proposal)
     if proposal.status != AssetResolutionProposalStatus.DRAFT:
         raise ResolutionServiceError("Only draft proposals can be applied", status_code=409)
     if proposal.thread_id != thread.id:
@@ -1205,31 +1320,59 @@ def apply_resolution_proposal(
     if not old_text.strip():
         raise ResolutionServiceError("Base block content is empty", status_code=422)
 
-    use_document_apply, next_blocks, next_markdown, new_text = _apply_proposal_blocks(
-        proposal, patch, base_blocks, base_block, block_id, old_text, final_blocks_ast, final_block_ast
-    )
-
+    revision = patch.get("native_revision")
+    if revision:
+        if revision.get("id") != revision_id:
+            raise ResolutionServiceError("The revision draft changed. Reopen it before publishing.", status_code=409)
+        if active_version_id != proposal_version_id or patch.get("rewrite_status") != "ready":
+            raise ResolutionServiceError("The published document changed. Regenerate the revision.", status_code=409)
+        if final_source_text is not None:
+            revision, accepted_change_ids = _edited_source_revision(revision, final_source_text)
+            patch["native_revision"] = revision
+            proposal.diff_text = _build_diff(revision["original"], final_source_text)
+        version = _publish_native_resolution(
+            db,
+            asset,
+            base_version,
+            actor_user_id,
+            revision,
+            accepted_change_ids,
+            change_note or f"Applied thread {thread.id} resolution",
+        )
+        patch["accepted_change_ids"] = accepted_change_ids
+        updated_block = asset_discussion_service.get_block_by_id(version, block_id)
+        patch["new_text"] = str((updated_block or {}).get("text") or "")
+    else:
+        if accepted_change_ids is not None or final_source_text is not None:
+            raise ResolutionServiceError("This proposal has no native revisions", status_code=422)
+        use_document_apply, next_blocks, next_markdown, new_text = _apply_proposal_blocks(
+            proposal, patch, base_blocks, base_block, block_id, old_text, final_blocks_ast, final_block_ast
+        )
+        version = _create_applied_version(
+            db,
+            asset,
+            thread,
+            actor_user_id,
+            change_note,
+            base_version,
+            base_blocks,
+            next_blocks,
+            next_markdown,
+            old_text,
+            new_text,
+            selected_text_for_apply,
+            use_document_apply,
+        )
     patch["old_text"] = old_text
     patch["change_stats"] = patch.get("change_stats") or {}
     proposal.proposed_patch_json = patch
     flag_modified(proposal, "proposed_patch_json")
 
-    version = _create_applied_version(
-        db,
-        asset,
-        thread,
-        actor_user_id,
-        change_note,
-        base_version,
-        base_blocks,
-        next_blocks,
-        next_markdown,
-        old_text,
-        new_text,
-        selected_text_for_apply,
-        use_document_apply,
-    )
+    _complete_resolution_application(db, asset, thread, version, proposal, patch, block_id, actor_user_id, sources)
+    return version
 
+
+def _complete_resolution_application(db, asset, thread, version, proposal, patch, block_id, actor_user_id, sources):
     effective_block_id, effective_selected_text = (block_id, None)
     if not sources:
         effective_block_id, effective_selected_text = _refresh_applied_anchor(
@@ -1244,7 +1387,7 @@ def apply_resolution_proposal(
             "proposal_id": proposal.id,
             "block_id": effective_block_id,
             "selected_text": effective_selected_text,
-            "old_text": old_text[:2400],
+            "old_text": str(patch.get("old_text") or "")[:2400],
             "new_text": str(patch.get("new_text") or "")[:2400],
         }
         _refresh_task_spec_pointer_and_bootstrap(
@@ -1264,7 +1407,7 @@ def apply_resolution_proposal(
         if (
             item.status == AssetResolutionProposalStatus.DRAFT
             and proposal_sources.source_ids(item.proposed_patch_json) == sources
-            and (not sources or item.base_version_id == proposal_version_id)
+            and (not sources or item.base_version_id == proposal.base_version_id)
         ):
             item.status = AssetResolutionProposalStatus.DISCARDED
 
@@ -1275,189 +1418,6 @@ def apply_resolution_proposal(
         content=f"已应用修订稿，文档已更新至 v{version.version_no}",
         creator_id=actor_user_id,
         metadata_json={"applied_version_id": version.id, "proposal_id": proposal.id},
+        allow_resolved_system_message=bool(sources),
     )
     db.flush()
-    return version
-
-
-def _pick_closest_occurrence(text: str, keyword: str, target: int | None) -> int | None:
-    if not text or not keyword:
-        return None
-    points: list[int] = []
-    from_index = 0
-    while from_index <= len(text) - len(keyword):
-        idx = text.find(keyword, from_index)
-        if idx < 0:
-            break
-        points.append(idx)
-        from_index = idx + 1
-    if not points:
-        return None
-    if not isinstance(target, int):
-        return points[0]
-    return min(points, key=lambda point: abs(point - target))
-
-
-def _remap_anchor_selection(
-    effective_anchor: dict[str, Any],
-    new_text: str,
-) -> tuple[str | None, int | None, int | None]:
-    old_selected = str(effective_anchor.get("selected_text") or "").strip()
-    if not old_selected or old_selected not in new_text:
-        return None, None, None
-    old_start = effective_anchor.get("char_start")
-    try:
-        old_start_int = int(old_start) if old_start is not None else None
-    except Exception:
-        old_start_int = None
-    start = _pick_closest_occurrence(new_text, old_selected, old_start_int)
-    if start is None:
-        return None, None, None
-    return old_selected, start, start + len(old_selected)
-
-
-def _edit_docx_review_block(version: SddAssetVersion, block: dict[str, Any], old_text: str, new_text: str) -> bytes:
-    spans = block.get("docx_spans") or []
-    if len(spans) != 1 or not isinstance(spans[0].get("paragraph"), int):
-        raise ResolutionServiceError("The review block has no source DOCX paragraph", status_code=422)
-    try:
-        return edit_docx_paragraph(version.original_path or "", spans[0]["paragraph"], old_text, new_text)
-    except ValueError as exc:
-        raise ResolutionServiceError(str(exc), status_code=422) from exc
-
-
-def manual_edit_block(
-    db: Session,
-    *,
-    asset: SddAsset,
-    block_id: str,
-    new_text: str,
-    actor_user_id: str,
-    context_version_id: str | None = None,
-    change_note: str | None = None,
-) -> tuple[SddAssetVersion, list[SddAssetThread]]:
-    text = str(new_text or "")
-    if not text.strip():
-        raise ResolutionServiceError("Edited block content cannot be empty", status_code=422)
-
-    resolved_context_version_id = str(context_version_id or "").strip() or asset.active_version_id
-    base_version = document_repository.get_asset_version(db, asset.id, resolved_context_version_id)
-    if not base_version:
-        raise ResolutionServiceError("Document version not found", status_code=404)
-    if str(base_version.id) != str(asset.active_version_id or ""):
-        raise ResolutionServiceError(
-            "Document has a newer version, please refresh and retry",
-            status_code=409,
-        )
-
-    base_block = asset_discussion_service.get_block_by_id(base_version, block_id)
-    if not base_block:
-        raise ResolutionServiceError("Block not found in current version", status_code=404)
-    if str(base_block.get("type") or "").strip().lower() == "table":
-        raise ResolutionServiceError("Table blocks do not support manual editing", status_code=422)
-
-    base_blocks = base_version.blocks_json or []
-    if not isinstance(base_blocks, list):
-        raise ResolutionServiceError("Base version blocks are invalid")
-
-    output_ext = base_version.original_ext or asset.source_ext or ".md"
-    if output_ext.lower() == ".docx":
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-        old_text = str(base_block.get("text") or "")
-        output_bytes = _edit_docx_review_block(base_version, base_block, old_text, text)
-        next_blocks = base_blocks
-        next_markdown = base_version.normalized_markdown or ""
-    else:
-        text = text.strip()
-        old_runs = _normalize_runs(base_block.get("runs"), str(base_block.get("text") or ""))
-        old_text = _runs_text(old_runs)
-        target_block = _build_new_block_ast(base_block, old_runs, text)
-        next_blocks = _replace_block_ast(base_blocks, block_id=block_id, target_block=target_block)
-        next_markdown = _blocks_to_markdown(next_blocks)
-        output_bytes = next_markdown.encode("utf-8")
-
-    version = document_versioning.create_asset_version_from_normalized_content(
-        db,
-        asset,
-        creator_id=actor_user_id,
-        normalized_markdown=next_markdown,
-        blocks_json=next_blocks,
-        change_note=change_note or f"Manual edit on block {block_id}",
-        base_version_id=base_version.id,
-        output_ext=output_ext,
-        output_mime=base_version.original_mime or asset.source_mime or "text/markdown",
-        output_file_bytes=output_bytes,
-        output_file_name=asset.source_file_name or f"spec-v{base_version.version_no + 1}.md",
-    )
-
-    affected_threads: list[SddAssetThread] = []
-    for thread in asset_discussion_service.list_threads(db, asset_id=asset.id):
-        anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
-            db,
-            thread=thread,
-            context_version=base_version,
-        )
-        effective_anchor = (
-            anchor_eval.get("effective_anchor") if isinstance(anchor_eval.get("effective_anchor"), dict) else {}
-        )
-        if str(effective_anchor.get("block_id") or "").strip() != str(block_id).strip():
-            continue
-
-        new_selected, new_start, new_end = _remap_anchor_selection(effective_anchor, text)
-        try:
-            asset_discussion_service.upsert_thread_anchor_mapping(
-                db,
-                thread=thread,
-                version_id=version.id,
-                block_id=block_id,
-                selected_text=new_selected,
-                char_start=new_start,
-                char_end=new_end,
-                actor_user_id=actor_user_id,
-            )
-        except ValueError:
-            # Older historical data may miss stable anchor ids.
-            pass
-
-        anchor_eval_next = asset_discussion_service.resolve_thread_anchor_for_version(
-            db,
-            thread=thread,
-            context_version=version,
-        )
-        if anchor_eval_next.get("anchor_status") == "missing":
-            if str(thread.close_hint_state or "none") != "no_close_needed":
-                asset_discussion_service.set_thread_close_hint(
-                    db,
-                    thread=thread,
-                    state="pending",
-                    reason="anchor_missing",
-                    version_id=version.id,
-                )
-        elif str(thread.close_hint_reason or "") == "anchor_missing":
-            asset_discussion_service.set_thread_close_hint(
-                db,
-                thread=thread,
-                state="none",
-                reason=None,
-                version_id=None,
-            )
-        affected_threads.append(thread)
-
-    if asset.task_id:
-        _refresh_task_spec_pointer_and_bootstrap(
-            db,
-            task_id=asset.task_id,
-            workspace_id=asset.workspace_id,
-            asset=asset,
-            version=version,
-            refresh_mode="DELTA",
-            refresh_context_json={
-                "scope": "manual_edit",
-                "block_id": block_id,
-                "old_text": old_text[:2400],
-                "new_text": text[:2400],
-            },
-        )
-
-    db.flush()
-    return version, affected_threads

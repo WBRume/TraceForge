@@ -15,7 +15,7 @@ from app.domains.asset.models.asset import SddAsset, SddAssetResolutionProposal,
 from app.domains.asset.schemas.asset import AssetManualEditBlockRequest, AssetResolutionApplyRequest
 from app.domains.asset.services import asset_discussion_service, asset_resolution_service
 from app.domains.asset.services.document import repository, storage, transactions, versioning
-from app.domains.asset.services.review import resolutions
+from app.domains.asset.services.review import manual_edit, resolutions
 from app.domains.asset.services.review.errors import ReviewError
 from app.domains.task.models.task import SddTask, TaskStatus
 from tests.postgres_support import temporary_postgres_schema
@@ -256,7 +256,7 @@ def test_upload_wins_against_edit_prepared_from_stale_session(document_db, opera
             assert start.wait(10)
             try:
                 if operation == "manual":
-                    asset_resolution_service.manual_edit_block(
+                    manual_edit.manual_edit_block(
                         db, asset=asset, block_id="blk-2", new_text="Stale edit", actor_user_id=ids[3]
                     )
                 else:
@@ -351,7 +351,7 @@ def test_upload_waits_for_edit_and_then_uses_latest_version(document_db):
 
     with factory() as writer, ThreadPoolExecutor(max_workers=1) as pool:
         asset = writer.get(SddAsset, ids[1])
-        edited, _threads = asset_resolution_service.manual_edit_block(
+        edited, _threads = manual_edit.manual_edit_block(
             writer, asset=asset, block_id="blk-2", new_text="Edited", actor_user_id=ids[3]
         )
         future = pool.submit(upload)

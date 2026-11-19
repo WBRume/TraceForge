@@ -331,8 +331,12 @@ def add_thread_message(
     content: str,
     creator_id: str | None = None,
     metadata_json: dict[str, Any] | None = None,
+    allow_resolved_system_message: bool = False,
 ) -> SddAssetThreadMessage:
-    if thread.status in {AssetThreadStatus.RESOLVED, AssetThreadStatus.CLOSED}:
+    resolved_system_message = allow_resolved_system_message and role == AssetThreadMessageRole.SYSTEM
+    if thread.status == AssetThreadStatus.CLOSED or (
+        thread.status == AssetThreadStatus.RESOLVED and not resolved_system_message
+    ):
         raise ValueError("Thread is not open for new messages")
     normalized_content = (content or "").strip()
     if not normalized_content:

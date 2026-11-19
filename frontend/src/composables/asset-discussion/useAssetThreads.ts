@@ -126,7 +126,11 @@ export function useAssetThreads(
         proposal_id: proposalId,
         change_note: changeNote?.trim() || undefined,
       }
-      if (Array.isArray(payload?.finalBlocksAst) && payload.finalBlocksAst.length) {
+      if (payload?.revisionId) {
+        body.accepted_change_ids = payload.acceptedChangeIds
+        body.revision_id = payload.revisionId
+        body.final_source_text = payload.finalSourceText
+      } else if (Array.isArray(payload?.finalBlocksAst) && payload.finalBlocksAst.length) {
         body.final_blocks_ast = payload.finalBlocksAst
       } else {
         body.final_block_ast = payload?.finalBlockAst
