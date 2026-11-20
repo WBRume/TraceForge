@@ -189,7 +189,7 @@ export function useChatViewModel() {
   const terminalLogs = useTerminalLogs()
   const cards = usePinnedCards({
     getMessages: () => messages.messages.value,
-    getJobs: () => jobs.jobList(),
+    getJob: jobId => jobs.confirmationJob(jobId),
     getCurrentTask: () => taskState.currentTask.value,
   })
   const highlight = useReferenceHighlight()

@@ -140,6 +140,35 @@ async def test_pending_form_recovers_same_public_id_and_private_reply_route(db, 
 
 
 @pytest.mark.asyncio
+async def test_turn_question_stays_in_snapshot_until_stopped(db, engine_factory):
+    from app.domains.task.services import chat_submission_service, task_confirmation_service
+    from app.domains.task.services import status_machine as sm
+
+    engine = engine_factory()
+    engine.cli.capabilities.hitl_modes = ["turn_based"]
+    await engine._on_ask_user({"ask_user_id": "provider-tool-id", "question": "Choose"})
+    question = db.query(ChatMessage).filter_by(task_id="replay-task").one()
+    interaction = question.metadata_json["confirmation"]["interaction_id"]
+    assert question.metadata_json["confirmation"]["delivery_mode"] == "turn"
+
+    task = db.get(SddTask, "replay-task")
+    job = db.get(SddAiJob, "replay-job")
+    job.status = AiJobStatus.SUCCESS
+    sm.execution_event(db, task, sm.Trigger.ROUND_FINISHED, job_id=job.id, event_key="finish", generation=1, revision=0)
+    db.commit()
+    state = chat_submission_service.build_session_state(db, task.id, actor_id="user")
+    assert state["status"] == "AWAITING_INPUT"
+    assert state["status_run_id"] == job.id
+    assert [item["id"] for item in state["jobs"]] == [job.id]
+    assert [item["id"] for item in state["messages"]] == [question.id]
+    assert task_confirmation_service.validate_reply_sync(db, task.id, interaction, question.id)["job_id"] == job.id
+
+    sm.dispatch(db, task, sm.Trigger.INTERRUPT, event_key="stop", actor_id="user")
+    with pytest.raises(task_confirmation_service.ConfirmationClosedError):
+        task_confirmation_service.validate_reply_sync(db, task.id, interaction, question.id)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status,answer", [("answered", {"answer": "external"}), ("cancelled", None), ("closed", None)])
 async def test_provider_resolution_is_durable_deduplicated_and_not_attributed_as_user(
     db, engine_factory, status, answer

@@ -292,6 +292,12 @@ def _accept_sync(
 
 
 async def accept(*, task_id, actor_id, client_message_id, content, metadata=None, new_agent_session=False):
+    from app.domains.task.services.task_confirmation_service import reply_reference
+
+    if isinstance(metadata, dict) and reply_reference(metadata):
+        raise SubmissionError(
+            "Confirmation replies must be sent through the task conversation", "CONFIRMATION_REQUIRED"
+        )
     client_id, text = str(client_message_id or "").strip(), str(content or "").strip()
     if not client_id or len(client_id) > 128 or not text:
         raise SubmissionError("消息内容和消息标识不能为空", "MESSAGE_INVALID", 400)
@@ -700,8 +706,10 @@ def build_session_state(db, task_id, *, actor_id, client_message_ids=None):
     for job in list_task_jobs(db, task_id=task_id, active_only=True):
         jobs.setdefault(job.id, job)
 
-    from app.domains.task.services.task_confirmation_service import snapshot_messages
+    from app.domains.task.services.task_confirmation_service import confirmation_owner, snapshot_messages
 
+    if owner := confirmation_owner(db, task):
+        jobs.setdefault(owner.id, owner)
     for message in snapshot_messages(db, task_id, int(task.session_generation or 0), list(jobs)):
         messages.setdefault(message.id, message)
 

@@ -231,9 +231,8 @@ class TaskWebSocketHandler:
             await self._send_chat_ack(request, status="failed", message="Task not found")
             return
 
-        # Ordinary chat is durably accepted before any slow checkpoint. HITL and
-        # interrupted-session recovery retain their existing specialised protocol.
-        if task_status != TaskStatus.INTERRUPTED.value and not request.metadata.get("interaction_id"):
+        reference = task_confirmation_service.reply_reference(request.metadata)
+        if task_status != TaskStatus.INTERRUPTED.value and reference is None:
             from app.domains.task.services import chat_submission_service
 
             try:
@@ -252,49 +251,52 @@ class TaskWebSocketHandler:
         claim = await self._claim_chat_message(self._task_id, request)
         if claim is None:
             return
-        interaction_id = str(request.metadata.get("interaction_id") or "").strip()
-        reply_to_message_id = str(request.metadata.get("reply_to_message_id") or "").strip()
-        if interaction_id or reply_to_message_id:
-            try:
-                confirmation = await task_confirmation_service.validate_reply(
-                    self._task_id, interaction_id, reply_to_message_id
-                )
-                # Use the persisted question's job, never a client-supplied locator.
-                request.metadata["job_id"] = confirmation["job_id"]
-                if confirmation.get("context"):
-                    request.metadata["confirmation_context"] = confirmation["context"]
-                live_delivery = await ai_job_task_chat.confirmation_delivery_available(
-                    task_id=self._task_id,
+        if reference is not None:
+            await self._handle_confirmation(request, claim, reference)
+            return
+
+        from app.domains.task.services.chat_submission_service import SubmissionError
+
+        try:
+            await self._resume_interrupted_task(request, claim)
+        except (
+            task_session_control_service.TaskSessionControlError,
+            task_session_service.TaskSessionUndoError,
+            SubmissionError,
+            LockAcquireTimeout,
+        ) as exc:
+            await self._mark_chat_claim_failed(claim)
+            await self._send_chat_ack(request, status="failed", message=str(exc))
+
+    async def _handle_confirmation(
+        self, request: _ChatMessageRequest, claim: ChatMessageClaim, reference: tuple[str, str]
+    ) -> None:
+        interaction_id, message_id = reference
+        try:
+            async with lock_task(self._task_id):
+                confirmation = await task_confirmation_service.validate_reply(self._task_id, interaction_id, message_id)
+                request.metadata.update(
                     interaction_id=interaction_id,
+                    reply_to_message_id=message_id,
                     job_id=confirmation["job_id"],
+                    confirmation_context=confirmation.get("context"),
                 )
-                if live_delivery:
+                if confirmation["delivery_mode"] == "live":
+                    if not await ai_job_task_chat.confirmation_delivery_available(
+                        task_id=self._task_id,
+                        interaction_id=interaction_id,
+                        job_id=confirmation["job_id"],
+                    ):
+                        raise task_confirmation_service.ConfirmationClosedError(
+                            "This question is closed or its execution is recovering. Refresh and retry."
+                        )
                     await self._persist_confirmation_reply(request, claim)
                     return
-                if confirmation["delivery_mode"] == "live":
-                    raise task_confirmation_service.ConfirmationClosedError(
-                        "This question is closed or its execution is recovering. Refresh and retry."
-                    )
-            except task_confirmation_service.ConfirmationClosedError as exc:
-                await self._mark_chat_claim_failed(claim)
-                await self._send_chat_ack(request, status="failed", message=str(exc))
-                return
-        if task_status == str(getattr(TaskStatus.INTERRUPTED, "value", TaskStatus.INTERRUPTED)):
-            from app.domains.task.services.chat_submission_service import SubmissionError
-
-            try:
-                await self._resume_interrupted_task(request, claim)
-            except (
-                task_session_control_service.TaskSessionControlError,
-                task_session_service.TaskSessionUndoError,
-                SubmissionError,
-                LockAcquireTimeout,
-            ) as exc:
-                await self._mark_chat_claim_failed(claim)
-                await self._send_chat_ack(request, status="failed", message=str(exc))
+                created = await self._persist_chat_message(request, claim)
+        except (task_confirmation_service.ConfirmationClosedError, LockAcquireTimeout) as exc:
+            await self._mark_chat_claim_failed(claim)
+            await self._send_chat_ack(request, status="failed", message=str(exc))
             return
-        created = await self._persist_chat_message(request, claim)
-
         if created is not None:
             await self._publish_chat_message(request, created)
 
@@ -366,17 +368,16 @@ class TaskWebSocketHandler:
         claim: ChatMessageClaim,
     ) -> task_session_service.CreatedChatTurn | None:
         try:
-            async with lock_task(self._task_id):
-                created = await task_session_service.create_task_chat_turn(
-                    task_id=self._task_id,
-                    actor_user_id=self._user.id,
-                    content=request.content,
-                    context_json={
-                        "client_message_id": request.client_message_id,
-                        **request.metadata,
-                    },
-                    client_message_id=request.client_message_id,
-                )
+            created = await task_session_service.create_task_chat_turn(
+                task_id=self._task_id,
+                actor_user_id=self._user.id,
+                content=request.content,
+                context_json={
+                    "client_message_id": request.client_message_id,
+                    **request.metadata,
+                },
+                client_message_id=request.client_message_id,
+            )
             await chat_message_idempotency_service.mark_message_done(
                 claim,
                 chat_message_id=created.message_id,
@@ -384,6 +385,7 @@ class TaskWebSocketHandler:
             )
             return created
         except (
+            task_confirmation_service.ConfirmationClosedError,
             task_session_service.TaskSessionUndoError,
             task_session_control_service.TaskSessionControlError,
             LockAcquireTimeout,
@@ -450,27 +452,24 @@ class TaskWebSocketHandler:
         claim: ChatMessageClaim,
     ) -> None:
         try:
-            async with lock_task(self._task_id):
-                # Provider acceptance precedes a successful user-answer record.
-                delivered = await ai_job_task_chat.deliver_confirmation_response(
-                    task_id=self._task_id,
-                    interaction_id=str(request.metadata.get("interaction_id") or ""),
-                    response=request.content,
-                    job_id=str(request.metadata.get("job_id") or "") or None,
-                )
-                if not delivered:
-                    raise task_confirmation_service.ConfirmationClosedError(
-                        "This question is no longer accepting answers."
-                    )
-                created = await task_session_service.create_confirmation_reply_message(
-                    task_id=self._task_id,
-                    actor_user_id=self._user.id,
-                    content=request.content,
-                    client_message_id=request.client_message_id,
-                    interaction_id=str(request.metadata.get("interaction_id") or ""),
-                    reply_to_message_id=str(request.metadata.get("reply_to_message_id") or ""),
-                    confirmation_value=request.metadata.get("confirmation_value"),
-                )
+            # Provider acceptance precedes a successful user-answer record.
+            delivered = await ai_job_task_chat.deliver_confirmation_response(
+                task_id=self._task_id,
+                interaction_id=str(request.metadata.get("interaction_id") or ""),
+                response=request.content,
+                job_id=str(request.metadata.get("job_id") or "") or None,
+            )
+            if not delivered:
+                raise task_confirmation_service.ConfirmationClosedError("This question is no longer accepting answers.")
+            created = await task_session_service.create_confirmation_reply_message(
+                task_id=self._task_id,
+                actor_user_id=self._user.id,
+                content=request.content,
+                client_message_id=request.client_message_id,
+                interaction_id=str(request.metadata.get("interaction_id") or ""),
+                reply_to_message_id=str(request.metadata.get("reply_to_message_id") or ""),
+                confirmation_value=request.metadata.get("confirmation_value"),
+            )
             await chat_message_idempotency_service.mark_message_done(
                 claim,
                 chat_message_id=created.message_id,

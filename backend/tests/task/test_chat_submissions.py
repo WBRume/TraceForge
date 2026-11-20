@@ -866,7 +866,11 @@ async def test_slow_checkpoint_remains_visible_and_rejects_second_send(task_db, 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fail_after_job_flush", [False, True])
 async def test_real_turn_creation_commits_receipt_message_and_job_together(task_db, monkeypatch, fail_after_job_flush):
-    from app.domains.task.services import context_token_service, task_session_snapshot_service
+    from app.domains.task.services import (
+        context_token_service,
+        task_session_snapshot_service,
+        task_session_turn_service,
+    )
 
     install_capture()
     row = accepted(task_db)
@@ -881,7 +885,7 @@ async def test_real_turn_creation_commits_receipt_message_and_job_together(task_
             task_db.rollback()
             raise
 
-    monkeypatch.setattr(task_session_service, "run_db_txn", txn)
+    monkeypatch.setattr(task_session_turn_service, "run_db_txn", txn)
     monkeypatch.setattr(
         task_session_snapshot_service, "create_checkpoint", AsyncMock(return_value={"root": "/fake/checkpoint"})
     )

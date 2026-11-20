@@ -93,6 +93,7 @@ class TaskResponse(BaseModel):
     git_repo_url: str | None = None
     status: str
     status_seq: Annotated[int, PlainSerializer(str, return_type=str)] = 0
+    status_run_id: str | None = None
     retry_count: int
     current_phase: str | None = None
     error_message: str | None = None

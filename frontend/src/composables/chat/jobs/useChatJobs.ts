@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, shallowReactive } from 'vue'
 import api from '@/utils/api'
 import { acceptsJobSnapshot } from '@/utils/jobSnapshot'
 import type { ChatAiJob, ChatAiJobStatus } from '../types'
@@ -27,9 +27,14 @@ export function useChatJobs(options: {
   let observation = 0
   let resetAt = 0
   let lastSnapshotCursor = 0
-  const observed = new Map<string, { job: ChatAiJob; at: number }>()
+  const observed = shallowReactive(new Map<string, { job: ChatAiJob; at: number }>())
 
   const jobList = () => Object.values(activeChatJobs.value)
+
+  const confirmationJob = (jobId: string) => {
+    const completed = observed.get(jobId)?.job
+    return activeChatJobs.value[jobId] ?? (completed?.status === 'SUCCESS' ? completed : undefined)
+  }
 
   const hasExecutingJob = () => jobList().some(job => isJobExecuting(job.status))
 
@@ -117,6 +122,7 @@ export function useChatJobs(options: {
   return {
     activeChatJobs,
     jobList,
+    confirmationJob,
     hasExecutingJob,
     upsert,
     reset,

@@ -40,7 +40,8 @@ def _publish(db: Session, message: ChatMessage) -> dict:
 def _prepare(
     db: Session, *, ws_id, task_id, actor_id, job_id, client_id, content, message_id, run_token, session_id
 ) -> tuple[dict, bool]:
-    task = db.query(SddTask).filter_by(id=task_id, workspace_id=ws_id).one_or_none()
+    # Match Job convergence and message reading capture: Task before Job.
+    task = db.query(SddTask).filter_by(id=task_id, workspace_id=ws_id).with_for_update().one_or_none()
     if task is None:
         raise SubmissionError("Task not found", "TASK_NOT_FOUND", 404)
     require_chat_actor(db, task, actor_id)

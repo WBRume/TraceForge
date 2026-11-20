@@ -204,7 +204,7 @@ def test_task_interrupt_with_claimed_attempt_converges_to_resumable_interrupted(
     assert payload["status"] == TaskStatus.INTERRUPTED.value
     # 恢复入口现在能找到可恢复作业。
     db.expire_all()
-    assert task_session_control_service._find_latest_interrupted_job(db, task.id) is not None
+    assert task_session_control_service._find_latest_interrupted_job(db, task) is not None
 
 
 def test_undo_commits_before_deleted_message_is_accessed_and_ignores_broadcast_failure(monkeypatch):
@@ -509,6 +509,22 @@ def test_task_resume_keeps_a_recoverable_owner_until_checkpoint(monkeypatch, ses
     assert duplicate["submission"]["id"] == submission_id
     assert duplicate["submission"]["ai_job_id"] == resume_job.id
     assert db.query(SddAiJob).count() == 2
+    for changed in (
+        {"new_agent_session": True},
+        {"metadata_json": {"agent_model": {"backend": "opencode", "model": "different-model"}}},
+    ):
+        with pytest.raises(task_session_control_service.TaskSessionControlError) as conflict:
+            asyncio.run(
+                task_session_control_service.resume_interrupted_task(
+                    task_id=task.id,
+                    actor_user_id="user-1",
+                    prompt="use this correction",
+                    client_message_id="client-resume-1",
+                    **changed,
+                )
+            )
+        assert conflict.value.status_code == 409
+    assert db.query(TaskChatSubmission).count() == 1
 
 
 def test_initialize_turn_captures_incremental_boundary_and_is_undoable(monkeypatch):

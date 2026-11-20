@@ -39,7 +39,9 @@ from app.domains.ai.services.jobs import (
 )
 from app.domains.ai.services.jobs import store as ai_store
 from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.services import chat_steering_service as steering
 from app.domains.task.services import status_machine as sm
+from app.domains.task.services.chat_submission_service import SubmissionError
 from app.domains.task.services.task_session_control_service import _accept_interrupt_command
 from tests.ai.jobs.ai_job_test_utils import patched_ai_job_db
 from tests.postgres_support import temporary_postgres_schema
@@ -135,6 +137,58 @@ def test_job_lock_preserves_pending_task_reading_watermark(postgres_factory):
         db.commit()
     with postgres_factory() as db:
         assert db.get(SddTask, "task-1").reading_change_seq == 1
+
+
+def test_steering_waits_for_task_before_locking_job(postgres_factory):
+    factory = postgres_factory
+    with factory() as db:
+        job = _seed_running_job(db)
+        task = db.get(SddTask, "task-1")
+        task.status_run_id = job.id
+        job.session_generation, job.session_revision = task.session_generation, task.session_revision
+        job.session_id = "native-session"
+        job_id = job.id
+        db.commit()
+
+    def submit():
+        with factory.begin() as db:
+            try:
+                steering._prepare(
+                    db,
+                    ws_id="ws-1",
+                    task_id="task-1",
+                    actor_id="user-1",
+                    job_id=job_id,
+                    client_id="guide-1",
+                    content="Verify the result",
+                    message_id="guide-message",
+                    run_token="run-1",
+                    session_id="native-session",
+                )
+            except SubmissionError as exc:
+                return exc.code
+            return "accepted"
+
+    with factory.begin() as db:
+        db.query(SddTask).filter_by(id="task-1").with_for_update().one()
+        thread, submission, _ = _run_in_thread(submit)
+        time.sleep(0.1)
+        assert thread.is_alive()
+        result = converge_job_attempt_in_txn(
+            db,
+            AttemptConvergenceRequest(
+                job_id=job_id,
+                run_token="run-1",
+                worker_boot_id=ai_registry.WORKER_BOOT_ID,
+                requested_status=AiJobStatus.SUCCESS,
+                reason="completed",
+                evidence=_dead_evidence(),
+            ),
+        )
+        assert result.status == AiJobStatus.SUCCESS.value
+    thread.join(timeout=8)
+    assert not thread.is_alive()
+    assert submission == {"value": "STEERING_NOT_RUNNING"}
 
 
 @pytest.mark.parametrize("concurrent_command", ["answer", "stop"])

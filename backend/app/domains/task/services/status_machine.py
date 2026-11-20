@@ -77,6 +77,7 @@ def snapshot(task: SddTask) -> dict:
         "workspace_id": task.workspace_id,
         "status": task.status.value,
         "status_seq": str(task.status_seq or 0),
+        "status_run_id": task.status_run_id,
         "session_generation": int(task.session_generation or 0),
         "session_revision": int(task.session_revision or 0),
     }

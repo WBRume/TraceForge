@@ -156,6 +156,7 @@ def _prepare_chat_turn_sync(
     replace_agent_session: bool = False,
     submission_id: str | None = None,
     initialization_id: str | None = None,
+    context_json: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """回合准备段（线程内执行）：活跃 job 互斥 + generation/revision 推进 + backend 解析。
 
@@ -170,6 +171,7 @@ def _prepare_chat_turn_sync(
     from app.domains.task.services.task_attempt_recovery_service import blocking_attempt_predicate
 
     assert_no_preparing_submission(db, task_id, allowed_id=submission_id, initialization_id=initialization_id)
+    task_confirmation_service.validate_turn_reply(db, task_id, context_json)
     if is_terminal(task.status):
         raise TaskSessionUndoError("Terminal tasks cannot accept messages", code="TASK_TERMINAL")
     active_job = (
@@ -298,6 +300,7 @@ def _persist_chat_turn_sync(
         or int(task.session_revision or 0) != revision
     ):
         raise TaskSessionUndoError("Session changed while preparing message", code="TASK_SESSION_CHANGED")
+    task_confirmation_service.validate_turn_reply(db, task_id, context_json)
     submission_id = (context_json or {}).get("submission_id")
     if submission_id and _enum_text(task.status) in {
         "INITIALIZED",
@@ -548,6 +551,7 @@ async def create_task_chat_turn(
             replace_agent_session=replace_agent_session,
             submission_id=(context_json or {}).get("submission_id"),
             initialization_id=initialization_id,
+            context_json=context_json,
         )
     )
     prepared["actor_user_id"] = str(actor_user_id)

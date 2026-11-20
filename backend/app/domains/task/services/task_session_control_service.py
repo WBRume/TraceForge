@@ -108,13 +108,14 @@ def _find_active_task_job(db: Session, task_id: str) -> SddAiJob | None:
     )
 
 
-def _find_latest_interrupted_job(db: Session, task_id: str) -> SddAiJob | None:
+def _find_latest_interrupted_job(db: Session, task: SddTask) -> SddAiJob | None:
     return (
         db.query(SddAiJob)
         .filter(
-            SddAiJob.task_id == task_id,
+            SddAiJob.task_id == task.id,
             SddAiJob.channel == AiJobChannel.TASK_CHAT,
             SddAiJob.status == AiJobStatus.INTERRUPTED,
+            SddAiJob.session_generation == task.session_generation,
         )
         .order_by(SddAiJob.interrupted_at.desc(), SddAiJob.created_at.desc())
         .first()
@@ -145,6 +146,7 @@ def _task_payload(task: SddTask, job_payload: dict[str, Any] | None = None) -> d
         "workspace_id": task.workspace_id,
         "status": _as_text(task.status),
         "status_seq": str(task.status_seq or 0),
+        "status_run_id": task.status_run_id,
         "session_generation": task.session_generation,
         "session_revision": task.session_revision,
         "session_id": task.session_id,
@@ -535,31 +537,32 @@ async def _publish_interruption(task, task_id, state):
 
 
 def _prepare_interrupted_resume(
-    db: Session, *, task_id, actor_user_id, idempotency_key, prompt, confirm_continue
+    db: Session,
+    *,
+    task_id,
+    actor_user_id,
+    idempotency_key,
+    prompt,
+    confirm_continue,
+    new_agent_session=False,
+    agent_model=None,
 ) -> dict[str, Any]:
     _require_local_actor(db, task_id, actor_user_id)
     if idempotency_key:
         from app.domains.workspace_collaboration.control import existing_resume
 
-        existing_receipt = existing_resume(db, task_id, actor_user_id, idempotency_key, prompt, confirm_continue)
+        existing_receipt = existing_resume(
+            db,
+            task_id,
+            actor_user_id,
+            idempotency_key,
+            prompt,
+            confirm_continue,
+            new_agent_session=new_agent_session,
+            agent_model=agent_model,
+        )
         if existing_receipt:
             return {"duplicate_payload": existing_receipt}
-        existing_jobs = (
-            db.query(SddAiJob)
-            .filter(
-                SddAiJob.task_id == task_id,
-                SddAiJob.channel == AiJobChannel.TASK_CHAT,
-            )
-            .order_by(SddAiJob.created_at.desc())
-            .limit(30)
-            .all()
-        )
-        for existing in existing_jobs:
-            context = existing.context_json if isinstance(existing.context_json, dict) else {}
-            if context.get("client_message_id") == idempotency_key:
-                task = db.query(SddTask).filter(SddTask.id == task_id).first()
-                if task is not None:
-                    return {"duplicate_payload": _task_payload(task, serialize_job(existing))}
 
     task = db.query(SddTask).filter(SddTask.id == task_id).first()
     if task is None:
@@ -580,7 +583,7 @@ def _prepare_interrupted_resume(
     if not prompt_text:
         raise TaskSessionControlError("Prompt is required to resume an interrupted task", status_code=400)
 
-    job = _find_latest_interrupted_job(db, task_id)
+    job = _find_latest_interrupted_job(db, task)
     if not job:
         # Queued stops and finished turn-mode questions may have no interrupted job.
         job = (
@@ -588,13 +591,16 @@ def _prepare_interrupted_resume(
             .filter(
                 SddAiJob.task_id == task_id,
                 SddAiJob.channel == AiJobChannel.TASK_CHAT,
+                SddAiJob.session_generation == task.session_generation,
+                SddAiJob.session_revision == task.session_revision,
                 SddAiJob.status.in_([AiJobStatus.SUCCESS, AiJobStatus.CANCELLED, AiJobStatus.FAILED]),
             )
             .order_by(SddAiJob.created_at.desc())
             .first()
         )
 
-    session_id = str(task.session_id or (job.session_id if job else None) or "").strip()
+    job_session = job.session_id if job and job.session_revision == task.session_revision else None
+    session_id = str(task.session_id or job_session or "").strip()
     return {
         "duplicate_payload": None,
         "task_status": _as_text(task.status),
@@ -603,6 +609,9 @@ def _prepare_interrupted_resume(
         "interrupted_at": task.interrupted_at.isoformat() if task.interrupted_at else None,
         "old_job_id": str(job.id) if job else None,
         "session_id": session_id or None,
+        "status_seq": task.status_seq,
+        "session_generation": task.session_generation,
+        "session_revision": task.session_revision,
         "prompt_text": prompt_text,
     }
 
@@ -624,6 +633,7 @@ async def resume_interrupted_task(
     if idempotency_key.lower().startswith(chat_submission_service.PRE_INPUT_CLIENT_ID_PREFIX):
         raise TaskSessionControlError("该消息标识由协作预输入保留", status_code=400)
 
+    message_metadata = dict(metadata_json) if isinstance(metadata_json, dict) else {}
     _prepare_resume_sync = partial(
         _prepare_interrupted_resume,
         task_id=task_id,
@@ -631,6 +641,8 @@ async def resume_interrupted_task(
         idempotency_key=idempotency_key,
         prompt=prompt,
         confirm_continue=confirm_continue,
+        new_agent_session=new_agent_session,
+        agent_model=message_metadata.get("agent_model"),
     )
 
     prepared = await run_db_txn(_prepare_resume_sync)
@@ -651,7 +663,6 @@ async def resume_interrupted_task(
 
     key, status = await check_task_session(task_id, new_session=new_agent_session)
     failed_check = key if status is None else None
-    message_metadata = dict(metadata_json) if isinstance(metadata_json, dict) else {}
     if new_agent_session:
         prepared["replace_agent_session"] = True
         prepared["agent_session_replacement_check"] = key

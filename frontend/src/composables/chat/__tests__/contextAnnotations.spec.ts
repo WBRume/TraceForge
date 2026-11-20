@@ -36,6 +36,19 @@ function setup() {
 }
 
 describe('context annotations and message submission', () => {
+  it('never converts a confirmation into a resume if the task stops while navigating history', async () => {
+    const { composer, options, send } = setup()
+    options.isHistoryAnchored = () => true
+    options.returnToLatest = vi.fn(async () => { options.task.isTaskInterrupted.value = true })
+    const accepted = await composer.sendChatContent('late answer', {
+      metadata: { interaction_id: 'question', reply_to_message_id: 'answer-target' },
+    })
+    expect(accepted).toBe(false)
+    expect(options.resumeInterruptedTask).not.toHaveBeenCalled()
+    expect(options.ws.sendFrame).not.toHaveBeenCalled()
+    expect(send).not.toHaveBeenCalled()
+  })
+
   it('sends a captured quote without requiring or inventing a comment', async () => {
     const { annotations, add, composer, send } = setup()
     add('')

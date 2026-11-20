@@ -1,7 +1,6 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ChatAiJob, ChatStatusCard, HitlCard, PinnedCard } from '../types'
-import { isJobExecuting } from '../jobs/useChatJobs'
 
 /**
  * 置顶富文本卡片区（独立于对话流）：HITL 交互卡 + 引擎状态卡。
@@ -10,8 +9,8 @@ import { isJobExecuting } from '../jobs/useChatJobs'
  */
 export function usePinnedCards(options: {
   getMessages: () => any[]
-  getJobs: () => ChatAiJob[]
-  getCurrentTask: () => { status?: string; session_generation?: number | null } | null | undefined
+  getJob: (jobId: string) => ChatAiJob | undefined
+  getCurrentTask: () => { status?: string; status_run_id?: string | null; session_generation?: number | null } | null | undefined
 }) {
   const { t } = useI18n()
 
@@ -19,12 +18,15 @@ export function usePinnedCards(options: {
 
   const canInteract = (card: HitlCard) => {
     const task = options.getCurrentTask()
-    if (!task || ['INTERRUPTED', 'COMPLETED', 'FAILED', 'BASELINED'].includes(String(task.status))) return false
+    if (!task || !card.job_id || ['INTERRUPTED', 'COMPLETED', 'FAILED', 'BASELINED'].includes(String(task.status))) return false
     if (card.session_generation == null || task.session_generation == null
       || Number(card.session_generation) !== Number(task.session_generation)) return false
-    return options.getJobs().some(job => job.id === card.job_id && (isJobExecuting(job.status)
-      || (card.delivery_mode === 'turn' && job.status === 'SUCCESS' && task.status === 'AWAITING_INPUT'))
-      && (job.session_generation == null || Number(job.session_generation) === Number(task.session_generation)))
+    if (task.status_run_id !== undefined && task.status_run_id !== card.job_id) return false
+    const job = options.getJob(card.job_id)
+    if (!job || (job.session_generation != null && Number(job.session_generation) !== Number(task.session_generation))) return false
+    return card.delivery_mode === 'turn'
+      ? task.status === 'AWAITING_INPUT' && job.status === 'SUCCESS'
+      : job.status === 'RUNNING' || job.status === 'WAITING_HITL'
   }
   // 历史中的问题不代表仍可回答；仅当前会话中仍执行的所属作业可以展示交互。
   const activeHitlCards = computed(() => cards.value.filter((c): c is HitlCard => (

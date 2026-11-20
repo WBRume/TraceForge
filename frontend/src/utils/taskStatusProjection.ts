@@ -4,6 +4,7 @@ export type TaskStatusSnapshot = {
   task_id: string
   status: string
   status_seq: string | number
+  status_run_id?: string | null
   session_generation?: number
   session_revision?: number
 }
@@ -31,14 +32,15 @@ export function applyTaskStatusSnapshot(target: any, payload: unknown): boolean 
   if (next === null || (current !== null && next <= current)) return false
   target.status = snapshot.status
   target.status_seq = String(snapshot.status_seq)
+  if (snapshot.status_run_id !== undefined) target.status_run_id = snapshot.status_run_id
   return true
 }
 
 /** REST/list refreshes use the same version fence as WebSocket delivery. */
 export function mergeTaskSnapshot(target: any, payload: Record<string, any>): void {
-  const { status, status_seq, session_generation, session_revision, ...other } = payload
+  const { status, status_seq, status_run_id, session_generation, session_revision, ...other } = payload
   Object.assign(target, other)
-  if (applyTaskStatusSnapshot(target, { task_id: target.id, status, status_seq })) {
+  if (applyTaskStatusSnapshot(target, { task_id: target.id, status, status_seq, status_run_id })) {
     if (Number.isSafeInteger(session_generation)) target.session_generation = session_generation
     if (Number.isSafeInteger(session_revision)) target.session_revision = session_revision
   }

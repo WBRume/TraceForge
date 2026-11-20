@@ -979,7 +979,9 @@ class TaskAgentEngine:
             "options": list(options or []),
             "allow_custom_input": normalized_kind != "select",
             "job_id": self.current_job_id,
-            "delivery_mode": "live" if provider_request_id else "turn",
+            "delivery_mode": "live"
+            if provider_request_id and "long_connection" in self.cli.capabilities.hitl_modes
+            else "turn",
         }
         if normalized_kind == "form":
             confirmation["fields"] = fields

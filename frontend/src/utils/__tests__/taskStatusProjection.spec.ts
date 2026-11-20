@@ -31,4 +31,12 @@ describe('authoritative task status projection', () => {
     mergeTaskSnapshot(task, { status: 'ROUND_COMPLETED', status_seq: '11', session_generation: 3, session_revision: 5 })
     expect(task).toMatchObject({ status: 'ROUND_COMPLETED', session_generation: 3, session_revision: 5 })
   })
+
+  it('keeps the current question owner when an older task snapshot arrives', () => {
+    const task = { id: 't', status: 'AWAITING_INPUT', status_seq: '10', status_run_id: 'current' as string | null }
+    mergeTaskSnapshot(task, { status: 'AWAITING_INPUT', status_seq: '9', status_run_id: 'old' })
+    expect(task.status_run_id).toBe('current')
+    applyTaskStatusSnapshot(task, { task_id: 't', status: 'INTERRUPTED', status_seq: '11', status_run_id: null })
+    expect(task.status_run_id).toBeNull()
+  })
 })

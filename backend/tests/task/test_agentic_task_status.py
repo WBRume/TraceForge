@@ -49,6 +49,8 @@ def test_interrupted_task_can_resume_after_its_job_already_stopped(db, job_statu
         status=job_status,
         queue_key=f"TASK:{task.id}",
         session_id="provider-session",
+        session_generation=task.session_generation,
+        session_revision=task.session_revision,
     )
     db.add(job)
     db.commit()
@@ -57,3 +59,30 @@ def test_interrupted_task_can_resume_after_its_job_already_stopped(db, job_statu
     )
     assert prepared["old_job_id"] == job.id
     assert prepared["session_id"] == "provider-session"
+
+
+@pytest.mark.parametrize("generation, revision, keeps_job", [(1, 4, False), (2, 4, True)])
+def test_resume_cannot_use_a_job_session_from_an_older_turn(db, generation, revision, keeps_job):
+    user, ws, task = _seed_workspace(db)
+    task.status = TaskStatus.INTERRUPTED
+    task.session_generation = 2
+    task.session_revision = 5
+    job = SddAiJob(
+        id="old-turn",
+        task_id=task.id,
+        workspace_id=ws.id,
+        creator_id=user.id,
+        channel=AiJobChannel.TASK_CHAT,
+        status=AiJobStatus.INTERRUPTED,
+        queue_key=f"TASK_CHAT:{task.id}",
+        session_id="previous-session",
+        session_generation=generation,
+        session_revision=revision,
+    )
+    db.add(job)
+    db.commit()
+    prepared = control._prepare_interrupted_resume(
+        db, task_id=task.id, actor_user_id=user.id, idempotency_key=None, prompt="continue", confirm_continue=False
+    )
+    assert prepared["old_job_id"] == (job.id if keeps_job else None)
+    assert prepared["session_id"] is None

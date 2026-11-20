@@ -77,6 +77,42 @@ async def test_stale_native_confirmation_never_falls_back_to_new_turn(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_turn_confirmation_is_validated_inside_lock_and_never_resumes_interrupted_task(monkeypatch):
+    handler = _handler()
+    locked = False
+
+    @asynccontextmanager
+    async def task_lock(_task_id):
+        nonlocal locked
+        locked = True
+        try:
+            yield
+        finally:
+            locked = False
+
+    async def validate(_task_id, _interaction_id, _message_id):
+        assert locked
+        raise task_handler.task_confirmation_service.ConfirmationClosedError("Question closed by stop")
+
+    monkeypatch.setattr(task_handler, "lock_task", task_lock)
+    monkeypatch.setattr(task_handler, "run_db", AsyncMock(side_effect=[None, "INTERRUPTED"]))
+    monkeypatch.setattr(task_handler.task_confirmation_service, "validate_reply", validate)
+    handler._claim_chat_message = AsyncMock(return_value=object())
+    handler._mark_chat_claim_failed = AsyncMock()
+    handler._persist_chat_message = AsyncMock()
+    handler._resume_interrupted_task = AsyncMock()
+
+    await handler._handle_chat_message(
+        {"payload": {"content": "late reply", "metadata": {"interaction_id": "i", "reply_to_message_id": "q"}}}
+    )
+
+    handler._resume_interrupted_task.assert_not_awaited()
+    handler._persist_chat_message.assert_not_awaited()
+    handler._mark_chat_claim_failed.assert_awaited_once()
+    assert handler._manager.outbound.sent_json[-1]["payload"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
 async def test_provider_rejection_never_persists_a_successful_user_answer(monkeypatch):
     from app.agents.errors import AgentInteractionClosedError
 

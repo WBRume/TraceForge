@@ -103,7 +103,8 @@ export function useChatSend(options: {
         interaction_id: confirmation.interaction_id, reply_to_message_id: confirmation.message_id,
         confirmation_value: content, job_id: confirmation.job_id } }
     }
-    if (!sendOptions.metadata?.interaction_id && options.collaborationBlocked?.()) {
+    const confirmationReply = Boolean(sendOptions.metadata?.interaction_id || sendOptions.metadata?.reply_to_message_id)
+    if (!confirmationReply && options.collaborationBlocked?.()) {
       ElMessage.warning(t('collaboration.blocked'))
       return false
     }
@@ -112,7 +113,7 @@ export function useChatSend(options: {
       return false
     }
     if (options.suggestionOnly?.()) {
-      if (sendOptions.metadata?.interaction_id) { ElMessage.warning('本地任务仅创建者或专家可以处理确认'); return false }
+      if (confirmationReply) { ElMessage.warning('本地任务仅创建者或专家可以处理确认'); return false }
       if (sendingChat.value || !content.trim()) return false
       sendingChat.value = true
       try {
@@ -127,26 +128,27 @@ export function useChatSend(options: {
       return false
     }
     if (sendingChat.value || options.isUndoing()) return false
-    if (!sendOptions.metadata?.interaction_id && options.submissions.busy.value) return false
+    if (!confirmationReply && options.submissions.busy.value) return false
     const normalized = String(content || '').trim()
     if (!normalized) return false
     const targetTaskId = options.getTaskId()
     const targetWorkspaceId = options.getWorkspaceId()
     if (options.isHistoryAnchored()) await options.returnToLatest()
     if (options.getTaskId() !== targetTaskId || options.getWorkspaceId() !== targetWorkspaceId) return false
-    if (!sendOptions.metadata?.interaction_id && options.agentSessionSendBlocked?.()) return false
+    if (confirmationReply && options.task.isTaskInterrupted.value) return false
+    if (!confirmationReply && options.agentSessionSendBlocked?.()) return false
     const newAgentSession = options.replacingAgentSession?.() || undefined
     const displayContent = String(sendOptions.displayContent || normalized).trim()
     const clientMessageId = generateClientMessageId()
     const modelSelection = options.getModelSelection?.()
-    if (!sendOptions.metadata?.interaction_id) sendOptions = { ...sendOptions, metadata: { ...sendOptions.metadata, ...options.getSubmissionMetadata?.() } }
-    if (modelSelection && !sendOptions.metadata?.interaction_id) {
+    if (!confirmationReply) sendOptions = { ...sendOptions, metadata: { ...sendOptions.metadata, ...options.getSubmissionMetadata?.() } }
+    if (modelSelection && !confirmationReply) {
       sendOptions = { ...sendOptions, metadata: { ...sendOptions.metadata, agent_model: modelSelection } }
     }
     options.noteSentTime(clientMessageId)
     sendingChat.value = true
     const taskId = options.getTaskId()
-    if (!options.task.isTaskInterrupted.value && !sendOptions.metadata?.interaction_id && taskId) {
+    if (!options.task.isTaskInterrupted.value && !confirmationReply && taskId) {
       try {
         // POST 回执直接应用；后续状态由 outbox 事件（chat_submission_update）驱动。
         const submission = newAgentSession
@@ -167,7 +169,7 @@ export function useChatSend(options: {
         sendingChat.value = false
       }
     }
-    if (options.task.isTaskInterrupted.value && taskId) {
+    if (!confirmationReply && options.task.isTaskInterrupted.value && taskId) {
       try {
         const payload = await options.resumeInterruptedTask(taskId, {
           prompt: normalized,

@@ -16,7 +16,7 @@ const confirmationMessage = (id: string, interactionId: string, kind = 'text') =
 const createStore = (getMessages: () => any[]) => {
   const task = ref({ status: 'RUNNING', session_generation: 1 })
   const jobs = ref<any[]>([{ id: 'j1', status: 'RUNNING', session_generation: 1 }])
-  const store = usePinnedCards({ getMessages, getJobs: () => jobs.value, getCurrentTask: () => task.value })
+  const store = usePinnedCards({ getMessages, getJob: id => jobs.value.find(job => job.id === id), getCurrentTask: () => task.value })
   return { store, task, jobs }
 }
 

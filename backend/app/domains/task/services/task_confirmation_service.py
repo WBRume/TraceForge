@@ -4,13 +4,40 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.offload import run_db_txn
-from app.domains.ai.models.ai_job import SddAiJob
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.task.models.chat import ChatMessage
-from app.domains.task.models.task import SddTask
+from app.domains.task.models.task import SddTask, TaskStatus
 
 
 class ConfirmationClosedError(RuntimeError):
     """A stale question must not become a new task submission."""
+
+
+def reply_reference(metadata: dict | None) -> tuple[str, str] | None:
+    metadata = metadata or {}
+    if "interaction_id" in metadata or "reply_to_message_id" in metadata:
+        return str(metadata.get("interaction_id") or "").strip(), str(metadata.get("reply_to_message_id") or "").strip()
+    return None
+
+
+_LIVE_CONFIRMATION_STATUSES = {AiJobStatus.RUNNING, AiJobStatus.WAITING_HITL}
+
+
+def confirmation_owner(db: Session, task: SddTask | None) -> SddAiJob | None:
+    if not task or task.status != TaskStatus.AWAITING_INPUT or task.baselined_at or not task.status_run_id:
+        return None
+    return (
+        db.query(SddAiJob)
+        .filter_by(
+            id=task.status_run_id,
+            task_id=task.id,
+            channel=AiJobChannel.TASK_CHAT,
+            session_generation=task.session_generation,
+            cancel_requested_at=None,
+        )
+        .filter(SddAiJob.status.in_(_LIVE_CONFIRMATION_STATUSES | {AiJobStatus.SUCCESS}))
+        .first()
+    )
 
 
 def question_context(message: ChatMessage) -> dict:
@@ -76,6 +103,7 @@ def validate_reply_sync(db: Session, task_id: str, interaction_id: str, message_
     if (
         not task
         or not parent
+        or not interaction_id
         or parent.task_id != task_id
         or parent.role != "assistant"
         or confirmation.get("interaction_id") != interaction_id
@@ -86,6 +114,7 @@ def validate_reply_sync(db: Session, task_id: str, interaction_id: str, message_
         db.query(ChatMessage.id)
         .filter(
             ChatMessage.task_id == task_id,
+            ChatMessage.session_generation == task.session_generation,
             or_(
                 (ChatMessage.role == "assistant")
                 & (
@@ -100,16 +129,17 @@ def validate_reply_sync(db: Session, task_id: str, interaction_id: str, message_
     if resolved:
         raise ConfirmationClosedError("This question has already been answered or closed. Refresh the conversation.")
     mode = confirmation.get("delivery_mode") or ("live" if task.agent_backend in {"opencode", "dsh"} else "turn")
-    if mode == "live":
-        job = db.get(SddAiJob, confirmation.get("job_id"))
-        if (
-            not job
-            or job.task_id != task_id
-            or job.status not in {"RUNNING", "WAITING_HITL"}
-            or task.status in {"INTERRUPTED", "COMPLETED", "FAILED", "BASELINED"}
-        ):
-            raise ConfirmationClosedError("The execution owning this question has ended.")
-    return {"delivery_mode": mode, "job_id": confirmation.get("job_id"), "context": question_context(parent)}
+    job = confirmation_owner(db, task)
+    allowed = _LIVE_CONFIRMATION_STATUSES if mode == "live" else {AiJobStatus.SUCCESS}
+    if not job or job.id != confirmation.get("job_id") or job.status not in allowed:
+        raise ConfirmationClosedError("The execution owning this question is not accepting answers.")
+    return {"delivery_mode": mode, "job_id": job.id, "context": question_context(parent)}
+
+
+def validate_turn_reply(db: Session, task_id: str, metadata: dict | None) -> None:
+    reference = reply_reference(metadata)
+    if reference and validate_reply_sync(db, task_id, *reference)["delivery_mode"] != "turn":
+        raise ConfirmationClosedError("This answer must be delivered to the running agent.")
 
 
 async def validate_reply(task_id: str, interaction_id: str, message_id: str) -> dict:

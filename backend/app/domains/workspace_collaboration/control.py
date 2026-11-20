@@ -137,10 +137,23 @@ def resume_submission(db, task_id, actor_id, prepared, client_id, metadata=None,
 
 
 def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *, content, source, failed_check=None):
+    from app.domains.task.services.task_session_control_service import TaskSessionControlError
+
     require_ready(db, task.id, actor_id=actor_id)
     client_id = client_id or str(uuid4())
-    sm.dispatch(db, task, sm.Trigger.RESUME, event_key=f"resume:{client_id}", actor_id=actor_id)
-    task.session_id = prepared.get("session_id", task.session_id)
+    sm.dispatch(
+        db,
+        task,
+        sm.Trigger.RESUME,
+        event_key=f"resume:{client_id}",
+        actor_id=actor_id,
+        expected_seq=prepared.get("status_seq"),
+    )
+    if task.session_generation != prepared.get(
+        "session_generation", task.session_generation
+    ) or task.session_revision != prepared.get("session_revision", task.session_revision):
+        raise TaskSessionControlError("Task session changed while resuming", status_code=409)
+    task.session_id = task.session_id or prepared.get("session_id")
     task.error_message = None
     task.interrupt_reason = None
     task.interrupted_by_id = None
@@ -152,6 +165,7 @@ def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *
         "resumed_by_id": actor_id,
         "resumed_at": datetime.utcnow().isoformat() + "Z",
     }
+    metadata.pop("_new_agent_session", None)
     if prepared.get("replace_agent_session"):
         metadata = {**(metadata or {}), "_new_agent_session": True}
     return accept_control(
@@ -169,7 +183,9 @@ def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *
     )
 
 
-def existing_resume(db, task_id, actor_id, client_id, prompt, confirm_continue):
+def existing_resume(
+    db, task_id, actor_id, client_id, prompt, confirm_continue, *, new_agent_session=False, agent_model=None
+):
     from app.domains.task.models.chat_submission import TaskChatSubmission
     from app.domains.task.services import chat_submission_service
     from app.domains.task.services.task_session_control_service import TaskSessionControlError
@@ -184,6 +200,12 @@ def existing_resume(db, task_id, actor_id, client_id, prompt, confirm_continue):
     expected = str(prompt or "").strip()
     if not expected and confirm_continue:
         expected = "Please continue the interrupted task from the current session context."
-    if row.content != expected or (row.metadata_json or {}).get("source") != "task_resume":
+    metadata = row.metadata_json or {}
+    if (
+        row.content != expected
+        or metadata.get("source") != "task_resume"
+        or bool(metadata.get("_new_agent_session")) != new_agent_session
+        or metadata.get("agent_model") != agent_model
+    ):
         raise TaskSessionControlError("相同消息标识不能用于不同内容", status_code=409)
     return {"task_id": task_id, "submission": chat_submission_service.serialize(row), "job": None}

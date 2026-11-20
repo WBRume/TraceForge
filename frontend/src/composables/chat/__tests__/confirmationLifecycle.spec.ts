@@ -28,7 +28,7 @@ const createLifecycle = () => {
     getSignal: () => undefined, onLoaded: () => { syncEngine(); return true },
   })
   const cards = usePinnedCards({
-    getMessages: () => messages.value, getJobs: jobs.jobList, getCurrentTask: () => task.value,
+    getMessages: () => messages.value, getJob: jobs.confirmationJob, getCurrentTask: () => task.value,
   })
   const engineRunning = ref(false)
   const preparingSubmission = ref(false)
@@ -92,6 +92,27 @@ const createLifecycle = () => {
 }
 
 describe('confirmation lifecycle', () => {
+  it('keeps the current turn question when its job succeeds, including on snapshot restore', () => {
+    const runtime = createLifecycle()
+    const message = runtime.messages.value[0]
+    message.metadata.confirmation.delivery_mode = 'turn'
+    Object.assign(runtime.task.value, { status: 'AWAITING_INPUT', status_run_id: 'old-job' })
+    runtime.cards.syncConfirmationCards()
+    expect(runtime.cards.activeHitlCards.value).toHaveLength(0)
+
+    const completed = { id: 'old-job', status: 'SUCCESS' as const, progress: 100, version: 2, session_generation: 1 }
+    runtime.ingestJob(completed)
+    expect(runtime.jobs.hasExecutingJob()).toBe(false)
+    expect(runtime.cards.activeHitlCards.value).toHaveLength(1)
+
+    runtime.jobs.reset()
+    runtime.jobs.mergeSnapshot([completed], runtime.jobs.snapshotCursor(), 1)
+    expect(runtime.cards.activeHitlCards.value).toHaveLength(1)
+    Object.assign(runtime.task.value, { status_run_id: 'new-job' })
+    expect(runtime.cards.activeHitlCards.value).toHaveLength(0)
+    runtime.state.dispose()
+  })
+
   it.each([false, true])('allows interrupting RUNNING preparation regardless of the engine flag (%s)', async engineRunning => {
     const runtime = createLifecycle()
     runtime.jobs.reset()
