@@ -44,6 +44,7 @@ def task_api(monkeypatch, tmp_path):
         running = False
         current_job_id = None
         session_id = None
+        attempt = None
         interrupts = 0
 
         async def stop(self):
@@ -80,6 +81,7 @@ def task_api(monkeypatch, tmp_path):
             job.session_id = f"session-{job.session_generation}"
             remote.session_id = job.session_id
             remote.current_job_id = job.id
+            remote.attempt = SimpleNamespace(run_token=job.run_token, worker_boot_id=job.worker_boot_id)
             remote.running = True
             db.add(
                 ChatMessage(

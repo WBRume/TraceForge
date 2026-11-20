@@ -50,6 +50,8 @@ const createLifecycle = () => {
     messages: {
       captureIdentitySnapshot: () => new Map(messages.value.map(message => [messageIdentity(message), message])),
       mergeSessionSnapshot: incoming => messages.value.push(...incoming),
+      pendingConfirmationKeys: () => [],
+      applyConfirmationReplies: () => {},
     },
     loadHistory: async () => true,
     loadActivePreInput: async () => true, onSessionGenerationBump: generationBump,

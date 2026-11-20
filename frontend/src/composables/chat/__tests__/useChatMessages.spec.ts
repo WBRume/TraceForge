@@ -100,6 +100,21 @@ describe('useChatMessages', () => {
     expect(store.visibleMessages.value).toEqual(store.messages.value)
   })
 
+  it('keeps a pending confirmation through history reset and applies its private failure receipt', () => {
+    const { store } = createMessages()
+    store.upsert({
+      id: 'local-answer', client_message_id: 'answer', content: 'my reply', delivery_status: 'processing',
+      metadata: { interaction_id: 'interaction', reply_to_message_id: 'question' },
+    })
+    store.applyHistoryPage([{ id: 'question', content: 'Continue?' }], true)
+    expect(store.pendingConfirmationKeys()).toEqual(['answer'])
+    store.applyConfirmationReplies([{ client_message_id: 'answer', status: 'FAILED', error_message: 'Timed out' }])
+    expect(store.findByIdentity('client:answer')).toMatchObject({
+      content: 'my reply', delivery_status: 'failed', delivery_error: 'Timed out',
+    })
+    expect(store.pendingConfirmationKeys()).toEqual([])
+  })
+
   it('merges snapshot messages without replacing realtime edits or restoring removed identities', () => {
     const { store } = createMessages()
     store.upsert({ id: 'updated', content: 'before' })

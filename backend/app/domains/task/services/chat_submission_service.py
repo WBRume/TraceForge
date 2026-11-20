@@ -43,6 +43,7 @@ from app.domains.task.services.task_attempt_recovery_service import (
 logger = get_logger(__name__, category="task_execution")
 _runners: dict[str, asyncio.Task] = {}
 PRE_INPUT_CLIENT_ID_PREFIX = "pre-input:"
+_RECOVERY_PAGE_SIZE = 100
 
 # PREPARING → {EXECUTING, FAILED}; EXECUTING → {SUCCEEDED, FAILED}.  Terminal
 # states are final; the fallback reconciler re-validates before converging.
@@ -636,11 +637,12 @@ def _reconcile_sync(db, task_id=None):
             TaskChatSubmission.status == "EXECUTING",
             or_(SddAiJob.id.is_(None), ~blocking_attempt_predicate()),
         )
-        .order_by(TaskChatSubmission.task_id, TaskChatSubmission.id)
-        .limit(100)
+        .order_by(TaskChatSubmission.updated_at, TaskChatSubmission.task_id, TaskChatSubmission.id)
+        .limit(_RECOVERY_PAGE_SIZE)
         .all()
     )
-    for candidate_task_id, receipt_id in rows:
+    # Select by retry age and acquire locks in task order across workers.
+    for candidate_task_id, receipt_id in sorted(rows):
         try:
             with db.begin_nested():
                 # Follow the same task-before-message lock order as acceptance.
@@ -668,6 +670,10 @@ def _reconcile_sync(db, task_id=None):
                 row.updated_at = datetime.utcnow()
         except Exception:
             logger.exception("Chat submission reconciliation deferred: submission_id={}", receipt_id)
+            with db.begin_nested():
+                db.query(TaskChatSubmission).filter_by(id=receipt_id, status="EXECUTING").update(
+                    {TaskChatSubmission.updated_at: datetime.utcnow()}, synchronize_session=False
+                )
     return pending
 
 
@@ -721,6 +727,10 @@ def build_session_state(db, task_id, *, actor_id, client_message_ids=None):
             message = db.get(ChatMessage, row.chat_message_id)
             if message:
                 messages[message.id] = message
+    from app.domains.task.services import live_confirmation_service
+
+    confirmation_replies, confirmation_messages = live_confirmation_service.snapshot_replies(db, task, actor_id, keys)
+    messages.update(confirmation_messages)
     from app.domains.ai.services.jobs.store import list_task_jobs, serialize_job
 
     for job in list_task_jobs(db, task_id=task_id, active_only=True):
@@ -739,6 +749,7 @@ def build_session_state(db, task_id, *, actor_id, client_message_ids=None):
         "session_generation": int(task.session_generation or 0),
         "session_revision": int(task.session_revision or 0),
         "receipts": [serialize(row) for row in receipts.values()],
+        "confirmation_replies": confirmation_replies,
         "jobs": [serialize_job(job) for job in jobs.values()],
         "messages": task_conversation_history.serialize_history_messages(db, task, ordered, task.workspace_id, task_id),
     }

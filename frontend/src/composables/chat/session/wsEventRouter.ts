@@ -55,6 +55,7 @@ export function createTaskWsEventRouter(deps: {
   }
   ingestJob: (job: ChatAiJob) => void
   refreshActiveJobs: (taskId: string) => Promise<boolean>
+  refreshConfirmationReplies?: () => Promise<void>
   applyTaskSessionPayload: (payload: any) => boolean | void
   specBootstrapApplyUpdate: (payload: any) => void
   shareSuggestionNudge: (payload: any) => void
@@ -168,11 +169,15 @@ export function createTaskWsEventRouter(deps: {
           session_turn_id: payload.session_turn_id || null,
           session_generation: payload.session_generation ?? null,
           can_undo: payload.can_undo,
+          delivery_error: status === 'failed' ? payload.message : null,
           delivery_status: status === 'accepted' || status === 'duplicate' ? 'sent' : status,
         }
         if (clientMessageId) {
           const existing = deps.messages.findByIdentity(`client:${clientMessageId}`)
           if (existing) {
+            if (['processing', 'failed', 'conflict'].includes(status)
+              && (existing.delivery_status === 'sent' || !String(existing.id).startsWith('local-'))) break
+            if (existing.delivery_status === 'failed' && status === 'processing') break
             deps.messages.upsert({
               ...messagePatch,
               content: messagePatch.content || existing.content,
@@ -191,6 +196,11 @@ export function createTaskWsEventRouter(deps: {
             if (taskId) void deps.refreshActiveJobs(taskId)
           }
         }
+        break
+      }
+
+      case 'confirmation_reply_changed': {
+        void deps.refreshConfirmationReplies?.()
         break
       }
 

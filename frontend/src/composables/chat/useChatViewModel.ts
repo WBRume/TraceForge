@@ -647,6 +647,7 @@ export function useChatViewModel() {
     },
     ingestJob,
     refreshActiveJobs: (taskId) => jobs.loadActive(taskId),
+    refreshConfirmationReplies: sessionState.refreshConfirmationReplies,
     applyTaskSessionPayload: sessionState.applyTaskSessionPayload,
     specBootstrapApplyUpdate: specBootstrap.applyUpdate,
     shareSuggestionNudge: (payload) => shareSuggestionNudgeHandler?.(payload),

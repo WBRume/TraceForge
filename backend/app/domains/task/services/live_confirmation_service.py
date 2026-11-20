@@ -132,11 +132,19 @@ def _locked_receipt(db: Session, receipt_id: str) -> tuple[SddTask | None, TaskC
     return task, db.get(TaskConfirmationReply, receipt_id) if task else None
 
 
+def _fail_delivery(db: Session, receipt: TaskConfirmationReply, error: str) -> None:
+    receipt.status = "FAILED"
+    receipt.error_message = error
+    task_event_publisher.queue_confirmation_reply_change(db, receipt.task_id)
+
+
 def _record_outcome(db: Session, receipt_id: str, token: str | None, accepted: bool, error: str | None) -> None:
     _, receipt = _locked_receipt(db, receipt_id)
     if receipt and receipt.status == "SENDING" and receipt.delivery_token == token:
-        receipt.status = "ACCEPTED" if accepted else "FAILED"
-        receipt.error_message = error
+        if accepted:
+            receipt.status = "ACCEPTED"
+        else:
+            _fail_delivery(db, receipt, error or _NOT_CONFIRMED)
 
 
 def _due_delivery(db: Session, receipt_id: str, *, recovery: bool) -> _Delivery | None:
@@ -147,13 +155,11 @@ def _due_delivery(db: Session, receipt_id: str, *, recovery: bool) -> _Delivery 
     if receipt.status == "SENDING" and (not recovery or receipt.updated_at > now - _SENDING_RECHECK):
         return None
     job = db.get(SddAiJob, receipt.job_id)
-    if job.status in _FINISHED_JOBS or task.status_run_id != receipt.job_id:
-        receipt.status = "FAILED"
-        receipt.error_message = "The execution ended before the answer delivery could be confirmed."
+    if job is None or job.status in _FINISHED_JOBS or task.status_run_id != receipt.job_id:
+        _fail_delivery(db, receipt, "The execution ended before the answer delivery could be confirmed.")
         return None
     if receipt.created_at <= now - _RECOVERY_WINDOW:
-        receipt.status = "FAILED"
-        receipt.error_message = _NOT_CONFIRMED
+        _fail_delivery(db, receipt, _NOT_CONFIRMED)
         return None
     return _Delivery(task.id, job.id, receipt.interaction_id, receipt.content, receipt.status, receipt.delivery_token)
 
@@ -167,8 +173,7 @@ def _claim_delivery(db: Session, receipt_id: str, delivery: _Delivery) -> str | 
         if owner["delivery_mode"] != "live" or owner["job_id"] != receipt.job_id:
             raise questions.ConfirmationClosedError("The execution owning this question has changed.")
     except questions.ConfirmationClosedError as exc:
-        receipt.status = "FAILED"
-        receipt.error_message = str(exc)
+        _fail_delivery(db, receipt, str(exc))
         return None
     receipt.status = "SENDING"
     receipt.delivery_token = token = str(uuid4())
@@ -286,22 +291,60 @@ async def submit(request: ReplyRequest) -> ReplyResult | None:
         return ReplyResult("processing", error="The answer delivery is being reconciled.")
 
 
-def _recoverable_receipts(db: Session) -> list[tuple[str, str]]:
+def snapshot_replies(
+    db: Session, task: SddTask, actor_id: str, keys: list[str]
+) -> tuple[list[dict], dict[str, ChatMessage]]:
+    if not keys:
+        return [], {}
+    replies = (
+        db.query(TaskConfirmationReply)
+        .filter(
+            TaskConfirmationReply.task_id == task.id,
+            TaskConfirmationReply.creator_id == actor_id,
+            TaskConfirmationReply.client_message_id.in_(keys),
+        )
+        .all()
+    )
+    statuses = []
+    messages = {}
+    for reply in replies:
+        statuses.append(
+            {
+                "client_message_id": reply.client_message_id,
+                "status": reply.status,
+                "error_message": reply.error_message,
+            }
+        )
+        message = db.get(ChatMessage, reply.message_id) if reply.message_id else None
+        if message and message.session_generation == task.session_generation:
+            messages[message.id] = message
+    return statuses, messages
+
+
+def _recoverable_receipts(db: Session, recovering: tuple[str, ...]) -> list[tuple[str, str]]:
     receipt = TaskConfirmationReply
     now = datetime.utcnow()
-    return (
-        db.query(receipt.id, receipt.status)
+    query = db.query(receipt.id, receipt.status).order_by(receipt.updated_at, receipt.id)
+    accepted = query.filter(receipt.status == "ACCEPTED").limit(50).all()
+    # A publication backlog must leave room for delivery probes and expiration.
+    due = (
+        query.filter(receipt.id.notin_(recovering))
         .filter(
             or_(
-                receipt.status == "ACCEPTED",
                 (receipt.status == "PENDING") & (receipt.updated_at <= now - _PENDING_RECHECK),
                 (receipt.status == "SENDING") & (receipt.updated_at <= now - _SENDING_RECHECK),
             )
         )
-        .order_by((receipt.status != "ACCEPTED"), receipt.updated_at, receipt.id)
-        .limit(50)
+        .limit(max(0, _MAX_RECOVERING - len(recovering)))
         .all()
     )
+    return [*due, *accepted]
+
+
+def _defer_settlement(db: Session, receipt_id: str) -> None:
+    _, receipt = _locked_receipt(db, receipt_id)
+    if receipt and receipt.status == "ACCEPTED":
+        receipt.updated_at = datetime.utcnow()
 
 
 async def _recover_delivery(receipt_id: str) -> None:
@@ -319,12 +362,17 @@ async def recover() -> None:
             await _flush_outcome(receipt_id)
         except Exception:
             logger.exception("Confirmation provider acknowledgement deferred: receipt_id={}", receipt_id)
-    for receipt_id, status in await run_db_txn(_recoverable_receipts):
+            outcome = _delivery_outcomes.pop(receipt_id, None)
+            if outcome is not None:
+                _delivery_outcomes[receipt_id] = outcome
+    recovering = tuple(_recovering)
+    for receipt_id, status in await run_db_txn(lambda db: _recoverable_receipts(db, recovering)):
         if status == "ACCEPTED":
             try:
                 await run_db_txn(lambda db, receipt_id=receipt_id: _settle(db, receipt_id))
             except Exception:
                 logger.exception("Confirmation reply recovery deferred: receipt_id={}", receipt_id)
+                await run_db_txn(lambda db, receipt_id=receipt_id: _defer_settlement(db, receipt_id))
         elif receipt_id not in _recovering and len(_recovering) < _MAX_RECOVERING:
             _recovering[receipt_id] = asyncio.create_task(_recover_delivery(receipt_id))
     task_event_publisher.wake()

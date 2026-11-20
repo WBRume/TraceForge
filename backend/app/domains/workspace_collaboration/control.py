@@ -137,7 +137,7 @@ def resume_submission(db, task_id, actor_id, prepared, client_id, metadata=None,
 
 
 def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *, content, source, failed_check=None):
-    from app.domains.task.services.task_session_control_service import TaskSessionControlError
+    from app.domains.task.services.task_session_control_service import TaskSessionControlError, find_resume_source_job
 
     require_ready(db, task.id, actor_id=actor_id)
     client_id = client_id or str(uuid4())
@@ -153,7 +153,12 @@ def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *
         "session_generation", task.session_generation
     ) or task.session_revision != prepared.get("session_revision", task.session_revision):
         raise TaskSessionControlError("Task session changed while resuming", status_code=409)
-    task.session_id = task.session_id or prepared.get("session_id")
+    # Recovery may settle the current Job after preparation. Resolve the
+    # predecessor under the lock held by the resume transition.
+    source_job = find_resume_source_job(db, task)
+    source_job_id = source_job.id if source_job else None
+    if not task.session_id and source_job and source_job.session_revision == task.session_revision:
+        task.session_id = source_job.session_id
     task.error_message = None
     task.interrupt_reason = None
     task.interrupted_by_id = None
@@ -161,7 +166,7 @@ def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *
     metadata = {
         **(metadata or {}),
         "resume_interrupted": True,
-        "resumed_from_job_id": prepared["old_job_id"],
+        "resumed_from_job_id": source_job_id,
         "resumed_by_id": actor_id,
         "resumed_at": datetime.utcnow().isoformat() + "Z",
     }
@@ -179,7 +184,7 @@ def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *
         metadata=metadata,
         failed_check=failed_check,
         replacement_check=prepared.get("agent_session_replacement_check"),
-        resumed_from_job_id=prepared["old_job_id"],
+        resumed_from_job_id=source_job_id,
     )
 
 

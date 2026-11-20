@@ -17,8 +17,8 @@ from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.confirmation_reply import TaskConfirmationReply
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_event_outbox import TaskEventOutbox
+from app.domains.task.services import chat_submission_service, task_confirmation_service, task_session_turn_service
 from app.domains.task.services import live_confirmation_service as replies
-from app.domains.task.services import task_confirmation_service, task_session_turn_service
 from tests.task.test_task_session_interrupt_resume import _seed_task
 
 
@@ -184,9 +184,50 @@ async def test_unconfirmed_delivery_has_a_bounded_recovery_without_redelivery(
         db.expire_all()
     assert intent.status == "FAILED"
     assert db.query(ChatMessage).filter_by(role="user").count() == 0
+    change = db.query(TaskEventOutbox).one()
+    assert change.payload_json == {"event_type": "confirmation_reply_changed", "task_id": question.task_id}
+    snapshot = chat_submission_service.build_session_state(
+        db, question.task_id, actor_id=question.actor_id, client_message_ids=[question.client_id]
+    )
+    assert snapshot["confirmation_replies"] == [
+        {"client_message_id": question.client_id, "status": "FAILED", "error_message": intent.error_message}
+    ]
+    viewer = chat_submission_service.build_session_state(
+        db, question.task_id, actor_id="other-user", client_message_ids=[question.client_id]
+    )
+    assert viewer["confirmation_replies"] == []
     db.rollback()
     assert (await replies.submit(question)).status == "failed"
     provider.assert_awaited_once()
+
+
+def test_acknowledged_backlog_leaves_a_slot_for_due_deliveries(db, question):
+    receipt_id = replies._reserve(db, question)
+    now = datetime.utcnow()
+    pending = db.get(TaskConfirmationReply, receipt_id)
+    pending.updated_at = now - timedelta(minutes=1)
+    for index in range(51):
+        db.add(
+            TaskConfirmationReply(
+                task_id=pending.task_id,
+                job_id=pending.job_id,
+                question_id=pending.question_id,
+                creator_id=pending.creator_id,
+                client_message_id=f"accepted-{index}",
+                interaction_id=pending.interaction_id,
+                content=pending.content,
+                status="ACCEPTED",
+                updated_at=now - timedelta(minutes=2, seconds=index),
+            )
+        )
+    db.commit()
+    first_page = replies._recoverable_receipts(db, ())
+    assert (receipt_id, "PENDING") in first_page
+    assert sum(status == "ACCEPTED" for _, status in first_page) == 50
+    oldest = first_page[1][0]
+    replies._defer_settlement(db, oldest)
+    db.flush()
+    assert (oldest, "ACCEPTED") not in replies._recoverable_receipts(db, ())
 
 
 def test_old_delivery_token_cannot_settle_a_new_attempt(db, question):

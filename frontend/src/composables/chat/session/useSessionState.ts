@@ -30,7 +30,8 @@ export function useSessionState(options: {
   syncEngineFromJobs: () => void
   convergeFromJobs: (taskId: string, items: ChatAiJob[]) => boolean
   syncConfirmationCards: () => void
-  messages: Pick<ReturnType<typeof useChatMessages>, 'captureIdentitySnapshot' | 'mergeSessionSnapshot'>
+  messages: Pick<ReturnType<typeof useChatMessages>,
+    'captureIdentitySnapshot' | 'mergeSessionSnapshot' | 'pendingConfirmationKeys' | 'applyConfirmationReplies'>
   loadHistory: (taskId: string, reset?: boolean) => Promise<boolean>
   loadActivePreInput: (taskId: string) => Promise<boolean>
   onSessionGenerationBump: () => void
@@ -126,6 +127,7 @@ export function useSessionState(options: {
     for (const job of merged.accepted) options.onSnapshotJobAccepted(job)
     options.convergeFromJobs(taskId, merged.items)
     options.messages.mergeSessionSnapshot(mapHistoryMessages(snapshot.messages || []), messagesAtRequest)
+    options.messages.applyConfirmationReplies(snapshot.confirmation_replies || [])
     options.syncConfirmationCards()
     return true
   }
@@ -139,11 +141,12 @@ export function useSessionState(options: {
     const signal = getAbortSignal()
     const stillCurrent = () => !signal?.aborted && currentTaskId() === taskId && sessionStateKeyFor(taskId) === key
     const unconfirmed = options.submissions.unconfirmedKeys()
+    const requestedKeys = [...new Set([...unconfirmed, ...options.messages.pendingConfirmationKeys()])]
     const jobCursor = options.jobs.snapshotCursor()
     const messagesAtRequest = options.messages.captureIdentitySnapshot()
     const flight = (async (): Promise<boolean> => {
       try {
-        const snapshot = await fetchSessionState(taskId, unconfirmed)
+        const snapshot = await fetchSessionState(taskId, requestedKeys)
         if (!stillCurrent()) return false
         const applied = applySessionSnapshot(snapshot, jobCursor, messagesAtRequest)
         if (applied && unconfirmed.length) {
@@ -183,6 +186,16 @@ export function useSessionState(options: {
       if (recoverSessionFlight === flight) recoverSessionFlight = null
     })
     return flight
+  }
+
+  const refreshConfirmationReplies = async () => {
+    if (!options.messages.pendingConfirmationKeys().length) return
+    const key = sessionStateKeyFor(currentTaskId())
+    // An existing read can predate this invalidation. Refresh after it settles.
+    if (recoverSessionFlight) await recoverSessionFlight
+    if (key === sessionStateKeyFor(currentTaskId()) && options.messages.pendingConfirmationKeys().length) {
+      await recoverSession('confirmation-reply-changed')
+    }
   }
 
   const loadSessionSnapshot = async (taskId: string): Promise<boolean> => {
@@ -323,6 +336,7 @@ export function useSessionState(options: {
     onInitialSubscriptionReady,
     onInitialConnectionUnavailable,
     recoverSession,
+    refreshConfirmationReplies,
     applyTaskSessionVersion,
     applyTaskSessionPayload,
     dispose,

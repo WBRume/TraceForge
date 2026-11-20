@@ -15,15 +15,25 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from functools import partial
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from app.agents.contract import AgentStopResult
 from app.core.logging import get_logger
 from app.core.offload import run_db_txn, run_db_txn_with_bind
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.schemas.websocket import WSMessage
+from app.domains.ai.services.ai_job_convergence_service import (
+    AttemptTerminationRequest,
+    TerminationRequestResult,
+    evidence_from_stop_result,
+    request_attempt_termination_in_txn,
+)
 from app.domains.ai.services.jobs import attempts as ai_job_attempts
 from app.domains.ai.services.jobs import publishing as ai_job_publishing
+from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
 from app.domains.ai.services.jobs.store import (
     create_task_chat_job,
     find_active_summary_job,
@@ -63,19 +73,6 @@ def _merge_json(original: Any, patch: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def _find_running_task_job(db: Session, task_id: str, engine: TaskAgentEngine) -> SddAiJob | None:
-    query = db.query(SddAiJob).filter(
-        SddAiJob.task_id == task_id,
-        SddAiJob.channel == AiJobChannel.TASK_CHAT,
-        SddAiJob.status.in_([AiJobStatus.RUNNING, AiJobStatus.WAITING_HITL]),
-    )
-    if engine.current_job_id:
-        current = query.filter(SddAiJob.id == engine.current_job_id).first()
-        if current:
-            return current
-    return query.order_by(SddAiJob.created_at.desc()).first()
-
-
 def _require_local_actor(db: Session, task_id: str, actor_id: str) -> None:
     from app.domains.local_resource.client import ResourceError
     from app.domains.local_resource.service import require_operation
@@ -86,26 +83,10 @@ def _require_local_actor(db: Session, task_id: str, actor_id: str) -> None:
         raise TaskSessionControlError(str(exc), status_code=exc.status_code) from exc
 
 
-def _find_active_task_job(db: Session, task_id: str) -> SddAiJob | None:
-    """查找尚未结束的 TASK_CHAT 作业（PENDING/RUNNING/WAITING_HITL）。"""
-    return (
-        db.query(SddAiJob)
-        .filter(
-            SddAiJob.task_id == task_id,
-            SddAiJob.channel == AiJobChannel.TASK_CHAT,
-            SddAiJob.status.in_(
-                [
-                    AiJobStatus.PENDING,
-                    AiJobStatus.RUNNING,
-                    AiJobStatus.WAITING_HITL,
-                    AiJobStatus.TERMINATING,
-                    AiJobStatus.ORPHANED,
-                ]
-            ),
-        )
-        .order_by(SddAiJob.created_at.desc())
-        .first()
-    )
+def _current_task_job(db: Session, task: SddTask) -> SddAiJob | None:
+    if not task.status_run_id:
+        return None
+    return db.query(SddAiJob).filter_by(id=task.status_run_id, task_id=task.id, channel=AiJobChannel.TASK_CHAT).first()
 
 
 def _find_latest_interrupted_job(db: Session, task: SddTask) -> SddAiJob | None:
@@ -117,13 +98,34 @@ def _find_latest_interrupted_job(db: Session, task: SddTask) -> SddAiJob | None:
             SddAiJob.status == AiJobStatus.INTERRUPTED,
             SddAiJob.session_generation == task.session_generation,
         )
-        .order_by(SddAiJob.interrupted_at.desc(), SddAiJob.created_at.desc())
+        .order_by(SddAiJob.interrupted_at.desc().nulls_last(), SddAiJob.created_at.desc(), SddAiJob.id.desc())
         .first()
     )
 
 
+def find_resume_source_job(db: Session, task: SddTask) -> SddAiJob | None:
+    # A queued stop or a finished turn-mode question can be the source of a
+    # resume. Its current revision takes precedence over historical pauses.
+    job = (
+        db.query(SddAiJob)
+        .filter(
+            SddAiJob.task_id == task.id,
+            SddAiJob.channel == AiJobChannel.TASK_CHAT,
+            SddAiJob.session_generation == task.session_generation,
+            SddAiJob.session_revision == task.session_revision,
+            SddAiJob.status.in_(
+                [AiJobStatus.INTERRUPTED, AiJobStatus.SUCCESS, AiJobStatus.CANCELLED, AiJobStatus.FAILED]
+            ),
+        )
+        .order_by(SddAiJob.created_at.desc(), SddAiJob.id.desc())
+        .first()
+    )
+    return job or _find_latest_interrupted_job(db, task)
+
+
 def _remote_attempt_starting(db: Session, task_id: str) -> bool:
-    job = _find_active_task_job(db, task_id)
+    task = db.get(SddTask, task_id)
+    job = _current_task_job(db, task) if task else None
     return bool(
         job
         and job.status == AiJobStatus.RUNNING
@@ -164,118 +166,13 @@ async def _broadcast_task_event(event_type: str, task: SddTask, job_payload: dic
     )
 
 
-def _prepare_interrupt_sync(
-    db: Session,
-    *,
-    task_id: str,
-    actor_user_id: str,
-    reason: str | None,
-    engine_job_id: str | None,
-) -> dict[str, Any]:
-    """中断准备段（单事务）：job/task 加锁 + 唯一 termination request。
-
-    不再直接把 job 写成 TERMINATING：行锁与写路径全部由
-    ``request_attempt_termination_in_txn`` 提供，与业务 finalizer 共享同一
-    锁协议，杜绝“普通 SELECT 读到 RUNNING 后覆盖已提交终态”的交错。
-    """
-    from app.domains.ai.services.ai_job_convergence_service import (
-        AttemptTerminationRequest,
-        request_attempt_termination_in_txn,
-    )
-
-    task = db.query(SddTask).filter(SddTask.id == task_id).first()
-    if not task:
-        raise TaskSessionControlError("Task not found", status_code=404)
-    _require_local_actor(db, task_id, actor_user_id)
-    query = db.query(SddAiJob.id).filter(
-        SddAiJob.task_id == task_id,
-        SddAiJob.channel == AiJobChannel.TASK_CHAT,
-        SddAiJob.status.in_([AiJobStatus.RUNNING, AiJobStatus.WAITING_HITL]),
-    )
-    if engine_job_id:
-        query = query.filter(SddAiJob.id == engine_job_id)
-    candidate = query.order_by(SddAiJob.created_at.desc()).first()
-    if not candidate:
-        raise TaskSessionControlError("No running AI job to interrupt", status_code=409)
-    job_id = str(candidate[0])
-
-    now = datetime.utcnow()
-    reason_text = str(reason or "User temporarily interrupted the AI session").strip()
-    result = request_attempt_termination_in_txn(
-        db,
-        AttemptTerminationRequest(
-            job_id=job_id,
-            task_id=task_id,
-            actor_user_id=actor_user_id,
-            reason=reason_text,
-            mode="INTERRUPT",
-            message="AI session interrupted by user",
-            failure_code="USER_INTERRUPT",
-            interrupt_context_patch={
-                "interrupted": True,
-                "interrupted_at": now.isoformat() + "Z",
-                "interrupted_by_id": actor_user_id,
-            },
-            mark_task_interrupted=True,
-        ),
-    )
-    if not result.changed:
-        # 行锁内重读发现已被 finalizer/取消收敛：幂等退出，不得覆盖。
-        raise TaskSessionControlError("AI job is no longer interruptible", status_code=409)
-    db.commit()
-    return {
-        "task_id": task_id,
-        "job_id": job_id,
-        "run_token": result.run_token,
-        "session_id": result.session_id,
-    }
-
-
 def _load_interrupt_state_sync(db: Session, *, task_id: str, job_id: str | None) -> dict[str, Any]:
     task = db.query(SddTask).filter(SddTask.id == task_id).first()
     if not task:
         raise TaskSessionControlError("Task not found", status_code=404)
-    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first() if job_id else None
-    return {
-        "task": _task_payload(task, serialize_job(job) if job else None),
-        "job": serialize_job(job) if job else None,
-    }
-
-
-def _cancel_active_jobs_sync(db: Session, *, task_id: str, workspace_id: str, message: str) -> dict[str, Any]:
-    active = _find_active_task_job(db, task_id)
-    if not active:
-        task = db.get(SddTask, task_id)
-        if task and task.status in {TaskStatus.RUNNING, TaskStatus.AWAITING_INPUT, TaskStatus.INTERRUPTED}:
-            receipt = _interrupt_preparing_submission(db, task_id, message)
-            if task.status != TaskStatus.INTERRUPTED:
-                sm.dispatch(db, task, sm.Trigger.INTERRUPT, event_key=f"interrupt:{task.status_seq}", reason=message)
-            task.interrupt_reason = message
-            db.commit()
-            return {"cancelled_ids": [], "task": {**_task_payload(task), "submission": receipt}, "job": None}
-        raise TaskSessionControlError(
-            "No running Claude CLI session or active AI job to interrupt",
-            status_code=409,
-        )
-    cancelled_ids = ai_job_attempts.mark_task_chat_jobs_cancelled(
-        db,
-        workspace_id=workspace_id,
-        task_id=task_id,
-        message=message,
-    )
-    if not cancelled_ids:
-        raise TaskSessionControlError("No active AI job to interrupt", status_code=409)
-    task = db.query(SddTask).filter(SddTask.id == task_id).first()
-    if task and task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.INTERRUPTED}:
-        sm.dispatch(db, task, sm.Trigger.INTERRUPT, event_key=f"interrupt:{task.status_seq}", reason=message)
-        task.interrupt_reason = message
-        db.commit()
-    job = db.query(SddAiJob).filter(SddAiJob.id == active.id).first()
-    return {
-        "cancelled_ids": cancelled_ids,
-        "task": _task_payload(task, serialize_job(job) if job else None),
-        "job": serialize_job(job) if job else None,
-    }
+    job = db.get(SddAiJob, job_id) if job_id else None
+    job_payload = serialize_job(job) if job else None
+    return {"task": _task_payload(task, job_payload), "job": job_payload}
 
 
 def _interrupt_preparing_submission(db: Session, task_id: str, message: str) -> dict[str, Any] | None:
@@ -325,15 +222,30 @@ def _finalize_legacy_interrupt_sync(
     db.commit()
 
 
-def _accept_interrupt_command(db, task_id, actor_id, command_id, sequence, reason):
-    from app.domains.ai.services.ai_job_convergence_service import (
-        AttemptTerminationRequest,
-        request_attempt_termination_in_txn,
-    )
-
-    task = db.query(SddTask).filter_by(id=task_id).with_for_update().one()
+def _accept_interrupt_command(
+    db: Session,
+    task_id: str,
+    actor_id: str,
+    command_id: str | None,
+    sequence: int | None,
+    reason: str | None,
+    *,
+    workspace_id: str | None = None,
+) -> tuple[dict[str, Any], TerminationRequestResult | None]:
+    task_query = db.query(SddTask).filter_by(id=task_id)
+    if workspace_id is not None:
+        task_query = task_query.filter_by(workspace_id=workspace_id)
+    task = task_query.populate_existing().with_for_update().one_or_none()
+    if task is None:
+        raise TaskSessionControlError("Task not found", status_code=404)
     _require_local_actor(db, task_id, actor_id)
-    event_key = f"interrupt-command:{command_id}"
+    if command_id is None and task.status == TaskStatus.INTERRUPTED:
+        return {**_task_payload(task), "duplicate": True}, None
+
+    event_key = f"interrupt-command:{command_id or uuid4()}"
+    # The transition clears status_run_id. Capture its exact job while holding
+    # the task lock, then commit the two writes together.
+    job = _current_task_job(db, task)
     result = sm.dispatch(
         db,
         task,
@@ -344,34 +256,48 @@ def _accept_interrupt_command(db, task_id, actor_id, command_id, sequence, reaso
         reason=reason,
     )
     if result.get("duplicate"):
-        return {**sm.receipt(db, task_id, event_key), "duplicate": True}
-    # Persist the stop intent with the transition. A process crash after
-    # this commit must still fence writes and let recovery stop the job.
-    job = _find_active_task_job(db, task_id)
-    if job and job.status == AiJobStatus.PENDING:
+        return {**sm.receipt(db, task_id, event_key), "duplicate": True}, None
+
+    reason_text = str(reason or "User temporarily interrupted the AI session").strip()
+    stopped = None
+    if job is not None:
         stopped = request_attempt_termination_in_txn(
             db,
             AttemptTerminationRequest(
                 job_id=job.id,
-                task_id=task_id,
+                task_id=task.id,
                 actor_user_id=actor_id,
-                reason=reason or "User interrupted before dispatch",
+                reason=reason_text,
                 mode="INTERRUPT",
+                message=reason_text if job.status == AiJobStatus.PENDING else "AI session interrupted by user",
+                failure_code="USER_INTERRUPT",
             ),
         )
-        if stopped.status == AiJobStatus.CANCELLED.value:
-            db.flush()
-            result["job"] = serialize_job(job)
-            sm.remember_command_result(db, task_id, event_key, result)
-    elif job:
-        job.cancel_requested_at = datetime.utcnow()
-        job.context_json = {**(job.context_json or {}), "termination_mode": "INTERRUPT"}
-    _interrupt_preparing_submission(db, task_id, str(reason or "User interrupted the session"))
-    task.interrupt_reason = reason
+        task.session_id = stopped.session_id or task.session_id
+    submission = _interrupt_preparing_submission(db, task_id, reason_text)
+    task.error_message = None
+    task.interrupt_reason = reason_text
     task.interrupted_by_id = actor_id
     task.interrupted_at = datetime.utcnow()
+    db.flush()
+    receipt = _task_payload(task)
+    if job is not None:
+        receipt["job"] = {"id": job.id, "status": _as_text(job.status)}
+    if submission is not None:
+        receipt["submission"] = submission
+    sm.remember_command_result(db, task_id, event_key, receipt)
     db.commit()
-    return result
+    return receipt, stopped
+
+
+def _engine_owns_stop(engine: TaskAgentEngine, target: TerminationRequestResult) -> bool:
+    attempt = engine.attempt
+    return (
+        engine.running
+        and engine.current_job_id == target.job_id
+        and (attempt.run_token if attempt else None) == target.run_token
+        and (attempt.worker_boot_id if attempt else None) == target.worker_boot_id
+    )
 
 
 async def interrupt_task(
@@ -385,148 +311,99 @@ async def interrupt_task(
     command_id: str | None = None,
     expected_status_seq: int | None = None,
 ) -> dict[str, Any]:
-    # The dependency Session is only useful for the caller's initial route
-    # lookup.  All DB work below is isolated into short worker-thread txns.
     db_bind = db.get_bind()
-
-    async def run_interrupt_txn(body):
-        return await run_db_txn_with_bind(db_bind, body)
-
-    # Direct service callers may intentionally retain a persistent ORM object
-    # for their own transaction assertions.  Production routes pass ids only
-    # and close the dependency session before awaiting locks.
     if task is None:
         db.close()
     resolved_task_id = str(task_id or (task.id if task is not None else ""))
-    resolved_workspace_id = str(workspace_id or (task.workspace_id if task is not None else ""))
     if not resolved_task_id:
         raise TaskSessionControlError("Task not found", status_code=404)
+    run_interrupt_txn = _bind_txn_runner(db, db_bind)
+
+    # Give a provider that is creating a session time to persist its locator.
+    # Recovery needs that locator if this worker goes away during the stop.
     await _wait_for_remote_attempt_start(run_interrupt_txn, resolved_task_id)
-    if command_id:
-        receipt = await run_interrupt_txn(
-            lambda session: _accept_interrupt_command(
-                session, resolved_task_id, actor_user_id, command_id, expected_status_seq, reason
-            )
+    receipt, target = await run_interrupt_txn(
+        lambda session: _accept_interrupt_command(
+            session, resolved_task_id, actor_user_id, command_id, expected_status_seq, reason, workspace_id=workspace_id
         )
-        if receipt.get("duplicate"):
-            return receipt
-        if receipt.get("job"):
-            queued_job_id = receipt["job"]["id"]
-            state = await run_interrupt_txn(
-                lambda session: _load_interrupt_state_sync(session, task_id=resolved_task_id, job_id=queued_job_id)
-            )
-            await ai_job_publishing.publish_job(queued_job_id)
-            await _publish_interruption(task, resolved_task_id, state)
-            return state["task"]
-    current = await run_interrupt_txn(
-        lambda session: _load_interrupt_state_sync(session, task_id=resolved_task_id, job_id=None)
     )
-    if not command_id and current["task"]["status"] == TaskStatus.INTERRUPTED.value:
-        return current["task"]
-    # A remote provider can be creating its session after the job is claimed.
-    # Let the locator become durable before requesting termination; otherwise
-    # there is no address to stop or recover, and an early click strands ORPHANED.
-    engine = get_engine(resolved_task_id)
-    if engine and engine.running:
-        prepared = await run_interrupt_txn(
-            lambda session: _prepare_interrupt_sync(
-                session,
-                task_id=resolved_task_id,
-                actor_user_id=actor_user_id,
-                reason=reason,
-                engine_job_id=engine.current_job_id,
-            )
-        )
-        reason_text = str(reason or "User temporarily interrupted the AI session").strip()
-        run_token = prepared["run_token"]
-        termination_error: str | None = None
-        try:
-            termination = await engine.interrupt()
-        except Exception as exc:
-            # The process state is unknown when the engine stop path itself
-            # fails.  Preserve the durable blocker as ORPHANED instead of
-            # claiming an INTERRUPTED terminal state.
-            termination = None
-            termination_error = str(exc) or exc.__class__.__name__
+    if receipt.get("duplicate"):
+        return receipt
 
-        termination_reason = termination_error or str(getattr(termination, "error_message", "") or reason_text)
-        # 统一停止结果协议：REMOTE_SESSION 以 stop_acknowledged 为
-        # 准；LOCAL_PROCESS 以 local_process_confirmed_dead 为准。旧 bridge 的
-        # TerminationResult 仍兼容（confirmed_dead 字段）。
-        from app.agents.contract import AgentStopResult
-        from app.domains.ai.services.ai_job_convergence_service import (
-            evidence_from_stop_result,
-        )
+    if target and target.changed and target.status == AiJobStatus.TERMINATING.value:
+        engine = get_engine(resolved_task_id)
+        if engine and _engine_owns_stop(engine, target):
+            await _stop_interrupt_engine(run_interrupt_txn, engine, target, receipt["interrupt_reason"])
+        elif target.worker_boot_id == WORKER_BOOT_ID:
+            # The local runner may be starting or exiting without an engine.
+            # The durable request also lets the reaper stop an abandoned owner.
+            ai_runtime.request_cancel(target.job_id)
 
-        if isinstance(termination, AgentStopResult):
-            if termination.execution_kind == "REMOTE_SESSION":
-                evidence = evidence_from_stop_result(
-                    termination,
-                    remote_session_started=bool(engine.session_id),
-                    execution_kind="REMOTE_SESSION",
-                )
-            else:
-                evidence = evidence_from_stop_result(termination, execution_kind="LOCAL_PROCESS")
-            confirmed_dead = termination_error is None and (
-                (termination.execution_kind == "REMOTE_SESSION" and termination.stop_acknowledged is True)
-                or (termination.execution_kind == "LOCAL_PROCESS" and bool(termination.local_process_confirmed_dead))
-            )
-        else:
-            confirmed_dead = termination_error is None and (
-                (termination is None and not run_token)
-                or bool(termination is not None and getattr(termination, "confirmed_dead", False))
-            )
-            evidence = None
-        if run_token:
-            await ai_job_attempts.finalize_attempt_termination(
-                prepared["job_id"],
-                run_token,
-                confirmed_dead=confirmed_dead,
-                reason=termination_reason,
-                failure_code=str(
-                    getattr(termination, "error_code", "")
-                    or ("USER_INTERRUPT" if confirmed_dead else "PROCESS_TREE_UNKNOWN")
-                ),
-                evidence=evidence,
-                termination_mode="INTERRUPT",
-            )
-        else:
-            await run_interrupt_txn(
-                lambda session: _finalize_legacy_interrupt_sync(
-                    session,
-                    task_id=resolved_task_id,
-                    job_id=prepared["job_id"],
-                    confirmed_dead=confirmed_dead,
-                    reason=termination_reason,
-                )
-            )
-        state = await run_interrupt_txn(
-            lambda session: _load_interrupt_state_sync(session, task_id=resolved_task_id, job_id=prepared["job_id"])
-        )
-
-        await ai_job_publishing.publish_job(prepared["job_id"])
-        await _publish_interruption(task, resolved_task_id, state)
-        return state["task"]
-
-    # 没有 running engine：可能是任务还在排队/刚结束，前端把停止按钮置为可点。
-    # 此时不再报“No running Claude CLI session”，而是取消尚未真正启动的 AI job，
-    # 让前端可以正确回刷运行状态。
     state = await run_interrupt_txn(
-        lambda session: _cancel_active_jobs_sync(
-            session,
-            task_id=resolved_task_id,
-            workspace_id=resolved_workspace_id,
-            message=str(reason or "Task execution stopped before Claude session started").strip(),
+        lambda session: _load_interrupt_state_sync(
+            session, task_id=resolved_task_id, job_id=target.job_id if target else None
         )
     )
-    for job_id in state["cancelled_ids"]:
-        # final 判定由 publish_job 依据 payload 状态计算。
-        await ai_job_publishing.publish_job(job_id)
+    if "submission" in receipt:
+        state["task"]["submission"] = receipt["submission"]
+    if target and target.changed:
+        await ai_job_publishing.publish_job(target.job_id)
     from app.domains.task.services.chat_submission_service import wake_event_publisher
 
     await wake_event_publisher()
     await _publish_interruption(task, resolved_task_id, state)
     return state["task"]
+
+
+async def _stop_interrupt_engine(run_txn, engine, target: TerminationRequestResult, reason: str) -> None:
+    termination_error = None
+    try:
+        termination = await engine.interrupt()
+    except Exception as exc:
+        termination = None
+        termination_error = str(exc) or exc.__class__.__name__
+
+    termination_reason = termination_error or getattr(termination, "error_message", None) or reason
+    if isinstance(termination, AgentStopResult):
+        evidence = evidence_from_stop_result(
+            termination,
+            remote_session_started=bool(engine.session_id),
+            execution_kind=termination.execution_kind,
+        )
+        confirmed_dead = (
+            termination.stop_acknowledged is True
+            if termination.execution_kind == "REMOTE_SESSION"
+            else termination.local_process_confirmed_dead is True
+        )
+    else:
+        confirmed_dead = termination_error is None and (
+            (termination is None and target.run_token is None) or bool(getattr(termination, "confirmed_dead", False))
+        )
+        evidence = None
+
+    if target.run_token:
+        await ai_job_attempts.finalize_attempt_termination(
+            target.job_id,
+            target.run_token,
+            confirmed_dead=confirmed_dead,
+            reason=termination_reason,
+            failure_code=str(
+                getattr(termination, "error_code", "")
+                or ("USER_INTERRUPT" if confirmed_dead else "PROCESS_TREE_UNKNOWN")
+            ),
+            evidence=evidence,
+            termination_mode="INTERRUPT",
+        )
+    else:
+        await run_txn(
+            lambda session: _finalize_legacy_interrupt_sync(
+                session,
+                task_id=engine.task_id,
+                job_id=target.job_id,
+                confirmed_dead=confirmed_dead,
+                reason=termination_reason,
+            )
+        )
 
 
 async def _publish_interruption(task, task_id, state):
@@ -583,22 +460,7 @@ def _prepare_interrupted_resume(
     if not prompt_text:
         raise TaskSessionControlError("Prompt is required to resume an interrupted task", status_code=400)
 
-    job = _find_latest_interrupted_job(db, task)
-    if not job:
-        # Queued stops and finished turn-mode questions may have no interrupted job.
-        job = (
-            db.query(SddAiJob)
-            .filter(
-                SddAiJob.task_id == task_id,
-                SddAiJob.channel == AiJobChannel.TASK_CHAT,
-                SddAiJob.session_generation == task.session_generation,
-                SddAiJob.session_revision == task.session_revision,
-                SddAiJob.status.in_([AiJobStatus.SUCCESS, AiJobStatus.CANCELLED, AiJobStatus.FAILED]),
-            )
-            .order_by(SddAiJob.created_at.desc())
-            .first()
-        )
-
+    job = find_resume_source_job(db, task)
     job_session = job.session_id if job and job.session_revision == task.session_revision else None
     session_id = str(task.session_id or job_session or "").strip()
     return {

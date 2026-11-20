@@ -107,6 +107,18 @@ describe('ChatExecutionInput', () => {
     expect(wrapper.emitted('submit')).toHaveLength(1)
   })
 
+  it('offers both answer and stop while the task awaits a reply', async () => {
+    const wrapper = mountInput({ running: false, canInterrupt: true })
+
+    await wrapper.get('button[aria-label="send"]').trigger('click')
+    await wrapper.get('button[aria-label="stop"]').trigger('click')
+    expect(wrapper.emitted('submit')).toHaveLength(1)
+    expect(wrapper.emitted('interrupt')).toHaveLength(1)
+
+    await wrapper.setProps({ canInterrupt: false, interrupting: true })
+    expect(wrapper.get('button[aria-label="stop"]').attributes('disabled')).toBeDefined()
+  })
+
   it('does not submit on Enter while the engine is running', async () => {
     const wrapper = mountInput({ running: true })
 

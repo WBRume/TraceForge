@@ -425,6 +425,19 @@ defineExpose({ resetPreInputForm, focusInput })
         <SpeechInputButton v-if="speechAvailable" ref="speechButtonRef" :disabled="props.disabled || props.running"
           :context-key="props.contextKey || ''" @transcript="insertTranscript" @busy="setSpeechBusy" />
         <button
+          v-if="!props.running && (props.canInterrupt || props.interrupting)"
+          type="button"
+          class="primary-action-btn stop-btn"
+          :class="{ 'is-interrupting': props.interrupting }"
+          :disabled="props.interrupting"
+          :aria-label="props.interruptTitle"
+          :title="props.interruptTitle"
+          @click="emit('interrupt')"
+        >
+          <Loader2 v-if="props.interrupting" :size="16" class="spin" />
+          <Square v-else :size="13" class="stop-icon" />
+        </button>
+        <button
           type="button"
           class="primary-action-btn"
           :class="[`${primaryAction}-btn`, {

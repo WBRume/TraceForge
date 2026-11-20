@@ -302,7 +302,9 @@ def serialize_history_messages(db, task, msg_query, workspace_id, task_id):
         .order_by(TaskSessionOperation.created_at, TaskSessionOperation.id)
         .first()
     )
-    recovery_turn = db.get(TaskSessionTurn, pending_undo.target_turn_id) if pending_undo else None
+    recovery_turn = (
+        db.get(TaskSessionTurn, pending_undo.target_turn_id) if pending_undo and pending_undo.target_turn_id else None
+    )
     recovery_turn_id = (
         recovery_turn.id
         if recovery_turn

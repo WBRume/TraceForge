@@ -49,6 +49,17 @@ def queue_chat_message(db, task_id: str, payload: dict) -> None:
     )
 
 
+def queue_confirmation_reply_change(db, task_id: str) -> None:
+    # The room only gets an invalidation. Reply receipts remain actor-private.
+    db.add(
+        TaskEventOutbox(
+            event_id=str(uuid4()),
+            task_id=task_id,
+            payload_json={"event_type": "confirmation_reply_changed", "task_id": task_id},
+        )
+    )
+
+
 def _backoff_seconds(attempts: int) -> float:
     return min(300.0, 2.0 ** max(0, attempts))
 
@@ -150,6 +161,7 @@ async def publish_once() -> int:
                         "workspace_collaboration_update",
                         "task_repository_update",
                         "chat_message",
+                        "confirmation_reply_changed",
                         "pre_input_submitted",
                         "task_status_changed",
                     }

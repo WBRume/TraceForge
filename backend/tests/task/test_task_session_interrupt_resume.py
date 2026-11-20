@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import create_engine
@@ -11,8 +12,10 @@ import app.domains.api_mock.models.api_mock
 import app.domains.task.models.test_result
 import app.domains.workflow.models.task_change
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
+from app.agents.contract import AgentRunResult
 from app.database import Base
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.services.jobs import attempts as ai_attempts
 from app.domains.ai.services.jobs import (
     executors as ai_executors,
 )
@@ -97,6 +100,7 @@ def test_task_interrupt_marks_task_and_job_interrupted(monkeypatch):
         current_job_id = job.id
         running = True
         session_id = "session-1"
+        attempt = None
 
         def __init__(self):
             self.interrupted = False
@@ -162,6 +166,7 @@ def test_task_interrupt_with_claimed_attempt_converges_to_resumable_interrupted(
         current_job_id = job.id
         running = True
         session_id = "session-1"
+        attempt = SimpleNamespace(run_token=job.run_token, worker_boot_id=job.worker_boot_id)
 
         async def interrupt(self):
             from app.agents.supervision import TerminationResult
@@ -401,6 +406,82 @@ def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch)
     )
     assert prepared["old_job_id"] == job.id
     assert prepared["prompt_text"] == "Continue the queued task"
+
+
+@pytest.mark.parametrize("provider_finished", [False, True])
+def test_interrupt_without_engine_only_stops_current_attempt(monkeypatch, provider_finished):
+    SessionLocal = _build_session()
+    patch_ai_job_db(monkeypatch, SessionLocal)
+    with SessionLocal() as db:
+        task, job = _seed_task(db)
+        task.session_revision = job.session_revision = 2
+        job.run_token = "active-token"
+        job.worker_boot_id = ai_registry.WORKER_BOOT_ID
+        db.add(
+            SddAiJob(
+                id="earlier-job",
+                workspace_id=job.workspace_id,
+                task_id=task.id,
+                creator_id=job.creator_id,
+                queue_key=job.queue_key,
+                channel=job.channel,
+                status=AiJobStatus.INTERRUPTED,
+                prompt_text="earlier prompt",
+                session_generation=task.session_generation,
+                session_revision=1,
+            )
+        )
+        db.commit()
+        monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: None)
+        monkeypatch.setattr(ai_publishing, "publish_job", AsyncMock())
+        monkeypatch.setattr(task_session_control_service, "_publish_interruption", AsyncMock())
+        cancelled = []
+        monkeypatch.setattr(ai_registry.runtime, "request_cancel", cancelled.append)
+
+        async def stop():
+            return await task_session_control_service.interrupt_task(
+                db,
+                task=task,
+                actor_user_id=task.creator_id,
+                command_id="stop-current",
+                expected_status_seq=0,
+                reason="pause for edits",
+            )
+
+        result = asyncio.run(stop())
+        assert result["status"] == "INTERRUPTED"
+        assert result["job"]["status"] == "TERMINATING"
+        db.refresh(job)
+        assert job.context_json["termination_mode"] == "INTERRUPT"
+        assert db.get(SddAiJob, "earlier-job").status == AiJobStatus.INTERRUPTED
+        assert cancelled == [job.id]
+        assert asyncio.run(stop())["duplicate"] is True
+        assert cancelled == [job.id]
+        payload = ai_attempts.finish_termination_sync(
+            job.id,
+            "active-token",
+            confirmed_dead=True,
+            reason="stop confirmed",
+            failure_code="USER_INTERRUPT",
+            recovered_result=AgentRunResult(success=False, result_text="provider aborted")
+            if provider_finished
+            else None,
+        )
+        assert payload["status"] == "INTERRUPTED"
+        db.refresh(job)
+        db.refresh(task)
+        assert job.run_token is None
+        assert job.interrupt_reason == "pause for edits"
+        assert job.terminal_reason == "stop confirmed"
+        prepared = task_session_control_service._prepare_interrupted_resume(
+            db,
+            task_id=task.id,
+            actor_user_id=task.creator_id,
+            idempotency_key=None,
+            prompt="resume current job",
+            confirm_continue=False,
+        )
+        assert prepared["old_job_id"] == job.id
 
 
 def test_task_resume_requires_interrupted_status(monkeypatch):

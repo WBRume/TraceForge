@@ -553,6 +553,32 @@ def _job_row_execution_kind(job: SddAiJob, evidence: AttemptFinalizerEvidence) -
     return EXECUTION_KIND_LOCAL_PROCESS
 
 
+def _persisted_user_stop_mode(job: SddAiJob) -> str | None:
+    mode = (job.context_json or {}).get("termination_mode")
+    return mode if job.cancel_requested_at is not None and mode in ("INTERRUPT", "CANCEL") else None
+
+
+def _resolve_termination_outcome(job: SddAiJob, request: AttemptConvergenceRequest) -> AttemptConvergenceRequest:
+    # A committed business result survives loss of the worker. Reaping still
+    # proves cleanup before it can consume that result.
+    if job.completion_json:
+        return replace(
+            request,
+            requested_status=AiJobStatus(job.completion_json["outcome"]),
+            message=job.completion_json["summary"],
+            error_message=None if job.completion_json["outcome"] == "SUCCESS" else job.error_message,
+        )
+    if (
+        request.intent == ConvergenceIntent.REAPER_FINALIZE
+        and request.requested_status is not None
+        and _persisted_user_stop_mode(job)
+    ):
+        # The provider outcome can prove cleanup while the committed stop
+        # still determines the business status.
+        return replace(request, requested_status=None, message=None, result_patch=None)
+    return request
+
+
 def _derive_termination_business_status(
     job: SddAiJob,
     request: AttemptConvergenceRequest,
@@ -561,8 +587,7 @@ def _derive_termination_business_status(
     if request.requested_status is not None:
         return request.requested_status
     queue_key = str(job.queue_key or "")
-    stored_mode = (job.context_json or {}).get("termination_mode")
-    mode = stored_mode if stored_mode in {"INTERRUPT", "CANCEL"} else request.termination_mode
+    mode = _persisted_user_stop_mode(job) or request.termination_mode
     if mode == "INTERRUPT" and job.channel == AiJobChannel.TASK_CHAT:
         # 用户临时中断（可恢复）：与 legacy 无 token 路径
         # （``_finalize_legacy_interrupt_sync``）语义一致，job 落 INTERRUPTED。
@@ -679,12 +704,17 @@ def _apply_business_status_in_txn(
         task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
         _apply_task_interrupt_in_txn(db, job, task, request, now)
     elif final_status == AiJobStatus.INTERRUPTED:
+        interrupted_by_user = _persisted_user_stop_mode(job) == "INTERRUPT"
         job.status = AiJobStatus.INTERRUPTED
         job.progress = 100
-        job.message = request.message or "AI session interrupted unexpectedly"
-        job.error_message = request.error_message if request.error_message is not None else reason
+        job.message = request.message or (
+            "AI session interrupted by user" if interrupted_by_user else "AI session interrupted unexpectedly"
+        )
+        job.error_message = (
+            request.error_message if interrupted_by_user or request.error_message is not None else reason
+        )
         job.finished_at = now
-        job.interrupt_reason = reason
+        job.interrupt_reason = (job.interrupt_reason or reason) if interrupted_by_user else reason
         _clear_ownership_fields(job)
     else:
         job.status = final_status
@@ -1026,17 +1056,8 @@ def converge_job_attempt_in_txn(
     # 6. 读取显式 execution kind。
     execution_kind = _job_row_execution_kind(job, request.evidence)
 
-    # A committed result survives loss of the worker/notification. Reaping
-    # still proves cleanup, then consumes the result instead of rerunning it.
-    if job.completion_json:
-        request = replace(
-            request,
-            requested_status=AiJobStatus(job.completion_json["outcome"]),
-            message=job.completion_json["summary"],
-            error_message=None if job.completion_json["outcome"] == "SUCCESS" else job.error_message,
-        )
-
     # 7. 决策表。
+    request = _resolve_termination_outcome(job, request)
     final_status, orphan_failure_code = _decide_final_status(job, request, execution_kind)
 
     # 8. 同一事务写 job / task / patch / ownership。
@@ -1217,7 +1238,7 @@ def request_attempt_termination_in_txn(
 
     # Preserve why termination began even if a later reaper finalizes it as CANCELLED.
     context = dict(job.context_json or {})
-    if request.mode != "WORKER_SHUTDOWN" or context.get("termination_mode") not in {"CANCEL", "INTERRUPT"}:
+    if request.mode != "WORKER_SHUTDOWN" or context.get("termination_mode") not in ("CANCEL", "INTERRUPT"):
         context["termination_mode"] = request.mode
     job.context_json = context
 

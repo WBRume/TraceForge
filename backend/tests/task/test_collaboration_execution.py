@@ -143,13 +143,14 @@ def test_interrupt_cancels_preparing_message_without_an_agent_job(collaboration_
         state.recovery_kind = "SERVER_INPUT"
         state.recovery_operation_id = "lost-handoff"
     db.commit()
-    result = controls._cancel_active_jobs_sync(db, task_id="t", workspace_id="w", message="cancel preparation")
+    result, target = controls._accept_interrupt_command(db, "t", "u", "stop-preparation", None, "cancel preparation")
+    assert target is None
     assert receipt.status == "FAILED"
     assert receipt.active_task_id is None
     assert state.pending_submission_id is None
     assert state.sync_phase == ("RECOVERY_REQUIRED" if phase == "RECOVERY_REQUIRED" else "READY")
-    assert result["task"]["status"] == "INTERRUPTED"
-    assert result["task"]["submission"]["status"] == "FAILED"
+    assert result["status"] == "INTERRUPTED"
+    assert result["submission"]["status"] == "FAILED"
     assert db.query(SddAiJob).count() == 0
 
 
@@ -486,6 +487,8 @@ def test_resume_receipt_is_idempotent_and_preserves_pre_input_metadata(collabora
             status=AiJobStatus.INTERRUPTED,
             prompt_text="old",
             session_id="interrupted-provider-session",
+            session_generation=task.session_generation,
+            session_revision=task.session_revision,
         )
     )
     db.commit()
@@ -493,7 +496,7 @@ def test_resume_receipt_is_idempotent_and_preserves_pre_input_metadata(collabora
         db,
         "t",
         "u",
-        {"prompt_text": "continue", "old_job_id": "interrupted", "session_id": "interrupted-provider-session"},
+        {"prompt_text": "continue", "old_job_id": None, "session_id": None},
         "resume-key",
         {"pre_input_id": "pre-input"},
     )
@@ -501,6 +504,7 @@ def test_resume_receipt_is_idempotent_and_preserves_pre_input_metadata(collabora
     assert existing_resume(db, "t", "u", "resume-key", "continue", False)["submission"]["id"] == receipt["id"]
     row = db.get(TaskChatSubmission, receipt["id"])
     assert row.metadata_json["pre_input_id"] == "pre-input"
+    assert row.metadata_json["resumed_from_job_id"] == "interrupted"
     assert task.status == TaskStatus.RUNNING
     assert task.session_id == "interrupted-provider-session"
     assert db.query(SddAiJob).count() == 1

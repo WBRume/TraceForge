@@ -5,6 +5,16 @@ import { dedupeMessages, mergeChatMessage, messageIdentity } from '../shared/mes
 
 type Submissions = ReturnType<typeof useChatSubmissions>
 type HistoryContext = ReturnType<typeof useChatMessageContext>
+type ConfirmationReplyReceipt = {
+  client_message_id: string
+  status: string
+  error_message?: string | null
+}
+
+const isLocalConfirmationReply = (message: any) => (
+  String(message?.id || '').startsWith('local-')
+  && Boolean(message?.metadata?.interaction_id && message?.metadata?.reply_to_message_id)
+)
 
 /**
  * 对话气泡存储（仅自然语言 user/assistant 文本与结果卡片消息）。
@@ -61,7 +71,7 @@ export function useChatMessages(options: {
       const completed = new Set(mapped.map(messageIdentity))
       const duringRequest = messages.value.filter(item => {
         const identity = messageIdentity(item)
-        if (item.streaming) return !completed.has(identity)
+        if (item.streaming || isLocalConfirmationReply(item)) return !completed.has(identity)
         return initialMessages.get(identity) !== item
       })
       messages.value = dedupeMessages([...mapped, ...duringRequest])
@@ -106,7 +116,22 @@ export function useChatMessages(options: {
     for (const item of items) {
       const id = messageIdentity(item)
       // 保留请求期间收到的更新，也不重新插入已从会话撤回的消息。
-      if (current.get(id)?.streaming || current.get(id) === atRequest.get(id)) upsert(item)
+      const existing = current.get(id)
+      if (existing?.streaming || existing === atRequest.get(id) || isLocalConfirmationReply(existing)) upsert(item)
+    }
+  }
+
+  const pendingConfirmationKeys = (): string[] => messages.value
+    .filter(message => isLocalConfirmationReply(message) && ['sending', 'processing'].includes(message.delivery_status))
+    .map(message => String(message.client_message_id))
+
+  const applyConfirmationReplies = (receipts: ConfirmationReplyReceipt[]) => {
+    for (const receipt of receipts) {
+      if (receipt.status !== 'FAILED') continue
+      const message = findByIdentity(`client:${receipt.client_message_id}`)
+      if (isLocalConfirmationReply(message)) {
+        upsert({ ...message, delivery_status: 'failed', delivery_error: receipt.error_message })
+      }
     }
   }
 
@@ -144,6 +169,8 @@ export function useChatMessages(options: {
     removeByIds,
     captureIdentitySnapshot,
     mergeSessionSnapshot,
+    pendingConfirmationKeys,
+    applyConfirmationReplies,
     applyHistoryPage,
     appendPage,
     upsert,

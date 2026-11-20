@@ -1100,6 +1100,51 @@ def test_receipt_publication_failure_rolls_back_before_job_and_task_commit(task_
     assert task_db.query(TaskEventOutbox).filter_by(receipt_id=receipt_id, receipt_version=2).count() == 1
 
 
+def test_reconciliation_rotates_failed_publication_out_of_the_next_page(task_db, monkeypatch):
+    stuck = accepted(task_db)
+    execution(task_db, stuck, AiJobStatus.SUCCESS)
+    now = datetime.utcnow()
+    stuck.updated_at = now - timedelta(minutes=2)
+    next_task = SddTask(
+        id="t-second",
+        workspace_id="w",
+        creator_id="u",
+        name="Next task",
+        status=TaskStatus.RUNNING,
+        session_generation=1,
+        session_revision=1,
+    )
+    next_receipt = TaskChatSubmission(
+        task_id=next_task.id,
+        workspace_id="w",
+        creator_id="u",
+        client_message_id="second",
+        content="resume",
+        payload_hash="second",
+        status="EXECUTING",
+        active_task_id=next_task.id,
+        session_generation=1,
+        session_revision=1,
+        updated_at=now - timedelta(minutes=1),
+    )
+    task_db.add_all([next_task, next_receipt])
+    task_db.commit()
+    monkeypatch.setattr(service, "_RECOVERY_PAGE_SIZE", 1)
+
+    def fail_publication(*args):
+        raise RuntimeError("publication unavailable")
+
+    monkeypatch.setattr(service, "_publish_knowledge", fail_publication)
+    service._reconcile_sync(task_db)
+    task_db.commit()
+    assert stuck.status == "EXECUTING"
+    assert next_receipt.status == "EXECUTING"
+    service._reconcile_sync(task_db)
+    task_db.commit()
+    assert next_receipt.status == "FAILED"
+    assert next_task.status == TaskStatus.INTERRUPTED
+
+
 def test_session_state_resolves_unconfirmed_key_beyond_any_window(task_db):
     row = accepted(task_db, "ancient-key")
     execution(task_db, row, AiJobStatus.FAILED)

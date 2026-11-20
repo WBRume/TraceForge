@@ -95,6 +95,7 @@ export const mapHistoryMessages = (hMessages: any[]): ChatMessageFields[] => hMe
   session_turn_id: m.session_turn_id || null,
   session_generation: m.session_generation ?? null,
   can_undo: Boolean(m.can_undo),
+  delivery_status: 'sent',
   streaming: false,
   undo_operation_id: m.undo_operation_id ? String(m.undo_operation_id) : null,
   reading_item_key: m.reading_item_key ?? null,

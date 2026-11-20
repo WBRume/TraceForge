@@ -362,7 +362,7 @@ watch(
         :send-blocked="vm.collaboration?.blocked.value || vm.agentSessionSendBlocked"
         :running="!vm.suggestionOnly && vm.engineRunning && vm.currentTask?.status !== 'AWAITING_INPUT'"
         :steering-job-id="vm.steeringJobId"
-        :can-interrupt="vm.canTemporarilyInterrupt"
+        :can-interrupt="!vm.suggestionOnly && vm.canTemporarilyInterrupt"
         :interrupting="vm.interruptingTask"
         :placeholder="vm.steeringJobId ? $t('chat.steering.placeholder') : vm.chatInputPlaceholder"
         :send-title="vm.suggestionOnly ? '提交建议' : $t('chat.send_message')"
