@@ -33,6 +33,7 @@ class Trigger(str, Enum):
     QUESTION_OPENED = "QUESTION_OPENED"
     ANSWER_RECEIVED = "ANSWER_RECEIVED"
     ROUND_FINISHED = "ROUND_FINISHED"
+    ROUND_FINISHED_WITHOUT_INPUT = "ROUND_FINISHED_WITHOUT_INPUT"
     EXECUTION_INTERRUPTED = "EXECUTION_INTERRUPTED"
     EXECUTION_LOST = "EXECUTION_LOST"
     INTERRUPT = "INTERRUPT"
@@ -54,6 +55,7 @@ TRANSITIONS: dict[Trigger, dict[S | None, S]] = {
     Trigger.QUESTION_OPENED: {S.RUNNING: S.AWAITING_INPUT, S.AWAITING_INPUT: S.AWAITING_INPUT},
     Trigger.ANSWER_RECEIVED: {S.AWAITING_INPUT: S.RUNNING},
     Trigger.ROUND_FINISHED: {S.RUNNING: S.ROUND_COMPLETED, S.AWAITING_INPUT: S.AWAITING_INPUT},
+    Trigger.ROUND_FINISHED_WITHOUT_INPUT: {S.AWAITING_INPUT: S.ROUND_COMPLETED},
     Trigger.EXECUTION_INTERRUPTED: {S.RUNNING: S.INTERRUPTED, S.AWAITING_INPUT: S.INTERRUPTED},
     Trigger.EXECUTION_LOST: {S.RUNNING: S.INTERRUPTED, S.AWAITING_INPUT: S.INTERRUPTED},
     Trigger.INTERRUPT: {S.RUNNING: S.INTERRUPTED, S.AWAITING_INPUT: S.INTERRUPTED},
@@ -62,7 +64,13 @@ TRANSITIONS: dict[Trigger, dict[S | None, S]] = {
     Trigger.FAIL: dict.fromkeys(OPEN, S.FAILED),
 }
 EXECUTION_TRIGGERS = frozenset(
-    {Trigger.QUESTION_OPENED, Trigger.ANSWER_RECEIVED, Trigger.ROUND_FINISHED, Trigger.EXECUTION_INTERRUPTED}
+    {
+        Trigger.QUESTION_OPENED,
+        Trigger.ANSWER_RECEIVED,
+        Trigger.ROUND_FINISHED,
+        Trigger.ROUND_FINISHED_WITHOUT_INPUT,
+        Trigger.EXECUTION_INTERRUPTED,
+    }
 )
 
 
@@ -253,7 +261,7 @@ def execution_event(
     expected_seq: int | None = None,
     reason: str | None = None,
 ) -> dict:
-    """Finalizers can load the cursor under the task lock; engines retain their cursor."""
+    """An owner holding the task lock can use its current status sequence."""
     if trigger not in EXECUTION_TRIGGERS:
         raise StatusTransitionError("A provider cannot dispatch user commands")
     return dispatch(

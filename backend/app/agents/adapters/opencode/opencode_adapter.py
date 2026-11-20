@@ -30,6 +30,7 @@ from app.agents.errors import (
     AgentError,
     AgentExecutionDetached,
     AgentInteractionClosedError,
+    AgentInteractionDeliveryUncertain,
     AgentSteeringClosedError,
     AgentTimeoutError,
     SessionForkError,
@@ -971,7 +972,10 @@ class OpenCodeAdapter(AgentBackend):
             body = {"answer": answer}
         else:
             raise AgentError("OpenCode v2 requires a permission or form request id")
-        result = await client.post(url, json=body)
+        try:
+            result = await client.post(url, json=body, timeout=30.0)
+        except httpx.RequestError as exc:
+            raise AgentInteractionDeliveryUncertain("OpenCode reply delivery could not be confirmed.") from exc
         if result.status_code in {404, 409}:
             await self._reject_closed_interaction(ask_user_id)
         self._check_response(result, "HITL reply")

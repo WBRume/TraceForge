@@ -741,7 +741,13 @@ def _converge_task_status_in_txn(db: Session, job: SddAiJob, final_status: AiJob
         finalize_in_txn(db, job)
     task = db.get(SddTask, job.task_id) if job.task_id else None
     if task:
-        trigger = sm.Trigger.ROUND_FINISHED if final_status == AiJobStatus.SUCCESS else sm.Trigger.EXECUTION_INTERRUPTED
+        from app.domains.task.services.task_confirmation_service import round_finished_trigger
+
+        trigger = (
+            round_finished_trigger(db, task, job)
+            if final_status == AiJobStatus.SUCCESS
+            else sm.Trigger.EXECUTION_INTERRUPTED
+        )
         sm.execution_event(
             db,
             task,

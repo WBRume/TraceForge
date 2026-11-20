@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.agents.errors import AgentError
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.logging import get_logger
 from app.core.offload import run_db
@@ -21,9 +21,9 @@ from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
 from app.domains.ai.services import chat_message_idempotency_service
 from app.domains.ai.services.chat_message_idempotency_service import ChatMessageClaim
 from app.domains.ai.services.jobs import publishing as ai_job_publishing
-from app.domains.ai.services.jobs.executors import task_chat as ai_job_task_chat
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import (
+    live_confirmation_service,
     pre_input_service,
     task_confirmation_service,
     task_session_control_service,
@@ -248,13 +248,13 @@ class TaskWebSocketHandler:
                 await self._send_chat_ack(request, status="failed", message=str(exc))
             return
 
+        if reference is not None:
+            await self._handle_confirmation(request, reference)
+            return
+
         claim = await self._claim_chat_message(self._task_id, request)
         if claim is None:
             return
-        if reference is not None:
-            await self._handle_confirmation(request, claim, reference)
-            return
-
         from app.domains.task.services.chat_submission_service import SubmissionError
 
         try:
@@ -268,37 +268,68 @@ class TaskWebSocketHandler:
             await self._mark_chat_claim_failed(claim)
             await self._send_chat_ack(request, status="failed", message=str(exc))
 
-    async def _handle_confirmation(
-        self, request: _ChatMessageRequest, claim: ChatMessageClaim, reference: tuple[str, str]
-    ) -> None:
+    async def _handle_confirmation(self, request: _ChatMessageRequest, reference: tuple[str, str]) -> None:
         interaction_id, message_id = reference
+        claim = None
         try:
             async with lock_task(self._task_id):
+                result = await live_confirmation_service.submit(
+                    live_confirmation_service.ReplyRequest(
+                        task_id=self._task_id,
+                        actor_id=self._user.id,
+                        client_id=request.client_message_id,
+                        interaction_id=interaction_id,
+                        question_id=message_id,
+                        content=request.content,
+                        value=request.metadata.get("confirmation_value"),
+                    )
+                )
+                if result is not None:
+                    await self._send_confirmation_ack(request, result)
+                    return
+                claim = await self._claim_chat_message(self._task_id, request)
+                if claim is None:
+                    return
                 confirmation = await task_confirmation_service.validate_reply(self._task_id, interaction_id, message_id)
+                if confirmation["delivery_mode"] != "turn":
+                    raise task_confirmation_service.ConfirmationClosedError("The question delivery mode has changed.")
                 request.metadata.update(
                     interaction_id=interaction_id,
                     reply_to_message_id=message_id,
                     job_id=confirmation["job_id"],
                     confirmation_context=confirmation.get("context"),
                 )
-                if confirmation["delivery_mode"] == "live":
-                    if not await ai_job_task_chat.confirmation_delivery_available(
-                        task_id=self._task_id,
-                        interaction_id=interaction_id,
-                        job_id=confirmation["job_id"],
-                    ):
-                        raise task_confirmation_service.ConfirmationClosedError(
-                            "This question is closed or its execution is recovering. Refresh and retry."
-                        )
-                    await self._persist_confirmation_reply(request, claim)
-                    return
                 created = await self._persist_chat_message(request, claim)
         except (task_confirmation_service.ConfirmationClosedError, LockAcquireTimeout) as exc:
-            await self._mark_chat_claim_failed(claim)
+            if claim is not None:
+                await self._mark_chat_claim_failed(claim)
             await self._send_chat_ack(request, status="failed", message=str(exc))
+            return
+        except SQLAlchemyError:
+            task_logger.exception("Failed to reserve a confirmation reply for task {}", self._task_id)
+            await self._send_chat_ack(request, status="failed", message="Could not save the answer. Please retry.")
             return
         if created is not None:
             await self._publish_chat_message(request, created)
+
+    async def _send_confirmation_ack(
+        self, request: _ChatMessageRequest, result: live_confirmation_service.ReplyResult
+    ) -> None:
+        saved = result.message or {}
+        request.metadata.pop("job_id", None)
+        if saved.get("metadata"):
+            request.metadata.clear()
+            request.metadata.update(saved["metadata"])
+        await self._send_chat_ack(
+            request,
+            status=result.status,
+            chat_message_id=saved.get("id"),
+            created_at=saved.get("created_at"),
+            session_turn_id=saved.get("session_turn_id"),
+            session_generation=saved.get("session_generation"),
+            can_undo=False,
+            message=result.error,
+        )
 
     def _check_chat_actor_sync(self):
         from app.domains.auth.models.user import WorkspacePermission
@@ -445,83 +476,6 @@ class TaskWebSocketHandler:
             await chat_message_idempotency_service.mark_message_failed(claim)
         except Exception:
             task_logger.warning(f"Failed to clear chat idempotency claim for task {self._task_id}")
-
-    async def _persist_confirmation_reply(
-        self,
-        request: _ChatMessageRequest,
-        claim: ChatMessageClaim,
-    ) -> None:
-        try:
-            # Provider acceptance precedes a successful user-answer record.
-            delivered = await ai_job_task_chat.deliver_confirmation_response(
-                task_id=self._task_id,
-                interaction_id=str(request.metadata.get("interaction_id") or ""),
-                response=request.content,
-                job_id=str(request.metadata.get("job_id") or "") or None,
-            )
-            if not delivered:
-                raise task_confirmation_service.ConfirmationClosedError("This question is no longer accepting answers.")
-            created = await task_session_service.create_confirmation_reply_message(
-                task_id=self._task_id,
-                actor_user_id=self._user.id,
-                content=request.content,
-                client_message_id=request.client_message_id,
-                interaction_id=str(request.metadata.get("interaction_id") or ""),
-                reply_to_message_id=str(request.metadata.get("reply_to_message_id") or ""),
-                confirmation_value=request.metadata.get("confirmation_value"),
-            )
-            await chat_message_idempotency_service.mark_message_done(
-                claim,
-                chat_message_id=created.message_id,
-                ai_job_id=None,
-            )
-            created_at = utc_isoformat(created.created_at) if created.created_at else None
-            await self._send_chat_ack(
-                request,
-                status="accepted",
-                chat_message_id=created.message_id,
-                created_at=created_at,
-                session_generation=created.session_generation,
-            )
-            await self._manager.send_message_to_room(
-                self._task_id,
-                WSMessage(
-                    type="chat_message",
-                    payload=WSChatPayload(
-                        task_id=self._task_id,
-                        role="user",
-                        content=request.content,
-                        metadata=request.metadata,
-                        message_type="text",
-                        id=created.message_id,
-                        client_message_id=request.client_message_id,
-                        creator_id=self._user.id,
-                        creator_display_name=self._user.display_name,
-                        creator_is_workspace_expert=self._user.is_workspace_expert,
-                        creator_avatar_url=self._user.avatar_url,
-                        creator_avatar_svg=self._user.avatar_svg,
-                        created_at=created_at,
-                        session_generation=created.session_generation,
-                        reading_item_key=created.reading_item_key,
-                        reading_change_seq=str(created.reading_change_seq)
-                        if created.reading_change_seq is not None
-                        else None,
-                    ).model_dump(),
-                ),
-            )
-        except (
-            AgentError,
-            task_confirmation_service.ConfirmationClosedError,
-            task_session_service.TaskSessionUndoError,
-            task_session_control_service.TaskSessionControlError,
-            LockAcquireTimeout,
-        ) as exc:
-            await self._mark_chat_claim_failed(claim)
-            await self._send_chat_ack(
-                request,
-                status="failed",
-                message="Task is busy; please retry." if isinstance(exc, LockAcquireTimeout) else str(exc),
-            )
 
     async def _publish_chat_message(
         self,

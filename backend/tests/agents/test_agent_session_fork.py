@@ -907,6 +907,37 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_dsh_question_survives_http_failure_until_confirmed(self):
+        import httpx
+
+        from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+        from app.agents.errors import AgentError
+
+        sent = []
+
+        def post(request):
+            sent.append(request.content)
+            return httpx.Response(503 if len(sent) == 1 else 200)
+
+        adapter = DshServerAdapter(server_url="http://fixture.invalid")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(post)) as client:
+            adapter._client = client
+            await adapter._handle_interaction_request(
+                "question/requested",
+                {"questions": [{"id": "q", "question": "Continue?"}]},
+                "rpc",
+                "session",
+                False,
+                mock.AsyncMock(),
+            )
+            with self.assertRaisesRegex(AgentError, "HTTP 503"):
+                await adapter.respond_to_ask_user("rpc", "yes")
+            self.assertIn("rpc", adapter._pending_asks)
+            await adapter.respond_to_ask_user("rpc", "yes")
+            self.assertNotIn("rpc", adapter._pending_asks)
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(sent[0], sent[1])
+
 
 class SelectionForkTest(_EnvHomeMixin, unittest.IsolatedAsyncioTestCase):
     async def test_fork_dispatch_for_claude(self):

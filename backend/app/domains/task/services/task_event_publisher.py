@@ -39,6 +39,16 @@ def wake() -> None:
     event.set()
 
 
+def queue_chat_message(db, task_id: str, payload: dict) -> None:
+    db.add(
+        TaskEventOutbox(
+            event_id=str(uuid4()),
+            task_id=task_id,
+            payload_json={"event_type": "chat_message", **payload},
+        )
+    )
+
+
 def _backoff_seconds(attempts: int) -> float:
     return min(300.0, 2.0 ** max(0, attempts))
 

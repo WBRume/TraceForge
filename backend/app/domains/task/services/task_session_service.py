@@ -36,15 +36,12 @@ from app.domains.task.services import task_session_snapshot_service
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.task_session_turn_service import (
     CreatedChatTurn,
-    CreatedConfirmationReply,
     TaskSessionUndoError,
     _chat_message_event_dto,
     _chat_turn_metadata,
     _new_chat_message,
     _persist_chat_turn_sync,
-    _persist_confirmation_reply_sync,
     _prepare_chat_turn_sync,
-    create_confirmation_reply_message,
     create_task_chat_turn,
 )
 from app.domains.websocket.ws.manager import manager
@@ -56,15 +53,12 @@ logger = get_logger(__name__, category="task_session_undo")
 
 __all__ = [
     "CreatedChatTurn",
-    "CreatedConfirmationReply",
     "TaskSessionUndoError",
     "_chat_message_event_dto",
     "_chat_turn_metadata",
     "_new_chat_message",
     "_persist_chat_turn_sync",
-    "_persist_confirmation_reply_sync",
     "_prepare_chat_turn_sync",
-    "create_confirmation_reply_message",
     "create_task_chat_turn",
     "undo_task_message",
 ]

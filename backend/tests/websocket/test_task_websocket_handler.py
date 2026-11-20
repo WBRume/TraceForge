@@ -47,12 +47,8 @@ async def test_stale_native_confirmation_never_falls_back_to_new_turn(monkeypatc
     handler._mark_chat_claim_failed = AsyncMock()
     handler._persist_chat_message = AsyncMock()
     handler._resume_interrupted_task = AsyncMock()
-    monkeypatch.setattr(
-        task_handler.task_confirmation_service,
-        "validate_reply",
-        AsyncMock(return_value={"delivery_mode": "live", "job_id": "real-job"}),
-    )
-    monkeypatch.setattr(task_handler.ai_job_task_chat, "confirmation_delivery_available", AsyncMock(return_value=False))
+    submit = AsyncMock(return_value=task_handler.live_confirmation_service.ReplyResult("failed", error="Closed"))
+    monkeypatch.setattr(task_handler.live_confirmation_service, "submit", submit)
     await handler._handle_chat_message(
         {
             "type": "chat_message",
@@ -69,10 +65,9 @@ async def test_stale_native_confirmation_never_falls_back_to_new_turn(monkeypatc
     )
     handler._persist_chat_message.assert_not_awaited()
     handler._resume_interrupted_task.assert_not_awaited()
-    handler._mark_chat_claim_failed.assert_awaited_once()
-    task_handler.ai_job_task_chat.confirmation_delivery_available.assert_awaited_once_with(
-        task_id="task-1", interaction_id="interaction", job_id="real-job"
-    )
+    handler._claim_chat_message.assert_not_awaited()
+    assert submit.await_args.args[0].question_id == "question"
+    assert submit.await_args.args[0].interaction_id == "interaction"
     assert handler._manager.outbound.sent_json[-1]["payload"]["status"] == "failed"
 
 
@@ -96,6 +91,7 @@ async def test_turn_confirmation_is_validated_inside_lock_and_never_resumes_inte
 
     monkeypatch.setattr(task_handler, "lock_task", task_lock)
     monkeypatch.setattr(task_handler, "run_db", AsyncMock(side_effect=[None, "INTERRUPTED"]))
+    monkeypatch.setattr(task_handler.live_confirmation_service, "submit", AsyncMock(return_value=None))
     monkeypatch.setattr(task_handler.task_confirmation_service, "validate_reply", validate)
     handler._claim_chat_message = AsyncMock(return_value=object())
     handler._mark_chat_claim_failed = AsyncMock()
@@ -113,25 +109,31 @@ async def test_turn_confirmation_is_validated_inside_lock_and_never_resumes_inte
 
 
 @pytest.mark.asyncio
-async def test_provider_rejection_never_persists_a_successful_user_answer(monkeypatch):
-    from app.agents.errors import AgentInteractionClosedError
-
+async def test_recovered_live_reply_ack_uses_the_durable_message(monkeypatch):
     handler = _handler()
-    handler._mark_chat_claim_failed = AsyncMock()
+    handler._claim_chat_message = AsyncMock()
+    saved = {
+        "id": "persisted-reply",
+        "session_generation": 2,
+        "session_turn_id": "turn",
+        "metadata": {"interaction_id": "i", "reply_to_message_id": "q", "confirmation_value": "yes"},
+    }
     monkeypatch.setattr(
-        task_handler.ai_job_task_chat,
-        "deliver_confirmation_response",
-        AsyncMock(side_effect=AgentInteractionClosedError("Already closed")),
+        task_handler.live_confirmation_service,
+        "submit",
+        AsyncMock(return_value=task_handler.live_confirmation_service.ReplyResult("duplicate", saved)),
     )
-    persist = AsyncMock()
-    monkeypatch.setattr(task_handler.task_session_service, "create_confirmation_reply_message", persist)
     request = task_handler._ChatMessageRequest(
-        content="late", client_message_id="late-id", metadata={"interaction_id": "i", "job_id": "j"}
+        content="yes", client_message_id="reply-id", metadata={"interaction_id": "i", "job_id": "forged"}
     )
-    await handler._persist_confirmation_reply(request, object())
-    persist.assert_not_awaited()
+    await handler._handle_confirmation(request, ("i", "q"))
+    handler._claim_chat_message.assert_not_awaited()
     assert not handler._manager.room_messages
-    assert handler._manager.outbound.sent_json[-1]["payload"]["status"] == "failed"
+    ack = handler._manager.outbound.sent_json[-1]["payload"]
+    assert ack["status"] == "duplicate"
+    assert ack["chat_message_id"] == "persisted-reply"
+    assert ack["metadata"] == saved["metadata"]
+    assert ack["session_generation"] == 2
 
 
 class _DisconnectedWebSocket(_FakeWebSocket):

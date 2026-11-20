@@ -40,7 +40,13 @@ from app.agents.contract import (
     AgentStopResult,
     TokenUsage,
 )
-from app.agents.errors import AgentError, AgentSteeringClosedError, AgentTimeoutError, SessionForkError
+from app.agents.errors import (
+    AgentError,
+    AgentInteractionDeliveryUncertain,
+    AgentSteeringClosedError,
+    AgentTimeoutError,
+    SessionForkError,
+)
 from app.agents.events import AgentEvent
 from app.agents.http_transport import agent_ssl_context
 from app.agents.tool_activity import mcp_tool_fields, wire_event_time
@@ -1012,7 +1018,7 @@ class DshServerAdapter(AgentBackend):
     async def respond_to_ask_user(self, ask_user_id: str, response: str) -> None:
         if not ask_user_id or ask_user_id not in self._pending_asks:
             raise AgentError("DSH HITL reply requires a pending approval/question rpcId")
-        pending = self._pending_asks.pop(ask_user_id)
+        pending = self._pending_asks[ask_user_id]
         kind = str(pending.get("kind") or "")
         if kind.startswith("approval"):
             outcome = (
@@ -1043,12 +1049,17 @@ class DshServerAdapter(AgentBackend):
                 "sessionId": pending.get("session_id") or self._session_id,
                 "answer": {"answers": answers},
             }
-        await self._respond(ask_user_id, value)
+        try:
+            await self._respond(ask_user_id, value)
+        except httpx.RequestError as exc:
+            raise AgentInteractionDeliveryUncertain("DSH reply delivery could not be confirmed.") from exc
+        self._pending_asks.pop(ask_user_id, None)
 
     async def _respond(self, rpc_id: str, value: dict[str, Any]) -> None:
         client = await self._ensure_client()
         reply = await client.post(
             f"{self.server_url}/api/respond",
+            timeout=30.0,
             json={
                 "type": "client-response",
                 "rpcId": rpc_id,

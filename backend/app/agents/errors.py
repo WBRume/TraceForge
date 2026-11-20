@@ -43,6 +43,10 @@ class AgentInteractionClosedError(AgentError):
     """The provider no longer accepts replies to this interaction."""
 
 
+class AgentInteractionDeliveryUncertain(AgentError):
+    """A reply request may have reached the provider without an acknowledgement."""
+
+
 class AgentSteeringClosedError(AgentError):
     """The active provider execution cannot accept steering."""
 

@@ -128,7 +128,6 @@ class TaskAgentEngine:
         self.attempt: AgentAttemptContext | None = attempt
         self.session_turn_id: str | None = None
         self.session_revision: int | None = None
-        self.status_seq: int | None = None
         self._run_task: asyncio.Task | None = None
         self.on_result = on_result
         self.on_hitl = on_hitl
@@ -275,9 +274,6 @@ class TaskAgentEngine:
             return False
         await self.cli.respond_to_ask_user(provider_request_id, response)
         self._pending_confirmations.pop(interaction_id, None)
-        if not self._pending_confirmations and not self._interrupt_requested:
-            await emit_status_event(self, Trigger.ANSWER_RECEIVED, event_key=f"answer:{interaction_id}")
-            await self.frontend.push_status("RUNNING", "继续执行")
         return True
 
     def can_steer(self, job_id: str) -> bool:
@@ -374,7 +370,6 @@ class TaskAgentEngine:
         )
         await self._gate.load()
         self._session_generation = await run_db(self.frontend.load_session_generation_sync)
-        self.status_seq = await run_db(self.frontend.load_status_sequence_sync)
 
         project_path = await run_db(turn_setup.resolve_project_path_sync, self.task_id)
         if not recovery and not self.additional_workspace_directories:
@@ -925,9 +920,6 @@ class TaskAgentEngine:
         interaction_id = self._confirmation_id(str(payload["ask_user_id"]))
         self._pending_confirmations.pop(interaction_id, None)
         status = str(payload.get("status") or "closed")
-        if not self._pending_confirmations and not self._interrupt_requested:
-            await emit_status_event(self, Trigger.ANSWER_RECEIVED, event_key=f"answer:{interaction_id}")
-            await self.frontend.push_status("RUNNING", "交互已处理，继续执行")
         labels = {
             "answered": "提问已回答",
             "cancelled": "提问已取消",
@@ -986,8 +978,6 @@ class TaskAgentEngine:
         if normalized_kind == "form":
             confirmation["fields"] = fields
         self._pending_confirmations[interaction_id] = str(provider_request_id or interaction_id)
-        await emit_status_event(self, Trigger.QUESTION_OPENED, event_key=f"question:{interaction_id}")
-        await self.frontend.push_status("AWAITING_INPUT", "等待用户输入")
         self.segments.record(
             "confirmation",
             workspace_id=self.ws_id,
@@ -998,9 +988,9 @@ class TaskAgentEngine:
             source_kind="confirmation_prompt",
             interaction_id=interaction_id,
         )
-        # 先持久化再广播：确认消息必须先进入历史，再由前端从 metadata 派生对话框
+        # The question, its status transition and its browser event commit together.
         await self.segments.flush()
-        payload = await self.frontend.persist_chat_message(
+        await self.frontend.persist_chat_message(
             "assistant",
             prompt,
             metadata={
@@ -1009,8 +999,6 @@ class TaskAgentEngine:
                 "provider_event_key": f"confirmation:{interaction_id}",
             },
         )
-        if payload:
-            await self.frontend.push("chat_message", payload)
         await self._emit_hook(
             self.on_hitl,
             prompt,

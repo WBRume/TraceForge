@@ -1,12 +1,13 @@
 """Validate confirmation replies and restore their durable conversation state."""
 
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core.offload import run_db_txn
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.services import status_machine as sm
 
 
 class ConfirmationClosedError(RuntimeError):
@@ -95,43 +96,130 @@ def enrich_history(db: Session, task_id: str, messages: list[dict]) -> None:
             }
 
 
-def validate_reply_sync(db: Session, task_id: str, interaction_id: str, message_id: str) -> dict:
-    task = db.get(SddTask, task_id)
+def load_question(db: Session, task_id: str, interaction_id: str, message_id: str) -> ChatMessage:
     parent = db.get(ChatMessage, message_id)
     metadata = (parent.metadata_json or {}) if parent else {}
     confirmation = metadata.get("confirmation") or {}
     if (
-        not task
-        or not parent
+        not parent
         or not interaction_id
         or parent.task_id != task_id
         or parent.role != "assistant"
         or confirmation.get("interaction_id") != interaction_id
-        or parent.session_generation != task.session_generation
     ):
+        raise ConfirmationClosedError("This question is no longer available in the current session.")
+    return parent
+
+
+def delivery_mode(task: SddTask, parent: ChatMessage) -> str:
+    return parent.metadata_json["confirmation"].get("delivery_mode") or (
+        "live" if task.agent_backend in {"opencode", "dsh"} else "turn"
+    )
+
+
+def _resolution_for(message, interaction_id):
+    return or_(
+        (message.role == "assistant")
+        & (message.metadata_json["confirmation_resolution"]["interaction_id"].as_string() == interaction_id),
+        (message.role == "user") & (message.metadata_json["interaction_id"].as_string() == interaction_id),
+    )
+
+
+def has_open_question(db: Session, task: SddTask, job: SddAiJob, *, turn_only: bool = False) -> bool:
+    resolution = aliased(ChatMessage)
+    confirmation = ChatMessage.metadata_json["confirmation"]
+    is_resolved = (
+        db.query(resolution.id)
+        .filter(
+            resolution.task_id == ChatMessage.task_id,
+            resolution.session_generation == ChatMessage.session_generation,
+            _resolution_for(resolution, confirmation["interaction_id"].as_string()),
+        )
+        .exists()
+    )
+    questions = db.query(ChatMessage.id).filter(
+        ChatMessage.task_id == task.id,
+        ChatMessage.session_generation == job.session_generation,
+        ChatMessage.role == "assistant",
+        confirmation["job_id"].as_string() == job.id,
+        confirmation["interaction_id"].as_string().isnot(None),
+        ~is_resolved,
+    )
+    if turn_only:
+        mode = confirmation["delivery_mode"].as_string()
+        questions = questions.filter(
+            or_(mode == "turn", mode.is_(None) & (task.agent_backend not in {"opencode", "dsh"}))
+        )
+    return questions.first() is not None
+
+
+def round_finished_trigger(db: Session, task: SddTask, job: SddAiJob) -> sm.Trigger:
+    if task.status == TaskStatus.AWAITING_INPUT and not has_open_question(db, task, job, turn_only=True):
+        return sm.Trigger.ROUND_FINISHED_WITHOUT_INPUT
+    return sm.Trigger.ROUND_FINISHED
+
+
+def sync_waiting_status(db: Session, task: SddTask, job: SddAiJob, *, event_key: str) -> None:
+    """Project from committed interaction identities under the task's row lock."""
+    if (
+        (task.status_run_id, task.session_generation, task.session_revision)
+        != (job.id, job.session_generation, job.session_revision)
+        or job.cancel_requested_at is not None
+        or task.baselined_at is not None
+        or task.status not in {TaskStatus.RUNNING, TaskStatus.AWAITING_INPUT}
+    ):
+        return
+    db.flush()
+    open_question = has_open_question(db, task, job, turn_only=job.status == AiJobStatus.SUCCESS)
+    if open_question and task.status == TaskStatus.RUNNING and job.status in _LIVE_CONFIRMATION_STATUSES:
+        trigger = sm.Trigger.QUESTION_OPENED
+    elif not open_question and task.status == TaskStatus.AWAITING_INPUT:
+        if job.status == AiJobStatus.SUCCESS:
+            trigger = sm.Trigger.ROUND_FINISHED_WITHOUT_INPUT
+        elif job.status in _LIVE_CONFIRMATION_STATUSES:
+            trigger = sm.Trigger.ANSWER_RECEIVED
+        else:
+            return
+    else:
+        return
+    sm.execution_event(
+        db,
+        task,
+        trigger,
+        event_key=event_key,
+        job_id=job.id,
+        generation=job.session_generation,
+        revision=job.session_revision,
+    )
+
+
+def validate_reply_sync(db: Session, task_id: str, interaction_id: str, message_id: str) -> dict:
+    task = db.get(SddTask, task_id)
+    parent = load_question(db, task_id, interaction_id, message_id)
+    if not task or parent.session_generation != task.session_generation:
         raise ConfirmationClosedError("This question is no longer available in the current session.")
     resolved = (
         db.query(ChatMessage.id)
         .filter(
             ChatMessage.task_id == task_id,
             ChatMessage.session_generation == task.session_generation,
-            or_(
-                (ChatMessage.role == "assistant")
-                & (
-                    ChatMessage.metadata_json["confirmation_resolution"]["interaction_id"].as_string() == interaction_id
-                ),
-                (ChatMessage.role == "user")
-                & (ChatMessage.metadata_json["interaction_id"].as_string() == interaction_id),
-            ),
+            _resolution_for(ChatMessage, interaction_id),
         )
         .first()
     )
     if resolved:
         raise ConfirmationClosedError("This question has already been answered or closed. Refresh the conversation.")
-    mode = confirmation.get("delivery_mode") or ("live" if task.agent_backend in {"opencode", "dsh"} else "turn")
+    mode = delivery_mode(task, parent)
     job = confirmation_owner(db, task)
     allowed = _LIVE_CONFIRMATION_STATUSES if mode == "live" else {AiJobStatus.SUCCESS}
-    if not job or job.id != confirmation.get("job_id") or job.status not in allowed:
+    # A turn reply advances the revision while preparing its own Job. A live
+    # reply must still target the exact revision of the running Job.
+    if (
+        not job
+        or job.id != parent.metadata_json["confirmation"].get("job_id")
+        or job.status not in allowed
+        or (mode == "live" and job.session_revision != task.session_revision)
+    ):
         raise ConfirmationClosedError("The execution owning this question is not accepting answers.")
     return {"delivery_mode": mode, "job_id": job.id, "context": question_context(parent)}
 

@@ -11,12 +11,6 @@ from app.engine.session.engine import TaskAgentEngine
 from app.engine.session.persistence import ContextSegmentBatcher
 
 
-@pytest.fixture(autouse=True)
-def status_events(monkeypatch):
-    # These checks exercise form persistence; state transitions have their own suite.
-    monkeypatch.setattr("app.engine.session.engine.emit_status_event", AsyncMock())
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["opencode", "claude-code", "dsh"])
 @pytest.mark.parametrize(
@@ -27,7 +21,6 @@ def status_events(monkeypatch):
         ("approved", "请求已批准", True),
         ("rejected", "请求已拒绝", False),
         ("closed", "交互已关闭，具体处理结果无法恢复", None),
-        ("unknown", "交互已关闭，具体处理结果无法恢复", None),
     ],
 )
 async def test_interaction_resolution_uses_the_same_contract_for_every_provider(provider, status, label, answer):
@@ -75,6 +68,7 @@ def test_questionnaire_is_persisted_as_chat_confirmation_without_provider_locato
         engine.session_id = "session"
         engine.current_job_id = "job"
         engine._pending_confirmations = {}
+        engine.cli = SimpleNamespace(capabilities=SimpleNamespace(hitl_modes=["long_connection"]))
         engine.segments = SimpleNamespace(record=MagicMock(), flush=AsyncMock())
         engine.frontend = SimpleNamespace(
             persist_chat_message=AsyncMock(return_value={"id": "message"}),
@@ -96,7 +90,6 @@ def test_questionnaire_is_persisted_as_chat_confirmation_without_provider_locato
         assert confirmation["job_id"] == "job"
         assert "frm_private" not in str(call)
         assert engine._pending_confirmations[confirmation["interaction_id"]] == "frm_private"
-        engine.frontend.push.assert_awaited_once_with("chat_message", {"id": "message"})
 
     asyncio.run(run())
 
@@ -115,6 +108,7 @@ def test_questionnaire_flushes_real_segment_batch_without_dropping_entries(db, m
         engine.current_job_id = "job-form"
         engine._gate = None
         engine._pending_confirmations = {}
+        engine.cli = SimpleNamespace(capabilities=SimpleNamespace(hitl_modes=["long_connection"]))
         engine.segments = ContextSegmentBatcher(engine)
         engine.frontend = SimpleNamespace(
             persist_chat_message=AsyncMock(return_value={"id": "message"}),

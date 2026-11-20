@@ -452,6 +452,8 @@ def handoff_history(db: Session, task_id: str) -> list[dict]:
 
 
 def enable(db: Session, task: SddTask, user_id: str, request: EnableRequest) -> dict:
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+
     _check_task(task)
     state = _state(db, task.id)
     previous = _operation(db, task.id, request.operation_id, "ENABLE", request.model_dump())
@@ -459,6 +461,10 @@ def enable(db: Session, task: SddTask, user_id: str, request: EnableRequest) -> 
         return previous
     if state and state.enabled:
         _fail("ALREADY_ENABLED", "Task collaboration is already enabled")
+    # The task lock also covers chat acceptance. An accepted input can own the
+    # workspace before its Job exists, and still needs the original input mode.
+    if db.query(TaskChatSubmission.id).filter_by(active_task_id=task.id, status="PREPARING").first():
+        _fail("WRITER_ACTIVE", "Wait for the current message to finish preparing")
     _assert_no_writer(db, task.id)
     repos = repository_metadata(db, task)
     if state is None:

@@ -1134,20 +1134,22 @@ def test_confirmation_reply_is_private_until_owning_turn_succeeds(task_db):
     parent = task_db.get(ChatMessage, "assistant")
     parent.metadata_json = {**parent.metadata_json, "confirmation": {"interaction_id": "question"}}
     task_db.commit()
-    reply = task_session_service._persist_confirmation_reply_sync(
+    from app.domains.task.services.task_session_turn_service import persist_confirmation_reply
+
+    message = persist_confirmation_reply(
         task_db,
-        task_id="t",
+        task=task_db.get(SddTask, "t"),
+        parent=parent,
         actor_user_id="u",
         content="private answer",
         client_message_id="reply",
         interaction_id="question",
-        reply_to_message_id="assistant",
         confirmation_value="yes",
     )
-    message = task_db.get(ChatMessage, reply.message_id)
     assert message.session_turn_id == "turn"
-    assert reply.reading_item_key == f"message:{message.id}"
-    assert reply.reading_change_seq is not None
+    payload = task_session_service._chat_message_event_dto(task_db, message)
+    assert payload["reading_item_key"] == f"message:{message.id}"
+    assert payload["reading_change_seq"] is not None
     assert build_search_projection(message, "message") is None
     job.status = AiJobStatus.SUCCESS
     task_db.commit()

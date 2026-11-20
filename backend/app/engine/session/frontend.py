@@ -15,6 +15,7 @@ from app.core.logging import get_logger
 from app.core.offload import run_db
 from app.core.timestamps import utc_isoformat
 from app.database import SessionLocal
+from app.domains.ai.models.ai_job import SddAiJob
 from app.domains.ai.schemas.websocket import (
     WSChatPayload,
     WSMessage,
@@ -26,12 +27,17 @@ from app.domains.ai.schemas.websocket import (
 )
 from app.domains.auth.models.user import User, WorkspaceMember
 from app.domains.task.models.task import SddTask
-from app.domains.task.services import context_token_service
+from app.domains.task.services import context_token_service, task_confirmation_service, task_event_publisher
 from app.domains.task.services.conversation import messages as task_conversation_messages
+from app.domains.task.services.conversation import notifications
 from app.domains.websocket.ws.manager import manager as ws_manager
 from app.protocols.tool_activity import ToolActivity
 
 logger = get_logger(__name__, category="task_execution")
+
+
+def _is_confirmation_event(metadata: dict | None) -> bool:
+    return bool(metadata and (metadata.get("confirmation") or metadata.get("confirmation_resolution")))
 
 
 class ThinkingStream:
@@ -289,7 +295,8 @@ class FrontendFeed:
         if not payload:
             return False
 
-        await self.push("chat_message", payload)
+        if not _is_confirmation_event(metadata):
+            await self.push("chat_message", payload)
         return True
 
     async def persist_chat_message(
@@ -302,7 +309,7 @@ class FrontendFeed:
         message_id: str | None = None,
     ) -> dict | None:
         """落库一条聊天消息（off-loop）并返回 WS payload；不广播。"""
-        return await run_db(
+        payload = await run_db(
             self._persist_chat_message_sync,
             role,
             content,
@@ -310,6 +317,9 @@ class FrontendFeed:
             message_type,
             message_id,
         )
+        if payload and _is_confirmation_event(metadata):
+            task_event_publisher.wake()
+        return payload
 
     def _persist_chat_message_sync(
         self,
@@ -324,12 +334,12 @@ class FrontendFeed:
         db = SessionLocal()
         try:
             key = (metadata or {}).get("provider_event_key")
-            if key and owner.current_job_id:
-                from app.domains.ai.models.ai_job import SddAiJob
-
+            confirmation_event = _is_confirmation_event(metadata)
+            task, job = None, None
+            if (key or confirmation_event) and owner.current_job_id:
                 # Serialize replay dedupe with ownership claims on the same job.
-                db.query(SddTask).filter(SddTask.id == owner.task_id).with_for_update().first()
-                db.query(SddAiJob).filter(SddAiJob.id == owner.current_job_id).with_for_update().first()
+                task = db.query(SddTask).filter(SddTask.id == owner.task_id).with_for_update().first()
+                job = db.query(SddAiJob).filter(SddAiJob.id == owner.current_job_id).with_for_update().first()
             # 关键写入兜底 fence：job 未撤销/取消且 session_revision 未变
             gate = owner.gate
             if gate is not None and not gate.fence_sync(db):
@@ -366,23 +376,15 @@ class FrontendFeed:
                 session_turn_id=owner.session_turn_id,
                 session_generation=generation,
                 message_id=message_id,
+                commit=not confirmation_event,
             )
-            try:
-                snapshot = context_token_service.ensure_snapshot(
-                    db,
-                    workspace_id=owner.ws_id,
-                    task_id=owner.task_id,
-                    ai_job_id=owner.current_job_id,
-                    session_id=owner.session_id,
-                    status="RUNNING",
-                )
-                context_token_service.record_chat_message(
-                    db,
-                    snapshot=snapshot,
-                    message=saved_message,
-                )
-            except Exception as exc:
-                logger.warning(f"Context token chat attribution failed: {exc}")
+            if confirmation_event and task and job:
+                from app.domains.task.services.live_confirmation_service import observe_resolution
+
+                resolution = (metadata or {}).get("confirmation_resolution")
+                if resolution:
+                    observe_resolution(db, job, resolution)
+                task_confirmation_service.sync_waiting_status(db, task, job, event_key=f"engine:{job.id}:{key}")
             creator = db.query(User).filter(User.id == owner.user_id).first()
             member = (
                 db.query(WorkspaceMember)
@@ -426,16 +428,26 @@ class FrontendFeed:
                 reading_item_key=reading_item_key,
                 reading_change_seq=reading_change_seq,
             ).model_dump()
-            from app.domains.task.services.task_confirmation_service import enrich_history
-
-            enrich_history(db, owner.task_id, [payload])
+            task_confirmation_service.enrich_history(db, owner.task_id, [payload])
+            if confirmation_event:
+                task_event_publisher.queue_chat_message(db, owner.task_id, payload)
+                db.commit()
+                notifications.notify_followers(db, saved_message)
+            try:
+                snapshot = context_token_service.ensure_snapshot(
+                    db,
+                    workspace_id=owner.ws_id,
+                    task_id=owner.task_id,
+                    ai_job_id=owner.current_job_id,
+                    session_id=owner.session_id,
+                    status="RUNNING",
+                )
+                context_token_service.record_chat_message(db, snapshot=snapshot, message=saved_message)
+            except Exception as exc:
+                logger.warning(f"Context token chat attribution failed: {exc}")
             return payload
         finally:
             db.close()
-
-    def load_status_sequence_sync(self) -> int:
-        with SessionLocal() as db:
-            return int(db.query(SddTask.status_seq).filter_by(id=self._owner.task_id).scalar() or 0)
 
     def load_session_generation_sync(self) -> int | None:
         """线程内执行：读取任务当前 session generation（run() 起点）。"""

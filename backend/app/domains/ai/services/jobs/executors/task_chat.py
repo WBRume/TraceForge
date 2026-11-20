@@ -198,21 +198,6 @@ async def on_engine_error(error_text: str, job_id: str) -> None:
 # ────────────────────────── HITL 确认投递 ──────────────────────────
 
 
-async def confirmation_delivery_available(
-    *,
-    task_id: str,
-    interaction_id: str,
-    job_id: str | None = None,
-) -> bool:
-    """Return whether the current long-connection engine owns this confirmation."""
-    engine = get_engine(task_id)
-    if engine is None:
-        return False
-    if job_id and str(engine.current_job_id or "") != str(job_id):
-        return False
-    return bool(engine.can_deliver_confirmation(interaction_id))
-
-
 async def deliver_confirmation_response(
     *,
     task_id: str,
@@ -222,7 +207,7 @@ async def deliver_confirmation_response(
 ) -> bool:
     """Wake the already-running provider through the service boundary."""
     engine = get_engine(task_id)
-    if engine is None:
+    if engine is None or not engine.is_current():
         return False
     if job_id and str(engine.current_job_id or "") != str(job_id):
         return False

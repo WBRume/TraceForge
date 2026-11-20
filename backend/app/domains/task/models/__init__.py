@@ -14,6 +14,7 @@ from app.domains.case_center.models import case as _case_center_models  # noqa: 
 from app.domains.notification.models import notification as _notification_models  # noqa: F401
 from app.domains.task.models import chat as _chat_models  # noqa: F401
 from app.domains.task.models import chat_submission as _submission_models  # noqa: F401
+from app.domains.task.models import confirmation_reply as _confirmation_reply_models  # noqa: F401
 from app.domains.task.models import diagnosis as _diagnosis_models  # noqa: F401
 from app.domains.task.models import pre_input as _pre_input_models  # noqa: F401
 from app.domains.task.models import reading as _reading_models  # noqa: F401

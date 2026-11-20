@@ -557,7 +557,13 @@ def _recover_execution_status(db, task, receipt, job):
     if job is not None:
         if job.id != task.status_run_id:
             return
-        trigger = sm.Trigger.ROUND_FINISHED if job.status == AiJobStatus.SUCCESS else sm.Trigger.EXECUTION_INTERRUPTED
+        from app.domains.task.services.task_confirmation_service import round_finished_trigger
+
+        trigger = (
+            round_finished_trigger(db, task, job)
+            if job.status == AiJobStatus.SUCCESS
+            else sm.Trigger.EXECUTION_INTERRUPTED
+        )
         sm.execution_event(
             db,
             task,
@@ -654,10 +660,12 @@ def _reconcile_sync(db, task_id=None):
 
 
 async def recover():
+    from app.domains.task.services import live_confirmation_service
     from app.domains.task.services.task_session_undo_finalization import recover_pending_undos
     from app.domains.workspace_collaboration.hooks import recover_deliveries
 
     await recover_deliveries()
+    await live_confirmation_service.recover()
     await recover_pending_undos()
     for submission_id in await run_db_txn(_reconcile_sync):
         schedule(submission_id)

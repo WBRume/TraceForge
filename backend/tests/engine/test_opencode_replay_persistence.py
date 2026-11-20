@@ -10,6 +10,7 @@ from app.agents.adapters.opencode.event_mapper import map_opencode_event
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.models.task_event_outbox import TaskEventOutbox
 from app.engine.session.engine import TaskAgentEngine
 from app.engine.session.frontend import FrontendFeed
 
@@ -130,13 +131,63 @@ async def test_pending_form_recovers_same_public_id_and_private_reply_route(db, 
     recovered = engine_factory()
     await recovered._on_ask_user(event)
     assert recovered._pending_confirmations == {original_id: "frm_private"}
-    recovered.frontend.push.assert_awaited_once()
-    assert recovered.frontend.push.await_args.args[0] == "status"
+    recovered.frontend.push.assert_not_awaited()
     messages = db.query(ChatMessage).filter_by(task_id="replay-task").all()
     assert len(messages) == 1
     assert messages[0].metadata_json["confirmation"]["interaction_id"] == original_id
+    assert (
+        db.query(TaskEventOutbox).filter(TaskEventOutbox.payload_json["id"].as_string() == messages[0].id).count() == 1
+    )
     assert await recovered.deliver_confirmation_response(original_id, '{"answer":"yes"}')
     recovered.cli.respond_to_ask_user.assert_awaited_once_with("frm_private", '{"answer":"yes"}')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_opens_before_resolution", [True, False])
+async def test_chained_questions_project_from_all_open_interactions(db, engine_factory, second_opens_before_resolution):
+    from app.domains.task.services.task_confirmation_service import validate_reply_sync
+
+    engine = engine_factory()
+    await engine._on_ask_user({"ask_user_id": "first", "question": "First"})
+    assert await engine.deliver_confirmation_response(engine._confirmation_id("first"), "yes")
+    resolution = {"ask_user_id": "first", "status": "answered"}
+    second = {"ask_user_id": "second", "question": "Second"}
+    if second_opens_before_resolution:
+        await engine._on_ask_user(second)
+        await engine._on_ask_user_resolved(resolution)
+    else:
+        await engine._on_ask_user_resolved(resolution)
+        await engine._on_ask_user(second)
+
+    db.expire_all()
+    question = db.query(ChatMessage).filter_by(task_id=engine.task_id, content="Second").one()
+    assert db.get(SddTask, engine.task_id).status == TaskStatus.AWAITING_INPUT
+    second_id = engine._confirmation_id("second")
+    assert validate_reply_sync(db, engine.task_id, second_id, question.id)["job_id"] == engine.current_job_id
+    db.rollback()
+    await engine._on_ask_user_resolved({"ask_user_id": "second", "status": "cancelled"})
+    await engine_factory()._on_ask_user(second)
+    db.expire_all()
+    assert db.get(SddTask, engine.task_id).status == TaskStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_confirmation_and_its_status_rollback_together(db, engine_factory, monkeypatch):
+    from app.domains.task.services import task_confirmation_service as confirmations
+
+    project = confirmations.sync_waiting_status
+
+    def fail_after_transition(*args, **kwargs):
+        project(*args, **kwargs)
+        raise RuntimeError("simulate a failed confirmation transaction")
+
+    monkeypatch.setattr(confirmations, "sync_waiting_status", fail_after_transition)
+    engine = engine_factory()
+    with pytest.raises(RuntimeError, match="failed confirmation transaction"):
+        await engine._on_ask_user({"ask_user_id": "missing", "question": "Do not commit"})
+    assert db.get(SddTask, engine.task_id).status == TaskStatus.RUNNING
+    assert db.query(ChatMessage).filter_by(task_id=engine.task_id).count() == 0
+    assert db.query(TaskEventOutbox).filter_by(task_id=engine.task_id).count() == 0
 
 
 @pytest.mark.asyncio
@@ -154,7 +205,15 @@ async def test_turn_question_stays_in_snapshot_until_stopped(db, engine_factory)
     task = db.get(SddTask, "replay-task")
     job = db.get(SddAiJob, "replay-job")
     job.status = AiJobStatus.SUCCESS
-    sm.execution_event(db, task, sm.Trigger.ROUND_FINISHED, job_id=job.id, event_key="finish", generation=1, revision=0)
+    sm.execution_event(
+        db,
+        task,
+        task_confirmation_service.round_finished_trigger(db, task, job),
+        job_id=job.id,
+        event_key="finish",
+        generation=1,
+        revision=0,
+    )
     db.commit()
     state = chat_submission_service.build_session_state(db, task.id, actor_id="user")
     assert state["status"] == "AWAITING_INPUT"
@@ -162,6 +221,11 @@ async def test_turn_question_stays_in_snapshot_until_stopped(db, engine_factory)
     assert [item["id"] for item in state["jobs"]] == [job.id]
     assert [item["id"] for item in state["messages"]] == [question.id]
     assert task_confirmation_service.validate_reply_sync(db, task.id, interaction, question.id)["job_id"] == job.id
+    task.session_revision += 1
+    db.flush()
+    task_confirmation_service.validate_turn_reply(
+        db, task.id, {"interaction_id": interaction, "reply_to_message_id": question.id}
+    )
 
     sm.dispatch(db, task, sm.Trigger.INTERRUPT, event_key="stop", actor_id="user")
     with pytest.raises(task_confirmation_service.ConfirmationClosedError):
@@ -228,7 +292,15 @@ async def test_answer_page_and_provider_event_include_full_question_context(db, 
     db.add(reply)
     db.commit()
     await engine._on_ask_user_resolved({"ask_user_id": "frm_private", "status": "answered", "answer": {"q0": "AI"}})
-    pushed = engine.frontend.push.await_args.args[1]
+    pushed = (
+        db.query(TaskEventOutbox)
+        .filter(
+            TaskEventOutbox.payload_json["metadata"]["confirmation_resolution"]["interaction_id"].as_string()
+            == interaction
+        )
+        .one()
+        .payload_json
+    )
     assert pushed["metadata"]["confirmation_context"]["fields"] == fields
     assert pushed["metadata"]["confirmation_context"]["answer_message_id"] == reply.id
     task = db.get(SddTask, "replay-task")

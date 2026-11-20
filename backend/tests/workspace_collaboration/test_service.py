@@ -100,6 +100,24 @@ def enabled(environment):
     return state
 
 
+def test_enable_rejects_preparing_input_before_it_changes_collaboration(environment):
+    from app.domains.task.services import chat_submission_service
+
+    db, task, _ = environment
+    task.status = TaskStatus.ROUND_COMPLETED
+    db.commit()
+    receipt = chat_submission_service._accept_sync(db, task.id, "u", "before-enable", "Continue", {})
+    db.commit()
+
+    with pytest.raises(service.CollaborationError) as error:
+        enabled(environment)
+    assert error.value.code == "WRITER_ACTIVE"
+    db.rollback()
+    assert db.get(CollaborationState, task.id) is None
+    assert chat_submission_service._load_preparation(db, receipt["id"]) is not None
+    assert receipt["id"] in chat_submission_service._reconcile_sync(db, task.id)
+
+
 def fence(state):
     return {
         "client_id": state["client_id"],
