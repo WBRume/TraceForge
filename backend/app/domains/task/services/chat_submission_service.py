@@ -522,6 +522,17 @@ def _publish_knowledge(db, task, job, row):
                 message.metadata_json = {**meta, "knowledge_state": "published"}
 
 
+def _finish_submission(db, task, row, job, *, success: bool):
+    _transition(
+        db,
+        row,
+        "SUCCEEDED" if success else "FAILED",
+        error_message=None if success else "本轮执行未成功，内容未进入知识检索",
+    )
+    if success:
+        _publish_knowledge(db, task, job, row)
+
+
 def finalize_submission_in_txn(db, job, final_status):
     """Converge the job's receipt inside the convergence transaction; returns the row or None.
 
@@ -534,14 +545,7 @@ def finalize_submission_in_txn(db, job, final_status):
     if row is None or row.status != "EXECUTING":
         return None
     task = db.query(SddTask).filter_by(id=row.task_id).first()
-    _transition(
-        db,
-        row,
-        "SUCCEEDED" if success else "FAILED",
-        error_message=None if success else "本轮执行未成功，内容未进入知识检索",
-    )
-    if success:
-        _publish_knowledge(db, task, job, row)
+    _finish_submission(db, task, row, job, success=success)
     return row
 
 
@@ -624,7 +628,7 @@ def _reconcile_sync(db, task_id=None):
     # Long-running jobs must not occupy the entire recovery page and starve
     # terminal receipts belonging to later tasks.
     rows = (
-        db.query(TaskChatSubmission)
+        db.query(TaskChatSubmission.task_id, TaskChatSubmission.id)
         .outerjoin(SddAiJob, SddAiJob.id == TaskChatSubmission.ai_job_id)
         .filter(
             scope,
@@ -636,26 +640,34 @@ def _reconcile_sync(db, task_id=None):
         .limit(100)
         .all()
     )
-    for row in rows:
-        # Follow the same task-before-message lock order as search capture and acceptance.
-        task = db.query(SddTask).filter_by(id=row.task_id).populate_existing().with_for_update().one_or_none()
-        row = db.query(TaskChatSubmission).filter_by(id=row.id).populate_existing().with_for_update().one_or_none()
-        if row is None or row.status != "EXECUTING":
-            continue
-        job = db.get(SddAiJob, row.ai_job_id) if row.ai_job_id else None
-        if job is not None and (job.status in BLOCKING or row_has_leaked_interrupted_ownership(job)):
-            continue
-        _recover_execution_status(db, task, row, job)
-        success = job is not None and job.status == AiJobStatus.SUCCESS
-        _transition(
-            db,
-            row,
-            "SUCCEEDED" if success else "FAILED",
-            error_message=None if success else "本轮执行未成功，内容未进入知识检索",
-        )
-        if success:
-            _publish_knowledge(db, task, job, row)
-        row.updated_at = datetime.utcnow()
+    for candidate_task_id, receipt_id in rows:
+        try:
+            with db.begin_nested():
+                # Follow the same task-before-message lock order as acceptance.
+                task = (
+                    db.query(SddTask)
+                    .filter_by(id=candidate_task_id)
+                    .populate_existing()
+                    .with_for_update()
+                    .one_or_none()
+                )
+                row = (
+                    db.query(TaskChatSubmission)
+                    .filter_by(id=receipt_id)
+                    .populate_existing()
+                    .with_for_update()
+                    .one_or_none()
+                )
+                if row is None or row.status != "EXECUTING":
+                    continue
+                job = db.get(SddAiJob, row.ai_job_id) if row.ai_job_id else None
+                if job is not None and (job.status in BLOCKING or row_has_leaked_interrupted_ownership(job)):
+                    continue
+                _recover_execution_status(db, task, row, job)
+                _finish_submission(db, task, row, job, success=job is not None and job.status == AiJobStatus.SUCCESS)
+                row.updated_at = datetime.utcnow()
+        except Exception:
+            logger.exception("Chat submission reconciliation deferred: submission_id={}", receipt_id)
     return pending
 
 

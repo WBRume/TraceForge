@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import pytest
 from sqlalchemy.orm import sessionmaker
 
@@ -140,6 +141,72 @@ async def test_pending_form_recovers_same_public_id_and_private_reply_route(db, 
     )
     assert await recovered.deliver_confirmation_response(original_id, '{"answer":"yes"}')
     recovered.cli.respond_to_ask_user.assert_awaited_once_with("frm_private", '{"answer":"yes"}')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing_answer", ["yes", "other"])
+async def test_provider_answer_is_not_attributed_to_a_rejected_platform_reply(
+    db, engine_factory, monkeypatch, existing_answer
+):
+    from app.domains.ai.services.jobs.executors import task_chat
+    from app.domains.task.models.confirmation_reply import TaskConfirmationReply
+    from app.domains.task.services import live_confirmation_service as replies
+    from tests.agents.test_opencode_interactions import create_monitor, form
+
+    engine = engine_factory()
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False)
+
+    async def txn(body):
+        with factory.begin() as transaction:
+            return body(transaction)
+
+    methods = []
+
+    def native(request):
+        methods.append(request.method)
+        return httpx.Response(
+            200, json={"data": {**form(), "state": {"status": "answered", "answer": {"q0": existing_answer}}}}
+        )
+
+    async def on_event(event):
+        if event.type == "ask_user":
+            adapter._pending_asks.add(event.payload["ask_user_id"])
+        await engine.handle_agent_event(event)
+
+    adapter, monitor, _, _ = create_monitor(native)
+    monitor.on_event = on_event
+    engine.cli = adapter
+    monkeypatch.setattr(task_chat, "get_engine", lambda task_id: engine)
+    monkeypatch.setattr(replies, "run_db_txn", txn)
+    monkeypatch.setattr(replies, "_delivery_outcomes", {})
+    try:
+        await monitor.handle_event({"type": "form.created", "data": {"form": form()}})
+        parent = db.query(ChatMessage).filter_by(task_id=engine.task_id).one()
+        request = replies.ReplyRequest(
+            engine.task_id,
+            "user",
+            "local-answer",
+            engine._confirmation_id("frm_test"),
+            parent.id,
+            '{"q0":"yes"}',
+            {"q0": "yes"},
+        )
+        db.rollback()
+        result = await replies.submit(request)
+        assert result.status == "failed" and result.message is None
+        assert methods == ["GET", "GET"]
+        db.expire_all()
+        assert db.query(TaskConfirmationReply).one().status == "FAILED"
+        assert db.query(ChatMessage).filter_by(role="user").count() == 0
+        resolution = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.metadata_json["confirmation_resolution"]["status"].as_string() == "answered")
+            .one()
+        )
+        assert resolution.metadata_json["confirmation_resolution"]["source"] == "provider"
+        assert resolution.metadata_json["confirmation_resolution"]["answer"] == {"q0": existing_answer}
+    finally:
+        await adapter.close()
 
 
 @pytest.mark.asyncio

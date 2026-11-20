@@ -561,7 +561,9 @@ def _derive_termination_business_status(
     if request.requested_status is not None:
         return request.requested_status
     queue_key = str(job.queue_key or "")
-    if request.termination_mode == "INTERRUPT" and job.channel == AiJobChannel.TASK_CHAT:
+    stored_mode = (job.context_json or {}).get("termination_mode")
+    mode = stored_mode if stored_mode in {"INTERRUPT", "CANCEL"} else request.termination_mode
+    if mode == "INTERRUPT" and job.channel == AiJobChannel.TASK_CHAT:
         # 用户临时中断（可恢复）：与 legacy 无 token 路径
         # （``_finalize_legacy_interrupt_sync``）语义一致，job 落 INTERRUPTED。
         # ``cancel_requested_at`` 在 INTERRUPT 模式下只承担写入 fence 职责，
@@ -771,8 +773,11 @@ def _finalize_submission_in_txn(db: Session, job: SddAiJob, final_status: AiJobS
         return
     from app.domains.task.services import chat_submission_service
 
+    # Flush the Job in the outer transaction before introducing the savepoint.
+    db.flush()
     try:
-        chat_submission_service.finalize_submission_in_txn(db, job, final_status)
+        with db.begin_nested():
+            chat_submission_service.finalize_submission_in_txn(db, job, final_status)
     except Exception as exc:
         # Submission convergence must never block the job's own final status;
         # the reconciler picks the receipt up on the next send/recover pass.

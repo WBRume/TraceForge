@@ -1057,6 +1057,49 @@ def test_convergence_finalizes_receipt_in_same_transaction(
             assert message.metadata_json["knowledge_state"] == knowledge_state
 
 
+def test_receipt_publication_failure_rolls_back_before_job_and_task_commit(task_db, monkeypatch):
+    from app.domains.ai.services import ai_job_convergence_service as convergence
+
+    row = accepted(task_db)
+    job = execution(task_db, row)
+    task = task_db.get(SddTask, "t")
+    job.session_revision = task.session_revision
+    status_machine.dispatch(task_db, task, status_machine.Trigger.BIND_EXECUTION, event_key="bind:job", job_id=job.id)
+    task_db.commit()
+    receipt_id = row.id
+    publish = service._publish_knowledge
+
+    def fail_after_partial_publish(*args):
+        publish(*args)
+        raise RuntimeError("publication unavailable")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(service, "_publish_knowledge", fail_after_partial_publish)
+        request = convergence.AttemptConvergenceRequest(
+            job_id=job.id,
+            run_token="",
+            worker_boot_id="",
+            requested_status=AiJobStatus.SUCCESS,
+            reason="provider succeeded",
+            evidence=convergence.resolve_attempt_evidence(execution_kind="LOCAL_PROCESS", fallback_dead=True),
+        )
+        assert convergence.converge_job_attempt_sync(task_db, request).status == "SUCCESS"
+        task_db.expire_all()
+        assert task.status == TaskStatus.ROUND_COMPLETED
+        assert row.status == "EXECUTING" and row.active_task_id == task.id
+        assert task_db.get(ChatMessage, "assistant").metadata_json["knowledge_state"] == "pending"
+        assert task_db.query(TaskEventOutbox).filter_by(receipt_id=receipt_id, receipt_version=2).count() == 0
+        service._reconcile_sync(task_db, task.id)
+        task_db.commit()
+        assert row.status == "EXECUTING"
+
+    service._reconcile_sync(task_db, task.id)
+    task_db.commit()
+    assert row.status == "SUCCEEDED" and row.active_task_id is None
+    assert task_db.get(ChatMessage, "assistant").metadata_json["knowledge_state"] == "published"
+    assert task_db.query(TaskEventOutbox).filter_by(receipt_id=receipt_id, receipt_version=2).count() == 1
+
+
 def test_session_state_resolves_unconfirmed_key_beyond_any_window(task_db):
     row = accepted(task_db, "ancient-key")
     execution(task_db, row, AiJobStatus.FAILED)

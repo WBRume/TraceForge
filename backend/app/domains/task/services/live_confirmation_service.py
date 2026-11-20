@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -22,10 +24,17 @@ from app.domains.task.services import task_event_publisher
 
 logger = get_logger(__name__, category="task_execution")
 
-# This preserves a definitive provider ACK across a database outage in the
-# same process. OpenCode also replays matching terminal answers after restart.
-_delivery_outcomes: dict[str, tuple[bool, str | None]] = {}
-_UNCERTAIN_GRACE = timedelta(minutes=2)
+# Only a direct provider ACK can attribute an answer to this user. Retain it
+# in memory until its transaction commits, including across a database outage.
+_delivery_outcomes: dict[str, tuple[str, bool, str | None]] = {}
+_recovering: dict[str, asyncio.Task] = {}
+_MAX_RECOVERING = 4
+_PENDING_RECHECK = timedelta(seconds=4)
+_SEND_TIMEOUT = 35
+_SENDING_RECHECK = timedelta(seconds=45)
+_RECOVERY_WINDOW = timedelta(minutes=3)
+_OPEN_DELIVERIES = {"PENDING", "SENDING"}
+_NOT_CONFIRMED = "The answer delivery could not be confirmed. Refresh the question before retrying."
 _FINISHED_JOBS = {
     AiJobStatus.SUCCESS,
     AiJobStatus.FAILED,
@@ -54,17 +63,20 @@ class ReplyResult:
 
 
 @dataclass(frozen=True)
-class _Reservation:
-    id: str
+class _Delivery:
+    task_id: str
     job_id: str
-    deliver: bool
+    interaction_id: str
+    content: str
+    status: str
+    token: str | None
 
 
 def _lock_task(db: Session, task_id: str) -> SddTask | None:
     return db.query(SddTask).filter_by(id=task_id).with_for_update().first()
 
 
-def _reserve(db: Session, request: ReplyRequest) -> _Reservation | None:
+def _reserve(db: Session, request: ReplyRequest) -> str | None:
     task = _lock_task(db, request.task_id)
     if task is None:
         raise questions.ConfirmationClosedError("Task not found.")
@@ -81,7 +93,7 @@ def _reserve(db: Session, request: ReplyRequest) -> _Reservation | None:
             or json.dumps(existing.confirmation_value, sort_keys=True) != json.dumps(request.value, sort_keys=True)
         ):
             raise questions.ConfirmationClosedError("This message ID is already bound to a different answer.")
-        return _Reservation(existing.id, existing.job_id, False)
+        return existing.id
 
     parent = questions.load_question(db, task.id, request.interaction_id, request.question_id)
     if questions.delivery_mode(task, parent) == "turn":
@@ -93,7 +105,7 @@ def _reserve(db: Session, request: ReplyRequest) -> _Reservation | None:
         db.query(TaskConfirmationReply.id)
         .filter(
             TaskConfirmationReply.question_id == parent.id,
-            TaskConfirmationReply.status.in_(["SENDING", "ACCEPTED"]),
+            TaskConfirmationReply.status.in_(_OPEN_DELIVERIES | {"ACCEPTED"}),
         )
         .first()
     ):
@@ -107,11 +119,11 @@ def _reserve(db: Session, request: ReplyRequest) -> _Reservation | None:
         interaction_id=request.interaction_id,
         content=request.content,
         confirmation_value=request.value,
-        status="SENDING",
+        status="PENDING",
     )
     db.add(receipt)
     db.flush()
-    return _Reservation(receipt.id, receipt.job_id, True)
+    return receipt.id
 
 
 def _locked_receipt(db: Session, receipt_id: str) -> tuple[SddTask | None, TaskConfirmationReply | None]:
@@ -120,11 +132,56 @@ def _locked_receipt(db: Session, receipt_id: str) -> tuple[SddTask | None, TaskC
     return task, db.get(TaskConfirmationReply, receipt_id) if task else None
 
 
-def _record_outcome(db: Session, receipt_id: str, accepted: bool, error: str | None) -> None:
+def _record_outcome(db: Session, receipt_id: str, token: str | None, accepted: bool, error: str | None) -> None:
     _, receipt = _locked_receipt(db, receipt_id)
-    if receipt and receipt.status == "SENDING":
+    if receipt and receipt.status == "SENDING" and receipt.delivery_token == token:
         receipt.status = "ACCEPTED" if accepted else "FAILED"
         receipt.error_message = error
+
+
+def _due_delivery(db: Session, receipt_id: str, *, recovery: bool) -> _Delivery | None:
+    task, receipt = _locked_receipt(db, receipt_id)
+    if task is None or receipt is None or receipt.status not in _OPEN_DELIVERIES:
+        return None
+    now = datetime.utcnow()
+    if receipt.status == "SENDING" and (not recovery or receipt.updated_at > now - _SENDING_RECHECK):
+        return None
+    job = db.get(SddAiJob, receipt.job_id)
+    if job.status in _FINISHED_JOBS or task.status_run_id != receipt.job_id:
+        receipt.status = "FAILED"
+        receipt.error_message = "The execution ended before the answer delivery could be confirmed."
+        return None
+    if receipt.created_at <= now - _RECOVERY_WINDOW:
+        receipt.status = "FAILED"
+        receipt.error_message = _NOT_CONFIRMED
+        return None
+    return _Delivery(task.id, job.id, receipt.interaction_id, receipt.content, receipt.status, receipt.delivery_token)
+
+
+def _claim_delivery(db: Session, receipt_id: str, delivery: _Delivery) -> str | None:
+    task, receipt = _locked_receipt(db, receipt_id)
+    if task is None or receipt is None or (receipt.status, receipt.delivery_token) != (delivery.status, delivery.token):
+        return None
+    try:
+        owner = questions.validate_reply_sync(db, task.id, receipt.interaction_id, receipt.question_id)
+        if owner["delivery_mode"] != "live" or owner["job_id"] != receipt.job_id:
+            raise questions.ConfirmationClosedError("The execution owning this question has changed.")
+    except questions.ConfirmationClosedError as exc:
+        receipt.status = "FAILED"
+        receipt.error_message = str(exc)
+        return None
+    receipt.status = "SENDING"
+    receipt.delivery_token = token = str(uuid4())
+    # The lease starts in the same commit as the claim, before any provider I/O.
+    receipt.updated_at = datetime.utcnow()
+    return token
+
+
+def _defer_delivery(db: Session, receipt_id: str, token: str | None, status: str) -> None:
+    _, receipt = _locked_receipt(db, receipt_id)
+    if receipt and receipt.status == "SENDING" and receipt.delivery_token == token:
+        receipt.status = status
+        receipt.updated_at = datetime.utcnow()
 
 
 def _message_payload(db: Session, message: ChatMessage) -> dict:
@@ -141,14 +198,7 @@ def _settle(db: Session, receipt_id: str) -> ReplyResult:
         return ReplyResult("duplicate", _message_payload(db, db.get(ChatMessage, receipt.message_id)))
     if receipt.status == "FAILED":
         return ReplyResult("failed", error=receipt.error_message)
-    if receipt.status == "SENDING":
-        job = db.get(SddAiJob, receipt.job_id)
-        if receipt.updated_at <= datetime.utcnow() - _UNCERTAIN_GRACE and (
-            job.status in _FINISHED_JOBS or task.status_run_id != receipt.job_id
-        ):
-            receipt.status = "FAILED"
-            receipt.error_message = "The execution ended before the answer delivery could be confirmed."
-            return ReplyResult("failed", error=receipt.error_message)
+    if receipt.status != "ACCEPTED":
         return ReplyResult("processing")
 
     from app.domains.task.services.task_session_turn_service import persist_confirmation_reply
@@ -173,98 +223,94 @@ def _settle(db: Session, receipt_id: str) -> ReplyResult:
     return ReplyResult("accepted", payload)
 
 
-def _matches_answer(db: Session, receipt: TaskConfirmationReply, resolution: dict) -> bool:
-    status = resolution.get("status")
-    if status in {"approved", "rejected"}:
-        rejected = receipt.content.strip().lower() in {"reject", "n", "no", "false"}
-        return status == ("rejected" if rejected else "approved")
-    if status != "answered" or resolution.get("answer") is None:
-        return False
-    try:
-        expected = json.loads(receipt.content)
-    except ValueError:
-        expected = None
-    if not isinstance(expected, dict):
-        fields = questions.question_context(db.get(ChatMessage, receipt.question_id))["fields"]
-        if len(fields) == 1 and fields[0].get("type") == "string":
-            expected = {fields[0]["key"]: receipt.content}
-    return expected == resolution["answer"]
-
-
-def observe_resolution(db: Session, job: SddAiJob, resolution: dict) -> None:
-    """Use a matching provider outcome to recover a lost transport ACK."""
-    receipt = (
-        db.query(TaskConfirmationReply)
-        .filter_by(job_id=job.id, interaction_id=resolution.get("interaction_id"), status="SENDING")
-        .first()
-    )
-    if receipt and _matches_answer(db, receipt, resolution):
-        receipt.status = "ACCEPTED"
-
-
 async def _flush_outcome(receipt_id: str) -> None:
     outcome = _delivery_outcomes.get(receipt_id)
     if outcome is not None:
         await run_db_txn(lambda db: _record_outcome(db, receipt_id, *outcome))
-        _delivery_outcomes.pop(receipt_id, None)
+        if _delivery_outcomes.get(receipt_id) == outcome:
+            _delivery_outcomes.pop(receipt_id, None)
+
+
+async def _deliver(receipt_id: str, delivery: _Delivery) -> str | None:
+    from app.domains.ai.services.jobs.executors import task_chat
+
+    address = {"task_id": delivery.task_id, "interaction_id": delivery.interaction_id, "job_id": delivery.job_id}
+    if delivery.status == "SENDING":
+        pending = await task_chat.confirmation_is_pending(**address)
+        if pending is False:
+            await run_db_txn(lambda db: _record_outcome(db, receipt_id, delivery.token, False, _NOT_CONFIRMED))
+            return None
+        if pending is None:
+            await run_db_txn(lambda db: _defer_delivery(db, receipt_id, delivery.token, "SENDING"))
+            return None
+
+    token = await run_db_txn(lambda db: _claim_delivery(db, receipt_id, delivery))
+    if token is None:
+        return None
+    try:
+        async with asyncio.timeout(_SEND_TIMEOUT):
+            accepted = await task_chat.deliver_confirmation_response(response=delivery.content, **address)
+    except (AgentInteractionDeliveryUncertain, TimeoutError):
+        return _NOT_CONFIRMED
+    except AgentError as exc:
+        _delivery_outcomes[receipt_id] = (token, False, str(exc))
+    else:
+        if accepted:
+            _delivery_outcomes[receipt_id] = (token, True, None)
+        else:
+            # The engine has no route for this question yet. This attempt sent
+            # nothing, so preserve the previous delivery state.
+            await run_db_txn(lambda db: _defer_delivery(db, receipt_id, token, delivery.status))
+    await _flush_outcome(receipt_id)
+    return None
+
+
+async def _advance(receipt_id: str, *, recovery: bool) -> ReplyResult:
+    await _flush_outcome(receipt_id)
+    delivery = await run_db_txn(lambda db: _due_delivery(db, receipt_id, recovery=recovery))
+    message = await _deliver(receipt_id, delivery) if delivery else None
+    result = await run_db_txn(lambda db: _settle(db, receipt_id))
+    task_event_publisher.wake()
+    return ReplyResult("processing", error=message) if result.status == "processing" and message else result
 
 
 async def submit(request: ReplyRequest) -> ReplyResult | None:
-    """Reserve under the caller's task lock, then deliver at most once per receipt."""
-    from app.domains.ai.services.jobs.executors import task_chat
-
-    reservation = await run_db_txn(lambda db: _reserve(db, request))
-    if reservation is None:
+    """Commit the user's intent before exposing it to a provider transport."""
+    receipt_id = await run_db_txn(lambda db: _reserve(db, request))
+    if receipt_id is None:
         return None
     try:
-        if reservation.deliver:
-            try:
-                accepted = await task_chat.deliver_confirmation_response(
-                    task_id=request.task_id,
-                    interaction_id=request.interaction_id,
-                    response=request.content,
-                    job_id=reservation.job_id,
-                )
-            except AgentInteractionDeliveryUncertain as exc:
-                return ReplyResult("processing", error=str(exc))
-            except AgentError as exc:
-                _delivery_outcomes[reservation.id] = (False, str(exc))
-            else:
-                _delivery_outcomes[reservation.id] = (
-                    accepted,
-                    None if accepted else "This question is closed or its execution is recovering.",
-                )
-        await _flush_outcome(reservation.id)
-        result = await run_db_txn(lambda db: _settle(db, reservation.id))
+        return await _advance(receipt_id, recovery=False)
     except Exception:
-        logger.exception("Confirmation reply deferred: receipt_id={}", reservation.id)
+        logger.exception("Confirmation reply deferred: receipt_id={}", receipt_id)
         return ReplyResult("processing", error="The answer delivery is being reconciled.")
-    task_event_publisher.wake()
-    return result
 
 
-def _recoverable_receipts(db: Session) -> list[str]:
+def _recoverable_receipts(db: Session) -> list[tuple[str, str]]:
     receipt = TaskConfirmationReply
-    return [
-        receipt_id
-        for (receipt_id,) in db.query(receipt.id)
-        .join(SddAiJob, SddAiJob.id == receipt.job_id)
-        .join(SddTask, SddTask.id == receipt.task_id)
+    now = datetime.utcnow()
+    return (
+        db.query(receipt.id, receipt.status)
         .filter(
             or_(
                 receipt.status == "ACCEPTED",
-                (receipt.status == "SENDING")
-                & (receipt.updated_at <= datetime.utcnow() - _UNCERTAIN_GRACE)
-                & or_(
-                    SddAiJob.status.in_(_FINISHED_JOBS),
-                    SddTask.status_run_id.is_distinct_from(receipt.job_id),
-                ),
+                (receipt.status == "PENDING") & (receipt.updated_at <= now - _PENDING_RECHECK),
+                (receipt.status == "SENDING") & (receipt.updated_at <= now - _SENDING_RECHECK),
             )
         )
-        .order_by(receipt.updated_at, receipt.id)
+        .order_by((receipt.status != "ACCEPTED"), receipt.updated_at, receipt.id)
         .limit(50)
         .all()
-    ]
+    )
+
+
+async def _recover_delivery(receipt_id: str) -> None:
+    try:
+        await _advance(receipt_id, recovery=True)
+    except Exception:
+        logger.exception("Confirmation reply recovery deferred: receipt_id={}", receipt_id)
+    finally:
+        _recovering.pop(receipt_id, None)
 
 
 async def recover() -> None:
@@ -273,9 +319,12 @@ async def recover() -> None:
             await _flush_outcome(receipt_id)
         except Exception:
             logger.exception("Confirmation provider acknowledgement deferred: receipt_id={}", receipt_id)
-    for receipt_id in await run_db_txn(_recoverable_receipts):
-        try:
-            await run_db_txn(lambda db, receipt_id=receipt_id: _settle(db, receipt_id))
-        except Exception:
-            logger.exception("Confirmation reply recovery deferred: receipt_id={}", receipt_id)
+    for receipt_id, status in await run_db_txn(_recoverable_receipts):
+        if status == "ACCEPTED":
+            try:
+                await run_db_txn(lambda db, receipt_id=receipt_id: _settle(db, receipt_id))
+            except Exception:
+                logger.exception("Confirmation reply recovery deferred: receipt_id={}", receipt_id)
+        elif receipt_id not in _recovering and len(_recovering) < _MAX_RECOVERING:
+            _recovering[receipt_id] = asyncio.create_task(_recover_delivery(receipt_id))
     task_event_publisher.wake()

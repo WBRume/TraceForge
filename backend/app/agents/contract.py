@@ -825,6 +825,10 @@ class AgentBackend(ABC):
         """可选：长连接 HITL 模式下回传用户回复。"""
         raise AgentError("HITL response not supported")
 
+    async def ask_user_is_pending(self, ask_user_id: str) -> bool | None:
+        """Read the provider's pending set. None means the state is unavailable."""
+        return None
+
     async def steer(self, message_id: str, content: str) -> None:
         """Admit a user instruction at the next step of the active run."""
         from app.agents.errors import AgentSteeringClosedError

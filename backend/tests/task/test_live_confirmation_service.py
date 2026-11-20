@@ -1,5 +1,6 @@
 """Recovery and delivery invariants for a live confirmation answer."""
 
+import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
@@ -54,7 +55,13 @@ def question(db, monkeypatch):
 
     monkeypatch.setattr(replies, "run_db_txn", txn)
     monkeypatch.setattr(replies, "_delivery_outcomes", {})
+    monkeypatch.setattr(replies, "_recovering", {})
     return request
+
+
+async def _recover():
+    await replies.recover()
+    await asyncio.gather(*list(replies._recovering.values()))
 
 
 @pytest.mark.asyncio
@@ -118,8 +125,41 @@ async def test_definitive_provider_rejection_leaves_question_open_for_another_tr
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("native_answer", ["yes", "other"])
-async def test_lost_provider_ack_requires_matching_evidence(db, monkeypatch, question, native_answer):
+@pytest.mark.parametrize("phase", ["PENDING", "SENDING"])
+async def test_worker_exit_before_transport_recovers_same_receipt(db, monkeypatch, question, phase):
+    with monkeypatch.context() as crash:
+        if phase == "PENDING":
+            crash.setattr(replies, "_advance", AsyncMock(side_effect=asyncio.CancelledError()))
+        else:
+            crash.setattr(task_chat, "deliver_confirmation_response", AsyncMock(side_effect=asyncio.CancelledError()))
+        with pytest.raises(asyncio.CancelledError):
+            await replies.submit(question)
+    intent = db.query(TaskConfirmationReply).one()
+    assert intent.status == phase
+    receipt_id, first_token = intent.id, intent.delivery_token
+    intent.updated_at = datetime.utcnow() - timedelta(minutes=1)
+    db.commit()
+    provider = AsyncMock(return_value=True)
+    probe = AsyncMock(return_value=True)
+    monkeypatch.setattr(task_chat, "deliver_confirmation_response", provider)
+    monkeypatch.setattr(task_chat, "confirmation_is_pending", probe)
+
+    await _recover()
+    assert (await replies.submit(question)).status == "duplicate"
+    db.expire_all()
+    receipt = db.get(TaskConfirmationReply, receipt_id)
+    assert receipt.status == "DELIVERED"
+    assert receipt.delivery_token and receipt.delivery_token != first_token
+    assert probe.await_count == (phase == "SENDING")
+    provider.assert_awaited_once()
+    assert db.query(ChatMessage).filter_by(role="user").count() == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_pending", [None, False])
+async def test_unconfirmed_delivery_has_a_bounded_recovery_without_redelivery(
+    db, monkeypatch, question, provider_pending
+):
     provider = AsyncMock(side_effect=AgentInteractionDeliveryUncertain("Network dropped the response"))
     monkeypatch.setattr(task_chat, "deliver_confirmation_response", provider)
     assert (await replies.submit(question)).status == "processing"
@@ -128,22 +168,41 @@ async def test_lost_provider_ack_requires_matching_evidence(db, monkeypatch, que
         await replies.submit(replace(question, client_id="other-client"))
     provider.assert_awaited_once()
     intent = db.query(TaskConfirmationReply).one()
-    job = db.get(SddAiJob, intent.job_id)
-    replies.observe_resolution(
-        db, job, {"interaction_id": question.interaction_id, "status": "answered", "answer": {"answer": native_answer}}
-    )
-    if native_answer != "yes":
-        intent.updated_at = datetime.utcnow() - timedelta(minutes=3)
-        job.status = AiJobStatus.SUCCESS
-        ai_job_convergence_service._converge_task_status_in_txn(db, job, job.status)
+    intent.updated_at = datetime.utcnow() - timedelta(minutes=1)
     db.commit()
+    probe = AsyncMock(return_value=provider_pending)
+    monkeypatch.setattr(task_chat, "confirmation_is_pending", probe)
 
-    await replies.recover()
+    await _recover()
     db.expire_all()
-    assert intent.status == ("DELIVERED" if native_answer == "yes" else "FAILED")
-    assert db.query(ChatMessage).filter_by(role="user").count() == int(native_answer == "yes")
-    if native_answer != "yes":
-        assert db.get(SddTask, question.task_id).status == TaskStatus.ROUND_COMPLETED
+    probe.assert_awaited_once()
+    if provider_pending is None:
+        assert intent.status == "SENDING"
+        intent.created_at = intent.updated_at = datetime.utcnow() - timedelta(minutes=5)
+        db.commit()
+        await _recover()
+        db.expire_all()
+    assert intent.status == "FAILED"
+    assert db.query(ChatMessage).filter_by(role="user").count() == 0
+    db.rollback()
+    assert (await replies.submit(question)).status == "failed"
+    provider.assert_awaited_once()
+
+
+def test_old_delivery_token_cannot_settle_a_new_attempt(db, question):
+    receipt_id = replies._reserve(db, question)
+    first = replies._due_delivery(db, receipt_id, recovery=False)
+    first_token = replies._claim_delivery(db, receipt_id, first)
+    row = db.get(TaskConfirmationReply, receipt_id)
+    row.updated_at = datetime.utcnow() - timedelta(minutes=1)
+    db.commit()
+    second = replies._due_delivery(db, receipt_id, recovery=True)
+    second_token = replies._claim_delivery(db, receipt_id, second)
+    assert first_token != second_token
+    replies._record_outcome(db, receipt_id, first_token, True, None)
+    assert row.status == "SENDING"
+    replies._record_outcome(db, receipt_id, second_token, True, None)
+    assert row.status == "ACCEPTED"
 
 
 @pytest.mark.asyncio

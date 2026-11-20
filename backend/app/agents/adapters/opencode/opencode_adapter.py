@@ -978,6 +978,8 @@ class OpenCodeAdapter(AgentBackend):
             raise AgentInteractionDeliveryUncertain("OpenCode reply delivery could not be confirmed.") from exc
         if result.status_code in {404, 409}:
             await self._reject_closed_interaction(ask_user_id)
+        if result.status_code == 408 or result.status_code >= 500:
+            raise AgentInteractionDeliveryUncertain("OpenCode reply delivery could not be confirmed.")
         self._check_response(result, "HITL reply")
         self._complete_ask(ask_user_id)
 
@@ -1000,6 +1002,23 @@ class OpenCodeAdapter(AgentBackend):
         if kind == "permission" or state.get("status", "pending") == "pending":
             return None
         return {"ask_user_id": ask_user_id, "status": state["status"], "answer": state.get("answer")}
+
+    async def ask_user_is_pending(self, ask_user_id: str) -> bool | None:
+        sid = self._session_id
+        if not sid or not ask_user_id:
+            return None
+        kind = "form" if ask_user_id.startswith("frm_") else "permission"
+        try:
+            client = await self._ensure_client()
+            response = await client.get(self._session_url(sid, f"/{kind}"), timeout=5.0)
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError, AgentError):
+            return None
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            return None
+        return any(isinstance(row, dict) and row.get("id") == ask_user_id for row in rows)
 
     async def _reject_closed_interaction(self, ask_user_id: str) -> None:
         resolution = await self.get_interaction_resolution(ask_user_id)

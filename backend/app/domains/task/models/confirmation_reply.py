@@ -11,7 +11,8 @@ class TaskConfirmationReply(Base):
     __table_args__ = (
         UniqueConstraint("task_id", "creator_id", "client_message_id", name="uq_task_confirmation_reply_client"),
         CheckConstraint(
-            "status IN ('SENDING', 'ACCEPTED', 'DELIVERED', 'FAILED')", name="ck_task_confirmation_reply_status"
+            "status IN ('PENDING', 'SENDING', 'ACCEPTED', 'DELIVERED', 'FAILED')",
+            name="ck_task_confirmation_reply_status",
         ),
         Index("ix_task_confirmation_replies_recovery", "status", "updated_at"),
         Index("ix_task_confirmation_replies_question", "question_id", "status"),
@@ -27,6 +28,8 @@ class TaskConfirmationReply(Base):
     content = Column(Text, nullable=False)
     confirmation_value = Column(JSON, nullable=True)
     status = Column(String(16), nullable=False)
+    delivery_token = Column(String(36), nullable=True)
     message_id = Column(String(36), ForeignKey("chat_messages.id", ondelete="CASCADE"), nullable=True)
     error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())

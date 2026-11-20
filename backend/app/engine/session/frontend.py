@@ -379,11 +379,6 @@ class FrontendFeed:
                 commit=not confirmation_event,
             )
             if confirmation_event and task and job:
-                from app.domains.task.services.live_confirmation_service import observe_resolution
-
-                resolution = (metadata or {}).get("confirmation_resolution")
-                if resolution:
-                    observe_resolution(db, job, resolution)
                 task_confirmation_service.sync_waiting_status(db, task, job, event_key=f"engine:{job.id}:{key}")
             creator = db.query(User).filter(User.id == owner.user_id).first()
             member = (

@@ -262,6 +262,11 @@ class TaskAgentEngine:
             and self.running
         )
 
+    async def confirmation_is_pending(self, interaction_id: str) -> bool | None:
+        if not self.can_deliver_confirmation(interaction_id):
+            return None
+        return await self.cli.ask_user_is_pending(self._pending_confirmations[interaction_id])
+
     async def deliver_confirmation_response(
         self,
         interaction_id: str,

@@ -100,6 +100,28 @@ def test_interrupt_mode_converges_resumable_interrupted(monkeypatch):
     assert saved.process_pid is None
 
 
+@pytest.mark.parametrize(
+    ("intent", "expected"), [("INTERRUPT", AiJobStatus.INTERRUPTED), ("CANCEL", AiJobStatus.CANCELLED)]
+)
+def test_reaper_uses_the_persisted_stop_intent(monkeypatch, intent, expected):
+    factory = _session_factory()
+    with factory() as db:
+        _owned_job(db, status=AiJobStatus.TERMINATING, cancel_requested=True)
+        db.get(SddAiJob, "convergence-job").context_json = {"termination_mode": intent}
+        db.commit()
+    patch_ai_job_db(monkeypatch, factory)
+
+    payload = ai_attempts.finish_termination_sync(
+        "convergence-job", "run-1", confirmed_dead=True, reason="WORKER_RESTART", failure_code="WORKER_RESTART"
+    )
+    assert payload["status"] == expected.value
+    with factory() as db:
+        job = db.get(SddAiJob, "convergence-job")
+        assert job.status == expected
+        assert job.context_json["termination_mode"] == intent
+        assert job.run_token is None
+
+
 def test_cancel_mode_still_converges_cancelled(monkeypatch):
     """CANCEL 模式行为不变：取消请求 + 死亡已证明 → CANCELLED。"""
     factory = _session_factory()

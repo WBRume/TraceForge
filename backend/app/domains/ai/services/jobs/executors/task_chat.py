@@ -198,6 +198,18 @@ async def on_engine_error(error_text: str, job_id: str) -> None:
 # ────────────────────────── HITL 确认投递 ──────────────────────────
 
 
+def _confirmation_engine(task_id: str, job_id: str | None) -> TaskAgentEngine | None:
+    engine = get_engine(task_id)
+    if engine is None or not engine.is_current():
+        return None
+    return engine if not job_id or str(engine.current_job_id or "") == str(job_id) else None
+
+
+async def confirmation_is_pending(*, task_id: str, interaction_id: str, job_id: str) -> bool | None:
+    engine = _confirmation_engine(task_id, job_id)
+    return await engine.confirmation_is_pending(interaction_id) if engine else None
+
+
 async def deliver_confirmation_response(
     *,
     task_id: str,
@@ -206,12 +218,8 @@ async def deliver_confirmation_response(
     job_id: str | None = None,
 ) -> bool:
     """Wake the already-running provider through the service boundary."""
-    engine = get_engine(task_id)
-    if engine is None or not engine.is_current():
-        return False
-    if job_id and str(engine.current_job_id or "") != str(job_id):
-        return False
-    return await engine.deliver_confirmation_response(interaction_id, response)
+    engine = _confirmation_engine(task_id, job_id)
+    return await engine.deliver_confirmation_response(interaction_id, response) if engine else False
 
 
 # ────────────────────────── 引擎接线与回合执行 ──────────────────────────
