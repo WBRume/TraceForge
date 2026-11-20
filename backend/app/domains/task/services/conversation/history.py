@@ -362,11 +362,11 @@ def serialize_history_messages(db, task, msg_query, workspace_id, task_id):
                 "reading_item_key": reading_item.item_key if reading_item is not None else None,
                 "reading_change_seq": str(int(reading_item.change_seq)) if reading_item is not None else None,
                 "undo_operation_id": pending_undo.operation_id
-                if pending_undo and msg.session_turn_id == recovery_turn_id and msg.role == "user"
+                if pending_undo and msg.session_turn_id == recovery_turn_id and msg.id in turn_index_by_message_id
                 else None,
                 "can_undo": bool(
                     getattr(msg.role, "value", msg.role) == "user"
-                    and msg.session_turn_id
+                    and msg.id in turn_index_by_message_id
                     and (
                         (not pending_undo and str(msg.session_turn_id) in active_turn_ids)
                         or msg.session_turn_id == recovery_turn_id

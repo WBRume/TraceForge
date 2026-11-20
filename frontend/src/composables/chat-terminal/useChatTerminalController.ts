@@ -40,6 +40,7 @@ export interface ChatTerminalBridge {
   annotations?: ContextAnnotations
   replacingAgentSession?: boolean
   agentSessionSendBlocked?: boolean
+  steeringJobId?: string
   currentTask: { id?: string; name?: string; status?: string } | null
   messages: any[]
   terminalLogs: any[]
@@ -62,6 +63,7 @@ export interface ChatTerminalBridge {
   formatToolInput: (value: unknown) => string
   startTask: () => Promise<boolean>
   sendChatContent: (content: string) => Promise<boolean>
+  sendSteeringContent?: (jobId: string, content: string) => Promise<boolean>
   initializeTaskWithReason: (reason?: string) => Promise<boolean>
   interruptCurrentRun: () => Promise<boolean>
   completeTaskNow: () => Promise<boolean>
@@ -213,13 +215,16 @@ export const useChatTerminalController = (vm: ChatTerminalBridge) => {
     appendEcho('info', `messages=${vm.messages.length} logs=${vm.terminalLogs.length}`)
   }
 
-  const runSend = async (text: string) => {
+  const runSend = async (text: string, steeringJobId?: string) => {
     const annotations = vm.replacingAgentSession ? undefined : vm.annotations?.snapshot()
     if (!text.trim() && !annotations?.items.length) {
       appendEcho('warning', vm.t('chat.cli_error_send_empty'))
       return
     }
-    const sent = await vm.sendChatContent(formatAnnotationMessage(text, annotations?.items || []))
+    const content = formatAnnotationMessage(text, annotations?.items || [])
+    const sent = steeringJobId
+      ? await vm.sendSteeringContent?.(steeringJobId, content)
+      : await vm.sendChatContent(content)
     if (sent && annotations) vm.annotations?.consume(annotations)
     if (!sent) {
       appendEcho('warning', vm.t('chat.cli_error_send_rejected'))
@@ -232,7 +237,8 @@ export const useChatTerminalController = (vm: ChatTerminalBridge) => {
       return
     }
 
-    const isBlocked = vm.engineRunning && !RUNNING_ALLOWED_COMMANDS.has(parsed.command)
+    const steeringJobId = parsed.command === 'send' ? vm.steeringJobId : undefined
+    const isBlocked = vm.engineRunning && !RUNNING_ALLOWED_COMMANDS.has(parsed.command) && !steeringJobId
     if (isBlocked) {
       appendEcho('warning', vm.t('chat.cli_running_blocked'))
       return
@@ -281,7 +287,7 @@ export const useChatTerminalController = (vm: ChatTerminalBridge) => {
         const payload = parsed.raw.startsWith('/')
           ? extractCommandPayload(parsed.raw, 'send')
           : parsed.raw
-        await runSend(payload)
+        await runSend(payload, steeringJobId)
         break
       }
       case 'init': {

@@ -48,6 +48,9 @@ def build_search_projection(source, kind):
     elif kind == "message":
         # Execution records are not knowledge sources until the owning job succeeds.
         meta = source.metadata_json or {}
+        steering = meta.get("steering")
+        if isinstance(steering, dict) and steering.get("status") != "delivered":
+            return None
         if meta.get("submission_id") and meta.get("knowledge_state") != "published":
             return None
         role, message_type = value(source.role), value(source.message_type)

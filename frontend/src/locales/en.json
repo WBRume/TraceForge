@@ -940,6 +940,15 @@
     "hitl_answer_done": "Completed",
     "ai_job_failed_default": "AI job failed",
     "message_failed": "This message could not be completed",
+    "steering": {
+      "label": "Steering",
+      "placeholder": "Add an instruction for the agent’s next step",
+      "send": "Steer current run",
+      "pending": "Waiting for the agent’s next step",
+      "not_delivered": "Delivery to this run could not be confirmed",
+      "run_changed": "The active run changed. Check the conversation before sending again.",
+      "send_failed": "Could not send the steering instruction"
+    },
     "stage_step": "Stage {index}: {timestamp}",
     "temporary_interrupt_desc": "Stop the current execution, keep session context, and continue later.",
     "temporary_interrupt_reason": "User temporarily interrupted the current AI session",

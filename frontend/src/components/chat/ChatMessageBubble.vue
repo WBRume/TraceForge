@@ -15,6 +15,7 @@ import { readMessageSelection } from '@/composables/chat/annotations/messageSele
 import { diagnosisPayloadFromMessage } from '@/types/diagnosis'
 import type { ChatDecisionPayload } from '@/composables/useChatDecision'
 import { confirmationHistoryRecord, confirmationHistoryText } from '@/composables/chat/message/confirmationHistory'
+import { steeringStatus } from '@/composables/chat/shared/messageIdentity'
 
 const props = defineProps<{
   msg: Record<string, any>
@@ -74,7 +75,7 @@ const canCopyMessage = computed(() => {
 
 const canUndoMessage = computed(() => Boolean(props.vm?.canUndoMessage?.(props.msg)))
 const isUndoingMessage = computed(() => String(props.vm?.undoingMessageId || '') === String(props.msg?.id || ''))
-const showUndoAction = computed(() => canUndoMessage.value || isUndoingMessage.value)
+const showUndoAction = computed(() => !steeringStatus(props.msg) && (canUndoMessage.value || isUndoingMessage.value))
 
 function handleUndoMessage() {
   if (!canUndoMessage.value || isUndoingMessage.value || Boolean(props.vm?.isUndoing)) return

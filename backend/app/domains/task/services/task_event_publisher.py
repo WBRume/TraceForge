@@ -120,13 +120,21 @@ async def publish_once() -> int:
     ):
         error_code: str | None = None
         try:
+            event_type = payload.get("event_type")
+            # The outbox uses event_type to route flat chat records. The
+            # WebSocket chat payload has a strict schema without that field.
+            body = (
+                {key: value for key, value in payload.items() if key != "event_type"}
+                if event_type == "chat_message"
+                else payload
+            )
             # Sequenced publish into the room journal; delivered==0 with no
             # subscribers still counts as success because the journal keeps it.
             await manager.send_message_to_room(
                 task_id,
                 WSMessage(
-                    type=payload["event_type"]
-                    if payload.get("event_type")
+                    type=event_type
+                    if event_type
                     in {
                         "share_suggestion_update",
                         "workspace_collaboration_update",
@@ -136,7 +144,7 @@ async def publish_once() -> int:
                         "task_status_changed",
                     }
                     else "chat_submission_update",
-                    payload=payload,
+                    payload=body,
                 ),
             )
             published += 1

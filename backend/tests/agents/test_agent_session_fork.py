@@ -456,6 +456,41 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
 
 
 class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
+    async def test_steering_is_admitted_into_the_observed_turn(self):
+        from app.agents.adapters.dsh.text_events import DshTextEvents
+        from app.agents.errors import AgentSteeringClosedError
+
+        adapter = DshServerAdapter("http://mock:3080")
+        adapter._running = True
+        adapter._session_id = "session-id"
+        adapter._prompt_request_id = "initial-request"
+        delivered = mock.AsyncMock()
+        adapter._on_steering_delivered = delivered
+        text_events, sink = DshTextEvents(), mock.AsyncMock()
+        await adapter._publish_session_event(
+            {"type": "user/message", "data": {"source": {"rpcId": "initial-request"}}}, text_events, sink
+        )
+        requests = mock.AsyncMock(side_effect=[{"running": True}, {"accepted": True}])
+        with mock.patch.object(adapter, "_rpc", requests):
+            await adapter.steer("message-id", "Change the next step")
+            await adapter._publish_session_event(
+                {"type": "user/message", "data": {"source": {"rpcId": "tf-steer-message-id"}}}, text_events, sink
+            )
+            await adapter._publish_session_event({"type": "turn/end"}, text_events, sink)
+            with self.assertRaises(AgentSteeringClosedError):
+                await adapter.steer("late", "This turn is closed")
+
+        requests.assert_awaited_with(
+            "session.prompt",
+            {
+                "requestId": "tf-steer-message-id",
+                "sessionId": "session-id",
+                "mode": "steer",
+                "content": [{"type": "text", "text": "Change the next step"}],
+            },
+        )
+        delivered.assert_awaited_once_with("message-id")
+
     async def test_rpc_envelope_and_business_error(self):
         from httpx import AsyncClient, MockTransport, Response
 

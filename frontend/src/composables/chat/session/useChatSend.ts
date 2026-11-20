@@ -19,6 +19,7 @@ import { formatAnnotationMessage } from '../annotations/contextAnnotations'
  * 3. 其余 → WebSocket 直发。
  */
 export function useChatSend(options: {
+  getSteeringJobId?: () => string
   agentSessionSendBlocked?: () => boolean
   replacingAgentSession?: () => boolean
   onAgentSessionUnavailable?: (taskId: string) => void
@@ -73,6 +74,7 @@ export function useChatSend(options: {
 
   const chatInput = ref('')
   const sendingChat = ref(false)
+  let unconfirmedSteering: { jobId: string; taskId: string; content: string; clientMessageId: string } | undefined
   const chatInputPlaceholder = computed(() => {
     if (!options.suggestionOnly?.() && options.resourceBlocked?.()) return '本地资源未连接，恢复在线后可发送消息'
     if (options.suggestionOnly?.()) return '输入建议，提交后由任务创建者采纳'
@@ -240,7 +242,49 @@ export function useChatSend(options: {
     }
   }
 
-  const sendChat = async () => {
+  const sendSteeringContent = async (jobId: string, content: string): Promise<boolean> => {
+    const taskId = options.getTaskId()
+    const workspaceId = options.getWorkspaceId()
+    if (!content.trim() || !taskId || sendingChat.value || options.isUndoing()
+      || options.collaborationBlocked?.() || options.agentSessionSendBlocked?.()) return false
+    if (options.isHistoryAnchored()) await options.returnToLatest()
+    if (options.getTaskId() !== taskId || options.getWorkspaceId() !== workspaceId) return false
+    if (jobId !== options.getSteeringJobId?.()) {
+      ElMessage.warning(t('chat.steering.run_changed'))
+      return false
+    }
+    const previous = unconfirmedSteering
+    const clientMessageId = previous?.jobId === jobId && previous.taskId === taskId && previous.content === content
+      ? previous.clientMessageId : generateClientMessageId()
+    const revision = options.task.getCurrentTask()?.session_revision
+    unconfirmedSteering = { jobId, taskId, content, clientMessageId }
+    options.noteSentTime(clientMessageId)
+    sendingChat.value = true
+    try {
+      const { data } = await api.post(`/workspaces/${workspaceId}/tasks/${taskId}/chat-steering`, {
+        content, job_id: jobId, client_message_id: clientMessageId,
+      })
+      unconfirmedSteering = undefined
+      if (options.getTaskId() === taskId && options.getWorkspaceId() === workspaceId
+        && options.task.getCurrentTask()?.session_revision === revision) {
+        options.messages.upsert({ ...data, streaming: false, delivery_status: 'sent' })
+        if (!options.isHistoryAnchored()) options.scrollTo('chat')
+      }
+      return true
+    } catch (error) {
+      const response = (error as { response?: { status?: number } })?.response
+      if (response?.status && response.status < 500) unconfirmedSteering = undefined
+      if (options.getTaskId() === taskId && options.getWorkspaceId() === workspaceId) {
+        ElMessage.error(formatApiError(error, t('chat.steering.send_failed'), t))
+        if (unconfirmedSteering) void options.recoverSession('steering-unknown')
+      }
+      return false
+    } finally {
+      sendingChat.value = false
+    }
+  }
+
+  const sendComposer = async (steeringJobId?: string) => {
     const annotations = options.replacingAgentSession?.() ? undefined : options.annotations?.snapshot()
     if (!chatInput.value.trim() && !annotations?.items.length) return
     const content = chatInput.value
@@ -248,7 +292,8 @@ export function useChatSend(options: {
     // The submission bubble owns this text during the request. Clearing now
     // also prevents a slow response from carrying the sent prompt into another task.
     chatInput.value = ''
-    const sent = await sendChatContent(formatAnnotationMessage(content, annotations?.items || []))
+    const prompt = formatAnnotationMessage(content, annotations?.items || [])
+    const sent = steeringJobId ? await sendSteeringContent(steeringJobId, prompt) : await sendChatContent(prompt)
     if (sent && annotations) options.annotations?.consume(annotations)
     if (!sent && options.getTaskId() === taskId && !chatInput.value) {
       chatInput.value = content
@@ -299,7 +344,9 @@ export function useChatSend(options: {
     chatInput,
     sendingChat,
     chatInputPlaceholder,
-    sendChat,
+    sendChat: () => sendComposer(),
+    sendSteeringChat: (jobId: string) => sendComposer(jobId),
+    sendSteeringContent,
     sendChatContent,
     submitHitl,
     sendVerification,

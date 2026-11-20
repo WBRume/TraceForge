@@ -825,6 +825,29 @@ async def test_publisher_relays_outbox_and_backs_off(task_db, recovery_env, monk
 
 
 @pytest.mark.asyncio
+async def test_publisher_keeps_chat_routing_field_out_of_the_message(task_db, recovery_env, monkeypatch):
+    from app.domains.task.services import task_event_publisher as publisher
+    from app.domains.websocket.ws.manager import manager
+
+    payload = {"task_id": "t", "role": "user", "content": "Next step"}
+    task_db.add(
+        TaskEventOutbox(
+            event_id="steering-test",
+            task_id="t",
+            payload_json={"event_type": "chat_message", **payload},
+        )
+    )
+    task_db.commit()
+    send = AsyncMock()
+    monkeypatch.setattr(manager, "send_message_to_room", send)
+
+    assert await publisher.publish_once() == 1
+    _, message = send.await_args.args
+    assert message.type == "chat_message"
+    assert message.payload == payload
+
+
+@pytest.mark.asyncio
 async def test_convergence_finalizes_receipt_in_same_transaction(task_db, monkeypatch):
     from app.domains.ai.services import ai_job_convergence_service as convergence
 

@@ -24,6 +24,7 @@ from app.agents import (
     AgentAttemptContext,
     AgentBackend,
     AgentEvent,
+    AgentRunRequest,
     AgentRunResult,
     AgentStopResult,
     AgentTimeoutError,
@@ -31,7 +32,7 @@ from app.agents import (
     record_attempt_remote_session_started,
     record_attempt_remote_stop,
 )
-from app.agents.errors import AgentExecutionDetached
+from app.agents.errors import AgentExecutionDetached, AgentSteeringClosedError
 from app.agents.run_logging import run_agent_backend_with_logging
 from app.agents.tool_activity import ToolActivityTracker
 from app.config import settings
@@ -279,6 +280,37 @@ class TaskAgentEngine:
             await self.frontend.push_status("RUNNING", "继续执行")
         return True
 
+    def can_steer(self, job_id: str) -> bool:
+        return bool(
+            self.current_job_id == job_id
+            and self.running
+            and self.session_id
+            and not self._interrupt_requested
+            and not self.last_result
+            and self.is_current()
+            and isinstance(self.cli, AgentBackend)
+            and self.cli.accepts_steering()
+        )
+
+    async def steer(self, job_id: str, message_id: str, content: str) -> None:
+        if not self.can_steer(job_id):
+            raise AgentSteeringClosedError("The task execution has changed")
+        await self.cli.steer(message_id, content)
+
+    async def _on_steering_delivered(self, message_id: str) -> None:
+        if self.current_job_id and self.is_current():
+            from app.domains.task.services.chat_steering_service import mark_delivered
+
+            await mark_delivered(self.current_job_id, message_id)
+
+    def _configure_run_request(self, request: AgentRunRequest, recovery: dict | None) -> None:
+        if self.cli.name == "opencode" and self.attempt is not None:
+            request.execution_checkpoint = dict(recovery or {})
+            request.on_execution_checkpoint = self._save_execution_checkpoint
+        if self.cli.capabilities.supports_steering and self.current_job_id:
+            request.on_steering_delivered = self._on_steering_delivered
+        request.provider_options["additional_workspace_directories"] = self.additional_workspace_directories
+
     # ─────────────── 主执行流程 ───────────────
 
     def _reset_turn_state(self) -> None:
@@ -411,10 +443,7 @@ class TaskAgentEngine:
                         attempt=self.attempt,
                         on_process_started=self._on_process_started,
                     )
-                    if self.cli.name == "opencode" and self.attempt is not None:
-                        request.execution_checkpoint = dict(recovery or {})
-                        request.on_execution_checkpoint = self._save_execution_checkpoint
-                    request.provider_options["additional_workspace_directories"] = self.additional_workspace_directories
+                    self._configure_run_request(request, recovery)
                     result = await run_agent_backend_with_logging(
                         self.cli,
                         request,

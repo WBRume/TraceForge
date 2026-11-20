@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, Search, ShieldCheck, Send, X, Loader2, Square } from '@/components/icons'
+import { ChatBubblePlusIcon, Check, Search, ShieldCheck, Send, X, Loader2, Square } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import AgentModelSelect from '@/components/agent/AgentModelSelect.vue'
 import type { AgentModelOption } from '@/composables/useAgentModels'
@@ -28,6 +28,7 @@ const props = defineProps<{
   disabled: boolean
   sendBlocked?: boolean
   running: boolean
+  steeringJobId?: string
   canInterrupt: boolean
   interrupting: boolean
   placeholder: string
@@ -47,6 +48,7 @@ const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
   (e: 'update:preInputMode', value: boolean): void
   (e: 'submit'): void
+  (e: 'steer', jobId: string): void
   (e: 'update:selectedModel', value: string): void
   (e: 'reload-models'): void
   (e: 'interrupt'): void
@@ -111,22 +113,41 @@ const onTextareaInput = (event: Event) => {
   emit('update:modelValue', value)
 }
 
-const canSend = computed(() => Boolean(props.modelValue.trim() || annotations?.items.value.length) && !props.disabled && !props.sendBlocked && !speechBusy.value)
+const hasInput = computed(() => Boolean(props.modelValue.trim() || annotations?.items.value.length))
+const primaryAction = computed(() => {
+  if (!props.running) return 'send'
+  return props.steeringJobId && hasInput.value && !props.interrupting ? 'steer' : 'stop'
+})
+const canSubmit = computed(() => hasInput.value && primaryAction.value !== 'stop'
+  && !props.disabled && !props.sendBlocked && !speechBusy.value)
+const primaryActionDisabled = computed(() => primaryAction.value === 'stop'
+  ? !props.canInterrupt || props.interrupting
+  : !canSubmit.value)
+const primaryActionTitle = computed(() => {
+  if (primaryAction.value === 'stop') return props.interruptTitle
+  if (primaryAction.value === 'steer') return t('chat.steering.send')
+  return isPreInput.value ? t('preInput.start_button') : props.sendTitle
+})
 
 const handleKeydown = (event: KeyboardEvent) => {
   if (event.isComposing) return
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
-    if (!canSend.value || props.running) return
-    if (props.preInputMode) emit('start-pre-input', buildPreInputPayload())
-    else emit('submit')
+    submitInput()
   }
 }
 
-const handleSendClick = () => {
-  if (!canSend.value) return
-  if (props.preInputMode) emit('start-pre-input', buildPreInputPayload())
+const submitInput = () => {
+  if (!canSubmit.value) return
+  if (primaryAction.value === 'steer' && props.steeringJobId) emit('steer', props.steeringJobId)
+  else if (props.preInputMode) emit('start-pre-input', buildPreInputPayload())
   else emit('submit')
+}
+
+const activatePrimaryAction = () => {
+  if (primaryActionDisabled.value) return
+  if (primaryAction.value === 'stop') emit('interrupt')
+  else submitInput()
 }
 
 // ── 协作预输入模式 ──
@@ -403,34 +424,25 @@ defineExpose({ resetPreInputForm, focusInput })
         />
         <SpeechInputButton v-if="speechAvailable" ref="speechButtonRef" :disabled="props.disabled || props.running"
           :context-key="props.contextKey || ''" @transcript="insertTranscript" @busy="setSpeechBusy" />
-        <!-- 主按钮：运行中切换为停止（替换发送位置，带过渡动效） -->
-        <Transition name="action-swap" mode="out-in">
-          <button
-            v-if="props.running"
-            key="stop"
-            type="button"
-            class="stop-btn"
-            :class="{ 'is-interrupting': props.interrupting }"
-            :disabled="!props.canInterrupt || props.interrupting"
-            :title="props.interruptTitle"
-            @click="emit('interrupt')"
-          >
+        <button
+          type="button"
+          class="primary-action-btn"
+          :class="[`${primaryAction}-btn`, {
+            'is-interrupting': primaryAction === 'stop' && props.interrupting,
+            'is-preinput': primaryAction === 'send' && isPreInput,
+          }]"
+          :disabled="primaryActionDisabled"
+          :aria-label="primaryActionTitle"
+          :title="primaryActionTitle"
+          @click="activatePrimaryAction"
+        >
+          <template v-if="primaryAction === 'stop'">
             <Loader2 v-if="props.interrupting" :size="16" class="spin" />
             <Square v-else :size="13" class="stop-icon" />
-          </button>
-          <button
-            v-else
-            key="send"
-            type="button"
-            class="send-btn"
-            :class="{ 'is-preinput': isPreInput }"
-            :disabled="!canSend"
-            :title="isPreInput ? $t('preInput.start_button') : props.sendTitle"
-            @click="handleSendClick"
-          >
-            <Send :size="16" />
-          </button>
-        </Transition>
+          </template>
+          <ChatBubblePlusIcon v-else-if="primaryAction === 'steer'" :size="16" />
+          <Send v-else :size="16" />
+        </button>
       </div>
       <slot name="status" />
     </div>
@@ -821,55 +833,58 @@ defineExpose({ resetPreInputForm, focusInput })
   height: 13px;
 }
 
-/* ── 发送按钮：圆形 ── */
-.send-btn {
-  border: none;
+.primary-action-btn {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: var(--color-primary-500, #0EA5E9);
-  color: #fff;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   flex: 0 0 auto;
+}
+
+.primary-action-btn:focus-visible {
+  outline: 2px solid var(--color-primary-700, #0369A1);
+  outline-offset: 2px;
+}
+
+.primary-action-btn:disabled {
+  cursor: not-allowed;
+}
+
+.send-btn,
+.steer-btn {
+  border: none;
+  background: var(--color-primary-500, #0EA5E9);
+  color: #fff;
+}
+
+.send-btn {
   transition: background var(--transition-fast), opacity var(--transition-fast);
 }
 
-.send-btn:hover:not(:disabled) {
+.send-btn:hover:not(:disabled),
+.steer-btn:hover:not(:disabled) {
   background: var(--color-primary-600, #0284C7);
 }
 
-.send-btn:disabled {
+.send-btn:disabled,
+.steer-btn:disabled {
   opacity: 0.45;
-  cursor: not-allowed;
 }
 
 .send-btn.is-preinput {
   background: var(--color-primary-600, #0284C7);
 }
 
-.send-btn svg {
-  width: 16px;
-  height: 16px;
-}
-
 /* ── 停止按钮：运行中替换发送位置，呼吸动效提示可中断 ── */
 .stop-btn {
   position: relative;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
   background: #fff;
   color: #B91C1C;
   border: 1px solid #FECACA;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  flex: 0 0 auto;
-  transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
+  transition: transform var(--transition-fast);
   animation: stop-breathe 1.8s ease-in-out infinite;
 }
 
@@ -884,7 +899,6 @@ defineExpose({ resetPreInputForm, focusInput })
 }
 
 .stop-btn:disabled {
-  cursor: not-allowed;
   opacity: 0.75;
   animation: none;
 }
@@ -905,22 +919,6 @@ defineExpose({ resetPreInputForm, focusInput })
   50% {
     box-shadow: 0 0 0 6px rgba(185, 28, 28, 0);
   }
-}
-
-/* ── 发送 ↔ 停止 切换动效 ── */
-.action-swap-enter-active,
-.action-swap-leave-active {
-  transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.18s ease;
-}
-
-.action-swap-enter-from {
-  transform: scale(0.5) rotate(-90deg);
-  opacity: 0;
-}
-
-.action-swap-leave-to {
-  transform: scale(0.5) rotate(90deg);
-  opacity: 0;
 }
 
 .spin {

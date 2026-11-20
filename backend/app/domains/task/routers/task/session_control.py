@@ -28,9 +28,11 @@ from app.domains.task.schemas.context_token import ContextWindowResponse
 from app.domains.task.schemas.task import (
     TaskInterruptRequest,
     TaskResumeInterruptedRequest,
+    TaskSteeringRequest,
     TaskUndoMessageRequest,
 )
 from app.domains.task.services import (
+    chat_steering_service,
     chat_submission_service,
     context_token_service,
     pre_input_service,
@@ -255,6 +257,34 @@ async def submit_chat(
         raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
     except chat_submission_service.SubmissionError as exc:
         raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.post("/{task_id}/chat-steering", status_code=202)
+async def steer_task_chat(
+    ws_id: str,
+    task_id: str,
+    body: TaskSteeringRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    actor_id = str(current_user.id)
+    bind = get_db_bind(db)
+    await run_route_db_txn(db, bind, lambda session: verify_workspace_access(ws_id, actor_id, session))
+    db.close()
+    try:
+        return await chat_steering_service.submit(
+            ws_id=ws_id,
+            task_id=task_id,
+            actor_id=actor_id,
+            job_id=body.job_id,
+            client_id=body.client_message_id,
+            content=body.content,
+            run_txn=partial(run_db_txn_with_bind, bind),
+        )
+    except chat_submission_service.SubmissionError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
+    except LockAcquireTimeout as exc:
+        raise_task_lock_conflict(exc)
 
 
 @router.get("/{task_id}/session-state")

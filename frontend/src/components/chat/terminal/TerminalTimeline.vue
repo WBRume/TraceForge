@@ -75,7 +75,9 @@ const isHighlightedLog = (entry: TerminalTimelineEntry): boolean => (
 
       <div v-else-if="entry.kind === 'message'" :class="resolveMessageClasses(entry)" @mouseup="selectForAnnotation($event, entry)" @keyup="selectForAnnotation($event, entry)">
         <div class="line-meta">
-          <span class="meta-title message-role">{{ entry.role }}</span>
+          <span class="meta-title message-role">{{ entry.steering ? props.t('chat.steering.label') : entry.role }}</span>
+          <span v-if="entry.steering === 'pending'" class="meta-time">{{ props.t('chat.steering.pending') }}</span>
+          <span v-if="entry.steering === 'failed'" class="meta-time">{{ props.t('chat.steering.not_delivered') }}</span>
           <span class="meta-time">{{ props.formatTime(entry.createdAt) }}</span>
         </div>
         <ConfirmationHistory v-if="entry.confirmation" :record="entry.confirmation" appearance="terminal" />

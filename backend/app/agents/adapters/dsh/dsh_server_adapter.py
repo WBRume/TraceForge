@@ -40,11 +40,15 @@ from app.agents.contract import (
     AgentStopResult,
     TokenUsage,
 )
-from app.agents.errors import AgentError, AgentTimeoutError, SessionForkError
+from app.agents.errors import AgentError, AgentSteeringClosedError, AgentTimeoutError, SessionForkError
 from app.agents.events import AgentEvent
 from app.agents.http_transport import agent_ssl_context
 from app.agents.tool_activity import mcp_tool_fields, wire_event_time
 from app.config import settings
+from app.core.logging import get_logger
+
+STEERING_REQUEST_PREFIX = "tf-steer-"
+logger = get_logger(__name__, category="ai_session")
 
 
 def _format_dsh_model(provider: Any, model: Any) -> str | None:
@@ -226,6 +230,7 @@ class DshServerAdapter(AgentBackend):
         supports_tool_events=True,
         supports_tool_binding=False,
         supports_fork=True,  # 文件级 fork（session_files）
+        supports_steering=True,
         hitl_modes=["turn_based", "long_connection"],
         supports_usage=True,
         skill_layouts=["dsh"],
@@ -252,6 +257,11 @@ class DshServerAdapter(AgentBackend):
         self._session_id: str | None = None
         self._pending_asks: dict[str, dict[str, Any]] = {}
         self._gateway_protocol: bool | None = None
+        self._prompt_request_id: str | None = None
+        self._steering_open = False
+        self._on_steering_delivered = None
+        self._steering_lock = asyncio.Lock()
+        self._pending_steering: set[str] = set()
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         from app.core.feature_settings import feature_settings
@@ -528,8 +538,17 @@ class DshServerAdapter(AgentBackend):
                     )
                 )
 
-    @staticmethod
-    async def _publish_session_event(event: dict, text_events: DshTextEvents, on_event: AgentEventSink) -> None:
+    async def _publish_session_event(self, event: dict, text_events: DshTextEvents, on_event: AgentEventSink) -> None:
+        if event.get("type") == "turn/end":
+            await self._close_steering()
+        elif event.get("type") == "user/message":
+            data = event.get("data") or {}
+            request_id = str((data.get("source") or {}).get("rpcId") or "")
+            if request_id and request_id == self._prompt_request_id:
+                self._steering_open = True
+            elif self._steering_open and request_id.startswith(STEERING_REQUEST_PREFIX) and self._on_steering_delivered:
+                await self._on_steering_delivered(request_id.removeprefix(STEERING_REQUEST_PREFIX))
+                self._pending_steering.discard(request_id)
         for unified in text_events.project(event, map_dsh_event(event)):
             await on_event(unified)
 
@@ -704,15 +723,87 @@ class DshServerAdapter(AgentBackend):
 
         request_id = f"tf-{uuid.uuid4().hex}"
         await record_dsh_prompt(session_id, request_id)
+        self._prompt_request_id = request_id
+        return await self._submit_prompt(session_id, request_id, prompt_text, mode="queue")
+
+    async def _submit_prompt(self, session_id, request_id, prompt_text, *, mode):
         return await self._rpc(
             "session.prompt",
             {
                 "requestId": request_id,
                 "sessionId": session_id,
-                "mode": "queue",
+                "mode": mode,
                 "content": [{"type": "text", "text": prompt_text}],
             },
         )
+
+    async def steer(self, message_id: str, content: str) -> None:
+        async with self._steering_lock:
+            session_id = self._session_id
+            if not self.accepts_steering() or not session_id:
+                raise AgentSteeringClosedError("DSH is outside the active prompt")
+            state = await self._rpc("session.state", {"sessionId": session_id})
+            if not self.accepts_steering() or state.get("running") is not True:
+                raise AgentSteeringClosedError("DSH is outside the active prompt")
+            request_id = STEERING_REQUEST_PREFIX + message_id
+            self._pending_steering.add(request_id)
+            receipt = await self._submit_prompt(session_id, request_id, content, mode="steer")
+            if receipt.get("accepted") is not True:
+                raise AgentError("DSH steering acceptance could not be confirmed")
+
+    def accepts_steering(self) -> bool:
+        return self._running and self._steering_open and self._session_id is not None
+
+    async def _close_steering(self) -> None:
+        self._steering_open = False
+        async with self._steering_lock:
+            if not self._pending_steering or not self._session_id:
+                return
+            session_id = self._session_id
+            try:
+                async with asyncio.timeout(5):
+                    await self._clear_late_steering(session_id)
+            except (AgentError, httpx.HTTPError, TimeoutError, OSError) as exc:
+                logger.warning(
+                    "Could not clear pending DSH steering: session={}, error={}", session_id, type(exc).__name__
+                )
+
+    async def _clear_late_steering(self, session_id: str) -> None:
+        """Clean up outstanding input if the native turn ended during admission."""
+        state = await self._rpc("session.state", {"sessionId": session_id})
+        for item in state.get("queue") or []:
+            if item.get("rpcId") in self._pending_steering:
+                await self._rpc(
+                    "session.updateQueue",
+                    {
+                        "sessionId": session_id,
+                        "itemId": item["id"],
+                        "action": {"kind": "remove"},
+                    },
+                )
+        if state.get("running"):
+            page = await self._rpc(
+                "session.events",
+                {
+                    "address": {"kind": "session", "sessionId": session_id},
+                    "maxMessages": 50,
+                },
+            )
+            # A steer on an idle DSH session can wake a native turn. Only stop
+            # it if the first input of the still-open turn is our late request.
+            first_request = None
+            for record in reversed(page.get("records", [])):
+                event = record.get("event") or {}
+                if event.get("type") == "turn/end":
+                    break
+                if event.get("type") == "turn/start":
+                    if first_request in self._pending_steering:
+                        await self._stop_session(session_id)
+                    break
+                if event.get("type") == "user/message":
+                    source = (event.get("data") or {}).get("source") or {}
+                    if source.get("kind") != "runtime-context":
+                        first_request = source.get("rpcId")
 
     async def _run_stream_turn(
         self, session_id: str, request: AgentRunRequest, watchdog: AgentActivityWatchdog, on_event: AgentEventSink
@@ -767,6 +858,10 @@ class DshServerAdapter(AgentBackend):
         await self._ensure_client()
         self._running = True
         self._pending_asks.clear()
+        self._prompt_request_id = None
+        self._steering_open = False
+        self._on_steering_delivered = request.on_steering_delivered
+        self._pending_steering.clear()
         started_at = time.monotonic()
         watchdog = AgentActivityWatchdog(
             startup_timeout_seconds=request.startup_timeout_seconds,
@@ -818,6 +913,8 @@ class DshServerAdapter(AgentBackend):
             raise AgentError(f"DSH server run failed: {exc}") from exc
         finally:
             self._running = False
+            self._steering_open = False
+            self._on_steering_delivered = None
 
     async def interrupt(self, run_id: str | None = None) -> AgentStopResult:
         """Remote interrupt: only a successful ``session.cancel`` RPC response
@@ -833,6 +930,8 @@ class DshServerAdapter(AgentBackend):
         from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
         from app.domains.ai.services.jobs.agent_dispatch import verify_bound_stop
 
+        if sid == self._session_id:
+            self._steering_open = False
         if not sid:
             return AgentStopResult(
                 execution_kind=EXECUTION_KIND_REMOTE_SESSION,

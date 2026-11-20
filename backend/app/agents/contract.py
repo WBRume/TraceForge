@@ -693,6 +693,7 @@ class AgentRunRequest:
     # Private, durable remote execution locator; never a new prompt on reattach.
     execution_checkpoint: dict[str, Any] = field(default_factory=dict)
     on_execution_checkpoint: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+    on_steering_delivered: Callable[[str], Awaitable[None]] | None = None
     # 显式执行类别（doc 7 数据流链路）：与 backend capability 声明一致，
     # 由 bridge/engine 填充；不得通过“是否有本地 PID”推断。
     execution_kind: ExecutionKind = EXECUTION_KIND_LOCAL_PROCESS
@@ -742,6 +743,7 @@ class AgentCapabilities:
     supports_tool_binding: bool = True
     # 是否支持把既有会话 fork 成独立新会话（baseline 复制上下文给评审线程）
     supports_fork: bool = False
+    supports_steering: bool = False
     hitl_modes: list[Literal["turn_based", "long_connection"]] = field(default_factory=list)
     supports_usage: bool = True
     skill_layouts: list[str] = field(default_factory=list)
@@ -822,6 +824,16 @@ class AgentBackend(ABC):
     async def respond_to_ask_user(self, ask_user_id: str, response: str) -> None:
         """可选：长连接 HITL 模式下回传用户回复。"""
         raise AgentError("HITL response not supported")
+
+    async def steer(self, message_id: str, content: str) -> None:
+        """Admit a user instruction at the next step of the active run."""
+        from app.agents.errors import AgentSteeringClosedError
+
+        raise AgentSteeringClosedError("Steering is unavailable")
+
+    def accepts_steering(self) -> bool:
+        """Whether the primary prompt has reached a live provider run."""
+        return False
 
     async def probe(self) -> str:
         """轻量连通性探测：确认 Agent 底座可接入。

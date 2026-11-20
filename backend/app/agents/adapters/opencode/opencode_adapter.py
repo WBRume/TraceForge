@@ -30,6 +30,7 @@ from app.agents.errors import (
     AgentError,
     AgentExecutionDetached,
     AgentInteractionClosedError,
+    AgentSteeringClosedError,
     AgentTimeoutError,
     SessionForkError,
 )
@@ -62,6 +63,7 @@ class OpenCodeAdapter(AgentBackend):
         supports_streaming_text=True,
         supports_tool_events=True,
         supports_fork=True,
+        supports_steering=True,
         hitl_modes=["turn_based", "long_connection"],
         supports_usage=True,
         skill_layouts=["opencode"],
@@ -280,6 +282,14 @@ class OpenCodeAdapter(AgentBackend):
 
     async def _send_prompt(self, session_id: str, request: AgentRunRequest) -> None:
         client = await self._ensure_client()
+        if request.session_id and request.on_steering_delivered:
+            from .execution import STEERING_PREFIX
+
+            inbox = await client.get(self._session_url(session_id, "/inbox"))
+            inbox.raise_for_status()
+            await self._remove_pending_steers(
+                session_id, {row["id"] for row in inbox.json()["data"] if row["id"].startswith(STEERING_PREFIX)}
+            )
         prompt_text = request.prompt
         normalized_mode = str(request.permission_mode or "").strip().lower()
         if normalized_mode in {"read-only", "readonly"}:
@@ -360,6 +370,22 @@ class OpenCodeAdapter(AgentBackend):
             raise AgentExecutionDetached("OpenCode returned a different input ID; submission must be reconciled")
         self._user_message_id = str(data["id"])
         self._message_ids.add(self._user_message_id)
+
+    async def _remove_pending_steers(self, session_id: str, provider_ids: set[str]) -> None:
+        client = await self._ensure_client()
+        for provider_id in provider_ids:
+            response = await client.delete(self._session_url(session_id, "/inbox/" + provider_id), timeout=5)
+            response.raise_for_status()
+
+    async def steer(self, message_id: str, content: str) -> None:
+        monitor = self._execution_monitor
+        if not self._running or not monitor or self._interrupted:
+            raise AgentSteeringClosedError("OpenCode is outside the active prompt")
+        await monitor.steer(message_id, content)
+
+    def accepts_steering(self) -> bool:
+        monitor = self._execution_monitor
+        return bool(self._running and not self._interrupted and monitor and monitor.steering_open)
 
     @staticmethod
     def _model_ref(model: str) -> dict[str, str]:

@@ -10,6 +10,7 @@ export type ChatAiJob = {
   attempt_count?: number
   id: string
   task_id?: string | null
+  channel?: string
   task_snapshot?: import('@/utils/taskStatusProjection').TaskStatusSnapshot | null
   session_revision?: number | null
   creator_id?: string

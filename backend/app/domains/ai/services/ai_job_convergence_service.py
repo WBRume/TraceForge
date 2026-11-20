@@ -734,6 +734,10 @@ def _converge_task_status_in_txn(db: Session, job: SddAiJob, final_status: AiJob
         AiJobStatus.INTERRUPTED,
     }:
         return
+    if job.agent_backend in {"opencode", "dsh"}:
+        from app.domains.task.services.chat_steering_service import finalize_in_txn
+
+        finalize_in_txn(db, job)
     task = db.get(SddTask, job.task_id)
     if task:
         trigger = sm.Trigger.ROUND_FINISHED if final_status == AiJobStatus.SUCCESS else sm.Trigger.EXECUTION_INTERRUPTED

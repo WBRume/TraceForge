@@ -116,6 +116,44 @@ describe('ChatExecutionInput', () => {
     expect(wrapper.find('.stop-btn').exists()).toBe(true)
   })
 
+  it('uses the same button for Stop and Steer as the running draft changes', async () => {
+    const wrapper = mountInput({ running: true, steeringJobId: 'active-job', modelValue: ' ' })
+    const button = wrapper.get('button[aria-label="stop"]')
+    expect(wrapper.findAll('.primary-action-btn')).toHaveLength(1)
+    expect(wrapper.find('.steer-btn').exists()).toBe(false)
+
+    await pressEnter(wrapper)
+    expect(wrapper.emitted('interrupt')).toBeUndefined()
+    expect(wrapper.emitted('steer')).toBeUndefined()
+    await button.trigger('click')
+    expect(wrapper.emitted('interrupt')).toHaveLength(1)
+
+    await wrapper.setProps({ modelValue: 'Choose the next step' })
+    const steer = wrapper.get('button[aria-label="引导当前回合"]')
+    expect(steer.element).toBe(button.element)
+    expect(steer.find('svg').exists()).toBe(true)
+    expect(steer.text()).toBe('')
+    expect(wrapper.find('.stop-btn').exists()).toBe(false)
+    await pressEnter(wrapper)
+    await steer.trigger('click')
+    expect(wrapper.emitted('steer')).toEqual([['active-job'], ['active-job']])
+    expect(wrapper.emitted('submit')).toBeUndefined()
+
+    await wrapper.setProps({ modelValue: '' })
+    expect(wrapper.get('button[aria-label="stop"]').element).toBe(button.element)
+    expect(wrapper.find('.steer-btn').exists()).toBe(false)
+  })
+
+  it('keeps the Stop progress state when the current run is being interrupted', async () => {
+    const wrapper = mountInput({ running: true, steeringJobId: 'active-job', interrupting: true })
+
+    await pressEnter(wrapper)
+
+    expect(wrapper.get('button[aria-label="stop"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.emitted('steer')).toBeUndefined()
+    expect(wrapper.emitted('submit')).toBeUndefined()
+  })
+
   it('does not start the pre input collection on Enter while the engine is running', async () => {
     const wrapper = mountInput({
       running: true,

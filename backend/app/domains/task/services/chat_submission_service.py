@@ -52,6 +52,22 @@ class SubmissionError(ValueError):
         self.code, self.status_code = code, status_code
 
 
+def require_chat_actor(db, task, actor_id):
+    from app.domains.auth.models.user import WorkspacePermission
+    from app.domains.local_resource.client import ResourceError
+    from app.domains.local_resource.service import require_operation
+    from app.domains.workspace.services import workspace_service
+
+    if task.execution_location != "LOCAL" and not workspace_service.user_has_permission(
+        db, task.workspace_id, actor_id, WorkspacePermission.START_TASK
+    ):
+        raise SubmissionError("No permission to send messages in this task", "TASK_WRITE_FORBIDDEN", 403)
+    try:
+        require_operation(db, task, actor_id)
+    except ResourceError as exc:
+        raise SubmissionError(str(exc), exc.code, exc.status_code) from exc
+
+
 def serialize(row):
     return {
         "id": row.id,
@@ -139,19 +155,7 @@ def _existing_submission_sync(db, task_id, actor_id, client_id, content, metadat
     task = db.query(SddTask).filter(SddTask.id == task_id).with_for_update().one_or_none()
     if task is None:
         raise SubmissionError("Task not found", "TASK_NOT_FOUND", 404)
-    from app.domains.auth.models.user import WorkspacePermission
-    from app.domains.local_resource.client import ResourceError
-    from app.domains.local_resource.service import require_operation
-    from app.domains.workspace.services import workspace_service
-
-    if task.execution_location != "LOCAL" and not workspace_service.user_has_permission(
-        db, task.workspace_id, actor_id, WorkspacePermission.START_TASK
-    ):
-        raise SubmissionError("No permission to send messages in this task", "TASK_WRITE_FORBIDDEN", 403)
-    try:
-        require_operation(db, task, actor_id)
-    except ResourceError as exc:
-        raise SubmissionError(str(exc), exc.code, exc.status_code) from exc
+    require_chat_actor(db, task, actor_id)
     fingerprint = hashlib.sha256(
         json.dumps([content, metadata], sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
@@ -293,6 +297,7 @@ async def accept(*, task_id, actor_id, client_message_id, content, metadata=None
         "submission_id",
         "knowledge_state",
         "client_message_id",
+        "steering",
         "_collaboration_control",
         "_new_agent_session",
         "_agent_session_check_failed",

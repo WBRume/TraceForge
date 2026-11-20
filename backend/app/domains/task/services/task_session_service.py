@@ -70,6 +70,7 @@ def _new_chat_message(
     prompt_text: str | None = None,
     metadata_json: dict[str, Any] | None,
     session_generation: int,
+    message_id: str | None = None,
 ) -> ChatMessage:
     from app.domains.search.capture import allocate_chat_seq
 
@@ -77,6 +78,7 @@ def _new_chat_message(
     metadata = dict(metadata_json or {})
     metadata["order_index"] = order_index
     message = ChatMessage(
+        id=message_id,
         task_id=task_id,
         workspace_id=workspace_id,
         creator_id=actor_user_id,
@@ -129,7 +131,7 @@ def _chat_message_event_dto(db: Session, message: ChatMessage) -> dict[str, Any]
         "reading_change_seq": str(reading_info["change_seq"])
         if reading_info and reading_info.get("change_seq") is not None
         else None,
-        "can_undo": bool(message.session_turn_id),
+        "can_undo": bool(message.session_turn_id and not (metadata or {}).get("steering")),
     }
 
 
@@ -286,6 +288,7 @@ def _chat_turn_metadata(db, task, context_json, client_message_id, generation, r
     metadata.pop("_new_agent_session", None)
     metadata.pop("_agent_session_check_failed", None)
     metadata.pop("_agent_session_replacement_check", None)
+    metadata.pop("steering", None)
     if replacing:
         metadata.update(fresh_session=True, agent_service_replacement=True)
     try:
@@ -725,6 +728,8 @@ def _load_turn_target(
     message = db.query(ChatMessage).filter(ChatMessage.id == message_id, ChatMessage.task_id == task.id).first()
     if not message:
         raise TaskSessionUndoError("Message not found", code="MESSAGE_NOT_FOUND", status_code=404)
+    if isinstance(message.metadata_json, dict) and message.metadata_json.get("steering"):
+        raise TaskSessionUndoError("运行中引导随主消息撤回。", code="UNDO_STEERING_MESSAGE")
     turn = db.query(TaskSessionTurn).filter(TaskSessionTurn.user_message_id == message.id).first()
     if not turn or not str(turn.checkpoint_path or "").strip():
         raise TaskSessionUndoError("This message has no session checkpoint", code="UNDO_NO_CHECKPOINT")

@@ -37,6 +37,7 @@ const timelineEntries = computed(() => {
 
 const inputPlaceholder = computed(() => {
   if (!props.vm.currentTask?.id) return props.vm.t('chat.empty_hint')
+  if (props.vm.steeringJobId) return props.vm.t('chat.steering.placeholder')
   return props.vm.t('chat.cli_input_placeholder')
 })
 

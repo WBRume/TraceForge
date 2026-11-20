@@ -940,6 +940,15 @@
     "hitl_answer_done": "已完成",
     "ai_job_failed_default": "AI 作业执行失败",
     "message_failed": "本轮消息处理失败",
+    "steering": {
+      "label": "运行中引导",
+      "placeholder": "追加指令，引导 Agent 的下一步",
+      "send": "引导当前回合",
+      "pending": "等待 Agent 在下一步接收",
+      "not_delivered": "本回合未确认接收引导",
+      "run_changed": "当前回合已变化，请确认后重新发送",
+      "send_failed": "引导指令发送失败"
+    },
     "stage_step": "阶段 {index}: {timestamp}",
     "temporary_interrupt_desc": "停止当前执行，但保留会话上下文，可稍后继续。",
     "temporary_interrupt_reason": "用户临时中断当前 AI 会话",

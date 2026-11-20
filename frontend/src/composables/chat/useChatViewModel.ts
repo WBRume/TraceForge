@@ -212,6 +212,14 @@ export function useChatViewModel() {
     || isUndoing.value
     || startActions.initializingTask.value
   ))
+  const steeringJobId = computed(() => {
+    const task = taskState.currentTask.value
+    const backend = task?.agent_backend || agentModels.backend.value
+    if (task?.status !== 'RUNNING' || !engine.engineRunning.value || isChatLocked.value || suggestionOnly.value
+      || !['opencode', 'dsh'].includes(String(backend))) return ''
+    const job = jobs.jobList().find(row => row.channel === 'TASK_CHAT' && row.status === 'RUNNING' && row.session_id)
+    return job?.id || ''
+  })
 
   // ─── 任务列表（selectRouteTask 由会话编排晚绑定，规避创建顺序环） ───
   const taskList = useTaskList({
@@ -665,6 +673,7 @@ export function useChatViewModel() {
 
   // ─── 发送 / 消息动作 / 任务动作 ───
   const send = useChatSend({
+    getSteeringJobId: () => steeringJobId.value,
     agentSessionSendBlocked: () => agentSessionSendBlocked.value,
     replacingAgentSession: () => replacingAgentSession.value,
     onAgentSessionUnavailable,
@@ -1176,6 +1185,9 @@ export function useChatViewModel() {
     collaborationReview,
     collaborationLeave,
     sendChat: send.sendChat,
+    steeringJobId,
+    sendSteeringChat: send.sendSteeringChat,
+    sendSteeringContent: send.sendSteeringContent,
     agentSessionUnavailable,
     replacingAgentSession,
     agentSessionSendBlocked,

@@ -3,6 +3,7 @@ import type {
   TerminalTimelineEntry,
 } from './timeline-types'
 import { confirmationHistoryRecord, isRedundantConfirmationReceipt } from '@/composables/chat/message/confirmationHistory'
+import { steeringStatus } from '@/composables/chat/shared/messageIdentity'
 
 interface MergeTerminalTimelineInput {
   messages: any[]
@@ -46,6 +47,7 @@ export const mergeTerminalTimeline = (input: MergeTerminalTimelineInput): Termin
       sessionTurnId: message?.session_turn_id,
       turnIndex: typeof message?.metadata?.session_turn_index === 'number' ? message.metadata.session_turn_index : undefined,
       confirmation,
+      steering: steeringStatus(message),
       createdAt: time.createdAt,
       createdMs: time.createdMs,
       seq: seq++,

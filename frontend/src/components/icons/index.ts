@@ -126,6 +126,7 @@ import {
   StarIcon as RawStarSolidIcon,
 } from '@heroicons/vue/24/solid'
 
+import ChatBubblePlusIconComponent from './ChatBubblePlusIcon.vue'
 import GitBranchIconComponent from './GitBranchIcon.vue'
 import RotateCcwIconComponent from './RotateCcwIcon.vue'
 import GitPullRequestIconComponent from './GitPullRequestIcon.vue'
@@ -289,6 +290,7 @@ export const XCircleIcon = wrapIcon(RawXCircleIcon, 'XCircleIcon')
 export const XMarkIcon = wrapIcon(RawXMarkIcon, 'XMarkIcon')
 
 // Custom Git domain icons in Heroicons 24/outline specifications
+export const ChatBubblePlusIcon = wrapIcon(ChatBubblePlusIconComponent, 'ChatBubblePlusIcon')
 export const GitBranchIcon = wrapIcon(GitBranchIconComponent, 'GitBranchIcon')
 export const GitPullRequestIcon = wrapIcon(GitPullRequestIconComponent, 'GitPullRequestIcon')
 export const GitCommitIcon = wrapIcon(GitCommitIconComponent, 'GitCommitIcon')

@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import type { useChatSubmissions } from '@/composables/useChatSubmissions'
 import type { useChatMessageContext } from '@/composables/useChatMessageContext'
-import { dedupeMessages, messageIdentity } from '../shared/messageIdentity'
+import { dedupeMessages, mergeChatMessage, messageIdentity } from '../shared/messageIdentity'
 
 type Submissions = ReturnType<typeof useChatSubmissions>
 type HistoryContext = ReturnType<typeof useChatMessageContext>
@@ -87,10 +87,7 @@ export function useChatMessages(options: {
     }
     const index = messages.value.findIndex(existing => messageIdentity(existing) === key)
     if (index >= 0) {
-      const merged = {
-        ...messages.value[index],
-        ...item,
-      }
+      const merged = mergeChatMessage(messages.value[index], item)
       // 定位结果卡片更新时把它移到会话末尾，确保最新结果展示在最后一次返回上
       if (String(item.message_type || item.type || '') === 'diagnosis_result') {
         messages.value.splice(index, 1)

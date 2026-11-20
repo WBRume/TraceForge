@@ -1,5 +1,6 @@
 import type { ConfirmationField } from '@/composables/chat/types'
 import type { ConfirmationHistoryRecord } from '@/composables/chat/message/confirmationHistory'
+import type { SteeringStatus } from '@/composables/chat/shared/messageIdentity'
 import type { ToolActivity } from '../../../shared/contracts/generated/applicationMessage'
 
 export type TerminalLocalEchoKind = 'command' | 'info' | 'success' | 'warning' | 'error'
@@ -40,6 +41,7 @@ export interface TerminalMessageEntry extends TerminalTimelineBase {
   sessionTurnId?: string | null
   turnIndex?: number
   confirmation?: ConfirmationHistoryRecord | null
+  steering?: SteeringStatus
 }
 
 export interface TerminalTurnSeparator extends TerminalTimelineBase {

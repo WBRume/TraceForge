@@ -316,6 +316,19 @@ def test_previous_idle_and_next_user_do_not_complete_our_input():
     assert turn_messages(rows, "msg_new") == []
 
 
+def test_steering_input_and_its_response_stay_in_the_primary_execution():
+    rows = [
+        {"id": "msg_primary", "type": "user"},
+        {"id": "msg_first_step", "type": "assistant"},
+        {"id": "msg_tf_steer_instruction", "type": "user"},
+        {"id": "msg_steered_step", "type": "assistant"},
+        {"type": "idle", "outcome": "succeeded"},
+        {"id": "msg_next_run", "type": "user"},
+    ]
+
+    assert turn_messages(rows, "msg_primary") == rows[1:5]
+
+
 def test_nine_hour_execution_is_alive_and_hard_limit_remains_bounded():
     watch = AgentActivityWatchdog(startup_timeout_seconds=60, idle_timeout_seconds=600, hard_timeout_seconds=86400)
     watch._started_at -= 9 * 3600

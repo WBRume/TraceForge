@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { AlertCircle, Bot } from '@/components/icons'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 import { messageAuthorColor, memberColorFor, memberColorRgba } from '@/composables/chat/message/memberColor'
-import type { ChatMessageFields } from '@/composables/chat/shared/messageIdentity'
+import { steeringStatus, type ChatMessageFields } from '@/composables/chat/shared/messageIdentity'
 import ConfirmationHistory from './ConfirmationHistory.vue'
 import ChatMessageMarkdown from './ChatMessageMarkdown.vue'
 import { confirmationHistoryRecord, isRedundantConfirmationReceipt } from '@/composables/chat/message/confirmationHistory'
@@ -26,6 +26,7 @@ const { t } = useI18n()
 const msgRole = computed(() => String(props.msg?.role || '').toLowerCase())
 const memberColor = computed(() => messageAuthorColor(props.msg))
 const confirmation = computed(() => confirmationHistoryRecord(props.msg, props.relatedMessages))
+const steering = computed(() => steeringStatus(props.msg))
 
 const metadata = computed(() => {
   const meta = props.msg?.metadata
@@ -82,6 +83,7 @@ const showTrailingAvatar = computed(() => (
     v-if="!isRedundantConfirmationReceipt(confirmation)"
     class="message-wrapper"
     :data-message-id="msg.id"
+    :data-steering-status="steering"
     :aria-busy="msg.streaming || undefined"
     :class="[
       `role-${msgRole}`,
@@ -90,6 +92,7 @@ const showTrailingAvatar = computed(() => (
         'from-workspace-expert': isExpert,
         'is-highlighted': highlighted,
         'is-collab-preinput': isCollabPreInput,
+        'is-steering': Boolean(steering),
         'is-diagnosis-result': diagnosisResult,
         'is-confirmation-history': Boolean(confirmation),
         'is-confirmation-receipt': confirmation?.kind === 'resolution' && !confirmation.rows.length,
@@ -101,6 +104,7 @@ const showTrailingAvatar = computed(() => (
       <div class="message-meta">
         <Bot v-if="msgRole === 'assistant' || msgRole === 'system'" class="w-3 h-3 message-role-icon" />
         <time class="message-time">{{ timeLabel }}</time>
+        <span v-if="steering" class="steering-badge">{{ t('chat.steering.label') }}</span>
         <span
           v-if="isCollabPreInput"
           class="collab-preinput-badge"
@@ -150,9 +154,11 @@ const showTrailingAvatar = computed(() => (
           <div v-else class="msg-content">{{ content ?? msg.content }}</div>
         </div>
       </slot>
-      <div v-if="msgRole === 'user' && msg.delivery_status === 'failed'" class="message-delivery-error" role="alert">
+      <span v-if="steering === 'pending'" class="steering-pending" role="status">{{ t('chat.steering.pending') }}</span>
+      <div v-else-if="steering === 'failed' || (msgRole === 'user' && msg.delivery_status === 'failed')"
+        class="message-delivery-error" role="alert">
         <AlertCircle :size="14" aria-hidden="true" />
-        <span>{{ msg.delivery_error || t('chat.message_failed') }}</span>
+        <span>{{ steering === 'failed' ? t('chat.steering.not_delivered') : msg.delivery_error || t('chat.message_failed') }}</span>
       </div>
       <slot name="actions" />
     </div>
@@ -342,6 +348,26 @@ const showTrailingAvatar = computed(() => (
 
 .role-user.from-workspace-expert .message-bubble {
   border-color: #166534;
+}
+
+.role-user.is-steering .message-bubble {
+  background: #f0f9ff;
+  border: 1px dashed #5383a9;
+  box-shadow: none;
+}
+
+.steering-badge {
+  color: #245779;
+  background: #e0f2fe;
+  border-radius: 4px;
+  font-weight: 600;
+  padding: 3px 5px;
+  white-space: nowrap;
+}
+
+.steering-pending {
+  color: #47657e;
+  font-size: 12px;
 }
 
 /* 协作预输入气泡：一律右对齐、无左侧色条，分段结构化展示，行尾显示发起人头像 */

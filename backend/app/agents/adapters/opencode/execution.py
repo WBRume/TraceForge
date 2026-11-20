@@ -18,13 +18,14 @@ from collections import Counter
 import httpx
 
 from app.agents.adapters.opencode.event_mapper import map_opencode_event, opencode_event_session_id, text_segment_fields
-from app.agents.errors import AgentExecutionDetached, AgentTimeoutError
+from app.agents.errors import AgentExecutionDetached, AgentSteeringClosedError, AgentTimeoutError
 from app.agents.events import AgentEvent
 from app.agents.tool_activity import mcp_tool_fields, wire_event_time
 from app.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__, category="ai_session")
+STEERING_PREFIX = "msg_tf_steer_"
 
 
 class StreamDisconnected(Exception):
@@ -45,7 +46,7 @@ def turn_messages(messages: list[dict], prompt_id: str) -> list[dict]:
         return []
     result = []
     for row in messages[boundary + 1 :]:
-        if row.get("type") == "user":
+        if row.get("type") == "user" and not str(row.get("id") or "").startswith(STEERING_PREFIX):
             break
         result.append(row)
         if row.get("type") == "idle":
@@ -94,6 +95,52 @@ class ExecutionMonitor:
         self.last_check = time.monotonic()
         self.interval = min(settings.OPENCODE_RECONCILE_INTERVAL_SECONDS, request.idle_timeout_seconds / 3)
         self.watchdog = adapter._watchdog
+        self.steering_open = False
+        self._steering_lock = asyncio.Lock()
+        self._pending_steers: set[str] = set()
+        self._delivered_steers: set[str] = set()
+
+    async def steer(self, message_id: str, content: str) -> None:
+        async with self._steering_lock:
+            if not self.steering_open:
+                raise AgentSteeringClosedError("OpenCode is outside the active prompt")
+            active = await self.get_data(self.adapter.server_url + "/api/session/active")
+            if not self.steering_open or self.session_id not in active or self.adapter._interrupted:
+                raise AgentSteeringClosedError("OpenCode is outside the active prompt")
+            provider_id = STEERING_PREFIX + message_id
+            if provider_id not in self._delivered_steers:
+                self._pending_steers.add(provider_id)
+            client = await self.adapter._ensure_client()
+            response = await client.post(
+                self.adapter._session_url(self.session_id, "/prompt"),
+                json={"id": provider_id, "text": content, "delivery": "steer", "resume": False},
+                timeout=5,
+            )
+            self.adapter._check_response(response, "steer")
+            if response.json().get("data", {}).get("id") != provider_id:
+                raise AgentExecutionDetached("OpenCode steering acceptance could not be confirmed")
+
+    async def _observe_user_input(self, provider_id: str) -> None:
+        if provider_id == self.checkpoint["prompt_id"]:
+            self.steering_open = True
+        elif provider_id.startswith(STEERING_PREFIX) and provider_id not in self._delivered_steers:
+            if self.request.on_steering_delivered:
+                await self.request.on_steering_delivered(provider_id.removeprefix(STEERING_PREFIX))
+            self.adapter._message_ids.add(provider_id)
+            self._delivered_steers.add(provider_id)
+            self._pending_steers.discard(provider_id)
+
+    async def _close_steering(self) -> None:
+        self.steering_open = False
+        async with self._steering_lock:
+            if not self._pending_steers:
+                return
+            try:
+                await self.adapter._remove_pending_steers(self.session_id, self._pending_steers)
+            except (httpx.HTTPError, OSError):
+                # Inputs use resume=false. The next primary prompt also clears
+                # leftover steering before it wakes the provider.
+                logger.warning("Could not clear pending OpenCode steering for session {}", self.session_id)
 
     async def save(self):
         if self.request.on_execution_checkpoint:
@@ -159,6 +206,9 @@ class ExecutionMonitor:
 
     async def restore_messages(self, messages: list[dict]):
         for row in messages:
+            if row.get("type") == "user":
+                await self._observe_user_input(str(row.get("id") or ""))
+                continue
             if row.get("type") != "assistant" or row.get("agent") in {"title", "summary"}:
                 continue
             mid = str(row.get("id") or "")
@@ -260,11 +310,14 @@ class ExecutionMonitor:
         await self.save()  # Also fences observation and terminal finalization.
         messages = await self.adapter.list_messages(self.session_id)
         current = turn_messages(messages, self.checkpoint["prompt_id"])
+        if any(row.get("id") == self.checkpoint["prompt_id"] for row in messages):
+            self.steering_open = not any(row.get("type") == "idle" for row in current)
         await self.restore_messages(current)
         terminal = next((row for row in current if row.get("type") == "idle"), None)
         await self.restore_asks(terminal=bool(terminal))
         self.last_check = time.monotonic()
         if terminal and terminal.get("outcome") in {"succeeded", "failed", "interrupted"}:
+            await self._close_steering()
             outcome = terminal["outcome"]
             return {
                 "success": outcome == "succeeded",
@@ -272,7 +325,12 @@ class ExecutionMonitor:
             }
         active = await self.get_data(self.adapter.server_url + "/api/session/active")
         inbox = await self.get_data(self.adapter._session_url(self.session_id, "/inbox"))
-        if self.session_id not in active and not inbox and aborted_tool_turn(current):
+        if (
+            self.session_id not in active
+            and not any(not str(row.get("id") or "").startswith(STEERING_PREFIX) for row in inbox)
+            and aborted_tool_turn(current)
+        ):
+            await self._close_steering()
             return {"success": False, "finish_reason": "interrupted"}
         admitted = any(row.get("id") == self.checkpoint["prompt_id"] for row in [*messages, *inbox])
         if admitted and self.checkpoint["phase"] != "submitted":
@@ -334,6 +392,9 @@ class ExecutionMonitor:
             # A prior execution can finish while our input is still queued.
             # Session ID alone never establishes ownership of this terminal.
             return await self.reconcile()
+        if kind == "session.inbox.delivered":
+            await self._observe_user_input(str(data.get("inboxID") or ""))
+            return None
         mid = str(data.get("assistantMessageID") or data.get("messageID") or "")
         if mid:
             self.adapter._message_ids.add(mid)

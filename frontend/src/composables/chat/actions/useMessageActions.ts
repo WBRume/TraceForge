@@ -55,6 +55,7 @@ export function useMessageActions(options: {
   }
 
   const canUndoMessage = (msg: any): boolean => {
+    if (msg?.metadata?.steering) return false
     const id = String(msg?.id || '').trim()
     if (!id || id.startsWith('local-')) return false
     if (!options.getCurrentTask()?.id || !options.canManageTaskStatus.value || options.sendingChat()) return false

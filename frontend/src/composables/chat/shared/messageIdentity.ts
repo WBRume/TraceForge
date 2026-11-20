@@ -16,6 +16,19 @@ export const messageIdentity = (msg: any): string => {
   return id ? `id:${id}` : ''
 }
 
+export type SteeringStatus = 'pending' | 'delivered' | 'failed'
+
+export function steeringStatus(message: { metadata?: any }): SteeringStatus | undefined {
+  const status = message.metadata?.steering?.status
+  if (status === 'pending' || status === 'delivered' || status === 'failed') return status
+}
+
+export function mergeChatMessage(existing: any, incoming: any) {
+  const previousStatus = steeringStatus(existing)
+  if (previousStatus && previousStatus !== 'pending' && steeringStatus(incoming) === 'pending') return existing
+  return { ...existing, ...incoming }
+}
+
 /** 按身份合并重复项（后者字段覆盖前者），无身份项原样保留。 */
 export const dedupeMessages = (items: any[]): any[] => {
   const indexByKey = new Map<string, number>()
@@ -33,10 +46,7 @@ export const dedupeMessages = (items: any[]): any[] => {
       continue
     }
     if (item.streaming && !result[existingIndex].streaming) continue
-    result[existingIndex] = {
-      ...result[existingIndex],
-      ...item,
-    }
+    result[existingIndex] = mergeChatMessage(result[existingIndex], item)
   }
   return result
 }

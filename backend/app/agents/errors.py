@@ -43,6 +43,10 @@ class AgentInteractionClosedError(AgentError):
     """The provider no longer accepts replies to this interaction."""
 
 
+class AgentSteeringClosedError(AgentError):
+    """The active provider execution cannot accept steering."""
+
+
 class AgentTimeoutError(AgentError):
     """Agent 回合超时。"""
 

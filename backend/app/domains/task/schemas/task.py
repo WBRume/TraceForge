@@ -137,6 +137,12 @@ class TaskStartRequest(BaseModel):
     sop_auto_run: bool | None = None
 
 
+class TaskSteeringRequest(BaseModel):
+    job_id: str = Field(min_length=1, max_length=36)
+    client_message_id: str = Field(min_length=1, max_length=128)
+    content: str = Field(min_length=1, max_length=50000)
+
+
 class TaskInterruptRequest(BaseModel):
     command_id: str = Field(min_length=1, max_length=128)
     expected_status_seq: int | None = None
