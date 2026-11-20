@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -47,7 +48,12 @@ from app.domains.task.models.task import (
     SddTask,
     TaskStatus,
 )
-from app.domains.task.services import chat_submission_service, task_session_control_service, task_session_service
+from app.domains.task.services import (
+    chat_submission_service,
+    task_attempt_recovery_service,
+    task_session_control_service,
+    task_session_service,
+)
 from app.domains.task.services.conversation import history as task_conversation_history
 from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
 
@@ -484,6 +490,40 @@ def test_interrupt_without_engine_only_stops_current_attempt(monkeypatch, provid
             confirm_continue=False,
         )
         assert prepared["old_job_id"] == job.id
+
+
+@pytest.mark.asyncio
+async def test_resume_reaps_the_previous_attempt_when_its_stop_lease_expires(monkeypatch):
+    from app.domains.ai.services.jobs import reaper
+
+    factory = _build_session()
+    with factory() as db:
+        task, job = _seed_task(db, task_status=TaskStatus.INTERRUPTED, job_status=AiJobStatus.TERMINATING)
+        task_id, job_id = task.id, job.id
+        job.context_json = {"termination_mode": "INTERRUPT"}
+        job.cancel_requested_at = datetime.utcnow()
+        job.lease_expires_at = datetime.utcnow() + timedelta(seconds=0.2)
+        db.commit()
+
+    async def txn(body):
+        with factory.begin() as db:
+            return body(db)
+
+    async def reap(*, task_id):
+        assert task_id == "task-1"
+        with factory.begin() as db:
+            job = db.get(SddAiJob, job_id)
+            if datetime.utcnow() >= job.lease_expires_at:
+                job.status = AiJobStatus.INTERRUPTED
+                job.lease_expires_at = None
+
+    reaper_spy = AsyncMock(side_effect=reap)
+    monkeypatch.setattr(reaper, "reap_stale_jobs", reaper_spy)
+    monkeypatch.setattr(task_attempt_recovery_service.settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 0.05)
+    await task_attempt_recovery_service.recover_task_attempts(task_id, run_txn=txn, wait_for_interrupt_lease=True)
+    assert reaper_spy.await_count == 2
+    with factory() as db:
+        assert db.get(SddAiJob, job_id).status == AiJobStatus.INTERRUPTED
 
 
 def test_task_resume_requires_interrupted_status(monkeypatch):

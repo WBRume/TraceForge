@@ -60,24 +60,34 @@ describe('useTaskSessionControls', () => {
     expect(controls.interruptingTask.value).toBe(false)
   })
 
-  it('resumes an interrupted task through the resume endpoint', async () => {
-    const { useTaskSessionControls } = await import('@/composables/useTaskSessionControls')
-    apiMock.post.mockResolvedValueOnce({ data: { status: 'RUNNING' } })
-
-    const controls = useTaskSessionControls({ getWorkspaceId: () => 'ws-1' })
-    await expect(
-      controls.resumeInterruptedTask('task-1', {
+  it('keeps the first resume request pending while the server recovers the previous attempt', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useTaskSessionControls } = await import('@/composables/useTaskSessionControls')
+      apiMock.post.mockImplementationOnce((_url, _body, config) => new Promise((resolve, reject) => {
+        const timeout = config?.timeout ?? 15000
+        if (timeout) setTimeout(() => reject(new Error('client timeout')), timeout)
+        setTimeout(() => resolve({ data: { submission: { id: 'resume-1' } } }), 30000)
+      }))
+      const controls = useTaskSessionControls({ getWorkspaceId: () => 'ws-1' })
+      const pending = controls.resumeInterruptedTask('task-1', {
         prompt: ' continue here ',
         confirmContinue: false,
         clientMessageId: 'client-1',
-      }),
-    ).resolves.toMatchObject({ status: 'RUNNING' })
-
-    expect(apiMock.post).toHaveBeenCalledWith('/workspaces/ws-1/tasks/task-1/resume-interrupted', {
-      prompt: 'continue here',
-      confirm_continue: false,
-      client_message_id: 'client-1',
-    })
-    expect(controls.resumingInterruptedTask.value).toBe(false)
+      })
+      await vi.advanceTimersByTimeAsync(16000)
+      expect(controls.resumingInterruptedTask.value).toBe(true)
+      await vi.advanceTimersByTimeAsync(14000)
+      await expect(pending).resolves.toMatchObject({ submission: { id: 'resume-1' } })
+      expect(apiMock.post).toHaveBeenCalledTimes(1)
+      expect(apiMock.post).toHaveBeenCalledWith('/workspaces/ws-1/tasks/task-1/resume-interrupted', {
+        prompt: 'continue here',
+        confirm_continue: false,
+        client_message_id: 'client-1',
+      }, { timeout: 0 })
+      expect(controls.resumingInterruptedTask.value).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

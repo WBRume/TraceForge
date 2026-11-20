@@ -52,14 +52,19 @@ export function useTaskSessionControls(options: UseTaskSessionControlsOptions) {
   const resumeInterruptedTask = async (taskId: string, resumeOptions: ResumeInterruptedOptions) => {
     resumingInterruptedTask.value = true
     try {
-      const res = await api.post(taskUrl(taskId, 'resume-interrupted'), {
-        prompt: String(resumeOptions.prompt || '').trim() || undefined,
-        confirm_continue: Boolean(resumeOptions.confirmContinue),
-        client_message_id: String(resumeOptions.clientMessageId || '').trim() || undefined,
-        agent_model: resumeOptions.agentModel,
-        ...(resumeOptions.newAgentSession ? { new_agent_session: true } : {}),
-        metadata: options.getSubmissionMetadata?.(),
-      })
+      const res = await api.post(
+        taskUrl(taskId, 'resume-interrupted'),
+        {
+          prompt: String(resumeOptions.prompt || '').trim() || undefined,
+          confirm_continue: Boolean(resumeOptions.confirmContinue),
+          client_message_id: String(resumeOptions.clientMessageId || '').trim() || undefined,
+          agent_model: resumeOptions.agentModel,
+          ...(resumeOptions.newAgentSession ? { new_agent_session: true } : {}),
+          metadata: options.getSubmissionMetadata?.(),
+        },
+        // The server may wait for the previous attempt's stop lease before accepting.
+        { timeout: 0 },
+      )
       return res.data
     } finally {
       resumingInterruptedTask.value = false

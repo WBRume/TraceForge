@@ -29,6 +29,7 @@ from app.domains.task.services import (
     task_session_control_service,
     task_session_service,
 )
+from app.domains.task.services.task_attempt_recovery_service import lock_task_for_resume
 from app.domains.websocket.ws.connection import (
     ConnectionEvicted,
     OutboundConnection,
@@ -442,7 +443,7 @@ class TaskWebSocketHandler:
         request: _ChatMessageRequest,
         claim: ChatMessageClaim,
     ) -> None:
-        async with lock_task(self._task_id):
+        async with lock_task_for_resume(self._task_id):
             result = await task_session_control_service.resume_interrupted_task(
                 task_id=self._task_id,
                 actor_user_id=self._user.id,

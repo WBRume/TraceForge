@@ -183,3 +183,36 @@ def test_stop_preserves_another_owner_and_uses_an_operation_conflict_message(tas
     asyncio.run(run())
     assert transport.values[key] == b"other-request"
     assert remote.interrupts == 0
+
+
+def test_first_resume_request_waits_for_abandoned_stop_lock_to_expire(task_api, monkeypatch):
+    app, transport, _remote, factory, _broadcast = task_api
+    key = dl._sanitize_lock_key(resource_type="task", resource_id="task-1")
+    transport.values[key] = b"crashed-stop"
+    monkeypatch.setattr(settings, "TASK_INTERRUPT_LOCK_TTL_SECONDS", 1)
+    monkeypatch.setattr(settings, "DISTRIBUTED_LOCK_SLEEP_SECONDS", 0.01)
+    with factory.begin() as db:
+        db.get(SddTask, "task-1").status = TaskStatus.INTERRUPTED
+    resumed = mock.AsyncMock(return_value={"task_id": "task-1", "submission": {"id": "resume-receipt"}})
+    monkeypatch.setattr(lifecycle, "resume_interrupted_task", resumed)
+
+    async def expire_dead_process_lock():
+        await asyncio.sleep(0.15)
+        assert transport.values.pop(key) == b"crashed-stop"
+
+    async def run():
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            request, _ = await asyncio.gather(
+                client.post(
+                    "/api/workspaces/ws-1/tasks/task-1/resume-interrupted",
+                    json={"prompt": "continue", "client_message_id": "resume-once"},
+                ),
+                expire_dead_process_lock(),
+            )
+        assert request.status_code == 200, request.text
+        assert request.json()["submission"]["id"] == "resume-receipt"
+
+    asyncio.run(run())
+    resumed.assert_awaited_once()
+    assert resumed.await_args.kwargs["client_message_id"] == "resume-once"
+    assert transport.values == {}

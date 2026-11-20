@@ -45,6 +45,7 @@ from app.domains.task.services.agent_session_switch import (
     preview_task_session,
     prime_session_version,
 )
+from app.domains.task.services.task_attempt_recovery_service import interrupt_lock_ttl_seconds, lock_task_for_resume
 from app.domains.task.services.task_records import queries as task_task_records_queries
 from app.domains.workspace_collaboration.service import CollaborationError
 
@@ -105,7 +106,7 @@ async def interrupt_task(
     db.close()
 
     try:
-        async with lock_task(task_id):
+        async with lock_task(task_id, ttl=interrupt_lock_ttl_seconds()):
             state = await run_route_db_txn(
                 db,
                 db_bind,
@@ -150,7 +151,7 @@ async def resume_interrupted_task(
     db.close()
 
     try:
-        async with lock_task(task_id):
+        async with lock_task_for_resume(task_id):
             await run_route_db_txn(
                 db,
                 db_bind,

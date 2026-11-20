@@ -238,7 +238,8 @@ export const useChatTerminalController = (vm: ChatTerminalBridge) => {
     }
 
     const steeringJobId = parsed.command === 'send' ? vm.steeringJobId : undefined
-    const isBlocked = vm.engineRunning && !RUNNING_ALLOWED_COMMANDS.has(parsed.command) && !steeringJobId
+    const resumesInterrupted = parsed.command === 'send' && vm.currentTask?.status === 'INTERRUPTED'
+    const isBlocked = vm.engineRunning && !RUNNING_ALLOWED_COMMANDS.has(parsed.command) && !steeringJobId && !resumesInterrupted
     if (isBlocked) {
       appendEcho('warning', vm.t('chat.cli_running_blocked'))
       return

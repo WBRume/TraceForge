@@ -360,7 +360,7 @@ watch(
         @update:selected-model="vm.selectAgentModel" @reload-models="vm.reloadAgentModels"
         :disabled="vm.initializingTask || vm.sendingChat || (!vm.suggestionOnly && (vm.isChatLocked || Boolean(playbook.run && !['COMPLETED', 'CANCELLED'].includes(playbook.run.state))))"
         :send-blocked="vm.collaboration?.blocked.value || vm.agentSessionSendBlocked"
-        :running="!vm.suggestionOnly && vm.engineRunning && vm.currentTask?.status !== 'AWAITING_INPUT'"
+        :running="!vm.suggestionOnly && vm.engineRunning && vm.currentTask?.status === 'RUNNING'"
         :steering-job-id="vm.steeringJobId"
         :can-interrupt="!vm.suggestionOnly && vm.canTemporarilyInterrupt"
         :interrupting="vm.interruptingTask"
