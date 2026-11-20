@@ -220,3 +220,4 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped src="@/styles/skill-editor/skill-editor-shared.css"></style>
+<style scoped src="@/styles/review-annotations.css"></style>

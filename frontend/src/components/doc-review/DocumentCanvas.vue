@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { Pencil } from '@/components/icons';
 import BlockInlineEditor from "./BlockInlineEditor.vue";
+import type { ReviewAnnotationTarget } from "./reviewAnnotationRanges";
 
 type DocumentBlock = {
   id: string;
@@ -103,7 +104,7 @@ type RenderBlock = DocumentBlock & {
 };
 
 const emit = defineEmits<{
-  "open-thread": [threadId: string];
+  "open-threads": [target: ReviewAnnotationTarget];
   "select-range": [
     {
       block_id: string;
@@ -822,12 +823,14 @@ const badgeStyle = (blockId: string): Record<string, string> | undefined => {
   };
 };
 
-const openBlockThread = (blockId: string) => {
+const openBlockThreads = (blockId: string, event: MouseEvent) => {
   const markers = props.markersByBlock[blockId] || [];
   if (!markers.length) return;
-  const preferred =
-    markers.find((item) => item.status === "open") || markers[0];
-  emit("open-thread", preferred.thread_id);
+  const trigger = event.currentTarget as HTMLElement;
+  const bounds = trigger.getBoundingClientRect();
+  emit("open-threads", {
+    threadIds: markers.map(item => item.thread_id), left: bounds.right + 8, top: bounds.top, trigger,
+  });
 };
 
 const emitSelection = (event: MouseEvent, block: RenderBlock) => {
@@ -916,9 +919,11 @@ const emitSelection = (event: MouseEvent, block: RenderBlock) => {
         <button
           v-if="markerCount(block.id) > 0"
           class="thread-badge"
+          type="button"
           :class="`state-${markerState(block.id)}`"
           :style="badgeStyle(block.id)"
-          @click.stop="openBlockThread(block.id)"
+          :aria-label="t('doc_review.thread_count', { count: markerCount(block.id) })"
+          @click.stop="openBlockThreads(block.id, $event)"
         >
           {{ markerCount(block.id) }}
         </button>

@@ -2108,6 +2108,11 @@
   "doc_review": {
     "annotation_discussions": "标注讨论",
     "thread_count": "{count} 个讨论串",
+    "anchor_thread_count": "此处有 {count} 个讨论串",
+    "line_thread_count": "本行有 {count} 个讨论串",
+    "anchor_thread_order": "按发起时间从早到晚",
+    "earliest_initiator": "最早发起",
+    "unknown_initiator": "未知发起人",
     "sync_live": "实时同步中",
     "sync_offline": "离线",
     "thread_status_resolved": "已解决",

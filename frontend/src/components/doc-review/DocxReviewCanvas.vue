@@ -2,12 +2,14 @@
 import { computed, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import api from '@/utils/api'
-import type { AssetThreadMarker } from '@/composables/asset-discussion/types'
+import type { AssetThread, AssetThreadMarker } from '@/composables/asset-discussion/types'
 import WordPreview from '@/components/file-preview/WordPreview.vue'
 import BlockInlineEditor from './BlockInlineEditor.vue'
+import ReviewAnnotationRail from './ReviewAnnotationRail.vue'
 import { prepareDocxReview, type ReviewBlock } from './docxReviewSource'
 import { indexDocxReview } from './docxReviewRanges'
 import { addDocxRevisionHighlights, type DocxRevisionMarker, type DocxRevisionPoint } from './docxRevisionHighlights'
+import { groupReviewAnnotations, reviewThreadIdsAt, type ReviewAnnotationTarget } from './reviewAnnotationRanges'
 
 const props = defineProps<{
   wsId: string
@@ -17,6 +19,7 @@ const props = defineProps<{
   name: string
   blocks: ReviewBlock[]
   markersByBlock: Record<string, AssetThreadMarker[]>
+  threads?: AssetThread[]
   selectedThreadId: string
   inlineReviewEnabled: boolean
   canManualEdit: boolean
@@ -32,7 +35,7 @@ const emit = defineEmits<{
     anchor: { top: number; left: number }
   }]
   'clear-selection': []
-  'open-thread': [threadId: string]
+  'open-threads': [target: ReviewAnnotationTarget]
   'start-edit': [blockId: string]
   'save-block-edit': [blockId: string, text: string]
   'cancel-block-edit': []
@@ -49,12 +52,21 @@ const surface = shallowRef<{
 const editAnchor = shallowRef<{ top: number; left: number }>()
 const editedParagraph = computed(() => surface.value?.index.paragraphs
   .find(paragraph => paragraph.edit?.id === props.editingBlockId)?.edit)
+const markerRanges = computed(() => {
+  const index = surface.value?.index
+  if (!index) return []
+  return Object.values(props.markersByBlock).flat().flatMap(marker => {
+    const ranges = index.rangesForText(marker.block_id, marker.char_start, marker.char_end, marker.selected_text)
+    return ranges.length ? [{ marker, ranges }] : []
+  })
+})
+const annotationGroups = computed(() => groupReviewAnnotations(markerRanges.value))
 const highlightNames = ['traceforge-review-open', 'traceforge-review-closed', 'traceforge-review-selected'] as const
 
 const iframeStyles = `
-  ::highlight(traceforge-review-open) {background:#fde5a5;color:inherit}
-  ::highlight(traceforge-review-closed) {background:#dce6ed;color:inherit}
-  ::highlight(traceforge-review-selected) {background:#ffbd62;color:inherit}
+  ::highlight(traceforge-review-open) {background:#e0f2fe;color:inherit}
+  ::highlight(traceforge-review-closed) {background:#edf2f7;color:inherit}
+  ::highlight(traceforge-review-selected) {background:#bae6fd;color:inherit}
   ::highlight(traceforge-revision) {background:#d3eddc;color:inherit}
   .tf-revision-markers {display:inline-block;position:relative;width:0;height:0;vertical-align:baseline;white-space:nowrap}
   .tf-revision-marker {
@@ -143,28 +155,48 @@ watch(surface, (current, _, cleanup) => {
   document.addEventListener('keyup', event => {
     if (event.shiftKey || event.key === 'Shift') reportSelection(event)
   }, { signal: events.signal })
+  content.addEventListener('click', event => {
+    const target = event.target as Element | null
+    if (props.editingBlockId || document.getSelection()?.isCollapsed === false
+      || target?.closest?.('button')) return
+    const threadIds = reviewThreadIdsAt(markerRanges.value, event)
+    if (!threadIds.length) return
+    const bounds = frame.getBoundingClientRect()
+    emit('open-threads', {
+      threadIds, left: bounds.left + event.clientX + 8, top: bounds.top + event.clientY + 8, frame,
+    })
+  }, { signal: events.signal })
   document.addEventListener('scroll', () => emit('clear-selection'), { signal: events.signal })
   cleanup(() => events.abort())
 })
 
-watch(() => [surface.value, props.markersByBlock, props.canManualEdit] as const, ([current], _, cleanup) => {
+watch(() => [surface.value, markerRanges.value, props.markersByBlock, props.canManualEdit] as const, ([current, entries], _, cleanup) => {
   if (!current) return
   const { frame, content, index } = current
   const document = content.ownerDocument
   const controls: Array<{ marker: HTMLElement; group: HTMLElement }> = []
+  const preciseIds = new Set(entries.map(({ marker }) => marker.thread_id))
   const seen = new Set<string>()
   for (const { marker, block, edit, hasTextRange } of index.paragraphs) {
     const group = document.createElement('span')
-    const markers = props.markersByBlock[block.id] ?? []
-    const preferred = markers.find(item => item.status === 'open') ?? markers[0]
-    if (preferred && hasTextRange && !seen.has(block.id)) {
+    // Older annotations with an ambiguous quote can still be opened from their paragraph.
+    const markers = (props.markersByBlock[block.id] ?? []).filter(item => !preciseIds.has(item.thread_id))
+    if (markers.length && hasTextRange && !seen.has(block.id)) {
       seen.add(block.id)
       const button = document.createElement('button')
       button.type = 'button'
       button.title = t('doc_review.thread_count', { count: markers.length })
+      button.setAttribute('aria-label', button.title)
       button.textContent = String(markers.length)
-      button.toggleAttribute('data-open', preferred.status === 'open')
-      button.addEventListener('click', () => emit('open-thread', preferred.thread_id))
+      button.toggleAttribute('data-open', markers.some(item => item.status === 'open'))
+      button.addEventListener('click', () => {
+        const frameBounds = frame.getBoundingClientRect()
+        const bounds = button.getBoundingClientRect()
+        emit('open-threads', {
+          threadIds: markers.map(item => item.thread_id),
+          left: frameBounds.left + bounds.right + 8, top: frameBounds.top + bounds.top, trigger: button, frame,
+        })
+      })
       group.append(button)
     }
     if (props.canManualEdit && edit) {
@@ -199,28 +231,26 @@ watch(() => [surface.value, props.markersByBlock, props.canManualEdit] as const,
   })
 }, { flush: 'post' })
 
-watch(() => [surface.value, props.markersByBlock, props.selectedThreadId] as const, ([current, markers, selected], _, cleanup) => {
+watch(() => [surface.value, markerRanges.value, props.selectedThreadId] as const, ([current, entries, selected], _, cleanup) => {
   if (!current) return
   const win = current.frame.contentWindow as (Window & typeof globalThis) | null
   if (!win?.CSS.highlights || !win.Highlight) return
   const ranges: [Range[], Range[], Range[]] = [[], [], []]
-  for (const marker of Object.values(markers).flat()) {
+  for (const { marker, ranges: markerRanges } of entries) {
     const type = marker.thread_id === selected ? 2 : marker.status === 'open' ? 0 : 1
-    ranges[type].push(...current.index.rangesForText(marker.block_id, marker.char_start, marker.char_end, marker.selected_text))
+    ranges[type].push(...markerRanges)
   }
   highlightNames.forEach((name, index) => {
     const highlight = new win.Highlight(...ranges[index])
-    highlight.priority = index === 2 ? 1 : 0
+    highlight.priority = index === 1 ? 0 : index === 0 ? 1 : 2
     win.CSS.highlights.set(name, highlight)
   })
   cleanup(() => highlightNames.forEach(name => win.CSS.highlights.delete(name)))
 }, { flush: 'post' })
 
-watch(() => [surface.value, props.selectedThreadId] as const, ([current, selected]) => {
+watch(() => [surface.value, markerRanges.value, props.selectedThreadId] as const, ([current, entries, selected]) => {
   if (!current || !selected) return
-  const marker = Object.values(props.markersByBlock).flat().find(item => item.thread_id === selected)
-  if (!marker) return
-  const [range] = current.index.rangesForText(marker.block_id, marker.char_start, marker.char_end, marker.selected_text)
+  const range = entries.find(entry => entry.marker.thread_id === selected)?.ranges[0]
   const win = current.frame.contentWindow
   if (!range || !win) return
   const rect = range.getBoundingClientRect()
@@ -245,6 +275,14 @@ defineExpose({
 
 <template>
   <div class="docx-review-canvas">
+    <ReviewAnnotationRail
+      :groups="annotationGroups"
+      :threads="threads"
+      :content="surface?.content"
+      :frame="surface?.frame"
+      :selected-thread-id="selectedThreadId"
+      @open-threads="emit('open-threads', $event)"
+    />
     <p v-if="failed" class="docx-review-state" role="alert">{{ t('file_preview.failed') }}</p>
     <p v-else-if="!source" class="docx-review-state" role="status">{{ t('common.loading') }}</p>
     <WordPreview v-else :bytes="source.bytes" :name="name" tab-stops @rendered="onRendered" />
@@ -269,7 +307,7 @@ defineExpose({
 </template>
 
 <style scoped>
-.docx-review-canvas { display: flex; height: 100%; min-height: 0; min-width: 0; }
+.docx-review-canvas { position: relative; display: flex; height: 100%; min-height: 0; min-width: 0; }
 .docx-review-state { margin: auto; padding: 16px; color: var(--color-text-muted, #64748b); }
 .docx-edit-popover {
   position: fixed; z-index: 30; width: min(440px, 80vw); padding: 12px;

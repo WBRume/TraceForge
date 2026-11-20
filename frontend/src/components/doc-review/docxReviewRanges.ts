@@ -133,8 +133,15 @@ export function indexDocxReview(content: HTMLElement, anchors: DocxParagraphAnch
     const pieces = blockRanges.get(blockId)
     if (!pieces?.length) return []
     const characters = blockCharacters.get(blockId)!
-    const first = start ?? 0
-    const last = end ?? characters.length
+    let first = start ?? 0
+    let last = end ?? characters.length
+    if (start == null && end == null && quote) {
+      const text = pieces[0]!.block.text
+      const offset = text.indexOf(quote)
+      if (offset < 0 || text.indexOf(quote, offset + 1) >= 0) return []
+      first = Array.from(text.slice(0, offset)).length
+      last = first + Array.from(quote).length
+    }
     if (first < 0 || last <= first || last > characters.length) return []
     if (quote && characters.slice(first, last).join('').trim() !== quote.trim()) return []
     return pieces.flatMap(piece => {

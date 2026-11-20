@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, useId, watch } from 'vue'
-import type { AssetThreadMarker } from '@/composables/asset-discussion/types'
+import type { AssetThread, AssetThreadMarker } from '@/composables/asset-discussion/types'
+import ReviewAnnotationRail from './ReviewAnnotationRail.vue'
 import { renderMarkdownReview } from './markdownReviewSource'
+import { groupReviewAnnotations, reviewThreadIdsAt, type ReviewAnnotationTarget } from './reviewAnnotationRanges'
 
 const SOURCE_BLOCK = 'source-text'
 const props = defineProps<{
   source: string
   markdown: boolean
   markersByBlock: Record<string, AssetThreadMarker[]>
+  threads: AssetThread[]
   selectedThreadId: string
   inlineReviewEnabled: boolean
 }>()
@@ -17,7 +20,7 @@ const emit = defineEmits<{
     anchor: { top: number; left: number }
   }]
   'clear-selection': []
-  'open-thread': [id: string]
+  'open-threads': [target: ReviewAnnotationTarget]
 }>()
 
 const body = ref<HTMLElement>()
@@ -111,20 +114,22 @@ const markerRanges = computed(() => {
       let to = piece.node.length
       while (from < to && piece.end(from + 1) <= start) from++
       while (to > from && piece.start(to - 1) >= end) to--
+      if (to <= from) return []
       const range = document.createRange()
       range.setStart(piece.node, from)
       range.setEnd(piece.node, to)
       return [range]
     })
-    return [{ marker, ranges }]
+    return ranges.length ? [{ marker, ranges }] : []
   })
 })
-watch(() => [body.value, props.source] as const, () => { paintKey.value++ }, { flush: 'post' })
+const annotationGroups = computed(() => groupReviewAnnotations(markerRanges.value))
+watch(() => [body.value, props.source, props.markdown] as const, () => { paintKey.value++ }, { flush: 'post' })
 
 watch(() => [paintKey.value, markerRanges.value, props.selectedThreadId] as const, ([, entries, selected], _, cleanup) => {
-  if (!CSS.highlights || !body.value) return
+  if (!globalThis.CSS?.highlights || !globalThis.Highlight || !body.value) return
   const style = document.createElement('style')
-  const colors = ['#fde5a5', '#dce6ed', '#ffbd62']
+  const colors = ['#e0f2fe', '#edf2f7', '#bae6fd']
   style.textContent = names.map((name, index) => `::highlight(${name}){background:${colors[index]};color:inherit}`).join('')
   document.head.append(style)
   const groups: Range[][] = [[], [], []]
@@ -133,7 +138,7 @@ watch(() => [paintKey.value, markerRanges.value, props.selectedThreadId] as cons
   }
   names.forEach((name, index) => {
     const highlight = new Highlight(...groups[index]!)
-    highlight.priority = index === 2 ? 1 : 0
+    highlight.priority = index === 1 ? 0 : index === 0 ? 1 : 2
     CSS.highlights.set(name, highlight)
   })
   cleanup(() => {
@@ -155,32 +160,37 @@ watch(() => [props.selectedThreadId, paintKey.value] as const, ([selected]) => {
 }, { flush: 'post' })
 
 function openMarker(event: MouseEvent) {
-  if (!window.getSelection()?.isCollapsed) return
-  const { clientX, clientY } = event
-  const match = markerRanges.value.find(entry => entry.ranges.some(range =>
-    Array.from(range.getClientRects()).some(rect =>
-      clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom),
-  ))
-  if (match) emit('open-thread', match.marker.thread_id)
+  if (window.getSelection()?.isCollapsed === false) return
+  const threadIds = reviewThreadIdsAt(markerRanges.value, event)
+  if (threadIds.length) emit('open-threads', { threadIds, left: event.clientX + 8, top: event.clientY + 8 })
 }
 </script>
 
 <template>
-  <article
-    class="text-page"
-    @pointerup="reportSelection"
-    @keyup.shift="reportSelection"
-    @click="openMarker"
-  >
-    <div v-if="rendered" ref="body" class="markdown-source" v-html="rendered.html" />
-    <div v-else ref="body" class="plain-source" v-text="source" />
-  </article>
+  <div class="text-review-canvas">
+    <ReviewAnnotationRail
+      :groups="annotationGroups"
+      :threads="threads"
+      :content="body"
+      :selected-thread-id="selectedThreadId"
+      @open-threads="emit('open-threads', $event)"
+    />
+    <article class="text-page" @pointerup="reportSelection" @keyup.shift="reportSelection" @click="openMarker">
+      <div v-if="rendered" ref="body" class="markdown-source" v-html="rendered.html" />
+      <div v-else ref="body" class="plain-source" v-text="source" />
+    </article>
+  </div>
 </template>
 
 <style scoped>
+.text-review-canvas {
+  display: flex;
+  min-height: 100%;
+}
 .text-page {
   box-sizing: border-box;
   width: min(100%, 55rem);
+  min-width: 0;
   min-height: 100%;
   margin: 0 auto;
   padding: clamp(1rem, 4vw, 3rem);

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, ref, useSlots, watch } from "vue";
+import { computed, defineAsyncComponent, onMounted, ref, shallowRef, useSlots, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ElMessage } from "element-plus";
 import { ChevronDown, FileText, Clock } from '@/components/icons';
@@ -10,6 +10,7 @@ import DocumentCanvas from "./DocumentCanvas.vue";
 import InlineSelectionPopover from "./InlineSelectionPopover.vue";
 import PdfCanvas from "./PdfCanvas.vue";
 import ProposalDraftModal from "./ProposalDraftModal.vue";
+import ReviewAnnotationPopover from "./ReviewAnnotationPopover.vue";
 import ResolutionDiffModal from "./ResolutionDiffModal.vue";
 import TextReviewCanvas from "./TextReviewCanvas.vue";
 import ThreadSidebar from "./ThreadSidebar.vue";
@@ -17,6 +18,7 @@ import SpecBaselineStatus from "./SpecBaselineStatus.vue";
 import VersionSwitcher from "./VersionSwitcher.vue";
 import { useDocumentDraft } from "./useDocumentDraft";
 import { useResolutionReview } from "./useResolutionReview";
+import type { ReviewAnnotationTarget } from "./reviewAnnotationRanges";
 import ConfirmActionModal from "@/components/ConfirmActionModal.vue";
 import type { TaskSpecBootstrapProgress } from "@/composables/chat/types";
 
@@ -42,6 +44,7 @@ const loadAssetsError = ref("");
 const assets = ref<AssetSummary[]>([]);
 const selectedAssetId = ref("");
 const selectedVersionId = ref("");
+const annotationTarget = shallowRef<ReviewAnnotationTarget | null>(null);
 const selectionPayload = ref<{
   block_id: string;
   selected_text: string;
@@ -377,6 +380,16 @@ const createThreadFromSelection = async (payload: {
 const openThread = (threadId: string) => {
   selectedThreadId.value = threadId;
   selectionPayload.value = null;
+  annotationTarget.value = null;
+};
+
+const openAnchoredThreads = (target: ReviewAnnotationTarget) => {
+  if (target.threadIds.length === 1 && !target.trigger) {
+    openThread(target.threadIds[0]!);
+    return;
+  }
+  selectionPayload.value = null;
+  annotationTarget.value = target.trigger && target.trigger === annotationTarget.value?.trigger ? null : target;
 };
 
 const sendThreadMessage = async (threadId: string, content: string) => {
@@ -432,6 +445,7 @@ const handleThreadCloseHintAction = async (
 
 const changeVersion = async (versionId: string) => {
   selectedVersionId.value = versionId;
+  annotationTarget.value = null;
   const document = await discussion.loadDocument(versionId);
   if (!document || selectedVersionId.value !== versionId) return;
   await discussion.loadThreads(versionId);
@@ -445,6 +459,8 @@ const showOriginal = async (versionId: string, threadId: string) => {
   await changeVersion(versionId);
   if (selectedVersionId.value === versionId) openThread(threadId);
 };
+
+watch([selectedAssetId, activeVersionId, editing], () => { annotationTarget.value = null; });
 
 watch(
   () => activeVersionId.value,
@@ -633,16 +649,17 @@ onMounted(() => {
             :source="formalText"
             :markdown="isMarkdown"
             :markers-by-block="markersByBlock"
+            :threads="threads"
             :selected-thread-id="selectedThreadId"
             :inline-review-enabled="inlineReviewEnabled"
-            @open-thread="openThread"
+            @open-threads="openAnchoredThreads"
             @select-range="handleSelectRange"
             @clear-selection="selectionPayload = null"
           />
           <component
             v-else
             :is="docxSource ? DocxReviewCanvas : DocumentCanvas"
-            v-bind="docxSource || {}"
+            v-bind="docxSource ? { ...docxSource, threads } : {}"
             :blocks="visibleBlocks"
             :markers-by-block="editing ? {} : markersByBlock"
             :selected-thread-id="selectedThreadId"
@@ -650,7 +667,7 @@ onMounted(() => {
             :can-manual-edit="editing && canOpenDraft && !draftBusy && !editingBlockId"
             :saving="draftBusy"
             :editing-block-id="editingBlockId"
-            @open-thread="openThread"
+            @open-threads="openAnchoredThreads"
             @select-range="handleSelectRange"
             @clear-selection="selectionPayload = null"
             @start-edit="startBlockEdit"
@@ -665,6 +682,13 @@ onMounted(() => {
           :can-comment="effectiveCapabilities.can_comment"
           @close="selectionPayload = null"
           @create="createThreadFromSelection"
+        />
+        <ReviewAnnotationPopover
+          :target="annotationTarget"
+          :threads="threads"
+          :selected-thread-id="selectedThreadId"
+          @close="annotationTarget = null"
+          @open-thread="openThread"
         />
       </section>
 
@@ -687,7 +711,7 @@ onMounted(() => {
         :online-users="onlineUsers"
         :ws-connected="wsConnected"
         @cancel-ai-job="cancelThreadAiJob"
-        @select-thread="selectedThreadId = $event"
+        @select-thread="openThread"
         @show-original="showOriginal"
         @send-message="sendThreadMessage"
         @ask-ai="askThreadAi"

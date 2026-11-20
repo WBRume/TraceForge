@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { ArrowLeft } from '@/components/icons';
 import type { AssetAiJob, AssetThread } from '@/composables/asset-discussion/types';
 import ConclusionProposals from "./ConclusionProposals.vue";
+import ReviewThreadAuthor from "./ReviewThreadAuthor.vue";
 import ThreadTimeline from "./ThreadTimeline.vue";
 
 type Thread = AssetThread;
@@ -442,7 +443,7 @@ const resetCloseHintPending = () => {
           @click="emit('select-thread', thread.id)"
         >
           <div class="thread-item-head">
-            <strong v-if="thread.block_id !== 'source-text'">#{{ thread.block_id }}</strong>
+            <ReviewThreadAuthor :thread="thread" />
             <span
               class="status-pill"
               :class="`state-${thread.status}`"
@@ -451,7 +452,7 @@ const resetCloseHintPending = () => {
               {{ statusLabel(thread.status) }}
             </span>
           </div>
-          <p>{{ thread.selected_text || t("doc_review.no_selected_text") }}</p>
+          <p>{{ thread.effective_anchor?.selected_text || thread.selected_text || t("doc_review.no_selected_text") }}</p>
           <p v-if="thread.anchor_status === 'missing'" class="thread-version">{{ originalVersion(thread) }}</p>
           <p
             v-else-if="shouldShowAnchorCloseHint(thread)"
@@ -463,7 +464,6 @@ const resetCloseHintPending = () => {
                 : t("doc_review.anchor_missing_title")
             }}
           </p>
-          <small>{{ new Date(thread.created_at).toLocaleString() }}</small>
         </button>
       </div>
     </div>
@@ -505,6 +505,12 @@ const resetCloseHintPending = () => {
       </header>
 
       <div class="detail-scrollable custom-scrollbar">
+        <div class="detail-thread-summary">
+          <ReviewThreadAuthor :thread="selectedThread" />
+          <p v-if="selectedThread.anchor_status !== 'missing' && (selectedThread.effective_anchor?.selected_text || selectedThread.selected_text)">
+            {{ selectedThread.effective_anchor?.selected_text || selectedThread.selected_text }}
+          </p>
+        </div>
         <section v-if="selectedThread.anchor_status === 'missing'" class="section-panel anchor-hint-panel pending">
           <header class="section-head">
             <h4 class="section-title">{{ originalVersion(selectedThread) }}</h4>
@@ -787,7 +793,6 @@ const resetCloseHintPending = () => {
   color: #475569;
   font-size: .75rem;
 }
-.thread-item .thread-version + small { display: block; }
 
 .thread-item:hover {
   transform: translateY(-2px);
@@ -827,6 +832,7 @@ const resetCloseHintPending = () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
 }
 
 .thread-item p {
@@ -846,12 +852,8 @@ const resetCloseHintPending = () => {
   font-weight: 600;
 }
 
-.thread-item small {
-  color: var(--color-text-muted);
-  font-size: 12px;
-}
-
 .status-pill {
+  flex: none;
   border-radius: 999px;
   padding: 2px 10px;
   font-size: 11px;
@@ -878,6 +880,13 @@ const resetCloseHintPending = () => {
 }
 
 /* Detail View Layout */
+.detail-thread-summary p {
+  margin: 8px 0 0;
+  color: var(--color-text-body);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .detail-head {
   display: flex;
   justify-content: space-between;

@@ -2106,6 +2106,11 @@
   "doc_review": {
     "annotation_discussions": "Annotation Discussions",
     "thread_count": "{count} threads",
+    "anchor_thread_count": "{count} threads here",
+    "line_thread_count": "{count} threads on this line",
+    "anchor_thread_order": "Oldest first",
+    "earliest_initiator": "First to start",
+    "unknown_initiator": "Unknown initiator",
     "sync_live": "Live Sync",
     "sync_offline": "Offline",
     "thread_status_resolved": "Resolved",
