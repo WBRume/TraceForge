@@ -6,7 +6,7 @@
 - 从 attempt runtime / typed 异常 / stop 结果解析唯一死亡证据
   （决策表本体在 :mod:`ai_job_convergence_service`，这里只做转交）；
 - 将本地进程身份持久化到作业行（PID attach fence）；
-- TERMINATING/REAPER 收敛与对外终止 API（``finalize_attempt_termination``）；
+- TERMINATING/REAPER 收敛与对外终止 API（``finalize_interruption_in_txn``）；
 - 用户取消入口（``cancel_job`` / ``mark_task_chat_jobs_cancelled``）。
 """
 
@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import dataclasses
 from typing import Any
+
+from sqlalchemy.orm import Session
 
 from app.agents import (
     EXECUTION_KIND_LOCAL_PROCESS,
@@ -28,6 +30,7 @@ from app.agents import (
     record_attempt_provider_call_stop,
 )
 from app.agents.supervision import (
+    TerminationResult,
     agent_stop_result_from_termination,
     process_supervisor,
 )
@@ -40,6 +43,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
     AttemptConvergenceRequest,
     AttemptTerminationRequest,
     ConvergenceIntent,
+    TerminationRequestResult,
     request_attempt_termination_in_txn,
     resolve_attempt_evidence,
 )
@@ -502,53 +506,40 @@ async def terminate_attempt(attempt: AgentAttemptContext, reason: str) -> None:
         reschedule_if_pending(payload)
 
 
-async def finalize_attempt_termination(
-    job_id: str,
-    run_token: str | None,
+def finalize_interruption_in_txn(
+    db: Session,
+    target: TerminationRequestResult,
     *,
-    confirmed_dead: bool,
+    stop_result: AgentStopResult | TerminationResult | None,
     reason: str,
-    failure_code: str,
-    evidence: _FinalizerEvidence | None = None,
-    termination_mode: str | None = None,
-) -> dict[str, Any] | None:
-    """Converge a stopped attempt only after process-death verification.
-
-    Callers that own an engine (for example the task interrupt endpoint) use
-    this after the engine has attempted to stop its CLI.  A missing token is
-    deliberately not accepted: without fencing there is no safe owner for a
-    durable state transition.  Remote backends must pass structured
-    ``evidence`` built from the unified stop result.
-    """
-    token = str(run_token or "").strip()
-    if not token:
-        return None
-    if evidence is None:
-        db = SessionLocal()
-        try:
-            row = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        finally:
-            db.close()
-        evidence = termination_evidence_for_row(
-            row,
-            confirmed_dead=bool(confirmed_dead),
-            failure_code=str(failure_code or "") or None,
-            reason=str(reason or ""),
+) -> None:
+    """Finalize the accepted stop using the same fences and proof as the reaper."""
+    job = db.get(SddAiJob, target.job_id)
+    if job is None:
+        return
+    if isinstance(stop_result, TerminationResult):
+        stop_result = agent_stop_result_from_termination(stop_result)
+    reason = getattr(stop_result, "error_message", None) or reason
+    if isinstance(stop_result, AgentStopResult) and job.process_execution_kind in (None, stop_result.execution_kind):
+        evidence = convergence.evidence_from_stop_result(
+            stop_result,
+            remote_session_started=bool(job.session_id),
         )
-    payload = await run_db(
-        converge_termination_sync,
-        job_id,
-        token,
-        evidence=evidence,
-        reason=str(reason or ""),
-        failure_code=str(failure_code or "") or None,
-        termination_mode=termination_mode,
+    else:
+        evidence = termination_evidence_for_row(job, confirmed_dead=False, reason=reason, failure_code=None)
+    convergence.converge_job_attempt_in_txn(
+        db,
+        AttemptConvergenceRequest(
+            job_id=target.job_id,
+            run_token=target.run_token or "",
+            worker_boot_id=target.worker_boot_id or "",
+            requested_status=None,
+            reason=reason,
+            evidence=evidence,
+            intent=ConvergenceIntent.TERMINATION_FINALIZE,
+            reap_bookkeeping=True,
+        ),
     )
-    if payload:
-        from app.domains.ai.services.jobs.publishing import reschedule_if_pending
-
-        reschedule_if_pending(payload)
-    return payload
 
 
 # ────────────────────────── 用户取消入口 ──────────────────────────

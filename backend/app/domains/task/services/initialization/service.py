@@ -211,9 +211,6 @@ async def initialize(
 
 
 async def _stop_previous(run, ws_id, task_id, actor_id, db):
-    # A running remote attempt can still be creating its session. Persist its
-    # stop locator before fencing the writer, as the interrupt path does.
-    await control._wait_for_remote_attempt_start(run, task_id)
     await run(
         lambda session: control.prepare_initialize_sync(
             session,

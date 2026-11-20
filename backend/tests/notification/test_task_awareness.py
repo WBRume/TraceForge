@@ -315,6 +315,7 @@ async def test_interrupt_notifies_initiator_unless_they_confirmed_the_stop(
         current_job_id = job.id
         running = True
         session_id = job.session_id
+        attempt = SimpleNamespace(run_token=job.run_token, worker_boot_id=job.worker_boot_id)
 
         async def interrupt(self):
             return TerminationResult(confirmed_dead=confirmed_dead, root_return_code=0 if confirmed_dead else None)
@@ -323,7 +324,7 @@ async def test_interrupt_notifies_initiator_unless_they_confirmed_the_stop(
         pass
 
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _: Engine())
-    monkeypatch.setattr(task_session_control_service, "_broadcast_task_event", ignore)
+    monkeypatch.setattr(task_session_control_service, "_publish_interruption", ignore)
     monkeypatch.setattr(publishing, "publish_job", ignore)
     await task_session_control_service.interrupt_task(
         db, task=task, actor_user_id=actor.id, reason="暂停本轮，稍后继续"
@@ -451,7 +452,7 @@ def test_recovery_and_repeated_error_convergence_do_not_duplicate_notifications(
         ("CANCEL", False),
     ],
 )
-def test_reaper_retains_notification_cause_when_finalizing_as_cancelled(seeded, monkeypatch, mode, other_actor):
+def test_reaper_retains_notification_cause_and_stop_status(seeded, monkeypatch, mode, other_actor):
     from app.domains.ai.services.ai_job_convergence_service import (
         AttemptTerminationRequest,
         request_attempt_termination_in_txn,
@@ -501,7 +502,8 @@ def test_reaper_retains_notification_cause_when_finalizing_as_cancelled(seeded, 
         failure_code=mode,
     )
     db.refresh(job)
-    assert payload is not None and job.status == AiJobStatus.CANCELLED
+    expected_status = AiJobStatus.INTERRUPTED if mode == "INTERRUPT" else AiJobStatus.CANCELLED
+    assert payload is not None and job.status == expected_status
     assert job.context_json["termination_mode"] == mode
     unexpected = mode == "WORKER_SHUTDOWN" or other_actor
     kind = "AI_RUN_ERROR" if unexpected else "AI_RUN_INTERRUPTED" if mode == "INTERRUPT" else "AI_RUN_STOPPED"

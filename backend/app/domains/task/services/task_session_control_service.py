@@ -19,7 +19,6 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.agents.contract import AgentStopResult
 from app.core.logging import get_logger
 from app.core.offload import run_db_txn, run_db_txn_with_bind
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
@@ -27,7 +26,6 @@ from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.ai.services.ai_job_convergence_service import (
     AttemptTerminationRequest,
     TerminationRequestResult,
-    evidence_from_stop_result,
     request_attempt_termination_in_txn,
 )
 from app.domains.ai.services.jobs import attempts as ai_job_attempts
@@ -41,7 +39,7 @@ from app.domains.ai.services.jobs.store import (
 )
 from app.domains.skill.services.runtime import configuration as skill_runtime_configuration
 from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.task.services import context_token_service
+from app.domains.task.services import context_token_service, task_event_publisher
 from app.domains.task.services import status_machine as sm
 from app.domains.task.services.conversation import messages as task_conversation_messages
 from app.domains.task.services.task_records import queries as task_task_records_queries
@@ -159,20 +157,13 @@ def _task_payload(task: SddTask, job_payload: dict[str, Any] | None = None) -> d
     }
 
 
-async def _broadcast_task_event(event_type: str, task: SddTask, job_payload: dict[str, Any] | None) -> None:
-    await task_ws_manager.send_message_to_room(
-        task.id,
-        WSMessage(type=event_type, payload=_task_payload(task, job_payload)),
-    )
-
-
 def _load_interrupt_state_sync(db: Session, *, task_id: str, job_id: str | None) -> dict[str, Any]:
     task = db.query(SddTask).filter(SddTask.id == task_id).first()
     if not task:
         raise TaskSessionControlError("Task not found", status_code=404)
     job = db.get(SddAiJob, job_id) if job_id else None
     job_payload = serialize_job(job) if job else None
-    return {"task": _task_payload(task, job_payload), "job": job_payload}
+    return _task_payload(task, job_payload)
 
 
 def _interrupt_preparing_submission(db: Session, task_id: str, message: str) -> dict[str, Any] | None:
@@ -186,40 +177,6 @@ def _interrupt_preparing_submission(db: Session, task_id: str, message: str) -> 
     abandon_input(db, task_id, row.id)
     chat_submission_service._transition(db, row, "FAILED", error_message=message)
     return chat_submission_service.serialize(row)
-
-
-def _finalize_legacy_interrupt_sync(
-    db: Session,
-    *,
-    task_id: str,
-    job_id: str,
-    confirmed_dead: bool,
-    reason: str,
-) -> None:
-    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-    if not job or job.status not in {AiJobStatus.TERMINATING, AiJobStatus.ORPHANED}:
-        return
-    if confirmed_dead:
-        job.status = AiJobStatus.INTERRUPTED
-        job.progress = 100
-        job.message = "AI session interrupted by user"
-        job.finished_at = datetime.utcnow()
-        job.error_message = None
-        job.run_token = None
-        job.worker_id = None
-        job.worker_boot_id = None
-        job.process_pid = None
-        job.process_started_at = None
-        job.process_group_id = None
-        job.heartbeat_at = None
-        job.lease_expires_at = None
-    else:
-        job.status = AiJobStatus.ORPHANED
-        job.message = "Agent process could not be confirmed dead"
-        job.error_message = reason
-        job.failure_code = "PROCESS_TREE_UNKNOWN"
-        job.terminal_reason = reason
-    db.commit()
 
 
 def _accept_interrupt_command(
@@ -345,72 +302,29 @@ async def interrupt_task(
         )
     )
     if "submission" in receipt:
-        state["task"]["submission"] = receipt["submission"]
+        state["submission"] = receipt["submission"]
     if target and target.changed:
         await ai_job_publishing.publish_job(target.job_id)
-    from app.domains.task.services.chat_submission_service import wake_event_publisher
-
-    await wake_event_publisher()
-    await _publish_interruption(task, resolved_task_id, state)
-    return state["task"]
+    task_event_publisher.wake()
+    await _publish_interruption(resolved_task_id, state)
+    return state
 
 
 async def _stop_interrupt_engine(run_txn, engine, target: TerminationRequestResult, reason: str) -> None:
-    termination_error = None
     try:
-        termination = await engine.interrupt()
+        stop_result = await engine.interrupt()
     except Exception as exc:
-        termination = None
-        termination_error = str(exc) or exc.__class__.__name__
-
-    termination_reason = termination_error or getattr(termination, "error_message", None) or reason
-    if isinstance(termination, AgentStopResult):
-        evidence = evidence_from_stop_result(
-            termination,
-            remote_session_started=bool(engine.session_id),
-            execution_kind=termination.execution_kind,
+        stop_result = None
+        reason = str(exc) or exc.__class__.__name__
+    await run_txn(
+        lambda session: ai_job_attempts.finalize_interruption_in_txn(
+            session, target, stop_result=stop_result, reason=reason
         )
-        confirmed_dead = (
-            termination.stop_acknowledged is True
-            if termination.execution_kind == "REMOTE_SESSION"
-            else termination.local_process_confirmed_dead is True
-        )
-    else:
-        confirmed_dead = termination_error is None and (
-            (termination is None and target.run_token is None) or bool(getattr(termination, "confirmed_dead", False))
-        )
-        evidence = None
-
-    if target.run_token:
-        await ai_job_attempts.finalize_attempt_termination(
-            target.job_id,
-            target.run_token,
-            confirmed_dead=confirmed_dead,
-            reason=termination_reason,
-            failure_code=str(
-                getattr(termination, "error_code", "")
-                or ("USER_INTERRUPT" if confirmed_dead else "PROCESS_TREE_UNKNOWN")
-            ),
-            evidence=evidence,
-            termination_mode="INTERRUPT",
-        )
-    else:
-        await run_txn(
-            lambda session: _finalize_legacy_interrupt_sync(
-                session,
-                task_id=engine.task_id,
-                job_id=target.job_id,
-                confirmed_dead=confirmed_dead,
-                reason=termination_reason,
-            )
-        )
+    )
 
 
-async def _publish_interruption(task, task_id, state):
-    if task is not None:
-        await _broadcast_task_event("task_interrupted", task, state["job"])
-    else:
-        await task_ws_manager.send_message_to_room(task_id, WSMessage(type="task_interrupted", payload=state["task"]))
+async def _publish_interruption(task_id: str, state: dict[str, Any]) -> None:
+    await task_ws_manager.send_message_to_room(task_id, WSMessage(type="task_interrupted", payload=state))
 
 
 def _prepare_interrupted_resume(

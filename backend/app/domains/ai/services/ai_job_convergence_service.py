@@ -589,10 +589,7 @@ def _derive_termination_business_status(
     queue_key = str(job.queue_key or "")
     mode = _persisted_user_stop_mode(job) or request.termination_mode
     if mode == "INTERRUPT" and job.channel == AiJobChannel.TASK_CHAT:
-        # 用户临时中断（可恢复）：与 legacy 无 token 路径
-        # （``_finalize_legacy_interrupt_sync``）语义一致，job 落 INTERRUPTED。
-        # ``cancel_requested_at`` 在 INTERRUPT 模式下只承担写入 fence 职责，
-        # 不把临时中断判定为 CANCELLED。
+        # The stop write fences the runner. Its intent preserves a resumable job.
         return AiJobStatus.INTERRUPTED
     # 用户显式取消（cancel_requested_at）绝不进入任何重试规则，必须落
     # CANCELLED。REQUIREMENT_PREVIEW 的 attempt_count < max_attempts 重试

@@ -13,6 +13,7 @@ import app.domains.task.models.test_result
 import app.domains.workflow.models.task_change
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
 from app.agents.contract import AgentRunResult
+from app.agents.supervision import TerminationResult
 from app.database import Base
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import attempts as ai_attempts
@@ -90,7 +91,8 @@ def _seed_task(db, *, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.RUN
     return task, job
 
 
-def test_task_interrupt_marks_task_and_job_interrupted(monkeypatch):
+@pytest.mark.parametrize("confirmed_dead", [True, False])
+def test_task_interrupt_converges_unclaimed_job_with_stop_evidence(monkeypatch, confirmed_dead):
     SessionLocal = _build_session()
     db = SessionLocal()
     task, job = _seed_task(db)
@@ -108,6 +110,7 @@ def test_task_interrupt_marks_task_and_job_interrupted(monkeypatch):
         async def interrupt(self):
             self.interrupted = True
             self.running = False
+            return TerminationResult(confirmed_dead=confirmed_dead, root_return_code=0 if confirmed_dead else None)
 
     engine = _FakeEngine()
     published = []
@@ -116,12 +119,12 @@ def test_task_interrupt_marks_task_and_job_interrupted(monkeypatch):
     async def _publish_job(job_id):
         published.append(job_id)
 
-    async def _broadcast(event_type, event_task, job_payload):
-        events.append((event_type, event_task.id, job_payload["id"]))
+    async def _broadcast(task_id, payload):
+        events.append((task_id, payload["status"], payload["job"]["id"]))
 
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: engine)
     monkeypatch.setattr(ai_publishing, "publish_job", _publish_job)
-    monkeypatch.setattr(task_session_control_service, "_broadcast_task_event", _broadcast)
+    monkeypatch.setattr(task_session_control_service, "_publish_interruption", _broadcast)
 
     payload = asyncio.run(
         task_session_control_service.interrupt_task(
@@ -138,10 +141,11 @@ def test_task_interrupt_marks_task_and_job_interrupted(monkeypatch):
     assert task.status == TaskStatus.INTERRUPTED
     assert task.session_id == "session-1"
     assert task.interrupt_reason == "pause for edits"
-    assert job.status == AiJobStatus.INTERRUPTED
+    assert job.status == (AiJobStatus.INTERRUPTED if confirmed_dead else AiJobStatus.ORPHANED)
+    assert (job.next_reap_at is not None) is (not confirmed_dead)
     assert job.session_id == "session-1"
     assert published == ["job-1"]
-    assert events == [("task_interrupted", "task-1", "job-1")]
+    assert events == [("task-1", "INTERRUPTED", "job-1")]
     assert payload["status"] == TaskStatus.INTERRUPTED.value
 
 
@@ -169,8 +173,6 @@ def test_task_interrupt_with_claimed_attempt_converges_to_resumable_interrupted(
         attempt = SimpleNamespace(run_token=job.run_token, worker_boot_id=job.worker_boot_id)
 
         async def interrupt(self):
-            from app.agents.supervision import TerminationResult
-
             return TerminationResult(confirmed_dead=True, root_return_code=0)
 
     engine = _FakeEngine()
@@ -180,12 +182,12 @@ def test_task_interrupt_with_claimed_attempt_converges_to_resumable_interrupted(
     async def _publish_job(job_id):
         published.append(job_id)
 
-    async def _broadcast(event_type, event_task, job_payload):
-        events.append((event_type, event_task.id, job_payload["id"]))
+    async def _broadcast(task_id, payload):
+        events.append((task_id, payload["status"], payload["job"]["id"]))
 
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: engine)
     monkeypatch.setattr(ai_publishing, "publish_job", _publish_job)
-    monkeypatch.setattr(task_session_control_service, "_broadcast_task_event", _broadcast)
+    monkeypatch.setattr(task_session_control_service, "_publish_interruption", _broadcast)
 
     payload = asyncio.run(
         task_session_control_service.interrupt_task(
@@ -205,7 +207,7 @@ def test_task_interrupt_with_claimed_attempt_converges_to_resumable_interrupted(
     assert job.run_token is None
     assert job.process_pid is None
     assert published == [job.id]
-    assert events == [("task_interrupted", task.id, job.id)]
+    assert events == [(task.id, "INTERRUPTED", job.id)]
     assert payload["status"] == TaskStatus.INTERRUPTED.value
     # 恢复入口现在能找到可恢复作业。
     db.expire_all()
@@ -372,12 +374,12 @@ def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch)
     async def _publish_job(job_id):
         published.append(job_id)
 
-    async def _broadcast(event_type, event_task, job_payload):
-        events.append((event_type, event_task.id, job_payload["id"]))
+    async def _broadcast(task_id, payload):
+        events.append((task_id, payload["status"], payload["job"]["id"]))
 
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: None)
     monkeypatch.setattr(ai_publishing, "publish_job", _publish_job)
-    monkeypatch.setattr(task_session_control_service, "_broadcast_task_event", _broadcast)
+    monkeypatch.setattr(task_session_control_service, "_publish_interruption", _broadcast)
 
     payload = asyncio.run(
         task_session_control_service.interrupt_task(
@@ -394,7 +396,7 @@ def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch)
     assert job.message == "stop before start"
     assert task.status == TaskStatus.INTERRUPTED
     assert published == ["job-1"]
-    assert events == [("task_interrupted", "task-1", "job-1")]
+    assert events == [("task-1", "INTERRUPTED", "job-1")]
     assert payload["job"]["status"] == AiJobStatus.CANCELLED.value
     prepared = task_session_control_service._prepare_interrupted_resume(
         db,
