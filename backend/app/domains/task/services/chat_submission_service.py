@@ -17,7 +17,7 @@ from datetime import datetime
 from functools import partial
 from uuid import uuid4
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
@@ -25,6 +25,7 @@ from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.logging import get_logger
 from app.core.offload import run_db, run_db_txn
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.services.jobs.store import row_has_leaked_interrupted_ownership
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.task import SddTask, TaskStatus
@@ -32,7 +33,12 @@ from app.domains.task.models.task_event_outbox import TaskEventOutbox
 from app.domains.task.services import agent_session_switch
 from app.domains.task.services import status_machine as sm
 from app.domains.task.services.conversation import history as task_conversation_history
-from app.domains.task.services.task_attempt_recovery_service import BLOCKING, active_statuses, recover_task_attempts
+from app.domains.task.services.task_attempt_recovery_service import (
+    BLOCKING,
+    active_statuses,
+    blocking_attempt_predicate,
+    recover_task_attempts,
+)
 
 logger = get_logger(__name__, category="task_execution")
 _runners: dict[str, asyncio.Task] = {}
@@ -235,7 +241,7 @@ def _accept_sync(
         raise SubmissionError("当前会话正在撤销，请等待完成")
     if (
         db.query(SddAiJob.id)
-        .filter(SddAiJob.task_id == task_id, SddAiJob.channel == AiJobChannel.TASK_CHAT, SddAiJob.status.in_(BLOCKING))
+        .filter(SddAiJob.task_id == task_id, SddAiJob.channel == AiJobChannel.TASK_CHAT, blocking_attempt_predicate())
         .first()
     ):
         raise SubmissionError("当前回合正在执行，请等待完成")
@@ -304,6 +310,10 @@ async def accept(*, task_id, actor_id, client_message_id, content, metadata=None
         "_agent_session_replacement_check",
         "fresh_session",
         "agent_service_replacement",
+        "resume_interrupted",
+        "resumed_from_job_id",
+        "resumed_by_id",
+        "resumed_at",
     ):
         clean.pop(key, None)
     if new_agent_session:
@@ -354,6 +364,7 @@ def _load_preparation(db, submission_id):
     task = db.get(SddTask, row.task_id)
     if (
         not task
+        or task.baselined_at is not None
         or str(getattr(task.status, "value", task.status)) in {"COMPLETED", "FAILED", "BASELINED", "INTERRUPTED"}
         or (int(task.session_generation or 0), int(task.session_revision or 0))
         != (row.session_generation, row.session_revision)
@@ -361,8 +372,11 @@ def _load_preparation(db, submission_id):
         _fail_sync(db, submission_id, "会话已改变，本次发送未执行")
         return None
     from app.domains.workspace_collaboration.hooks import input_ready
+    from app.domains.workspace_collaboration.service import local_input_expired
 
     if not input_ready(db, row.task_id, row.id):
+        if local_input_expired(db, row.task_id, row.id):
+            _fail_sync(db, submission_id, "本地协同输入已过期，请重新发送")
         return None
     control = (row.metadata_json or {}).get("_collaboration_control") or {}
     return {
@@ -525,13 +539,72 @@ def finalize_submission_in_txn(db, job, final_status):
     return row
 
 
+def _recover_execution_status(db, task, receipt, job):
+    if (
+        task is None
+        or task.baselined_at is not None
+        or task.status not in {TaskStatus.RUNNING, TaskStatus.AWAITING_INPUT}
+        or (receipt.session_generation, receipt.session_revision) != (task.session_generation, task.session_revision)
+    ):
+        return
+    event_key = f"submission-recovery:{receipt.id}"
+    if job is not None:
+        if job.id != task.status_run_id:
+            return
+        trigger = sm.Trigger.ROUND_FINISHED if job.status == AiJobStatus.SUCCESS else sm.Trigger.EXECUTION_INTERRUPTED
+        sm.execution_event(
+            db,
+            task,
+            trigger,
+            event_key=event_key,
+            job_id=job.id,
+            generation=int(job.session_generation or 0),
+            revision=int(job.session_revision or 0),
+        )
+    elif not active_statuses(db, task.id):
+        reason = "本轮执行记录缺失，请重新发送消息"
+        sm.dispatch(db, task, sm.Trigger.EXECUTION_LOST, event_key=event_key, reason=reason)
+        task.interrupt_reason = reason
+        task.interrupted_at = datetime.utcnow()
+        task.interrupted_by_id = None
+
+
 def _reconcile_sync(db, task_id=None):
+    from app.domains.workspace_collaboration.models import CollaborationState
+
     scope = TaskChatSubmission.task_id == task_id if task_id is not None else True
+    now = datetime.utcnow()
+    cloud_input = TaskChatSubmission.metadata_json["collaboration"].as_string().is_(None)
     pending = [
         row.id
         for row in db.query(TaskChatSubmission.id)
-        .filter_by(status="PREPARING")
-        .filter(scope)
+        .join(SddTask, SddTask.id == TaskChatSubmission.task_id)
+        .outerjoin(
+            CollaborationState,
+            and_(CollaborationState.task_id == TaskChatSubmission.task_id, CollaborationState.enabled.is_(True)),
+        )
+        .filter(
+            TaskChatSubmission.status == "PREPARING",
+            scope,
+            or_(
+                CollaborationState.task_id.is_(None),
+                SddTask.session_generation != TaskChatSubmission.session_generation,
+                SddTask.session_revision != TaskChatSubmission.session_revision,
+                SddTask.status.in_([TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.INTERRUPTED]),
+                SddTask.baselined_at.isnot(None),
+                and_(
+                    CollaborationState.pending_submission_id == TaskChatSubmission.id,
+                    or_(
+                        and_(CollaborationState.lease_expires_at <= now, ~cloud_input),
+                        and_(
+                            CollaborationState.sync_phase == "PREPARING",
+                            CollaborationState.input_submission_id == TaskChatSubmission.id,
+                            or_(CollaborationState.lease_expires_at > now, cloud_input),
+                        ),
+                    ),
+                ),
+            ),
+        )
         .order_by(TaskChatSubmission.created_at, TaskChatSubmission.id)
         .limit(100)
         .all()
@@ -545,7 +618,7 @@ def _reconcile_sync(db, task_id=None):
             scope,
             TaskChatSubmission.active_task_id.isnot(None),
             TaskChatSubmission.status == "EXECUTING",
-            or_(SddAiJob.id.is_(None), SddAiJob.status.notin_(BLOCKING)),
+            or_(SddAiJob.id.is_(None), ~blocking_attempt_predicate()),
         )
         .order_by(TaskChatSubmission.task_id, TaskChatSubmission.id)
         .limit(100)
@@ -553,13 +626,14 @@ def _reconcile_sync(db, task_id=None):
     )
     for row in rows:
         # Follow the same task-before-message lock order as search capture and acceptance.
-        task = db.query(SddTask).filter_by(id=row.task_id).with_for_update().one_or_none()
+        task = db.query(SddTask).filter_by(id=row.task_id).populate_existing().with_for_update().one_or_none()
         row = db.query(TaskChatSubmission).filter_by(id=row.id).populate_existing().with_for_update().one_or_none()
         if row is None or row.status != "EXECUTING":
             continue
         job = db.get(SddAiJob, row.ai_job_id) if row.ai_job_id else None
-        if job is not None and job.status in BLOCKING:
+        if job is not None and (job.status in BLOCKING or row_has_leaked_interrupted_ownership(job)):
             continue
+        _recover_execution_status(db, task, row, job)
         success = job is not None and job.status == AiJobStatus.SUCCESS
         _transition(
             db,

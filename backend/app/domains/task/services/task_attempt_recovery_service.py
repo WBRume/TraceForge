@@ -2,9 +2,12 @@
 
 import asyncio
 
+from sqlalchemy import and_, or_
+
 from app.config import settings
 from app.core.offload import run_db_txn
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.services.jobs.store import attempt_ownership_predicate
 
 BLOCKING = [
     AiJobStatus.PENDING,
@@ -15,6 +18,13 @@ BLOCKING = [
 ]
 
 
+def blocking_attempt_predicate():
+    return or_(
+        SddAiJob.status.in_(BLOCKING),
+        and_(SddAiJob.status == AiJobStatus.INTERRUPTED, attempt_ownership_predicate()),
+    )
+
+
 def active_statuses(db, task_id):
     return [
         row[0]
@@ -22,7 +32,7 @@ def active_statuses(db, task_id):
         .filter(
             SddAiJob.task_id == task_id,
             SddAiJob.channel == AiJobChannel.TASK_CHAT,
-            SddAiJob.status.in_(BLOCKING),
+            blocking_attempt_predicate(),
         )
         .all()
     ]

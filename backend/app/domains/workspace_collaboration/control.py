@@ -1,5 +1,6 @@
 """Keep start/resume commands on the same durable input path as ordinary chat."""
 
+from datetime import datetime
 from uuid import uuid4
 
 from app.domains.task.services import status_machine as sm
@@ -24,6 +25,7 @@ def accept_control(
     metadata=None,
     failed_check=None,
     replacement_check=None,
+    resumed_from_job_id=None,
 ):
     from app.domains.task.services import chat_submission_service
     from app.domains.workspace_collaboration.session import uses_local_input
@@ -32,7 +34,11 @@ def accept_control(
     metadata = {
         **(metadata or {}),
         "source": source,
-        "_collaboration_control": {"prompt": prompt or content, "fresh_session": fresh_session},
+        "_collaboration_control": {
+            "prompt": prompt or content,
+            "fresh_session": fresh_session,
+            "resumed_from_job_id": resumed_from_job_id,
+        },
     }
     # Historical bindings are not an input dependency. Match ordinary chat:
     # only the connected driver's own command requests a local handoff.
@@ -115,20 +121,8 @@ def require_ready(db, task_id, *, actor_id=None):
 
 def resume_submission(db, task_id, actor_id, prepared, client_id, metadata=None, *, failed_check=None):
     from app.domains.task.models.task import SddTask
-    from app.domains.task.models.task_status_event import TaskStatusEvent
 
     task = db.get(SddTask, task_id)
-    # A failed preparation needs a fresh receipt, even without collaboration.
-    if not enabled(db, task_id) and not (
-        db.query(TaskStatusEvent.id)
-        .filter_by(
-            task_id=task_id,
-            status_seq=task.status_seq,
-            trigger=sm.Trigger.INPUT_PREPARATION_FAILED.value,
-        )
-        .first()
-    ):
-        return None
     return _accept_resumed_control(
         db,
         task,
@@ -143,20 +137,24 @@ def resume_submission(db, task_id, actor_id, prepared, client_id, metadata=None,
 
 
 def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *, content, source, failed_check=None):
-    from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
-
     require_ready(db, task.id, actor_id=actor_id)
-    sm.dispatch(
-        db, task, sm.Trigger.RESUME, event_key=f"resume:{client_id or prepared['old_job_id']}", actor_id=actor_id
-    )
+    client_id = client_id or str(uuid4())
+    sm.dispatch(db, task, sm.Trigger.RESUME, event_key=f"resume:{client_id}", actor_id=actor_id)
     task.session_id = prepared.get("session_id", task.session_id)
     task.error_message = None
     task.interrupt_reason = None
     task.interrupted_by_id = None
     task.interrupted_at = None
+    metadata = {
+        **(metadata or {}),
+        "resume_interrupted": True,
+        "resumed_from_job_id": prepared["old_job_id"],
+        "resumed_by_id": actor_id,
+        "resumed_at": datetime.utcnow().isoformat() + "Z",
+    }
     if prepared.get("replace_agent_session"):
         metadata = {**(metadata or {}), "_new_agent_session": True}
-    receipt = accept_control(
+    return accept_control(
         db,
         task,
         actor_id,
@@ -167,13 +165,8 @@ def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *
         metadata=metadata,
         failed_check=failed_check,
         replacement_check=prepared.get("agent_session_replacement_check"),
+        resumed_from_job_id=prepared["old_job_id"],
     )
-    old_job_id = prepared["old_job_id"]
-    old_job = db.get(SddAiJob, old_job_id) if old_job_id else None
-    if old_job is not None and old_job.status == AiJobStatus.INTERRUPTED:
-        old_job.status = AiJobStatus.CANCELLED
-        old_job.message = "Interrupted attempt superseded by resume preparation"
-    return receipt
 
 
 def existing_resume(db, task_id, actor_id, client_id, prompt, confirm_continue):

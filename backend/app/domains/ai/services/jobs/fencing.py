@@ -119,7 +119,7 @@ def update_job_state_sync(
     is_terminal_write = bool(finalize) or status in FINAL_STATUSES
     db = SessionLocal()
     try:
-        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).with_for_update().first()
+        job = convergence.lock_job_in_txn(db, db.query(SddAiJob).filter(SddAiJob.id == job_id))
         if not job:
             return None
         if not is_terminal_write and job.completion_json:

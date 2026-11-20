@@ -23,7 +23,9 @@ from app.domains.ai.services.jobs import state
 from app.domains.ai.services.jobs.constants import (
     JOB_KIND_DIAGNOSIS_SUMMARY,
     JOB_KIND_TASK_BASELINE,
+    TASK_QUEUE_PAUSED_STATUSES,
     looks_like_timeout_text,
+    task_id_from_queue_key,
 )
 from app.domains.ai.services.jobs.registry import runtime
 from app.domains.task.models.task import SddTask
@@ -86,6 +88,10 @@ def load_dispatch_context_sync(job_id: str) -> dict[str, Any] | None:
         # task 缺失不在分派查询中抛错：runner 兜底收敛与 baseline 只需要
         # task_id/input_revision；聊天执行路径在执行器入口自行校验。
         task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
+        if task_id_from_queue_key(job.queue_key) and (
+            job.cancel_requested_at is not None or (task and task.status in TASK_QUEUE_PAUSED_STATUSES)
+        ):
+            return None
         return {
             "channel": job.channel,
             "queue_key": str(job.queue_key or ""),

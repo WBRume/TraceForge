@@ -15,6 +15,7 @@ import pytest
 
 from app.agents.contract import (
     EXECUTION_KIND_LOCAL_PROCESS,
+    EXECUTION_KIND_REMOTE_SESSION,
     AgentAttemptRuntimeState,
     bind_agent_attempt,
     bind_agent_attempt_runtime,
@@ -367,6 +368,31 @@ def test_runner_convergence_leaves_running_job_safe_terminal(monkeypatch):
     saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
     assert saved.status == AiJobStatus.INTERRUPTED
     assert saved.process_pid is None
+
+
+def test_runner_converges_persisted_stop_before_provider_dispatch(monkeypatch):
+    factory = _session_factory()
+    with factory() as db:
+        job = _owned_job(db, kind=EXECUTION_KIND_REMOTE_SESSION, pid=None, cancel_requested=True)
+        job.context_json = {"termination_mode": "INTERRUPT"}
+        db.commit()
+    patch_ai_job_db(monkeypatch, factory)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
+
+    asyncio.run(
+        ai_queue_runner._converge_runner_exit(
+            _make_attempt(kind=EXECUTION_KIND_REMOTE_SESSION),
+            AgentAttemptRuntimeState(),
+            ai_executors.JobExecutionOutcome(),
+        )
+    )
+
+    with factory() as db:
+        job = db.get(SddAiJob, "convergence-job")
+        assert job.status == AiJobStatus.INTERRUPTED
+        assert job.cancel_requested_at is not None
+        assert job.run_token is None
+        assert job.lease_expires_at is None
 
 
 # ────────────────────── 14.4 广播语义 ──────────────────────

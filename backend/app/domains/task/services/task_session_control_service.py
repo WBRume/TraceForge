@@ -31,7 +31,7 @@ from app.domains.ai.services.jobs.store import (
 )
 from app.domains.skill.services.runtime import configuration as skill_runtime_configuration
 from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.task.services import context_token_service, task_session_service
+from app.domains.task.services import context_token_service
 from app.domains.task.services import status_machine as sm
 from app.domains.task.services.conversation import messages as task_conversation_messages
 from app.domains.task.services.task_records import queries as task_task_records_queries
@@ -324,28 +324,50 @@ def _finalize_legacy_interrupt_sync(
 
 
 def _accept_interrupt_command(db, task_id, actor_id, command_id, sequence, reason):
+    from app.domains.ai.services.ai_job_convergence_service import (
+        AttemptTerminationRequest,
+        request_attempt_termination_in_txn,
+    )
+
     task = db.query(SddTask).filter_by(id=task_id).with_for_update().one()
     _require_local_actor(db, task_id, actor_id)
+    event_key = f"interrupt-command:{command_id}"
     result = sm.dispatch(
         db,
         task,
         sm.Trigger.INTERRUPT,
-        event_key=f"interrupt-command:{command_id}",
+        event_key=event_key,
         actor_id=actor_id,
         expected_seq=sequence,
         reason=reason,
     )
-    if not result.get("duplicate"):
-        # Persist the stop intent with the transition. A process crash after
-        # this commit must still fence writes and let recovery stop the job.
-        job = _find_active_task_job(db, task_id)
-        if job:
-            job.cancel_requested_at = datetime.utcnow()
-            job.context_json = {**(job.context_json or {}), "termination_mode": "INTERRUPT"}
-        _interrupt_preparing_submission(db, task_id, str(reason or "User interrupted the session"))
-        task.interrupt_reason = reason
-        task.interrupted_by_id = actor_id
-        task.interrupted_at = datetime.utcnow()
+    if result.get("duplicate"):
+        return {**sm.receipt(db, task_id, event_key), "duplicate": True}
+    # Persist the stop intent with the transition. A process crash after
+    # this commit must still fence writes and let recovery stop the job.
+    job = _find_active_task_job(db, task_id)
+    if job and job.status == AiJobStatus.PENDING:
+        stopped = request_attempt_termination_in_txn(
+            db,
+            AttemptTerminationRequest(
+                job_id=job.id,
+                task_id=task_id,
+                actor_user_id=actor_id,
+                reason=reason or "User interrupted before dispatch",
+                mode="INTERRUPT",
+            ),
+        )
+        if stopped.status == AiJobStatus.CANCELLED.value:
+            db.flush()
+            result["job"] = serialize_job(job)
+            sm.remember_command_result(db, task_id, event_key, result)
+    elif job:
+        job.cancel_requested_at = datetime.utcnow()
+        job.context_json = {**(job.context_json or {}), "termination_mode": "INTERRUPT"}
+    _interrupt_preparing_submission(db, task_id, str(reason or "User interrupted the session"))
+    task.interrupt_reason = reason
+    task.interrupted_by_id = actor_id
+    task.interrupted_at = datetime.utcnow()
     db.commit()
     return result
 
@@ -386,6 +408,14 @@ async def interrupt_task(
         )
         if receipt.get("duplicate"):
             return receipt
+        if receipt.get("job"):
+            queued_job_id = receipt["job"]["id"]
+            state = await run_interrupt_txn(
+                lambda session: _load_interrupt_state_sync(session, task_id=resolved_task_id, job_id=queued_job_id)
+            )
+            await ai_job_publishing.publish_job(queued_job_id)
+            await _publish_interruption(task, resolved_task_id, state)
+            return state["task"]
     current = await run_interrupt_txn(
         lambda session: _load_interrupt_state_sync(session, task_id=resolved_task_id, job_id=None)
     )
@@ -552,13 +582,7 @@ def _prepare_interrupted_resume(
 
     job = _find_latest_interrupted_job(db, task_id)
     if not job:
-        # A queued attempt can be cancelled before it has a provider session;
-        # a turn-mode question can also be interrupted after its job succeeded.
-        # Both are safe to resume. Active/unknown ownership remains a blocker.
-        if _find_active_task_job(db, task_id):
-            raise TaskSessionControlError(
-                "Previous execution is still stopping. Please retry shortly.", status_code=409
-            )
+        # Queued stops and finished turn-mode questions may have no interrupted job.
         job = (
             db.query(SddAiJob)
             .filter(
@@ -583,55 +607,6 @@ def _prepare_interrupted_resume(
     }
 
 
-def _finalize_interrupted_resume(db: Session, *, task_id, prepared, now, created) -> dict[str, Any]:
-    """收尾段（单事务）：task 状态清理 + 旧 job 终态 + snapshot 种子 + payload 组装。"""
-    task = db.query(SddTask).filter(SddTask.id == task_id).first()
-    if task is None:
-        raise TaskSessionControlError("Task not found", status_code=404)
-    _ensure_task_not_baselined(task)
-    if not prepared.get("replace_agent_session"):
-        task.session_id = prepared["session_id"]
-    task.error_message = None
-    task.interrupt_reason = None
-    task.interrupted_by_id = None
-    task.interrupted_at = None
-
-    # The interrupted attempt remains immutable history.  Making it terminal
-    # removes the queue blocker; the new attempt is claimed as RUNNING only by
-    # the normal queue worker, so scheduling failures cannot strand it RUNNING.
-    old_job = db.query(SddAiJob).filter(SddAiJob.id == prepared["old_job_id"]).first()
-    if old_job is not None and old_job.status == AiJobStatus.INTERRUPTED:
-        old_job.status = AiJobStatus.CANCELLED
-        old_job.progress = 100
-        old_job.message = "Interrupted attempt superseded by resume"
-        old_job.finished_at = now
-        old_job.context_json = _merge_json(
-            old_job.context_json,
-            {
-                "superseded_by_resume_job_id": created.job_id,
-                "superseded_at": now.isoformat() + "Z",
-            },
-        )
-
-    resume_job = db.query(SddAiJob).filter(SddAiJob.id == created.job_id).first()
-    try:
-        if resume_job is not None:
-            snapshot = context_token_service.ensure_snapshot_for_job(db, resume_job, status="PENDING")
-            context_token_service.record_task_prompt(
-                db,
-                snapshot=snapshot,
-                prompt_text=prepared["prompt_text"],
-                chat_message_id=created.message_id,
-            )
-    except Exception:
-        pass
-
-    db.commit()
-    job_payload = serialize_job(resume_job) if resume_job is not None else {}
-    task_payload = _task_payload(task, job_payload)
-    return {"task_payload": task_payload, "job_payload": job_payload}
-
-
 async def resume_interrupted_task(
     *,
     task_id: str,
@@ -642,11 +617,7 @@ async def resume_interrupted_task(
     client_message_id: str | None = None,
     new_agent_session: bool = False,
 ) -> dict[str, Any]:
-    """恢复被打断的任务（上行/REST 共用入口）。
-
-    同步 DB 段拆分到 DB 线程执行（准备/收尾各自单事务、线程内自建 session）；
-    引擎检查、checkpoint、turn 创建与广播保持在事件循环。
-    """
+    """Accept a durable resume receipt before preparing the successor turn."""
     idempotency_key = str(client_message_id or "").strip()
     from app.domains.task.services import chat_submission_service
 
@@ -692,54 +663,8 @@ async def resume_interrupted_task(
             db, task_id, actor_user_id, prepared, idempotency_key or None, message_metadata, failed_check=failed_check
         )
     )
-    if receipt:
-        await schedule_control(receipt)
-        return {"task_id": task_id, "job": None, "submission": receipt}
-
-    await run_db_txn(
-        lambda session: sm.dispatch(
-            session,
-            session.get(SddTask, task_id),
-            sm.Trigger.RESUME,
-            event_key=f"resume:{idempotency_key or prepared['old_job_id']}",
-            actor_id=actor_user_id,
-        )
-    )
-    now = datetime.utcnow()
-
-    created = await task_session_service.create_task_chat_turn(
-        task_id=task_id,
-        actor_user_id=actor_user_id,
-        content=prepared["prompt_text"],
-        context_json={
-            "source": "task_resume",
-            "resume_interrupted": True,
-            "resumed_from_job_id": prepared["old_job_id"],
-            "resumed_at": now.isoformat() + "Z",
-            "resumed_by_id": actor_user_id,
-            "client_message_id": idempotency_key or None,
-            **message_metadata,
-        },
-        session_id=prepared["session_id"],
-        replace_agent_session=new_agent_session,
-        agent_session_replacement_check=prepared.get("agent_session_replacement_check"),
-        failed_session_check=failed_check,
-        client_message_id=idempotency_key or None,
-    )
-
-    _finalize_resume_sync = partial(
-        _finalize_interrupted_resume, task_id=task_id, prepared=prepared, now=now, created=created
-    )
-
-    finalized = await run_db_txn(_finalize_resume_sync)
-
-    await ai_job_publishing.publish_job(prepared["old_job_id"])
-    await task_ws_manager.send_message_to_room(
-        task_id,
-        WSMessage(type="task_resumed", payload=finalized["task_payload"]),
-    )
-    await ai_job_publishing.enqueue_task_chat_job(created.job_id)
-    return finalized["task_payload"]
+    await schedule_control(receipt)
+    return {"task_id": task_id, "job": None, "submission": receipt}
 
 
 # ──────────────────────── 会话建立：start / initialize ────────────────────────
@@ -892,6 +817,8 @@ def start_task_session_sync(
             "fresh_session": True,
             "initial_prompt": True,
         },
+        session_generation=task.session_generation,
+        commit=False,
     )
     job = create_task_chat_job(
         db,
@@ -899,10 +826,11 @@ def start_task_session_sync(
         task_id=task.id,
         creator_id=creator_id,
         prompt_text=prompt,
-        context_json={"source": "task_start", "fresh_session": True},
+        context_json={"source": "task_start", "fresh_session": True, "chat_message_id": initial_message.id},
         chat_message_id=initial_message.id,
         session_generation=task.session_generation,
         session_revision=task.session_revision,
+        commit=False,
     )
     result = {
         "task_id": task.id,
@@ -920,6 +848,25 @@ def _replay_start(db, task_id, command_id, actor_id, reason):
     if result:
         sm.dispatch(db, db.get(SddTask, task_id), sm.Trigger.START, event_key=key, actor_id=actor_id, reason=reason)
     return result
+
+
+def _finish_start_side_effects(db: Session, job_id: str) -> None:
+    from app.domains.task.models.chat import ChatMessage
+    from app.domains.task.services.conversation.notifications import notify_followers
+
+    job = db.get(SddAiJob, job_id)
+    if not job:
+        return
+    message_id = (job.context_json or {}).get("chat_message_id")
+    if message_id and (message := db.get(ChatMessage, message_id)):
+        notify_followers(db, message)
+    try:
+        context_token_service.seed_snapshot_for_job(
+            db, job=job, prompt_text=job.prompt_text, chat_message_id=message_id
+        )
+    except Exception:
+        logger.exception("Start context snapshot deferred: job_id={}", job_id)
+        db.rollback()
 
 
 async def start_task_session(
@@ -974,6 +921,7 @@ async def start_task_session(
 
         await schedule_control(result["submission"])
         return {**result, "msg": "正在准备本轮本地代码"}
+    await run_txn(lambda session: _finish_start_side_effects(session, result["job_id"]))
     await ai_job_publishing.enqueue_task_chat_job(result["job_id"])
     return {**result, "msg": "Task started"}
 

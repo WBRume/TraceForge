@@ -35,22 +35,23 @@ from app.domains.ai.services.jobs.executors import (
     task_chat as ai_task_chat,
 )
 from app.domains.ai.services.jobs.registry import runtime as ai_runtime
-from app.domains.auth.models.user import User, Workspace
+from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
 from app.domains.task.models.chat import ChatMessage
+from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus
 from app.domains.task.models.task import (
     SddTask,
     TaskStatus,
 )
-from app.domains.task.services import task_session_control_service, task_session_service
+from app.domains.task.services import chat_submission_service, task_session_control_service, task_session_service
 from app.domains.task.services.conversation import history as task_conversation_history
 from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
 
 
-def _build_session(*, expire_on_commit=False):
+def _build_session(*, expire_on_commit=False, autoflush=True):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=expire_on_commit)
+    return sessionmaker(bind=engine, expire_on_commit=expire_on_commit, autoflush=autoflush)
 
 
 def _seed_task(db, *, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.RUNNING):
@@ -80,7 +81,8 @@ def _seed_task(db, *, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.RUN
         creator_id=user.id,
         session_id="session-1",
     )
-    db.add_all([user, workspace, task, job])
+    member = WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role=WorkspaceRole.OWNER)
+    db.add_all([user, workspace, member, task, job])
     db.commit()
     return task, job
 
@@ -422,43 +424,34 @@ def test_task_resume_requires_interrupted_status(monkeypatch):
 
 
 @pytest.mark.parametrize("session_id", ["session-1", None])
-def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(monkeypatch, session_id):
-    SessionLocal = _build_session()
+@pytest.mark.parametrize("checkpoint_fails", [False, True])
+def test_task_resume_keeps_a_recoverable_owner_until_checkpoint(monkeypatch, session_id, checkpoint_fails):
+    SessionLocal = _build_session(autoflush=False)
     db = SessionLocal()
     task, job = _seed_task(db, task_status=TaskStatus.INTERRUPTED, job_status=AiJobStatus.INTERRUPTED)
     task.session_id = session_id
     job.session_id = session_id
     db.commit()
 
-    published = []
-    events = []
     enqueued = []
-
-    async def _publish_job(job_id):
-        published.append(job_id)
-
-    async def _broadcast_event(event_type, payload):
-        events.append((event_type, payload["task_id"], payload["job"]["id"]))
+    scheduled = []
 
     async def _enqueue(job_id):
         enqueued.append(job_id)
         return
 
     async def _checkpoint(*_args, **_kwargs):
+        if checkpoint_fails:
+            raise task_session_service.task_session_snapshot_service.TaskSessionSnapshotError("checkpoint failed")
         return {"root": "G:/tmp/fake-session-checkpoint", "worktree": {}, "provider": {}}
 
     async def _cleanup(_path):
         return None
 
-    class _CaptureManager:
-        async def send_message_to_room(self, task_id, message):
-            await _broadcast_event(message.type, message.payload)
-
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: None)
-    monkeypatch.setattr(ai_publishing, "publish_job", _publish_job)
     monkeypatch.setattr(ai_publishing, "enqueue_task_chat_job", _enqueue)
-    monkeypatch.setattr(task_session_control_service, "task_ws_manager", _CaptureManager())
-    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
+    monkeypatch.setattr(chat_submission_service, "schedule", scheduled.append)
+    patch_ai_job_db(monkeypatch, SessionLocal)
     monkeypatch.setattr(task_session_service.task_session_snapshot_service, "create_checkpoint", _checkpoint)
     monkeypatch.setattr(task_session_service.task_session_snapshot_service, "cleanup_checkpoint", _cleanup)
 
@@ -471,24 +464,40 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
         )
     )
 
+    submission_id = payload["submission"]["id"]
+    assert payload["submission"]["status"] == "PREPARING"
+    assert scheduled == [submission_id]
+    db.refresh(job)
+    assert job.status == AiJobStatus.INTERRUPTED
+    assert db.query(SddAiJob).count() == 1
+    asyncio.run(chat_submission_service._run(submission_id))
+
     db.refresh(task)
     db.refresh(job)
+    if checkpoint_fails:
+        assert task.status == TaskStatus.INTERRUPTED
+        assert job.status == AiJobStatus.INTERRUPTED
+        assert db.query(SddAiJob).count() == 1
+        assert db.query(ChatMessage).count() == 0
+        assert db.get(TaskChatSubmission, submission_id).status == "FAILED"
+        assert not enqueued
+        return
     resume_job = db.query(SddAiJob).filter(SddAiJob.id != job.id).one()
     assert task.status == TaskStatus.RUNNING
+    assert task.reading_change_seq == 1
     assert task.session_id == session_id
     assert job.status == AiJobStatus.CANCELLED
+    assert job.context_json["superseded_by_resume_job_id"] == resume_job.id
     assert resume_job.status == AiJobStatus.PENDING
     assert resume_job.session_id == session_id
     assert resume_job.prompt_text == "use this correction"
     assert resume_job.context_json["resumed_from_job_id"] == job.id
     assert resume_job.context_json["client_message_id"] == "client-resume-1"
     assert db.query(ChatMessage).filter(ChatMessage.task_id == task.id).count() == 1
-    assert published == ["job-1"]
-    assert events == [("task_resumed", "task-1", resume_job.id)]
     assert enqueued == [resume_job.id]
-    assert payload["status"] == TaskStatus.RUNNING.value
+    assert db.get(TaskChatSubmission, submission_id).ai_job_id == resume_job.id
 
-    # Retrying the same HTTP request is idempotent even though the task is now CODING.
+    # Retrying the same request returns the durable, updated receipt.
     duplicate = asyncio.run(
         task_session_control_service.resume_interrupted_task(
             task_id=task.id,
@@ -497,7 +506,8 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
             client_message_id="client-resume-1",
         )
     )
-    assert duplicate["job"]["id"] == resume_job.id
+    assert duplicate["submission"]["id"] == submission_id
+    assert duplicate["submission"]["ai_job_id"] == resume_job.id
     assert db.query(SddAiJob).count() == 2
 
 
@@ -667,10 +677,13 @@ def test_execute_job_dispatches_requirement_preview_jobs(monkeypatch):
     assert calls == [("import", "preview-job-1")]
 
 
-def test_ai_job_queue_blocks_on_interrupted_job(monkeypatch):
+@pytest.mark.parametrize("owns_process", [False, True])
+def test_ai_job_queue_blocks_only_on_interrupted_job_with_ownership(monkeypatch, owns_process):
     SessionLocal = _build_session()
     db = SessionLocal()
-    task, _job = _seed_task(db, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.INTERRUPTED)
+    task, job = _seed_task(db, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.INTERRUPTED)
+    if owns_process:
+        job.process_containment_id = "previous-attempt"
     pending = SddAiJob(
         id="job-2",
         workspace_id="ws-1",
@@ -688,10 +701,11 @@ def test_ai_job_queue_blocks_on_interrupted_job(monkeypatch):
     patch_ai_job_db(monkeypatch, SessionLocal)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
-    assert ai_store.take_next_pending_job_id_sync(f"{AiJobChannel.TASK_CHAT.value}:task-1") is None
+    claimed = ai_store.take_next_pending_job_id_sync(f"{AiJobChannel.TASK_CHAT.value}:task-1")
+    assert claimed == (None if owns_process else "job-2")
     check_db = SessionLocal()
     try:
-        assert check_db.query(SddAiJob).filter(SddAiJob.id == "job-2").first().status == AiJobStatus.PENDING
+        assert check_db.get(SddAiJob, "job-2").status == (AiJobStatus.PENDING if owns_process else AiJobStatus.RUNNING)
     finally:
         check_db.close()
 
@@ -740,7 +754,7 @@ def test_run_task_chat_turn_restores_job_session_for_resume(monkeypatch):
     instead of starting a completely fresh Claude session."""
     SessionLocal = _build_session()
     db = SessionLocal()
-    task, job = _seed_task(db, task_status=TaskStatus.INTERRUPTED, job_status=AiJobStatus.INTERRUPTED)
+    task, job = _seed_task(db, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.RUNNING)
     job.session_id = "session-1"
     db.commit()
 

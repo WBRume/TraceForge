@@ -35,7 +35,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
 )
 from app.domains.ai.services.jobs import attempts as attempt_ops
 from app.domains.ai.services.jobs import publishing, state
-from app.domains.ai.services.jobs.constants import FINAL_STATUSES, looks_like_timeout_text
+from app.domains.ai.services.jobs.constants import FINAL_STATUSES, TASK_QUEUE_PAUSED_STATUSES, looks_like_timeout_text
 from app.domains.ai.services.jobs.fencing import attempt_is_current_sync
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime
 from app.domains.ai.services.jobs.store import row_has_leaked_interrupted_ownership
@@ -241,6 +241,12 @@ def _load_task_chat_turn_state_sync(db, job_id: str, run_token: str | None = Non
     task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
     if not task:
         raise ValueError("Task not found")
+    if (
+        task.status in TASK_QUEUE_PAUSED_STATUSES
+        or job.cancel_requested_at is not None
+        or not attempt_is_current_sync(db, job_id=job_id, run_token=run_token)
+    ):
+        return None
     # 任务粘性 backend：首次运行固化到 sdd_tasks，之后工作区切换不影响本任务
     task_backend = (job.agent_service_binding or {}).get("backend") or resolve_task_backend(db, task.id)
     additional_directories = []

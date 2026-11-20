@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -630,6 +631,134 @@ def test_success_publishes_sources_once_with_transactional_outbox(task_db):
     service._reconcile_sync(task_db)
     task_db.commit()
     assert task_db.query(SearchOutbox).filter(SearchOutbox.entity_key.like("message:%")).count() == 2
+
+
+def test_start_job_failure_rolls_back_message_and_status(task_db, monkeypatch):
+    task = task_db.get(SddTask, "t")
+    task.status = TaskStatus.INITIALIZED
+    task_db.commit()
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("injected job failure")
+
+    monkeypatch.setattr(task_session_control_service, "create_task_chat_job", fail)
+    with pytest.raises(RuntimeError, match="injected job failure"):
+        task_session_control_service.start_task_session_sync(
+            task_db,
+            ws_id="w",
+            task_id="t",
+            creator_id="u",
+            prompt="start",
+            user_display="start",
+        )
+    task_db.rollback()
+    assert task.status == TaskStatus.INITIALIZED
+    assert task_db.query(ChatMessage).count() == task_db.query(SddAiJob).count() == 0
+    assert task_db.query(TaskStatusEvent).count() == task_db.query(TaskEventOutbox).count() == 0
+
+
+@pytest.mark.parametrize("replaced", [False, True])
+def test_recovery_closes_receipt_with_missing_job_without_interrupting_a_new_revision(task_db, replaced):
+    row = accepted(task_db)
+    row.status = "EXECUTING"
+    task = task_db.get(SddTask, "t")
+    task.status_run_id = "missing-job"
+    if replaced:
+        task.session_revision += 1
+    task_db.commit()
+    service._reconcile_sync(task_db)
+    task_db.commit()
+    assert row.status == "FAILED" and row.active_task_id is None
+    assert task.status == (TaskStatus.RUNNING if replaced else TaskStatus.INTERRUPTED)
+    assert task_db.query(TaskStatusEvent).filter_by(trigger="EXECUTION_LOST").count() == int(not replaced)
+
+
+def test_recovery_skips_waiting_desktop_and_closes_expired_input(task_db):
+    from app.domains.workspace_collaboration.models import CollaborationState
+
+    now = datetime.utcnow()
+    for task_id, expired in [("waiting", False), ("expired", True)]:
+        task_db.add(
+            SddTask(
+                id=task_id,
+                workspace_id="w",
+                creator_id="u",
+                name=task_id,
+                status=TaskStatus.RUNNING,
+                session_generation=1,
+                session_revision=0,
+            )
+        )
+        task_db.add(
+            TaskChatSubmission(
+                id=task_id,
+                task_id=task_id,
+                workspace_id="w",
+                creator_id="u",
+                client_message_id=task_id,
+                content="desktop input",
+                payload_hash="x",
+                status="PREPARING",
+                active_task_id=task_id,
+                session_generation=1,
+                session_revision=0,
+                metadata_json={"collaboration": {}},
+            )
+        )
+        task_db.add(
+            CollaborationState(
+                task_id=task_id,
+                sync_phase="PREPARING",
+                pending_submission_id=task_id,
+                input_submission_id=task_id if expired else None,
+                session_generation=1,
+                session_revision=0,
+                repository_set_digest="x",
+                binding_id="binding",
+                driver_user_id="u",
+                client_id="desktop",
+                instance_id="instance",
+                lease_expires_at=now + timedelta(minutes=-1 if expired else 1),
+            )
+        )
+    task_db.commit()
+    ready = accepted(task_db)
+    assert set(service._reconcile_sync(task_db)) == {"expired", ready.id}
+    assert service._load_preparation(task_db, "expired") is None
+    task_db.commit()
+    assert task_db.get(TaskChatSubmission, "expired").status == "FAILED"
+    assert task_db.get(SddTask, "expired").status == TaskStatus.INTERRUPTED
+    assert task_db.get(TaskChatSubmission, "waiting").status == "PREPARING"
+    assert service._reconcile_sync(task_db) == [ready.id]
+
+
+def test_task_job_reads_preserve_legacy_ownership_and_session(task_db):
+    task = task_db.get(SddTask, "t")
+    task.session_id = "current-session"
+    task.session_revision = 2
+    task.status_run_id = "current-job"
+    old_time = datetime.utcnow() - timedelta(days=2)
+    job = SddAiJob(
+        task_id=task.id,
+        workspace_id="w",
+        creator_id="u",
+        channel=AiJobChannel.TASK_CHAT,
+        queue_key="TASK_CHAT:t",
+        status=AiJobStatus.RUNNING,
+        session_id="legacy-session",
+        session_generation=1,
+        session_revision=1,
+        process_pid=777777,
+        started_at=old_time,
+        updated_at=old_time,
+    )
+    task_db.add(job)
+    task_db.commit()
+    service.build_session_state(task_db, "t", actor_id="u")
+    task_db.expire_all()
+    assert job.status == AiJobStatus.RUNNING and job.process_pid == 777777
+    assert task.session_id == "current-session" and task.status == TaskStatus.RUNNING
+    assert task_db.query(TaskStatusEvent).count() == 0
 
 
 @pytest.mark.asyncio

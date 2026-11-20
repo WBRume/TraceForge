@@ -101,24 +101,16 @@ async def job_heartbeat_loop(attempt: AgentAttemptContext) -> None:
 # ────────────────────────── runner 收尾收敛 ──────────────────────────
 
 
-def _converge_normal_sync(
+def _converge_runner_exit_sync(
     job_id: str,
     run_token: str,
     *,
     evidence: _FinalizerEvidence,
     requested_status: AiJobStatus,
     reason: str,
-    message: str | None = None,
-    error_message: str | None = None,
-    result_patch: dict[str, Any] | None = None,
-    context_patch: dict[str, Any] | None = None,
-    session_id: str | None = None,
-    agent_backend: str | None = None,
     mark_task_interrupted: bool = False,
-    interrupt_session_id: str | None = None,
-    progress: int | None = None,
 ) -> dict[str, Any] | None:
-    """NORMAL_FINALIZE 收敛 DB 段（线程内执行，由 run_db 包装）。"""
+    """Settle a runner exit using the latest durable stop intent."""
     db = SessionLocal()
     try:
         request = AttemptConvergenceRequest(
@@ -128,16 +120,8 @@ def _converge_normal_sync(
             requested_status=requested_status,
             reason=str(reason or ""),
             evidence=evidence,
-            result_patch=result_patch,
-            context_patch=context_patch,
-            message=message,
-            progress=progress,
-            error_message=error_message,
-            session_id=session_id,
-            agent_backend=agent_backend,
             mark_task_interrupted=mark_task_interrupted,
-            interrupt_session_id=interrupt_session_id,
-            intent=ConvergenceIntent.NORMAL_FINALIZE,
+            intent=ConvergenceIntent.RUNNER_EXIT,
         )
         result = convergence.converge_job_attempt_sync(db, request)
         if not result.changed or not result.payload:
@@ -236,7 +220,7 @@ async def _converge_runner_exit(
     )
     reason = str(outcome.error) if outcome.error is not None else ("Runner exited without a business finalizer")
     payload = await run_db(
-        _converge_normal_sync,
+        _converge_runner_exit_sync,
         job_id,
         attempt.run_token,
         evidence=evidence,

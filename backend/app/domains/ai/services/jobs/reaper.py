@@ -41,7 +41,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
 from app.domains.ai.services.jobs import attempts as attempt_ops
 from app.domains.ai.services.jobs import publishing, remote_recovery
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID
-from app.domains.ai.services.jobs.store import row_has_leaked_interrupted_ownership
+from app.domains.ai.services.jobs.store import attempt_ownership_predicate, row_has_leaked_interrupted_ownership
 
 logger = get_logger(__name__, category="ai_session")
 
@@ -60,16 +60,6 @@ def remote_locator(db, job):
         "legacy_unbound_after_switch": remote_recovery.legacy_binding_unknown(db, job),
         "old_service": bool(binding and binding["generation"] != generation),
     }
-
-
-def _dirty_interrupted_ownership_predicate():
-    return or_(
-        SddAiJob.run_token.isnot(None),
-        SddAiJob.worker_boot_id.isnot(None),
-        SddAiJob.process_pid.isnot(None),
-        SddAiJob.process_group_id.isnot(None),
-        SddAiJob.lease_expires_at.isnot(None),
-    )
 
 
 # ────────────────────────── 可回收扫描与收养 ──────────────────────────
@@ -101,7 +91,7 @@ def list_reclaimable_jobs_sync(task_id: str | None = None) -> list[dict[str, Any
                     # of exposing a resumable session with a possibly live CLI.
                     and_(
                         SddAiJob.status == AiJobStatus.INTERRUPTED,
-                        _dirty_interrupted_ownership_predicate(),
+                        attempt_ownership_predicate(),
                         SddAiJob.manual_intervention_required.isnot(True),
                     ),
                 ),
@@ -166,7 +156,7 @@ def adopt_reclaimable_job_sync(
             or_(
                 SddAiJob.lease_expires_at.is_(None),
                 SddAiJob.lease_expires_at <= datetime.utcnow(),
-                and_(SddAiJob.status == AiJobStatus.INTERRUPTED, _dirty_interrupted_ownership_predicate()),
+                and_(SddAiJob.status == AiJobStatus.INTERRUPTED, attempt_ownership_predicate()),
             ),
             or_(
                 SddAiJob.status.in_(
@@ -178,7 +168,7 @@ def adopt_reclaimable_job_sync(
                 ),
                 and_(
                     SddAiJob.status == AiJobStatus.INTERRUPTED,
-                    _dirty_interrupted_ownership_predicate(),
+                    attempt_ownership_predicate(),
                 ),
             ),
             SddAiJob.manual_intervention_required.isnot(True),

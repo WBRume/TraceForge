@@ -28,6 +28,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
     AttemptFinalizerEvidence,
     ConvergenceIntent,
     converge_job_attempt_in_txn,
+    lock_job_in_txn,
 )
 from app.domains.ai.services.jobs import (
     attempts as ai_attempts,
@@ -36,6 +37,10 @@ from app.domains.ai.services.jobs import fencing as ai_fencing
 from app.domains.ai.services.jobs import (
     registry as ai_registry,
 )
+from app.domains.ai.services.jobs import store as ai_store
+from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.services import status_machine as sm
+from app.domains.task.services.task_session_control_service import _accept_interrupt_command
 from tests.ai.jobs.ai_job_test_utils import patched_ai_job_db
 from tests.postgres_support import temporary_postgres_schema
 from tests.workspace_asset.test_workspace_asset_boundary import _seed_workspace
@@ -45,7 +50,7 @@ from tests.workspace_asset.test_workspace_asset_boundary import _seed_workspace
 def postgres_factory():
     with temporary_postgres_schema() as engine:
         Base.metadata.create_all(engine)
-        yield sessionmaker(bind=engine, expire_on_commit=False)
+        yield sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
 
 
 def _seed_running_job(db, *, token="run-1"):
@@ -95,6 +100,101 @@ def _run_in_thread(fn):
     started = time.monotonic()
     thread.start()
     return thread, result, started
+
+
+def test_pending_stop_wins_against_claim(postgres_factory):
+    factory = postgres_factory
+    with factory() as db:
+        job = _seed_running_job(db)
+        job_id = job.id
+        job.status = AiJobStatus.PENDING
+        job.run_token = job.worker_boot_id = job.process_pid = job.process_group_id = None
+        db.commit()
+    with factory() as stopper, patched_ai_job_db(factory):
+        task = stopper.query(SddTask).filter_by(id="task-1").with_for_update().one()
+        thread, result, _ = _run_in_thread(lambda: ai_store.take_next_pending_job_id_sync("TASK_CHAT:task-1"))
+        time.sleep(0.1)
+        assert thread.is_alive()
+        _accept_interrupt_command(stopper, task.id, task.creator_id, "stop-before-claim", task.status_seq, "stop")
+        thread.join(timeout=8)
+        assert not thread.is_alive()
+        assert result == {"value": None}
+    with factory() as db:
+        assert db.get(SddTask, "task-1").status == TaskStatus.INTERRUPTED
+        job = db.get(SddAiJob, job_id)
+        assert job.status == AiJobStatus.CANCELLED
+        assert job.cancel_requested_at is not None and job.attempt_count == 0
+
+
+def test_job_lock_preserves_pending_task_reading_watermark(postgres_factory):
+    with postgres_factory() as db:
+        job = _seed_running_job(db)
+        task = db.query(SddTask).filter_by(id="task-1").with_for_update().one()
+        task.reading_change_seq += 1
+        assert lock_job_in_txn(db, db.query(SddAiJob).filter_by(id=job.id)) is job
+        db.commit()
+    with postgres_factory() as db:
+        assert db.get(SddTask, "task-1").reading_change_seq == 1
+
+
+@pytest.mark.parametrize("concurrent_command", ["answer", "stop"])
+def test_finalizer_serializes_with_task_transitions(postgres_factory, concurrent_command):
+    factory = postgres_factory
+    with factory() as db:
+        job = _seed_running_job(db)
+        job_id = job.id
+        task = db.get(SddTask, "task-1")
+        task.status = TaskStatus.AWAITING_INPUT if concurrent_command == "answer" else TaskStatus.RUNNING
+        task.status_run_id = job.id
+        job.session_generation = task.session_generation
+        job.session_revision = task.session_revision
+        db.commit()
+
+    def finish():
+        with factory.begin() as db:
+            result = converge_job_attempt_in_txn(
+                db,
+                AttemptConvergenceRequest(
+                    job_id=job_id,
+                    run_token="run-1",
+                    worker_boot_id=ai_registry.WORKER_BOOT_ID,
+                    requested_status=AiJobStatus.SUCCESS,
+                    reason="result",
+                    evidence=_dead_evidence(),
+                    intent=ConvergenceIntent.NORMAL_FINALIZE,
+                ),
+            )
+            return result.changed
+
+    with factory() as actor:
+        task = actor.query(SddTask).filter_by(id="task-1").with_for_update().one()
+        thread, result, _ = _run_in_thread(finish)
+        time.sleep(0.2)
+        assert thread.is_alive()
+        if concurrent_command == "answer":
+            transition = sm.execution_event(
+                actor,
+                task,
+                sm.Trigger.ANSWER_RECEIVED,
+                event_key="answered",
+                job_id=job_id,
+                generation=task.session_generation,
+                revision=task.session_revision,
+            )
+            assert transition["outcome"] == "APPLIED"
+            actor.commit()
+        else:
+            _accept_interrupt_command(actor, task.id, task.creator_id, "racing-stop", task.status_seq, "stop")
+        thread.join(timeout=8)
+        assert not thread.is_alive()
+        assert result == {"value": concurrent_command == "answer"}
+    with factory() as db:
+        task = db.get(SddTask, "task-1")
+        job = db.get(SddAiJob, job_id)
+        if concurrent_command == "answer":
+            assert task.status == TaskStatus.ROUND_COMPLETED and job.status == AiJobStatus.SUCCESS
+        else:
+            assert task.status == TaskStatus.INTERRUPTED and job.cancel_requested_at is not None
 
 
 def test_finalizer_locks_row_cancel_waits_then_idempotent(postgres_factory):

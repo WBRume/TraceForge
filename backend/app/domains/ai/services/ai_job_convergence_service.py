@@ -16,12 +16,12 @@ commit 之后执行。
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Literal
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from app.agents.contract import (
     EXECUTION_KIND_LOCAL_PROCESS,
@@ -65,6 +65,7 @@ class ConvergenceIntent(str, Enum):
     """收敛来源（按 intent 决定允许的来源状态）。"""
 
     NORMAL_FINALIZE = "NORMAL_FINALIZE"
+    RUNNER_EXIT = "RUNNER_EXIT"
     TERMINATION_FINALIZE = "TERMINATION_FINALIZE"
     REAPER_FINALIZE = "REAPER_FINALIZE"
 
@@ -738,7 +739,7 @@ def _converge_task_status_in_txn(db: Session, job: SddAiJob, final_status: AiJob
         from app.domains.task.services.chat_steering_service import finalize_in_txn
 
         finalize_in_txn(db, job)
-    task = db.get(SddTask, job.task_id)
+    task = db.get(SddTask, job.task_id) if job.task_id else None
     if task:
         trigger = sm.Trigger.ROUND_FINISHED if final_status == AiJobStatus.SUCCESS else sm.Trigger.EXECUTION_INTERRUPTED
         sm.execution_event(
@@ -755,9 +756,8 @@ def _converge_task_status_in_txn(db: Session, job: SddAiJob, final_status: AiJob
 def _finalize_submission_in_txn(db: Session, job: SddAiJob, final_status: AiJobStatus) -> None:
     """Converge the owning submission in the same commit as the job's final status.
 
-    Only ordinary TASK_CHAT turns carry a receipt; initialize/resume/HITL paths
-    have none and this is a no-op.  CANCELLED/REVERTED turns already had their
-    receipts removed by undo redaction, so no event resurrects deleted content.
+    Turns without a durable input receipt need no reconciliation. Undo
+    redaction removes the receipt before convergence.
     """
     if job.channel != AiJobChannel.TASK_CHAT or not job.session_turn_id:
         return
@@ -886,13 +886,54 @@ def _decide_final_status(
     return AiJobStatus.ORPHANED, evidence.failure_code or PROCESS_TREE_STILL_ALIVE
 
 
-def converge_job_attempt_in_txn(  # noqa: PLR0912
+def lock_job_in_txn(db: Session, query: Query) -> SddAiJob | None:
+    """Lock the owning task before a task-chat job, then reload the job under its lock."""
+    with db.no_autoflush:
+        owner = query.with_entities(SddAiJob.task_id, SddAiJob.channel).first()
+        if owner is None:
+            return None
+        if owner.task_id and owner.channel == AiJobChannel.TASK_CHAT:
+            task = db.query(SddTask).filter_by(id=owner.task_id).with_for_update().first()
+            if task is not None:
+                if task in db.dirty:
+                    db.flush([task])
+                db.refresh(task)
+        return query.populate_existing().with_for_update().first()
+
+
+def _resolve_runner_exit_intent(
+    job: SddAiJob, request: AttemptConvergenceRequest, token: str
+) -> AttemptConvergenceRequest:
+    if request.intent != ConvergenceIntent.RUNNER_EXIT:
+        return request
+    # A stop command can commit while a claimed runner is exiting before dispatch.
+    if (
+        token
+        and job.channel == AiJobChannel.TASK_CHAT
+        and job.cancel_requested_at is not None
+        and job.status in {AiJobStatus.RUNNING, AiJobStatus.TERMINATING}
+    ):
+        mode = (job.context_json or {}).get("termination_mode")
+        return replace(
+            request,
+            intent=ConvergenceIntent.TERMINATION_FINALIZE,
+            requested_status=None,
+            termination_mode=mode,
+            reason=job.interrupt_reason
+            or job.terminal_reason
+            or (USER_INTERRUPT if mode == "INTERRUPT" else CANCEL_REQUESTED),
+            mark_task_interrupted=False,
+        )
+    return replace(request, intent=ConvergenceIntent.NORMAL_FINALIZE)
+
+
+def converge_job_attempt_in_txn(
     db: Session,
     request: AttemptConvergenceRequest,
 ) -> ConvergenceResult:
     """唯一 job 终态事务核心。
 
-    事务顺序固定：行锁 SELECT FOR UPDATE -> 幂等检查 -> run token / worker
+    事务顺序固定：先锁任务再锁作业 -> 幂等检查 -> run token / worker
     boot id 校验 -> TASK_CHAT session revision 校验 -> 按 intent 校验来源
     状态 -> 读取显式 execution kind -> 决策表 -> 同事务写 job/task/patch/
     ownership -> 返回。
@@ -901,7 +942,7 @@ def converge_job_attempt_in_txn(  # noqa: PLR0912
     transaction 中的调用方必须使用本函数，提交所有权归最外层事务。
     """
     now = datetime.utcnow()
-    job = db.query(SddAiJob).filter(SddAiJob.id == request.job_id).with_for_update().first()
+    job = lock_job_in_txn(db, db.query(SddAiJob).filter(SddAiJob.id == request.job_id))
     if job is None:
         return ConvergenceResult(job_id=request.job_id, status="", payload=None, changed=False)
 
@@ -937,6 +978,9 @@ def converge_job_attempt_in_txn(  # noqa: PLR0912
         if job.run_token is not None or job.worker_boot_id is not None:
             return _noop()
 
+    runner_exit = request.intent == ConvergenceIntent.RUNNER_EXIT
+    request = _resolve_runner_exit_intent(job, request, token)
+
     # 4. TASK_CHAT session revision 校验（仅正常收尾路径）。
     if (
         request.intent == ConvergenceIntent.NORMAL_FINALIZE
@@ -963,9 +1007,10 @@ def converge_job_attempt_in_txn(  # noqa: PLR0912
         if job.cancel_requested_at is not None:
             # 取消已请求：正常收尾不得绕过 termination convergence。
             return _noop()
-    else:
-        if job.status not in {AiJobStatus.TERMINATING, AiJobStatus.ORPHANED}:
-            return _noop()
+    elif job.status not in {AiJobStatus.TERMINATING, AiJobStatus.ORPHANED} and not (
+        runner_exit and job.status == AiJobStatus.RUNNING
+    ):
+        return _noop()
 
     # 6. 读取显式 execution kind。
     execution_kind = _job_row_execution_kind(job, request.evidence)
@@ -973,8 +1018,6 @@ def converge_job_attempt_in_txn(  # noqa: PLR0912
     # A committed result survives loss of the worker/notification. Reaping
     # still proves cleanup, then consumes the result instead of rerunning it.
     if job.completion_json:
-        from dataclasses import replace
-
         request = replace(
             request,
             requested_status=AiJobStatus(job.completion_json["outcome"]),
@@ -1081,10 +1124,6 @@ class TerminationRequestResult:
     worker_boot_id: str | None = None
 
 
-def _job_active_ownership(job: SddAiJob) -> bool:
-    return job.process_pid is not None or job.process_group_id is not None
-
-
 def _mark_task_interrupted(db, job, request, resolved_session_id, reason, now):
     if request.mark_task_interrupted and job.task_id:
         task = db.query(SddTask).filter(SddTask.id == job.task_id).populate_existing().with_for_update().first()
@@ -1121,7 +1160,7 @@ def request_attempt_termination_in_txn(
     """唯一取消/中断请求事务核心。
 
     规则：
-    1. 使用 ``with_for_update()`` 锁定 job 行（与业务 finalizer 共享行锁）；
+    1. 先锁任务再锁作业（与业务 finalizer 共享锁顺序）；
     2. 持锁后重新读取 status / run token / worker boot id；
     3. 已是业务终态时幂等返回，绝不恢复为非终态；
     4. ``PENDING/WAITING_HITL`` 且无活动 ownership 时可直接写 ``CANCELLED``；
@@ -1130,14 +1169,17 @@ def request_attempt_termination_in_txn(
        task 状态；
     7. 不广播、不触发内存 cancel event —— 由最外层事务提交成功后执行。
     """
+    from app.domains.ai.services.jobs.store import has_attempt_ownership
+
     now = datetime.utcnow()
     reason = str(request.reason or request.mode).strip() or request.mode
-    job_query = db.query(SddAiJob).filter(SddAiJob.id == request.job_id)
-    if request.workspace_id:
-        job_query = job_query.filter(SddAiJob.workspace_id == request.workspace_id)
-    if request.expected_run_token:
-        job_query = job_query.filter(SddAiJob.run_token == request.expected_run_token)
-    job = job_query.with_for_update().first()
+    job_query = db.query(SddAiJob).filter(
+        SddAiJob.id == request.job_id,
+        SddAiJob.workspace_id == request.workspace_id if request.workspace_id else True,
+        SddAiJob.task_id == request.task_id if request.task_id else True,
+        SddAiJob.run_token == request.expected_run_token if request.expected_run_token else True,
+    )
+    job = lock_job_in_txn(db, job_query)
     if job is None:
         return TerminationRequestResult(job_id=request.job_id, status="", changed=False)
 
@@ -1168,22 +1210,8 @@ def request_attempt_termination_in_txn(
         context["termination_mode"] = request.mode
     job.context_json = context
 
-    clean_interrupted = job.status == AiJobStatus.INTERRUPTED and not any(
-        getattr(job, field, None) is not None
-        for field in (
-            "run_token",
-            "worker_id",
-            "worker_boot_id",
-            "process_pid",
-            "process_started_at",
-            "process_group_id",
-            "process_containment_id",
-            "heartbeat_at",
-            "lease_expires_at",
-        )
-    )
-    if (job.status in {AiJobStatus.PENDING, AiJobStatus.WAITING_HITL} or clean_interrupted) and (
-        request.mode != "WORKER_SHUTDOWN" and not _job_active_ownership(job)
+    if job.status in {AiJobStatus.PENDING, AiJobStatus.WAITING_HITL, AiJobStatus.INTERRUPTED} and (
+        request.mode != "WORKER_SHUTDOWN" and not has_attempt_ownership(job)
     ):
         # 无活动归属的排队/HITL 作业：直接落 CANCELLED 终态。
         job.cancel_requested_at = now
@@ -1198,6 +1226,8 @@ def request_attempt_termination_in_txn(
             job.interrupted_at = now
             if request.interrupt_context_patch:
                 job.context_json = _merge_json(job.context_json, request.interrupt_context_patch)
+        _finalize_submission_in_txn(db, job, AiJobStatus.CANCELLED)
+        _converge_task_status_in_txn(db, job, AiJobStatus.CANCELLED)
         return _result(True)
 
     if request.mode != "WORKER_SHUTDOWN" or job.channel != AiJobChannel.BACKGROUND:

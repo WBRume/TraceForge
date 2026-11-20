@@ -22,6 +22,7 @@ def save_chat_message(
     session_generation: int | None = None,
     *,
     message_id: str | None = None,
+    commit: bool = True,
 ) -> ChatMessage:
     # 落库序号：同一秒内多条消息的稳定顺序依据（解决历史重载时气泡乱序）。
     # followers 与 task_name 合并为一条 join 查询，减少每条消息的 DB 往返。
@@ -63,7 +64,8 @@ def save_chat_message(
     from app.domains.task.services import reading_capture_service
 
     reading_capture_service.record_message_change(db, task_id=task_id, message=msg)
-    db.commit()
-    db.refresh(msg)
-    notifications.notify_followers(db, msg)
+    if commit:
+        db.commit()
+        db.refresh(msg)
+        notifications.notify_followers(db, msg)
     return msg

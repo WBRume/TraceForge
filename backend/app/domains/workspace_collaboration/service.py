@@ -616,6 +616,20 @@ def input_ready(db: Session, task_id: str, submission_id: str) -> bool:
     )
 
 
+def local_input_expired(db: Session, task_id: str, submission_id: str) -> bool:
+    """Confirm a desktop input lease expired under the collaboration fence."""
+    from .session import is_cloud_input
+
+    state = _state(db, task_id)
+    return bool(
+        state
+        and state.enabled
+        and state.pending_submission_id == submission_id
+        and state.lease_expires_at <= datetime.utcnow()
+        and not is_cloud_input(db, task_id, submission_id)
+    )
+
+
 def recover_cloud_input_checkpoint(db: Session, task: SddTask, state: CollaborationState) -> Path:
     """Recapture a missing private checkpoint for the current published cloud input."""
     _check_session(state, task)

@@ -175,17 +175,19 @@ export function useChatSend(options: {
           agentModel: modelSelection,
           ...(newAgentSession ? { newAgentSession } : {}),
         })
-        options.messages.upsert({
-          id: `local-${clientMessageId}`,
-          role: 'user',
-          content: displayContent,
-          created_at: new Date().toISOString(),
-          message_type: 'text',
-          client_message_id: clientMessageId,
-          delivery_status: 'sent',
-          ...options.getCreatorMeta(),
-          metadata: sendOptions.metadata || null,
-        })
+        if (!payload?.submission) {
+          options.messages.upsert({
+            id: `local-${clientMessageId}`,
+            role: 'user',
+            content: displayContent,
+            created_at: new Date().toISOString(),
+            message_type: 'text',
+            client_message_id: clientMessageId,
+            delivery_status: 'sent',
+            ...options.getCreatorMeta(),
+            metadata: sendOptions.metadata || null,
+          })
+        }
         options.applyTaskSessionPayload(payload)
         if (options.getTaskId() === taskId) options.onAgentSessionAccepted?.()
         noteTaskRunInitiated(taskId, clientMessageId, payload?.job?.id || payload?.task?.job?.id)

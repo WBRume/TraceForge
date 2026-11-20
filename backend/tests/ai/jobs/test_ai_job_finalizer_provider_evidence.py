@@ -29,6 +29,7 @@ from app.agents.contract import (
     AgentAttemptContext,
     AgentAttemptRuntimeState,
     AgentBackend,
+    AgentCapabilities,
     AgentRunResult,
     AttemptFinalizerEvidence,
     bind_agent_attempt,
@@ -132,6 +133,7 @@ def test_real_result_object_with_persist_failure_is_provider_outcome(monkeypatch
 
     provider = Mock(spec=AgentBackend, name="provider")
     provider.name = "opencode"
+    provider.capabilities = AgentCapabilities(execution_kind=REMOTE, supports_steering=True)
     result = AgentRunResult(session_id="remote-1", success=False, result_text="provider finished")
     monkeypatch.setattr(engine_module.TaskAgentEngine, "_create_engine_backend", lambda _: provider)
     engine = engine_module.TaskAgentEngine("task-1", "ws-1", "user-1")

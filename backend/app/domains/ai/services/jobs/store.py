@@ -74,22 +74,25 @@ def merge_json(original: Any, patch: dict[str, Any] | None) -> dict[str, Any]:
     return merged
 
 
-def clear_process_ownership(job: SddAiJob) -> None:
-    """Clear the live owner fence after complete process-tree death."""
-    job.heartbeat_at = None
-    job.lease_expires_at = None
-    job.process_pid = None
-    job.process_started_at = None
-    job.process_group_id = None
-    job.process_containment_id = None
-    job.run_token = None
-    job.worker_id = None
-    job.worker_boot_id = None
+_OWNERSHIP_FIELDS = (
+    "run_token",
+    "worker_id",
+    "worker_boot_id",
+    "process_pid",
+    "process_started_at",
+    "process_group_id",
+    "process_containment_id",
+    "heartbeat_at",
+    "lease_expires_at",
+)
 
 
-def has_active_process_ownership(job: SddAiJob) -> bool:
-    """Whether the durable row still claims a locally attached process."""
-    return job.process_pid is not None or job.process_group_id is not None
+def has_attempt_ownership(job: SddAiJob) -> bool:
+    return any(getattr(job, field) is not None for field in _OWNERSHIP_FIELDS)
+
+
+def attempt_ownership_predicate():
+    return or_(*(getattr(SddAiJob, field).isnot(None) for field in _OWNERSHIP_FIELDS))
 
 
 def row_has_leaked_interrupted_ownership(job: SddAiJob) -> bool:
@@ -99,15 +102,7 @@ def row_has_leaked_interrupted_ownership(job: SddAiJob) -> bool:
     stop/verify/backoff flow: the process may still be alive, so the fields
     must never be cleared directly.
     """
-    if job.status != AiJobStatus.INTERRUPTED:
-        return False
-    return bool(
-        job.run_token is not None
-        or job.worker_boot_id is not None
-        or job.process_pid is not None
-        or job.process_group_id is not None
-        or job.lease_expires_at is not None
-    )
+    return job.status == AiJobStatus.INTERRUPTED and has_attempt_ownership(job)
 
 
 # ────────────────────────── 执行类别 ──────────────────────────
@@ -402,7 +397,6 @@ def list_task_jobs(
     task_id: str,
     active_only: bool = True,
 ) -> list[SddAiJob]:
-    cleanup_stale_running_jobs(db, task_id=task_id)
     query = db.query(SddAiJob).filter(
         SddAiJob.task_id == task_id,
         SddAiJob.channel == AiJobChannel.TASK_CHAT,
@@ -415,123 +409,34 @@ def list_task_jobs(
 # ────────────────────────── 陈旧作业清理 ──────────────────────────
 
 
-def apply_task_chat_job_interrupted(
-    db: Session,
-    job: SddAiJob,
-    task: SddTask | None,
-    reason: str,
-    *,
-    message: str | None = None,
-    session_id: str | None = None,
-    context_patch: dict[str, Any] | None = None,
-    result_patch: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """把 TASK_CHAT 作业和所属任务标记为可恢复的 INTERRUPTED（纯字段赋值 helper）。
-
-    自动失败（底层 API 报错、超时、欠费、网络抖动等）不应进入终态 FAILED；
-    FAILED 只允许用户通过失败复盘/关闭流程显式标记。
-
-    该 helper 不再承担状态判断职责：调用方必须先完成进程树死亡判定
-    （confirmed_dead=True 或从未启动本地进程），因此这里总是清空全部
-    ownership 字段，保证 INTERRUPTED 是干净的“当前 attempt 已停止，允许恢复”。
-    """
-    now = datetime.utcnow()
-    resolved_session_id = str(session_id or job.session_id or (getattr(task, "session_id", None) or "")).strip() or None
-    reason_text = str(reason or "AI 执行异常")[:500]
-    job.status = AiJobStatus.INTERRUPTED
-    job.progress = 100
-    job.message = message or "AI 执行异常，可继续发送消息恢复"
-    job.error_message = None
-    job.session_id = resolved_session_id
-    job.interrupt_reason = reason_text
-    job.interrupted_by_id = None
-    job.interrupted_at = now
-    job.finished_at = now
-    patch = {"interrupted": True, "interrupted_at": now.isoformat() + "Z"}
-    if context_patch:
-        patch.update(context_patch)
-    job.context_json = merge_json(job.context_json, patch)
-    if result_patch:
-        job.result_json = merge_json(job.result_json, result_patch)
-    if task:
-        task = db.query(SddTask).filter_by(id=task.id).populate_existing().with_for_update().one_or_none()
-    if task and task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
-        # 用户已显式关闭/失败的任务不能被引擎回调降级回 INTERRUPTED。
-        sm.execution_event(
-            db,
-            task,
-            sm.Trigger.EXECUTION_INTERRUPTED,
-            event_key=f"job:{job.id}:interrupted",
-            job_id=job.id,
-            generation=int(job.session_generation or 0),
-            revision=int(job.session_revision or 0),
-        )
-        task.session_id = resolved_session_id
-        task.error_message = None
-        task.interrupt_reason = reason_text
-        task.interrupted_by_id = None
-        task.interrupted_at = now
-    clear_process_ownership(job)
-    runtime.clear_cancel(job.id)
-    db.commit()
-    db.refresh(job)
-    if task:
-        db.refresh(task)
-    return serialize_job(job)
-
-
 def cleanup_stale_running_jobs(
     db: Session,
     *,
-    thread_id: str | None = None,
-    task_id: str | None = None,
+    thread_id: str,
 ) -> None:
     cutoff = datetime.utcnow() - timedelta(minutes=_RUNNING_STALE_MINUTES)
     query = db.query(SddAiJob).filter(
         SddAiJob.status == AiJobStatus.RUNNING,
+        SddAiJob.thread_id == thread_id,
+        SddAiJob.channel == AiJobChannel.ASSET_THREAD,
     )
-    if thread_id:
-        query = query.filter(
-            SddAiJob.thread_id == thread_id,
-            SddAiJob.channel == AiJobChannel.ASSET_THREAD,
-        )
-    if task_id:
-        query = query.filter(
-            SddAiJob.task_id == task_id,
-            SddAiJob.channel == AiJobChannel.TASK_CHAT,
-        )
     jobs = query.all()
     dirty = False
     for job in jobs:
         # Lease-owned attempts are handled by the independent reaper, which
         # first verifies/terminates the process tree.  Query-time cleanup must
         # not forge a terminal state while a CLI may still be alive.
-        if job.run_token or job.lease_expires_at:
+        if has_attempt_ownership(job):
             continue
         heartbeat = job.updated_at or job.started_at or job.created_at
         if heartbeat and heartbeat >= cutoff:
             continue
-        job_context = job.context_json if isinstance(job.context_json, dict) else {}
-        if (
-            job.channel == AiJobChannel.TASK_CHAT
-            and job.task_id
-            and str(job_context.get("job_kind") or "").strip().upper() != JOB_KIND_DIAGNOSIS_SUMMARY
-        ):
-            task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-            apply_task_chat_job_interrupted(
-                db,
-                job,
-                task,
-                "AI job was interrupted unexpectedly (restart/crash). Please retry.",
-                message="Job interrupted unexpectedly",
-            )
-        else:
-            job.status = AiJobStatus.FAILED
-            job.progress = 100
-            job.message = "Job interrupted unexpectedly"
-            job.error_message = "AI job was interrupted unexpectedly (restart/crash). Please retry."
-            job.finished_at = datetime.utcnow()
-            runtime.clear_cancel(job.id)
+        job.status = AiJobStatus.FAILED
+        job.progress = 100
+        job.message = "Job interrupted unexpectedly"
+        job.error_message = "AI job was interrupted unexpectedly (restart/crash). Please retry."
+        job.finished_at = datetime.utcnow()
+        runtime.clear_cancel(job.id)
         dirty = True
     if dirty:
         db.commit()
@@ -849,7 +754,7 @@ def is_task_queue_paused(db: Session, queue_key: str) -> bool:
     task_id = task_id_from_queue_key(queue_key)
     if not task_id:
         return False
-    row = db.query(SddTask.status).filter(SddTask.id == task_id).first()
+    row = db.query(SddTask.status).filter(SddTask.id == task_id).with_for_update().first()
     if not row:
         return False
     return row[0] in TASK_QUEUE_PAUSED_STATUSES
@@ -860,12 +765,17 @@ def take_next_pending_job_id_sync(queue_key: str) -> str | None:
     try:
         if is_task_queue_paused(db, queue_key):
             return None
+        blocking = SddAiJob.status.in_(BLOCKING_STATUSES)
+        if task_id_from_queue_key(queue_key):
+            blocking = blocking & ((SddAiJob.status != AiJobStatus.INTERRUPTED) | attempt_ownership_predicate())
+        # Cancelled domain workflows may still need a worker for compensation.
+        can_claim = True if queue_key.startswith("DOMAIN_JOB:") else SddAiJob.cancel_requested_at.is_(None)
         active = (
             db.query(SddAiJob)
             .filter(
                 SddAiJob.queue_key == queue_key,
                 SddAiJob.execution_backend == "durable",
-                SddAiJob.status.in_(list(BLOCKING_STATUSES)),
+                blocking,
             )
             .order_by(SddAiJob.created_at.asc())
             .first()
@@ -878,6 +788,7 @@ def take_next_pending_job_id_sync(queue_key: str) -> str | None:
                 SddAiJob.queue_key == queue_key,
                 SddAiJob.status == AiJobStatus.PENDING,
                 SddAiJob.execution_backend == "durable",
+                can_claim,
             )
             .order_by(SddAiJob.created_at.asc())
             .first()
@@ -917,6 +828,7 @@ def take_next_pending_job_id_sync(queue_key: str) -> str | None:
             .filter(
                 SddAiJob.id == job_id,
                 SddAiJob.status == AiJobStatus.PENDING,
+                can_claim,
             )
             .update(
                 {
@@ -933,9 +845,6 @@ def take_next_pending_job_id_sync(queue_key: str) -> str | None:
                     SddAiJob.worker_boot_id: WORKER_BOOT_ID,
                     SddAiJob.heartbeat_at: now,
                     SddAiJob.lease_expires_at: lease_expires_at,
-                    SddAiJob.cancel_requested_at: (
-                        SddAiJob.cancel_requested_at if queue_key.startswith("DOMAIN_JOB:") else None
-                    ),
                     SddAiJob.process_pid: None,
                     SddAiJob.process_started_at: None,
                     SddAiJob.process_group_id: None,

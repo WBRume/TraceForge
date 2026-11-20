@@ -14,6 +14,7 @@ def _record_native_session(attempt, identity):
             job.run_token != attempt.run_token
             or job.worker_boot_id != attempt.worker_boot_id
             or job.status != AiJobStatus.RUNNING
+            or job.cancel_requested_at is not None
             or not job.agent_service_binding
         ):
             raise AgentError("Remote session locator belongs to a stale attempt")
@@ -36,6 +37,7 @@ def _record_dsh_prompt_sync(attempt, session_id, request_id):
             job.run_token != attempt.run_token
             or job.worker_boot_id != attempt.worker_boot_id
             or job.status != AiJobStatus.RUNNING
+            or job.cancel_requested_at is not None
         ):
             raise AgentError("DSH prompt belongs to a stale attempt")
         job.provider_execution_json = {"provider": "dsh", "session_id": session_id, "request_id": request_id}
