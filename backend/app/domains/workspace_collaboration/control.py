@@ -115,12 +115,23 @@ def require_ready(db, task_id, *, actor_id=None):
 
 def resume_submission(db, task_id, actor_id, prepared, client_id, metadata=None, *, failed_check=None):
     from app.domains.task.models.task import SddTask
+    from app.domains.task.models.task_status_event import TaskStatusEvent
 
-    if not enabled(db, task_id):
+    task = db.get(SddTask, task_id)
+    # A failed preparation needs a fresh receipt, even without collaboration.
+    if not enabled(db, task_id) and not (
+        db.query(TaskStatusEvent.id)
+        .filter_by(
+            task_id=task_id,
+            status_seq=task.status_seq,
+            trigger=sm.Trigger.INPUT_PREPARATION_FAILED.value,
+        )
+        .first()
+    ):
         return None
     return _accept_resumed_control(
         db,
-        db.get(SddTask, task_id),
+        task,
         actor_id,
         prepared,
         client_id,

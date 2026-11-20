@@ -27,8 +27,14 @@ from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.session_turn import TaskSessionTurn
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_event_outbox import TaskEventOutbox
+from app.domains.task.models.task_status_event import TaskStatusEvent
+from app.domains.task.services import (
+    agent_session_switch,
+    status_machine,
+    task_session_control_service,
+    task_session_service,
+)
 from app.domains.task.services import chat_submission_service as service
-from app.domains.task.services import task_session_service
 from app.domains.task.services.provisioning.creation import create_task_record_for_provision
 from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
 
@@ -626,13 +632,42 @@ def test_success_publishes_sources_once_with_transactional_outbox(task_db):
     assert task_db.query(SearchOutbox).filter(SearchOutbox.entity_key.like("message:%")).count() == 2
 
 
-def test_preparation_failure_releases_slot_without_formal_message(task_db):
+@pytest.mark.asyncio
+async def test_preparation_failure_releases_slot_and_allows_resume(task_db, recovery_env, monkeypatch):
+    task = task_db.get(SddTask, "t")
+    task.status = TaskStatus.ROUND_COMPLETED
+    task.session_id = "original-session"
+    task_db.commit()
     row = accepted(task_db)
     service._fail_sync(task_db, row.id, "snapshot failed")
     task_db.commit()
     assert row.status == "FAILED" and row.active_task_id is None
+    assert task.status == TaskStatus.INTERRUPTED
+    assert task.interrupt_reason == "snapshot failed"
+    assert task.session_id == "original-session"
+    transition = task_db.query(TaskStatusEvent).filter_by(trigger="INPUT_PREPARATION_FAILED").one()
+    assert transition.status_seq == task.status_seq
+    assert task_db.query(SddAiJob).count() == 0
     assert task_db.query(ChatMessage).count() == 0
-    assert accepted(task_db, "next").status == "PREPARING"
+    events = [event.payload_json for event in task_db.query(TaskEventOutbox).order_by(TaskEventOutbox.id)]
+    assert events[-2]["event_type"] == "task_status_changed"
+    assert events[-2]["status"] == "INTERRUPTED"
+    assert events[-1]["receipt"]["status"] == "FAILED"
+
+    monkeypatch.setattr(agent_session_switch, "check_task_session", AsyncMock(return_value=(None, "available")))
+    result = await task_session_control_service.resume_interrupted_task(
+        task_id="t", actor_user_id="u", client_message_id="next", prompt="retry"
+    )
+    task_db.expire_all()
+    assert result["submission"]["status"] == "PREPARING"
+    assert recovery_env == [result["submission"]["id"]]
+    assert task.status == TaskStatus.RUNNING
+
+    service._fail_sync(task_db, row.id, "late failure")
+    task_db.commit()
+    assert task.status == TaskStatus.RUNNING
+    assert row.error_message == "snapshot failed"
+    assert task_db.query(TaskStatusEvent).filter_by(trigger="INPUT_PREPARATION_FAILED").count() == 1
 
 
 def test_session_changed_during_restart_does_not_execute_old_prompt(task_db):
@@ -642,6 +677,7 @@ def test_session_changed_during_restart_does_not_execute_old_prompt(task_db):
     assert service._load_preparation(task_db, row.id) is None
     task_db.commit()
     assert row.status == "FAILED"
+    assert task_db.get(SddTask, "t").status == TaskStatus.RUNNING
 
 
 def test_lost_receipt_after_commit_cannot_mark_job_unsent(task_db):
@@ -695,7 +731,7 @@ async def test_slow_checkpoint_remains_visible_and_rejects_second_send(task_db, 
     assert task_db.query(ChatMessage).count() == 0
     assert task_db.query(SddAiJob).count() == 0
     assert service._load_preparation(task_db, row.id) is None
-    assert accepted(task_db, "after-failed-preparation").status == "PREPARING"
+    assert task_db.get(SddTask, "t").status == TaskStatus.INTERRUPTED
 
 
 @pytest.mark.asyncio
@@ -847,32 +883,45 @@ async def test_publisher_keeps_chat_routing_field_out_of_the_message(task_db, re
     assert message.payload == payload
 
 
-@pytest.mark.asyncio
-async def test_convergence_finalizes_receipt_in_same_transaction(task_db, monkeypatch):
+@pytest.mark.parametrize(
+    ("status", "task_status", "receipt_status", "knowledge_state"),
+    [
+        (AiJobStatus.SUCCESS, TaskStatus.ROUND_COMPLETED, "SUCCEEDED", "published"),
+        (AiJobStatus.INTERRUPTED, TaskStatus.INTERRUPTED, "FAILED", "pending"),
+    ],
+)
+def test_convergence_finalizes_receipt_in_same_transaction(
+    task_db, status, task_status, receipt_status, knowledge_state
+):
     from app.domains.ai.services import ai_job_convergence_service as convergence
 
     row = accepted(task_db)
-    execution(task_db, row)  # seeds EXECUTING directly, as the turn owner does
+    job = execution(task_db, row)
+    task = task_db.get(SddTask, "t")
+    job.session_revision = task.session_revision
+    status_machine.dispatch(task_db, task, status_machine.Trigger.BIND_EXECUTION, event_key="bind:job", job_id=job.id)
     task_db.commit()
     request = convergence.AttemptConvergenceRequest(
         job_id="job",
         run_token="",
         worker_boot_id="",
-        requested_status=AiJobStatus.SUCCESS,
+        requested_status=status,
         reason="turn done",
         evidence=convergence.resolve_attempt_evidence(execution_kind="remote_session", fallback_dead=True),
         intent=convergence.ConvergenceIntent.NORMAL_FINALIZE,
     )
     result = convergence.converge_job_attempt_sync(task_db, request)
-    assert result.changed and result.is_final
+    assert result.changed and result.status == status.value
     task_db.expire_all()
-    assert row.status == "SUCCEEDED"
+    assert task.status == task_status
+    assert row.status == receipt_status
     assert row.active_task_id is None
     events = task_db.query(TaskEventOutbox).all()
-    assert events[-1].payload_json["receipt"]["status"] == "SUCCEEDED"
+    receipt_event = next(event for event in reversed(events) if event.receipt_id == row.id)
+    assert receipt_event.payload_json["receipt"]["status"] == receipt_status
     for message in task_db.query(ChatMessage).all():
         if message.metadata_json.get("submission_id") == row.id:
-            assert message.metadata_json["knowledge_state"] == "published"
+            assert message.metadata_json["knowledge_state"] == knowledge_state
 
 
 def test_session_state_resolves_unconfirmed_key_beyond_any_window(task_db):

@@ -761,7 +761,7 @@ def _finalize_submission_in_txn(db: Session, job: SddAiJob, final_status: AiJobS
     """
     if job.channel != AiJobChannel.TASK_CHAT or not job.session_turn_id:
         return
-    if final_status not in {AiJobStatus.SUCCESS, AiJobStatus.FAILED, AiJobStatus.CANCELLED}:
+    if final_status not in {AiJobStatus.SUCCESS, AiJobStatus.FAILED, AiJobStatus.CANCELLED, AiJobStatus.INTERRUPTED}:
         return
     from app.domains.task.services import chat_submission_service
 

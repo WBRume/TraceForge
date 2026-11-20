@@ -34,8 +34,8 @@ from app.domains.task.services import (
 from app.domains.task.services import (
     task_session_undo_finalization as finalization,
 )
-from app.domains.workspace_collaboration import content, identity, service
-from app.domains.workspace_collaboration.models import CollaborationState
+from app.domains.workspace_collaboration import content, identity, manifest_store, service
+from app.domains.workspace_collaboration.models import CollaborationSnapshot, CollaborationState
 from app.domains.workspace_collaboration.schemas import (
     DeliveryReceipt,
     EnableRequest,
@@ -324,6 +324,44 @@ def test_deleted_snapshots_rebuild_current_storage_without_rewriting_history(env
     }
 
 
+@pytest.mark.parametrize("workspace_changed", [False, True])
+def test_missing_private_cloud_checkpoint_checks_legacy_manifest(environment, workspace_changed):
+    from app.domains.task.services import chat_submission_service
+
+    db, task, root = environment
+    published_id = enabled(environment)["snapshot_id"]
+    published = db.get(CollaborationSnapshot, published_id)
+    legacy_repositories = service.get_snapshot(db, task.id, published_id)["repositories"]
+    for repo in legacy_repositories:
+        for file in repo["files"]:
+            del file["content_sha256"]
+    published.content_digest = manifest_store.store_repositories(db, task.id, legacy_repositories)
+    private_path = content.ObjectStore(task).root / "snapshots" / (published_id + ".json")
+    private_path.unlink()
+    if workspace_changed:
+        (root / "api/same.txt").write_bytes(b"unpublished code")
+    db.commit()
+    receipt = chat_submission_service._accept_sync(db, task.id, "u", "cloud", "Continue", {})
+    db.commit()
+    assert service.input_ready(db, task.id, receipt["id"])
+
+    if workspace_changed:
+        with pytest.raises(service.CollaborationError, match="与已发布快照不一致"):
+            service.input_worktree_checkpoint(db, task, receipt["id"])
+        db.rollback()
+        assert db.get(CollaborationState, task.id).snapshot_id == published_id
+        assert (root / "api/same.txt").read_bytes() == b"unpublished code"
+    else:
+        checkpoint = service.input_worktree_checkpoint(db, task, receipt["id"])
+        db.commit()
+        state = db.get(CollaborationState, task.id)
+        assert checkpoint["repositories"]
+        assert state.input_snapshot_id == state.snapshot_id != published_id
+        assert service.get_snapshot(db, task.id, state.input_snapshot_id)["source"] == "RECOVERED_INPUT"
+        assert service.get_snapshot(db, task.id, published_id)["repositories"] == legacy_repositories
+        assert not private_path.exists()
+
+
 @pytest.mark.parametrize("snapshot_error", [False, True])
 def test_capture_failure_ends_receipt_and_recovery_does_not_execute_cancelled_message(
     environment, monkeypatch, snapshot_error
@@ -332,6 +370,7 @@ def test_capture_failure_ends_receipt_and_recovery_does_not_execute_cancelled_me
 
     db, task, _ = environment
     state = preparing(environment)
+    db.get(TaskChatSubmission, "submission").active_task_id = task.id
     request = input_request(environment, state)
     capture = service._capture
     error = (
@@ -349,6 +388,7 @@ def test_capture_failure_ends_receipt_and_recovery_does_not_execute_cancelled_me
     assert state["sync_phase"] == "RECOVERY_REQUIRED"
     assert state["pending_submission_id"] is None
     assert db.get(TaskChatSubmission, "submission").status == "FAILED"
+    assert task.status == TaskStatus.INTERRUPTED
     monkeypatch.setattr(service, "_capture", capture)
     state = service.recover_input(db, task, "u", Fence(**fence(state)), "handoff")
     assert state["sync_phase"] == "READY"

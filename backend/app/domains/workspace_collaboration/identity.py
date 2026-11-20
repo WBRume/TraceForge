@@ -36,10 +36,14 @@ def content_digest(raw: bytes) -> str:
 
 
 def same_file(left: dict | None, right: dict | None) -> bool:
-    """A file is unchanged when its content and mode are unchanged."""
+    """Compare file modes and use raw hashes for legacy manifests."""
     if left is None or right is None:
         return left is None and right is None
-    return left.get("mode") == right.get("mode") and left.get("content_sha256") == right.get("content_sha256")
+    if left.get("mode") != right.get("mode"):
+        return False
+    if left.get("content_sha256") and right.get("content_sha256"):
+        return left["content_sha256"] == right["content_sha256"]
+    return left["sha256"] == right["sha256"]
 
 
 def same_files(left: dict[str, dict], right: dict[str, dict]) -> bool:

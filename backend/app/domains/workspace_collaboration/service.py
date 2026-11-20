@@ -616,19 +616,48 @@ def input_ready(db: Session, task_id: str, submission_id: str) -> bool:
     )
 
 
-def input_worktree_checkpoint(db: Session, task: SddTask, submission_id: str) -> dict | None:
+def recover_cloud_input_checkpoint(db: Session, task: SddTask, state: CollaborationState) -> Path:
+    """Recapture a missing private checkpoint for the current published cloud input."""
+    _check_session(state, task)
+    _assert_no_writer(db, task.id)
+    previous = get_snapshot(db, task.id, state.snapshot_id)
+    repositories = _check_repositories(db, state, task)
+    _ensure_store(db, task)
+    captured = _inventory(task, task.project_path, repositories, stable=True)
+    if not identity.same_repositories(captured, previous["repositories"]):
+        _fail("INPUT_REQUIRED", "云端工作区与已发布快照不一致，请先核对代码再重试")
+    snapshot = _snapshot(db, task, state, "RECOVERED_INPUT", captured)
+    path = content.ObjectStore(task).root / "snapshots" / (snapshot["snapshot_id"] + ".json")
+    if not path.is_file():
+        _fail("INPUT_REQUIRED", "无法重建云端输入检查点，请重试")
+    _publish(state, snapshot)
+    state.input_snapshot_id = snapshot["snapshot_id"]
+    return path
+
+
+def input_worktree_checkpoint(db: Session, task: SddTask, submission_id: str | None) -> dict | None:
     """Return the full private H checkpoint, never its filtered wire manifest."""
     import json
+
+    from .session import is_cloud_input
 
     state = _state(db, task.id)
     if not state or not state.enabled:
         return None
-    if state.input_submission_id != submission_id or state.pending_submission_id != submission_id:
+    if (
+        not submission_id
+        or state.input_submission_id != submission_id
+        or state.pending_submission_id != submission_id
+        or not state.input_snapshot_id
+    ):
         _fail("INPUT_REQUIRED", "The checkpoint must belong to this message's fixed input")
-    get_snapshot(db, task.id, state.input_snapshot_id)
     path = content.ObjectStore(task).root / "snapshots" / (state.input_snapshot_id + ".json")
     if not path.exists():
-        _fail("INPUT_REQUIRED", "Full private input checkpoint is unavailable")
+        if state.input_snapshot_id != state.snapshot_id or not is_cloud_input(db, task.id, submission_id):
+            _fail("INPUT_REQUIRED", "本地协同输入检查点缺失，请重新交接后再发送")
+        path = recover_cloud_input_checkpoint(db, task, state)
+    else:
+        get_snapshot(db, task.id, state.input_snapshot_id)
     payload = json.loads(path.read_text(encoding="utf-8"))["worktree"]
     if Path(payload["task_root"]).resolve() != Path(task.project_path).resolve() or not payload.get("repositories"):
         _fail("INPUT_REQUIRED", "Full private input checkpoint is unavailable")
@@ -1181,12 +1210,9 @@ def cancel_preparation(
     submission = db.get(TaskChatSubmission, submission_id)
     if not submission or submission.ai_job_id or submission.status != "PREPARING":
         _fail("PREPARATION_CHANGED", "The message is no longer preparing")
-    from app.domains.task.services.chat_submission_service import _transition
+    from app.domains.task.services.chat_submission_service import _fail_sync
 
-    _transition(
-        db, submission, "FAILED", error_message=error_message or "Local code preparation cancelled by the driver"
-    )
-    abandon_input(db, task.id, submission_id)
+    _fail_sync(db, submission_id, error_message or "Local code preparation cancelled by the driver")
     db.flush()
     return (
         _record(db, task, operation_id, operation_kind, request.model_dump()) if operation_id else get_state(db, task)
@@ -1272,14 +1298,11 @@ def claim_driver(db: Session, task: SddTask, user_id: str, request: EnableReques
     from .session import is_cloud_input
 
     if state.sync_phase == "PREPARING" and not is_cloud_input(db, task.id, state.pending_submission_id):
-        from app.domains.task.models.chat_submission import TaskChatSubmission
-        from app.domains.task.services.chat_submission_service import _transition
+        from app.domains.task.services.chat_submission_service import _fail_sync
 
-        submission = db.get(TaskChatSubmission, state.pending_submission_id) if state.pending_submission_id else None
-        if submission and submission.status == "PREPARING" and not submission.ai_job_id:
-            _transition(db, submission, "FAILED", error_message="Desktop driver changed before execution")
-        if state.pending_submission_id:
-            abandon_input(db, task.id, state.pending_submission_id)
+        submission_id = state.pending_submission_id
+        if submission_id and _fail_sync(db, submission_id, "Desktop driver changed before execution") is None:
+            abandon_input(db, task.id, submission_id)
         if state.sync_phase != "RECOVERY_REQUIRED":
             state.pending_submission_id = None
             state.input_submission_id = None

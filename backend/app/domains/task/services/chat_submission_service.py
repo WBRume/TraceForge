@@ -32,7 +32,7 @@ from app.domains.task.models.task_event_outbox import TaskEventOutbox
 from app.domains.task.services import agent_session_switch
 from app.domains.task.services import status_machine as sm
 from app.domains.task.services.conversation import history as task_conversation_history
-from app.domains.task.services.task_attempt_recovery_service import BLOCKING, recover_task_attempts
+from app.domains.task.services.task_attempt_recovery_service import BLOCKING, active_statuses, recover_task_attempts
 
 logger = get_logger(__name__, category="task_execution")
 _runners: dict[str, asyncio.Task] = {}
@@ -358,7 +358,7 @@ def _load_preparation(db, submission_id):
         or (int(task.session_generation or 0), int(task.session_revision or 0))
         != (row.session_generation, row.session_revision)
     ):
-        _transition(db, row, "FAILED", error_message="会话已改变，本次发送未执行")
+        _fail_sync(db, submission_id, "会话已改变，本次发送未执行")
         return None
     from app.domains.workspace_collaboration.hooks import input_ready
 
@@ -393,18 +393,44 @@ def _transition(db, row, target_status, *, error_message=None):
 
 
 def _fail_sync(db, submission_id, message):
-    row = db.query(TaskChatSubmission).filter_by(id=submission_id).with_for_update().one_or_none()
-    # A commit may have completed despite a lost caller. Never mark a durable job unsent.
-    if row and row.status == "PREPARING" and not row.ai_job_id:
-        from app.domains.workspace_collaboration import service as collaboration
+    """Close a preparation and its task state in the same transaction."""
+    task_id = db.query(TaskChatSubmission.task_id).filter_by(id=submission_id).scalar()
+    if not task_id:
+        return None
+    task = db.query(SddTask).filter_by(id=task_id).populate_existing().with_for_update().one_or_none()
+    row = db.query(TaskChatSubmission).filter_by(id=submission_id).populate_existing().with_for_update().one_or_none()
+    # A commit may have completed despite a lost caller.
+    if row is None or row.status != "PREPARING" or row.ai_job_id:
+        return None
+    from app.domains.workspace_collaboration import service as collaboration
 
-        collaboration.abandon_input(db, row.task_id, row.id)
-        _transition(db, row, "FAILED", error_message=message)
+    collaboration.abandon_input(db, task_id, submission_id)
+    if (
+        task is not None
+        and task.status == TaskStatus.RUNNING
+        and task.baselined_at is None
+        and row.active_task_id == task_id
+        and (row.session_generation, row.session_revision) == (task.session_generation, task.session_revision)
+        and not active_statuses(db, task_id)
+    ):
+        sm.dispatch(
+            db,
+            task,
+            sm.Trigger.INPUT_PREPARATION_FAILED,
+            event_key=f"input-failed:{submission_id}",
+            reason=message,
+        )
+        task.interrupt_reason = message
+        task.interrupted_by_id = None
+        task.interrupted_at = datetime.utcnow()
+        task.error_message = None
+    return _transition(db, row, "FAILED", error_message=message)
 
 
 async def _run(submission_id):
     from app.domains.ai.services.jobs.publishing import enqueue_task_chat_job
     from app.domains.task.services import task_session_service
+    from app.domains.workspace_collaboration.service import CollaborationError
 
     try:
         task_id = await run_db(lambda: _task_id_sync(submission_id))
@@ -432,8 +458,9 @@ async def _run(submission_id):
     except asyncio.CancelledError:
         # Durable receipt remains recoverable after shutdown/worker loss.
         raise
-    except agent_session_switch.SessionSwitchError as exc:
+    except (agent_session_switch.SessionSwitchError, CollaborationError) as exc:
         message = str(exc)
+        logger.warning("Chat preparation rejected: submission_id={}, code={}", submission_id, exc.code)
         await run_db_txn(lambda db: _fail_sync(db, submission_id, message))
         await wake_event_publisher()
     except Exception:
