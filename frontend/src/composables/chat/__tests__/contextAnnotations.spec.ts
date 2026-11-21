@@ -28,8 +28,8 @@ function setup() {
     submissions: { send, busy: ref(false), current: ref([]) }, messages: { upsert: vi.fn() },
     noteSentTime: vi.fn(), findHitlCard: () => undefined, engine: { engineRunning: ref(false) },
     ws: { isOpen: () => true, sendFrame: vi.fn(() => true), connect: vi.fn() },
-    recoverSession: vi.fn(), resumeInterruptedTask: vi.fn(), applyTaskSessionPayload: vi.fn(),
-    isUndoing: () => false, isHistoryAnchored: () => false, returnToLatest: vi.fn(), getCreatorMeta: () => ({}), scrollTo: vi.fn(), resolveActionError: vi.fn(),
+    recoverSession: vi.fn(),
+    isUndoing: () => false, isHistoryAnchored: () => false, returnToLatest: vi.fn(), getCreatorMeta: () => ({}), scrollTo: vi.fn(),
   }
   const composer = scope.run(() => useChatSend(options))!
   return { task, annotations, add, send, options, composer }
@@ -44,7 +44,6 @@ describe('context annotations and message submission', () => {
       metadata: { interaction_id: 'question', reply_to_message_id: 'answer-target' },
     })
     expect(accepted).toBe(false)
-    expect(options.resumeInterruptedTask).not.toHaveBeenCalled()
     expect(options.ws.sendFrame).not.toHaveBeenCalled()
     expect(send).not.toHaveBeenCalled()
   })
@@ -120,11 +119,23 @@ describe('context annotations and message submission', () => {
     expect(send.mock.calls[0]![2]).toBe('快捷操作'); expect(annotations.items.value).toHaveLength(1)
   })
   it('uses the same package when resuming an interrupted task', async () => {
-    const { annotations, add, composer, options } = setup()
+    const { annotations, add, composer, options, send } = setup()
     add(); options.task.isTaskInterrupted.value = true
     await composer.sendChat()
-    expect(options.resumeInterruptedTask).toHaveBeenCalledWith('task-a', expect.objectContaining({ prompt: expect.stringContaining('行号：35–36') }))
+    expect(send).toHaveBeenCalledWith('task-a', expect.any(String), expect.stringContaining('行号：35–36'),
+      expect.any(Object), undefined, true)
     expect(annotations.items.value).toHaveLength(0)
+  })
+  it('lets an interrupted task submit once while its prior execution receipt waits for cleanup', async () => {
+    const { composer, options, send } = setup()
+    options.task.isTaskInterrupted.value = true
+    options.submissions.busy.value = true
+    options.submissions.current.value = [{ status: 'EXECUTING' }]
+    expect(await composer.sendChatContent('continue after restart')).toBe(true)
+    expect(send).toHaveBeenCalledOnce()
+    options.submissions.current.value = [{ status: 'UNKNOWN' }]
+    expect(await composer.sendChatContent('do not duplicate')).toBe(false)
+    expect(send).toHaveBeenCalledOnce()
   })
   it('does not submit to a task opened while returning from anchored history', async () => {
     const { annotations, task, add, composer, send, options } = setup()

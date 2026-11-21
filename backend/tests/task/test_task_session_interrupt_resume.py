@@ -97,6 +97,33 @@ def _seed_task(db, *, task_status=TaskStatus.RUNNING, job_status=AiJobStatus.RUN
     return task, job
 
 
+def test_manual_interrupt_cannot_replace_an_already_accepted_job_cancel():
+    from app.domains.ai.services.ai_job_convergence_service import (
+        AttemptTerminationRequest,
+        request_attempt_termination_in_txn,
+    )
+
+    factory = _build_session()
+    with factory() as db:
+        task, job = _seed_task(db)
+        result = request_attempt_termination_in_txn(db, AttemptTerminationRequest(job_id=job.id, mode="CANCEL"))
+        assert result.changed
+        db.commit()
+        with pytest.raises(task_session_control_service.TaskSessionControlError) as blocked:
+            task_session_control_service._accept_interrupt_command(
+                db,
+                task.id,
+                task.creator_id,
+                "stop-after-cancel",
+                task.status_seq,
+                "pause",
+                user_requested=True,
+            )
+        assert blocked.value.status_code == 409
+        assert task.status == TaskStatus.RUNNING and task.interrupt_kind is None
+        assert job.status == AiJobStatus.TERMINATING and job.context_json["termination_mode"] == "CANCEL"
+
+
 @pytest.mark.parametrize("confirmed_dead", [True, False])
 def test_task_interrupt_converges_unclaimed_job_with_stop_evidence(monkeypatch, confirmed_dead):
     SessionLocal = _build_session()
@@ -609,7 +636,7 @@ def test_task_resume_keeps_a_recoverable_owner_until_checkpoint(monkeypatch, ses
     assert task.status == TaskStatus.RUNNING
     assert task.reading_change_seq == 1
     assert task.session_id == session_id
-    assert job.status == AiJobStatus.CANCELLED
+    assert job.status == AiJobStatus.INTERRUPTED
     assert job.context_json["superseded_by_resume_job_id"] == resume_job.id
     assert resume_job.status == AiJobStatus.PENDING
     assert resume_job.session_id == session_id

@@ -3,19 +3,14 @@ import api from '@/utils/api'
 import { acceptsJobSnapshot } from '@/utils/jobSnapshot'
 import type { ChatAiJob, ChatAiJobStatus } from '../types'
 
-/** 活跃 AI job 生命周期状态（排队/执行中/HITL 挂起/中断）。 */
-export const isJobActive = (status?: ChatAiJobStatus) => (
-  status === 'PENDING' || status === 'RUNNING' || status === 'WAITING_HITL' || status === 'INTERRUPTED' || status === 'TERMINATING' || status === 'ORPHANED'
-)
-
 /** 引擎实际执行中（不含已中断）。 */
 export const isJobExecuting = (status?: ChatAiJobStatus) => (
   status === 'PENDING' || status === 'RUNNING' || status === 'WAITING_HITL' || status === 'TERMINATING' || status === 'ORPHANED'
 )
 
 /**
- * 活跃 AI job 登记：task 级 job 表（PENDING/RUNNING/WAITING_HITL/INTERRUPTED 保持在表内，
- * 终态移出）。纯状态存储；job 变更的跨域反应（HITL 卡收敛、引擎态、诊断刷新）见 jobIngest。
+ * 活跃 AI job 登记：只保存仍在排队、执行、等待输入或回收的作业。
+ * job 变更的跨域反应（HITL 卡收敛、引擎态、诊断刷新）见 jobIngest。
  */
 export function useChatJobs(options: {
   getWorkspaceId: () => string
@@ -41,7 +36,7 @@ export function useChatJobs(options: {
   const upsert = (job: ChatAiJob) => {
     if (!job?.id || !acceptsJobSnapshot(observed.get(job.id)?.job, job)) return false
     observed.set(job.id, { job, at: ++observation })
-    if (isJobActive(job.status)) {
+    if (isJobExecuting(job.status)) {
       activeChatJobs.value = { ...activeChatJobs.value, [job.id]: job }
     } else if (activeChatJobs.value[job.id]) {
       const nextJobs = { ...activeChatJobs.value }
@@ -77,7 +72,7 @@ export function useChatJobs(options: {
       const prior = observed.get(job.id)
       if (!acceptsJobSnapshot(prior?.job, job)) {
         // 已被较早快照移出，但当前快照确认了该版本仍在活跃集合中。
-        if (!next[job.id] && prior && prior.job.version === job.version && isJobActive(prior.job.status)) {
+        if (!next[job.id] && prior && prior.job.version === job.version && isJobExecuting(prior.job.status)) {
           if (next === current) next = { ...current }
           next[job.id] = prior.job
         }
@@ -85,7 +80,7 @@ export function useChatJobs(options: {
       }
       observed.set(job.id, { job, at: ++observation })
       accepted.push(job)
-      if (isJobActive(job.status)) {
+      if (isJobExecuting(job.status)) {
         if (next === current) next = { ...current }
         next[job.id] = job
       } else if (next[job.id]) {

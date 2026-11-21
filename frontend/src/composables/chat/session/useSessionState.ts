@@ -1,11 +1,12 @@
 import api from '@/utils/api'
 import { isOlderTaskStatusSequence } from '@/utils/taskStatusProjection'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
-import { mapHistoryMessages } from '../shared/messageIdentity'
+import { mapHistoryMessages, messageIdentity } from '../shared/messageIdentity'
 import { isCanceledRequest } from '../shared/requestGuards'
 import type { useChatJobs } from '../jobs/useChatJobs'
 import type { useChatMessages } from '../message/useChatMessages'
 import type { ChatAiJob } from '../types'
+import type { useChatSubmissions } from '@/composables/useChatSubmissions'
 
 /**
  * 会话状态协调：初始快照单飞、异常路径恢复（指数退避）、WS 恢复屏障、
@@ -21,7 +22,7 @@ export function useSessionState(options: {
     unconfirmedKeys: () => string[]
     current: () => any[]
     put: (receipt: any) => void
-    send: (taskId: string, clientMessageId: string, content: string, metadata?: Record<string, any>, newAgentSession?: boolean) => Promise<boolean>
+    send: ReturnType<typeof useChatSubmissions>['send']
     clear: (taskId: string) => void
   }
   ingestJob: (job: ChatAiJob) => void
@@ -151,13 +152,15 @@ export function useSessionState(options: {
         const applied = applySessionSnapshot(snapshot, jobCursor, messagesAtRequest)
         if (applied && unconfirmed.length) {
           const queried = new Set(unconfirmed)
-          const present = new Set((snapshot.receipts || []).map((row: any) => row.client_message_id))
+          const present = new Set((snapshot.receipts || []).map(messageIdentity))
           for (const row of options.submissions.current()) {
             if (!stillCurrent() || !matchesCurrentVersion(snapshot)) break
             if (row.task_id !== taskId || row.status !== 'UNKNOWN'
-              || !queried.has(row.client_message_id) || present.has(row.client_message_id)) continue
+              || !queried.has(row.client_message_id) || present.has(messageIdentity(row))) continue
             // 只有本次确实查询过且服务端缺席的键，才按原幂等键重投。
-            if (row.new_agent_session) {
+            if (row.resume_interrupted) {
+              await options.submissions.send(taskId, row.client_message_id, row.content, row.metadata, row.new_agent_session, true)
+            } else if (row.new_agent_session) {
               await options.submissions.send(taskId, row.client_message_id, row.content, row.metadata, true)
             } else {
               await options.submissions.send(taskId, row.client_message_id, row.content, row.metadata)

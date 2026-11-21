@@ -11,7 +11,8 @@ export const generateClientMessageId = (): string => {
 
 export const messageIdentity = (msg: any): string => {
   const clientMessageId = String(msg?.client_message_id || '').trim()
-  if (clientMessageId) return `client:${clientMessageId}`
+  const creatorId = String(msg?.creator_id || '')
+  if (clientMessageId) return creatorId ? `client-author:${creatorId}:${clientMessageId}` : `client:${clientMessageId}`
   const id = String(msg?.id || '').trim()
   return id ? `id:${id}` : ''
 }

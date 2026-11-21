@@ -7,8 +7,13 @@ cancel 不误报 finished、迟到终止不可覆盖终态、TERMINATING 防降�
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
+
+import pytest
 
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+from app.domains.ai.models.job_history import JobAttempt
+from app.domains.ai.services import ai_job_convergence_service as convergence
 from app.domains.ai.services.jobs import attempts as ai_attempts
 from app.domains.ai.services.jobs import fencing as ai_fencing
 from app.domains.ai.services.jobs import reaper as ai_reaper
@@ -75,6 +80,76 @@ def test_cancel_running_job_is_not_reported_as_finished(monkeypatch):
     assert result is not None
     assert result.status == AiJobStatus.TERMINATING
     assert result.finished_at is None
+
+
+@pytest.mark.parametrize("mode", ["CANCEL", "INTERRUPT"])
+def test_later_stop_does_not_replace_the_first_accepted_interrupt(mode):
+    factory = _session_factory()
+    with factory() as db:
+        job = _owned_job(db, status=AiJobStatus.RUNNING)
+        first = convergence.request_attempt_termination_in_txn(
+            db,
+            convergence.AttemptTerminationRequest(
+                job_id=job.id,
+                mode="INTERRUPT",
+                actor_user_id="operator",
+                reason="pause here",
+            ),
+        )
+        assert first.changed and first.status == AiJobStatus.TERMINATING.value
+        db.commit()
+        accepted_at, version = job.cancel_requested_at, job.version
+
+        duplicate = convergence.request_attempt_termination_in_txn(
+            db,
+            convergence.AttemptTerminationRequest(job_id=job.id, mode=mode, reason="later request"),
+        )
+        assert not duplicate.changed and duplicate.status == AiJobStatus.TERMINATING.value
+        assert job.context_json["termination_mode"] == "INTERRUPT"
+        assert job.interrupt_reason == "pause here" and job.interrupted_by_id == "operator"
+        assert job.cancel_requested_at == accepted_at and job.version == version
+
+
+def test_cancel_and_tokenless_finalizer_cannot_rewrite_settled_interruption(monkeypatch):
+    factory = _session_factory()
+    with factory() as db:
+        job = _job(db, status=AiJobStatus.INTERRUPTED)
+        job.interrupt_reason = "provider disconnected"
+        db.commit()
+        version = job.version
+        patch_ai_job_db(monkeypatch, factory)
+
+        finalizer = ai_fencing.update_job_state_sync(
+            job.id,
+            status=AiJobStatus.SUCCESS,
+            finalize=True,
+            termination_confirmed_dead=True,
+        )
+        assert not finalizer["broadcast"]
+        cancelled = ai_attempts.cancel_job(db, workspace_id=job.workspace_id, job_id=job.id)
+        assert cancelled.status == AiJobStatus.INTERRUPTED
+        assert cancelled.interrupt_reason == "provider disconnected" and cancelled.version == version
+
+
+def test_later_job_metadata_does_not_change_attempt_finish_record():
+    factory = _session_factory()
+    with factory() as db:
+        job = _owned_job(db, status=AiJobStatus.RUNNING)
+        job.attempt_count = 1
+        job.progress = 15
+        db.commit()
+
+        job.status = AiJobStatus.INTERRUPTED
+        job.run_token = None
+        job.finished_at = datetime.utcnow()
+        db.commit()
+        attempt = db.query(JobAttempt).filter_by(job_id=job.id).one()
+        recorded = attempt.finished_at
+        assert recorded is not None and attempt.outcome == "INTERRUPTED"
+
+        job.context_json = {"superseded_by_resume_job_id": "successor"}
+        db.commit()
+        assert attempt.finished_at == recorded and attempt.outcome == "INTERRUPTED"
 
 
 def test_late_termination_cannot_overwrite_success(monkeypatch):

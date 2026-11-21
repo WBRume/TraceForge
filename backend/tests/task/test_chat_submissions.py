@@ -349,6 +349,44 @@ def test_model_selection_is_durable_and_part_of_idempotency(task_db):
         )
 
 
+@pytest.mark.asyncio
+async def test_same_client_key_from_two_members_can_resume_independently(task_db, recovery_env):
+    task_db.add(User(id="other", email="other@test.local", hashed_password="x", display_name="Other"))
+    task_db.add(WorkspaceMember(workspace_id="w", user_id="other", role=WorkspaceRole.DEVELOPER))
+    task_db.get(SddTask, "t").status = TaskStatus.INTERRUPTED
+    task_db.commit()
+    first = await task_session_control_service.resume_interrupted_task(
+        task_id="t",
+        actor_user_id="u",
+        client_message_id="same-key",
+        prompt="first actor",
+    )
+    service._fail_sync(task_db, first["submission"]["id"], "preparation failed")
+    task_db.commit()
+    second = await task_session_control_service.resume_interrupted_task(
+        task_id="t",
+        actor_user_id="other",
+        client_message_id="same-key",
+        prompt="second actor",
+    )
+    assert second["submission"]["id"] != first["submission"]["id"]
+    assert second["submission"]["creator_id"] == "other"
+    assert task_db.query(TaskStatusEvent).filter_by(trigger="RESUME", outcome="APPLIED").count() == 2
+
+
+def test_recovered_sends_from_two_members_with_same_client_key_do_not_conflict(task_db):
+    task_db.add(User(id="other", email="other@test.local", hashed_password="x", display_name="Other"))
+    task_db.add(WorkspaceMember(workspace_id="w", user_id="other", role=WorkspaceRole.DEVELOPER))
+    task_db.get(SddTask, "t").status = TaskStatus.INTERRUPTED
+    task_db.commit()
+    first = service._accept_sync(task_db, "t", "u", "same-key", "first actor", {}, after_recovery=True)
+    service._fail_sync(task_db, first["id"], "preparation failed")
+    task_db.commit()
+    second = service._accept_sync(task_db, "t", "other", "same-key", "second actor", {}, after_recovery=True)
+    assert second["id"] != first["id"] and second["creator_id"] == "other"
+    assert task_db.get(SddTask, "t").status == TaskStatus.RUNNING
+
+
 def test_wrong_engine_model_is_rejected_before_acceptance(task_db):
     task_db.get(SddTask, "t").agent_backend = "claude-code"
     task_db.commit()

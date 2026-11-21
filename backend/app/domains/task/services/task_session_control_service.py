@@ -26,6 +26,7 @@ from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.ai.services.ai_job_convergence_service import (
     AttemptTerminationRequest,
     TerminationRequestResult,
+    persisted_stop_mode,
     request_attempt_termination_in_txn,
 )
 from app.domains.ai.services.jobs import attempts as ai_job_attempts
@@ -95,6 +96,7 @@ def _find_latest_interrupted_job(db: Session, task: SddTask) -> SddAiJob | None:
             SddAiJob.channel == AiJobChannel.TASK_CHAT,
             SddAiJob.status == AiJobStatus.INTERRUPTED,
             SddAiJob.session_generation == task.session_generation,
+            SddAiJob.context_json["superseded_by_resume_job_id"].as_string().is_(None),
         )
         .order_by(SddAiJob.interrupted_at.desc().nulls_last(), SddAiJob.created_at.desc(), SddAiJob.id.desc())
         .first()
@@ -205,6 +207,14 @@ def _accept_interrupt_command(
     # The transition clears status_run_id. Capture its exact job while holding
     # the task lock, then commit the two writes together.
     job = _current_task_job(db, task)
+    if (
+        job is not None
+        and job.status in {AiJobStatus.TERMINATING, AiJobStatus.ORPHANED}
+        and persisted_stop_mode(job) == "CANCEL"
+    ):
+        if user_requested:
+            raise TaskSessionControlError("当前执行已请求终止，请等待回收完成", status_code=409)
+        return {**_task_payload(task), "duplicate": True}, None
     result = sm.dispatch(
         db,
         task,
@@ -238,7 +248,8 @@ def _accept_interrupt_command(
         )
         task.session_id = stopped.session_id or task.session_id
     submission = _interrupt_preparing_submission(db, task_id, reason_text)
-    task.error_message = None
+    if user_requested:
+        task.error_message = None
     task.interrupt_reason = reason_text
     task.interrupted_by_id = actor_id
     task.interrupted_at = datetime.utcnow()
@@ -254,13 +265,12 @@ def _accept_interrupt_command(
 
 
 def _engine_owns_stop(engine: TaskAgentEngine, target: TerminationRequestResult) -> bool:
+    if not engine.running or engine.current_job_id != target.job_id:
+        return False
     attempt = engine.attempt
-    return (
-        engine.running
-        and engine.current_job_id == target.job_id
-        and (attempt.run_token if attempt else None) == target.run_token
-        and (attempt.worker_boot_id if attempt else None) == target.worker_boot_id
-    )
+    return (attempt.run_token if attempt else None) == target.run_token and (
+        attempt.worker_boot_id if attempt else None
+    ) == target.worker_boot_id
 
 
 async def interrupt_task(
@@ -421,6 +431,8 @@ async def resume_interrupted_task(
     idempotency_key = str(client_message_id or "").strip()
     from app.domains.task.services import chat_submission_service
 
+    if len(idempotency_key) > chat_submission_service.MAX_CLIENT_MESSAGE_ID_LENGTH:
+        raise TaskSessionControlError("消息标识过长", status_code=400)
     if idempotency_key.lower().startswith(chat_submission_service.PRE_INPUT_CLIENT_ID_PREFIX):
         raise TaskSessionControlError("该消息标识由协作预输入保留", status_code=400)
 

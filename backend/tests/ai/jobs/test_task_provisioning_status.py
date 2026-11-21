@@ -284,7 +284,9 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
             assert task.session_generation == 1
             jobs = db.query(SddAiJob).filter_by(task_id=task_id, channel=AiJobChannel.TASK_CHAT).all()
             assert len(jobs) == 2
-            assert db.get(SddAiJob, old_id).status in {AiJobStatus.FAILED, AiJobStatus.CANCELLED}
+            assert db.get(SddAiJob, old_id).status == (
+                AiJobStatus.CANCELLED if old_status == AiJobStatus.RUNNING else old_status
+            )
             assert next(j for j in jobs if j.id != old_id).status == AiJobStatus.PENDING
     finally:
         engine.dispose()

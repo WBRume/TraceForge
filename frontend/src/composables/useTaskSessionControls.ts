@@ -32,18 +32,25 @@ export function useTaskSessionControls(options: UseTaskSessionControlsOptions) {
     return `/workspaces/${wsId}/tasks/${taskId}/${action}`
   }
 
-  const pendingInterrupts = new Map<string, string>()
-  const interruptTask = async (taskId: string, reason?: string) => {
-    const commandId = pendingInterrupts.get(taskId) || generateClientMessageId()
-    pendingInterrupts.set(taskId, commandId)
+  const pendingInterrupts = new Map<string, { id: string; reason?: string; sequence?: string | number }>()
+  const interruptTask = async (taskId: string, reason?: string, expectedStatusSeq?: string | number) => {
+    const command = pendingInterrupts.get(taskId) || {
+      id: generateClientMessageId(), reason: String(reason || '').trim() || undefined, sequence: expectedStatusSeq,
+    }
+    pendingInterrupts.set(taskId, command)
     interruptingTask.value = true
     try {
       const res = await api.post(taskUrl(taskId, 'interrupt'), {
-        reason: String(reason || '').trim() || undefined,
-        command_id: commandId,
+        reason: command.reason,
+        command_id: command.id,
+        ...(command.sequence != null ? { expected_status_seq: command.sequence } : {}),
       })
       pendingInterrupts.delete(taskId)
       return res.data
+    } catch (error) {
+      const status = (error as { response?: { status?: number } })?.response?.status
+      if (status && status >= 400 && status < 500 && ![408, 429].includes(status)) pendingInterrupts.delete(taskId)
+      throw error
     } finally {
       interruptingTask.value = false
     }

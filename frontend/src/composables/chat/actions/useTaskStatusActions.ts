@@ -26,8 +26,8 @@ export function useTaskStatusActions(options: {
   messagesPush: (message: any) => void
   isHistoryAnchored: () => boolean
   scrollToChatBottom: () => void
-  interruptTask: (taskId: string, reason?: string) => Promise<any>
-  applyTaskSessionPayload: (payload: any) => void
+  interruptTask: (taskId: string, reason?: string, expectedStatusSeq?: string | number) => Promise<any>
+  applyTaskSessionPayload: (payload: any) => boolean
   refreshActiveJobs: (taskId: string) => Promise<boolean>
   loadTasks: (loadOptions?: { reset?: boolean; trySelectRouteTask?: boolean }) => Promise<void>
   patchTask: (taskId: string, patch: Record<string, any>) => void
@@ -105,12 +105,12 @@ export function useTaskStatusActions(options: {
       const payload = await options.interruptTask(
         task.id,
         t('chat.temporary_interrupt_reason'),
+        task.status_seq,
       )
-      options.cardsDropStatusCards()
-      options.engineRunning.value = false
-      options.applyTaskSessionPayload(payload)
+      if (options.applyTaskSessionPayload(payload)) options.cardsDropStatusCards()
       return true
     } catch (e: any) {
+      if (options.getCurrentTask()?.id !== task.id) return false
       console.error('Temporary interrupt failed', e)
       const detail = String(e?.response?.data?.detail || '')
       if (

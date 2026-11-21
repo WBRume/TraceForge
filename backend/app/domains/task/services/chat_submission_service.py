@@ -43,6 +43,7 @@ from app.domains.task.services.task_attempt_recovery_service import (
 logger = get_logger(__name__, category="task_execution")
 _runners: dict[str, asyncio.Task] = {}
 PRE_INPUT_CLIENT_ID_PREFIX = "pre-input:"
+MAX_CLIENT_MESSAGE_ID_LENGTH = 128
 _RECOVERY_PAGE_SIZE = 100
 
 # PREPARING → {EXECUTING, FAILED}; EXECUTING → {SUCCEEDED, FAILED}.  Terminal
@@ -201,6 +202,7 @@ def _accept_sync(
     after_recovery=False,
     failed_check=None,
     replacement_check=None,
+    receipt_id=None,
 ):
     previous = _existing_submission_sync(
         db, task_id, actor_id, client_id, content, metadata, allow_recovered_interrupt=after_recovery
@@ -254,20 +256,13 @@ def _accept_sync(
         raise SubmissionError(str(exc), "MODEL_SELECTION_INVALID", 422) from exc
     # Preserve the caller's exact metadata/hash for durable duplicate detection.
     # The task preference is frozen into the job when preparing this receipt.
-    if after_recovery and task.status == "INTERRUPTED":
-        # This same send requested continuation before recovery stopped a stale
-        # attempt. All blockers were checked above; retain its session/context.
-        sm.dispatch(db, task, sm.Trigger.RESUME, event_key=f"recovered-input:{client_id}", actor_id=actor_id)
-        task.error_message = None
-        task.interrupt_reason = None
-        task.interrupted_by_id = None
-        task.interrupted_at = None
     stored_metadata = dict(metadata)
     if failed_check:
         stored_metadata["_agent_session_check_failed"] = failed_check
     if replacement_check:
         stored_metadata["_agent_session_replacement_check"] = replacement_check
     row = TaskChatSubmission(
+        id=receipt_id or str(uuid4()),
         task_id=task_id,
         workspace_id=task.workspace_id,
         creator_id=actor_id,
@@ -283,7 +278,14 @@ def _accept_sync(
     )
     db.add(row)
     db.flush()
-    if task.status in {TaskStatus.ROUND_COMPLETED, TaskStatus.AWAITING_INPUT}:
+    if after_recovery and task.status == TaskStatus.INTERRUPTED:
+        # This same send requested continuation before recovery stopped a stale attempt.
+        sm.dispatch(db, task, sm.Trigger.RESUME, event_key=f"recovered-input:{row.id}", actor_id=actor_id)
+        task.error_message = None
+        task.interrupt_reason = None
+        task.interrupted_by_id = None
+        task.interrupted_at = None
+    elif task.status in {TaskStatus.ROUND_COMPLETED, TaskStatus.AWAITING_INPUT}:
         sm.dispatch(db, task, sm.Trigger.INPUT_SUBMITTED, event_key=f"input:{row.id}", actor_id=actor_id)
     from app.domains.workspace_collaboration.hooks import request_input
 
@@ -300,7 +302,7 @@ async def accept(*, task_id, actor_id, client_message_id, content, metadata=None
             "Confirmation replies must be sent through the task conversation", "CONFIRMATION_REQUIRED"
         )
     client_id, text = str(client_message_id or "").strip(), str(content or "").strip()
-    if not client_id or len(client_id) > 128 or not text:
+    if not client_id or len(client_id) > MAX_CLIENT_MESSAGE_ID_LENGTH or not text:
         raise SubmissionError("消息内容和消息标识不能为空", "MESSAGE_INVALID", 400)
     if client_id.lower().startswith(PRE_INPUT_CLIENT_ID_PREFIX):
         raise SubmissionError("该消息标识由协作预输入保留", "MESSAGE_INVALID", 400)

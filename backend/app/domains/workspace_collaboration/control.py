@@ -26,6 +26,7 @@ def accept_control(
     failed_check=None,
     replacement_check=None,
     resumed_from_job_id=None,
+    receipt_id=None,
 ):
     from app.domains.task.services import chat_submission_service
     from app.domains.workspace_collaboration.session import uses_local_input
@@ -59,6 +60,7 @@ def accept_control(
         metadata,
         failed_check=failed_check,
         replacement_check=replacement_check,
+        receipt_id=receipt_id,
     )
 
 
@@ -141,11 +143,12 @@ def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *
 
     require_ready(db, task.id, actor_id=actor_id)
     client_id = client_id or str(uuid4())
+    receipt_id = str(uuid4())
     sm.dispatch(
         db,
         task,
         sm.Trigger.RESUME,
-        event_key=f"resume:{client_id}",
+        event_key=f"resume:{receipt_id}",
         actor_id=actor_id,
         expected_seq=prepared.get("status_seq"),
     )
@@ -185,6 +188,7 @@ def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *
         failed_check=failed_check,
         replacement_check=prepared.get("agent_session_replacement_check"),
         resumed_from_job_id=source_job_id,
+        receipt_id=receipt_id,
     )
 
 

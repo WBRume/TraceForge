@@ -1,6 +1,8 @@
 import { computed, ref } from 'vue'
 import api from '@/utils/api'
 import { noteTaskRunInitiated, forgetTaskRunIntent } from '@/utils/taskAwarenessIntent'
+import { messageIdentity } from './chat/shared/messageIdentity'
+import type { useTaskSessionControls } from './useTaskSessionControls'
 
 export interface ChatSubmission {
   id?: string
@@ -16,6 +18,7 @@ export interface ChatSubmission {
   created_at?: string
   metadata?: Record<string, any>
   new_agent_session?: boolean
+  resume_interrupted?: boolean
 }
 
 const rank: Record<string, number> = { SENDING: 0, UNKNOWN: 0, PREPARING: 1, EXECUTING: 2, FAILED: 3, SUCCEEDED: 4 }
@@ -25,17 +28,24 @@ export function useChatSubmissions(options: {
   workspaceId: () => string
   taskId: () => string
   userId: () => string
+  resumeInterruptedTask: ReturnType<typeof useTaskSessionControls>['resumeInterruptedTask']
   onAgentSessionUnavailable?: (taskId: string) => void
   onAgentSessionChanged?: (taskId: string) => void
 }) {
   const receipts = ref<Record<string, ChatSubmission>>({})
   const storageKey = `traceforge.chat-submissions:${options.userId()}`
+  const key = (task: string, client: string, creator = options.userId(), workspace = options.workspaceId()) =>
+    `${workspace}:${task}:${creator}:${client}`
   try {
     const saved = JSON.parse(sessionStorage.getItem(storageKey) || '{}')
     for (const [id, row] of Object.entries(saved)) {
       const item = row as ChatSubmission
       if (item?.task_id && item.client_message_id && typeof item.content === 'string') {
-        receipts.value[id] = { ...item, status: 'UNKNOWN', version: 0 }
+        const workspace = id.split(':', 1)[0]
+        const creator = item.creator_id || options.userId()
+        receipts.value[key(item.task_id, item.client_message_id, creator, workspace)] = {
+          ...item, creator_id: creator, status: 'UNKNOWN', version: 0,
+        }
       }
     }
   } catch { /* Storage is optional; durable receipts still recover through REST. */ }
@@ -47,17 +57,16 @@ export function useChatSubmissions(options: {
   }
   const invalidated = new Set<string>()
   const provisional = new Set<string>()
-  const revisions = new Map<string, number>()
-  const key = (task: string, client: string) => `${options.workspaceId()}:${task}:${client}`
+  const keyForReceipt = (row: ChatSubmission) => key(row.task_id, row.client_message_id, row.creator_id || options.userId())
   const current = computed(() => Object.values(receipts.value).filter(row => row.task_id === options.taskId()
-    && receipts.value[key(row.task_id, row.client_message_id)] === row))
+    && receipts.value[keyForReceipt(row)] === row))
   const busy = computed(() => current.value.some(row => ['SENDING', 'UNKNOWN', 'PREPARING', 'EXECUTING'].includes(row.status)))
   /** Unconfirmed idempotency keys (SENDING/UNKNOWN) for recovery snapshots. */
   const unconfirmedKeys = (): string[] => current.value
-    .filter(row => ['SENDING', 'UNKNOWN'].includes(row.status))
+    .filter(row => row.creator_id === options.userId() && ['SENDING', 'UNKNOWN'].includes(row.status))
     .map(row => row.client_message_id)
   const put = (row: ChatSubmission) => {
-    const identity = key(row.task_id, row.client_message_id)
+    const identity = keyForReceipt(row)
     if (invalidated.has(identity)) return
     const old = receipts.value[identity]
     // Server receipts carry a monotonically increasing version; a stale or
@@ -70,29 +79,39 @@ export function useChatSubmissions(options: {
         if (nextVersion < oldVersion) return
       } else if ((rank[old.status] ?? 0) > (rank[row.status] ?? 0)) return
     }
-    receipts.value[identity] = { ...old, ...row }
+    receipts.value[identity] = { ...old, ...row, creator_id: row.creator_id || options.userId() }
     if (['SENDING', 'UNKNOWN', 'PREPARING', 'EXECUTING'].includes(row.status)) provisional.add(identity)
     persistUnconfirmed()
   }
-  const send = async (taskId: string, clientId: string, content: string, metadata?: Record<string, any>, newAgentSession?: boolean) => {
+  const send = async (
+    taskId: string, clientId: string, content: string, metadata?: Record<string, any>,
+    newAgentSession?: boolean, resumeInterrupted = false,
+  ) => {
     const workspace = options.workspaceId()
     noteTaskRunInitiated(taskId, clientId)
-    put({ task_id: taskId, client_message_id: clientId, content, metadata, new_agent_session: newAgentSession, status: 'SENDING',
+    put({ task_id: taskId, client_message_id: clientId, content, metadata, new_agent_session: newAgentSession,
+      resume_interrupted: resumeInterrupted, status: 'SENDING',
       creator_id: options.userId(), created_at: new Date().toISOString() })
     try {
-      const { data } = await api.post(`/workspaces/${workspace}/tasks/${taskId}/chat-submissions`, {
-        client_message_id: clientId, content, metadata,
-        ...(newAgentSession ? { new_agent_session: true } : {}),
-      })
+      const data: ChatSubmission = resumeInterrupted
+        ? (await options.resumeInterruptedTask(taskId, {
+          prompt: content, clientMessageId: clientId, agentModel: metadata?.agent_model, newAgentSession,
+        })).submission
+        : (await api.post(`/workspaces/${workspace}/tasks/${taskId}/chat-submissions`, {
+          client_message_id: clientId, content, metadata,
+          ...(newAgentSession ? { new_agent_session: true } : {}),
+        })).data
       if (options.workspaceId() === workspace) put(data)
       if (data.ai_job_id) noteTaskRunInitiated(taskId, clientId, data.ai_job_id)
       return true
     } catch (error: any) {
       if (options.workspaceId() !== workspace) return false
       const row = receipts.value[key(taskId, clientId)]
+      if (!row) return false
       if (row?.id) return true // A server receipt received over WS takes precedence.
       const status = error.response?.status
-      const code = error.response?.data?.detail?.code
+      const detail = error.response?.data?.detail
+      const code = detail?.code
       if (code === 'AGENT_SESSION_CHANGED') options.onAgentSessionChanged?.(taskId)
       if (code === 'AGENT_SESSION_UNAVAILABLE') {
         forgetTaskRunIntent(taskId, clientId)
@@ -104,45 +123,46 @@ export function useChatSubmissions(options: {
       }
       const definitive = status >= 400 && status < 500 && ![408, 429].includes(status)
       if (definitive) forgetTaskRunIntent(taskId, clientId)
-      put({ ...row!, status: definitive ? 'FAILED' : 'UNKNOWN',
-        error_message: definitive ? (error.response?.data?.detail?.message || '消息未被接收，请重试') : '正在确认发送结果，请勿重复发送' })
+      put({ ...row, status: definitive ? 'FAILED' : 'UNKNOWN',
+        error_message: definitive ? ((typeof detail === 'string' ? detail : detail?.message) || '消息未被接收，请重试') : '正在确认发送结果，请勿重复发送' })
       // Keep an ambiguous send in its recoverable bubble, rather than leaving
       // the same prompt in the composer to be sent again under a new key.
       return !definitive
     }
   }
   const clear = (taskId: string) => {
-    revisions.set(taskId, (revisions.get(taskId) || 0) + 1)
     for (const [id, row] of Object.entries(receipts.value)) if (row.task_id === taskId) {
       invalidated.add(id)
+      provisional.delete(id)
       delete receipts.value[id]
     }
     persistUnconfirmed()
   }
   const removeMessages = (taskId: string, messageIds: Set<string>) => {
-    revisions.set(taskId, (revisions.get(taskId) || 0) + 1)
     for (const [id, row] of Object.entries(receipts.value)) if (row.task_id === taskId && row.chat_message_id && messageIds.has(row.chat_message_id)) {
       invalidated.add(id)
+      provisional.delete(id)
       delete receipts.value[id]
     }
     persistUnconfirmed()
   }
   const bubbles = (messages: any[], creatorMeta?: Record<string, any>) => {
     const mapped = messages.map(message => {
-      const row = current.value.find(item => item.chat_message_id === message.id)
-      if (row) provisional.delete(key(row.task_id, row.client_message_id))
+      const row = current.value.find(item => item.chat_message_id && item.chat_message_id === message.id)
+      if (row) provisional.delete(keyForReceipt(row))
       return row ? { ...message, delivery_status: row.status.toLowerCase(), delivery_error: row.error_message } : message
     })
     for (const row of current.value) {
-      const awaitingHistory = provisional.has(key(row.task_id, row.client_message_id))
+      const awaitingHistory = provisional.has(keyForReceipt(row))
+      const identity = messageIdentity(row)
       if ((row.status === 'SUCCEEDED' && !awaitingHistory)
         || (row.status === 'FAILED' && row.chat_message_id && !awaitingHistory)
-        || mapped.some(message => message.id === row.chat_message_id
-        || message.client_message_id === row.client_message_id)) continue
+        || mapped.some(message => (row.chat_message_id && message.id === row.chat_message_id)
+        || messageIdentity(message) === identity)) continue
       // The pending bubble must render exactly like the eventual server message:
       // creator profile decides the expert badge/avatar, metadata decides the body.
       const creator = creatorMeta && String(row.creator_id || '') === options.userId() ? creatorMeta : null
-      mapped.push({ id: `submission-${row.client_message_id}`, role: 'user', content: row.content,
+      mapped.push({ id: `submission-${identity}`, role: 'user', content: row.content,
         client_message_id: row.client_message_id, creator_id: row.creator_id, created_at: row.created_at,
         message_type: 'text', can_undo: false, metadata: row.metadata || null,
         delivery_status: row.status.toLowerCase(), delivery_error: row.error_message,

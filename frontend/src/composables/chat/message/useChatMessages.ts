@@ -36,13 +36,13 @@ export function useChatMessages(options: {
 
   const visibleMessages = computed(() => submissions.bubbles(messages.value, options.getCreatorMeta())
     .map((message: any) => {
-      const clientId = String(message?.client_message_id || '')
-      const sentAt = clientId ? localSentTimes.get(clientId) : undefined
+      const sentAt = localSentTimes.get(messageIdentity(message))
       return sentAt && sentAt !== message.created_at ? { ...message, created_at: sentAt } : message
     }))
 
   const noteSentTime = (clientMessageId: string) => {
-    localSentTimes.set(clientMessageId, new Date().toISOString())
+    const identity = messageIdentity({ client_message_id: clientMessageId, creator_id: options.getCreatorMeta().creator_id })
+    localSentTimes.set(identity, new Date().toISOString())
   }
 
   const reset = () => {
@@ -128,7 +128,7 @@ export function useChatMessages(options: {
   const applyConfirmationReplies = (receipts: ConfirmationReplyReceipt[]) => {
     for (const receipt of receipts) {
       if (receipt.status !== 'FAILED') continue
-      const message = findByIdentity(`client:${receipt.client_message_id}`)
+      const message = findByIdentity(messageIdentity({ ...receipt, creator_id: options.getCreatorMeta().creator_id }))
       if (isLocalConfirmationReply(message)) {
         upsert({ ...message, delivery_status: 'failed', delivery_error: receipt.error_message })
       }

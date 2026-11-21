@@ -450,11 +450,6 @@ def _supersede_interrupted_job(db: Session, submission, new_job_id: str) -> None
     old_job_id = resume.get("resumed_from_job_id")
     if not old_job_id:
         return
-    from app.domains.ai.services.ai_job_convergence_service import (
-        AttemptTerminationRequest,
-        request_attempt_termination_in_txn,
-    )
-
     prior = (
         db.query(SddAiJob)
         .filter_by(id=old_job_id, task_id=submission.task_id, status=AiJobStatus.INTERRUPTED)
@@ -466,17 +461,7 @@ def _supersede_interrupted_job(db: Session, submission, new_job_id: str) -> None
         return
     if ai_job_store.has_attempt_ownership(prior):
         raise TaskSessionUndoError("Previous execution is still stopping", code="TASK_SESSION_BUSY")
-    stopped = request_attempt_termination_in_txn(
-        db,
-        AttemptTerminationRequest(
-            job_id=old_job_id,
-            task_id=submission.task_id,
-            reason="SUPERSEDED_BY_RESUME",
-            message="Interrupted attempt superseded by resume",
-        ),
-    )
-    if stopped.changed:
-        prior.context_json = {**(prior.context_json or {}), "superseded_by_resume_job_id": new_job_id}
+    prior.context_json = {**(prior.context_json or {}), "superseded_by_resume_job_id": new_job_id}
 
 
 def _apply_initialization(db, task, prepared, job, checkpoint):

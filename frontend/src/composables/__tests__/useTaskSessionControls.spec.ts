@@ -60,6 +60,22 @@ describe('useTaskSessionControls', () => {
     expect(controls.interruptingTask.value).toBe(false)
   })
 
+  it('fences the original interrupt across an uncertain response and replaces a definitively rejected command', async () => {
+    const { useTaskSessionControls } = await import('@/composables/useTaskSessionControls')
+    const controls = useTaskSessionControls({ getWorkspaceId: () => 'ws-1' })
+    const lost = new Error('response lost')
+    const stale = { response: { status: 409 } }
+    apiMock.post.mockRejectedValueOnce(lost).mockRejectedValueOnce(stale).mockResolvedValueOnce({ data: {} })
+    await expect(controls.interruptTask('t', 'pause', '9007199254740993')).rejects.toBe(lost)
+    await expect(controls.interruptTask('t', 'translated pause reason', '9007199254740994')).rejects.toBe(stale)
+    await controls.interruptTask('t', 'pause', '9007199254740994')
+    const [first, retry, next] = apiMock.post.mock.calls.map(call => call[1])
+    expect(first.expected_status_seq).toBe('9007199254740993')
+    expect(retry).toEqual(first)
+    expect(next.expected_status_seq).toBe('9007199254740994')
+    expect(next.command_id).not.toBe(first.command_id)
+  })
+
   it('keeps the first resume request pending while the server recovers the previous attempt', async () => {
     vi.useFakeTimers()
     try {

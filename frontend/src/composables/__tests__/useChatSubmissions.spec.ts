@@ -5,9 +5,11 @@ import { useChatSubmissions } from '../useChatSubmissions'
 
 vi.mock('@/utils/api', () => ({ default: { get: vi.fn(), post: vi.fn() } }))
 const receipt = { id: 'r', task_id: 'a', client_message_id: 'c', content: 'prompt', status: 'PREPARING', version: 1 }
-const setup = () => {
+const setup = (resumeInterruptedTask = vi.fn()) => {
   const task = ref('a')
-  return { task, model: useChatSubmissions({ workspaceId: () => 'w', taskId: () => task.value, userId: () => 'u' }) }
+  return { task, model: useChatSubmissions({
+    workspaceId: () => 'w', taskId: () => task.value, userId: () => 'u', resumeInterruptedTask,
+  }) }
 }
 beforeEach(() => { vi.resetAllMocks(); sessionStorage.clear() })
 
@@ -75,6 +77,17 @@ describe('durable chat submissions', () => {
     const [bubble] = model.bubbles([], { creator_is_workspace_expert: true })
     expect(bubble.creator_is_workspace_expert).toBeUndefined()
   })
+  it('keeps each sender’s receipt and bubble when their client keys match', () => {
+    const { model } = setup()
+    model.put({ ...receipt, creator_id: 'u', status: 'FAILED', version: 2, error_message: 'first failed' })
+    model.put({ ...receipt, id: 'other-receipt', creator_id: 'other', content: 'second prompt' })
+    expect(model.bubbles([]).map(bubble => [bubble.creator_id, bubble.content])).toEqual([
+      ['u', 'prompt'], ['other', 'second prompt'],
+    ])
+    expect(new Set(model.bubbles([]).map(bubble => bubble.id)).size).toBe(2)
+    expect(model.bubbles([{ id: 'second-formal', client_message_id: 'c', creator_id: 'other' }]))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ creator_id: 'u', delivery_error: 'first failed' })]))
+  })
   it('shows a failure without keeping the task busy', () => {
     const { model } = setup()
     model.put(receipt)
@@ -98,6 +111,21 @@ describe('durable chat submissions', () => {
     })
     expect(model.current.value).toHaveLength(1)
     expect(model.current.value[0]?.status).toBe('PREPARING')
+  })
+  it('preserves an uncertain resume for the same command after reload', async () => {
+    const resume = vi.fn().mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValueOnce({ submission: receipt })
+    const { model } = setup(resume)
+    const metadata = { agent_model: { backend: 'opencode', model: 'selected' } }
+    expect(await model.send('a', 'c', 'prompt', metadata, true, true)).toBe(true)
+    const reloaded = setup(resume).model
+    expect(reloaded.current.value[0]).toMatchObject({ status: 'UNKNOWN', resume_interrupted: true })
+    await reloaded.send('a', 'c', 'prompt', metadata, true, true)
+    expect(resume.mock.calls).toEqual(Array(2).fill(['a', {
+      prompt: 'prompt', clientMessageId: 'c', agentModel: metadata.agent_model, newAgentSession: true,
+    }]))
+    expect(reloaded.current.value[0]?.status).toBe('PREPARING')
+    expect(api.post).not.toHaveBeenCalled()
   })
   it('removes an undone receipt and rejects late receipt events', () => {
     const { model } = setup()

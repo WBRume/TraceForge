@@ -3,6 +3,7 @@ import { useI18n } from 'vue-i18n'
 import type { ChatAiJob } from '../types'
 import { notifyRepositoryUpdate } from '@/services/repositoryUpdates'
 import { isTerminalTaskStatus } from '@/utils/taskStatus'
+import { messageIdentity } from '../shared/messageIdentity'
 import type { WSChatStreamPayloadContract } from '../../../../shared/contracts/generated/applicationMessage'
 
 /**
@@ -173,7 +174,7 @@ export function createTaskWsEventRouter(deps: {
           delivery_status: status === 'accepted' || status === 'duplicate' ? 'sent' : status,
         }
         if (clientMessageId) {
-          const existing = deps.messages.findByIdentity(`client:${clientMessageId}`)
+          const existing = deps.messages.findByIdentity(messageIdentity(messagePatch))
           if (existing) {
             if (['processing', 'failed', 'conflict'].includes(status)
               && (existing.delivery_status === 'sent' || !String(existing.id).startsWith('local-'))) break

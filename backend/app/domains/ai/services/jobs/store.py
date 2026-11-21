@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session, object_session
 
 from app.agents import (
@@ -93,6 +93,10 @@ def has_attempt_ownership(job: SddAiJob) -> bool:
 
 def attempt_ownership_predicate():
     return or_(*(getattr(SddAiJob, field).isnot(None) for field in _OWNERSHIP_FIELDS))
+
+
+def is_settled_job(job: SddAiJob) -> bool:
+    return job.status in FINAL_STATUSES or (job.status == AiJobStatus.INTERRUPTED and not has_attempt_ownership(job))
 
 
 def row_has_leaked_interrupted_ownership(job: SddAiJob) -> bool:
@@ -403,7 +407,12 @@ def list_task_jobs(
         SddAiJob.channel == AiJobChannel.TASK_CHAT,
     )
     if active_only:
-        query = query.filter(SddAiJob.status.in_(list(ACTIVE_STATUSES)))
+        query = query.filter(
+            or_(
+                SddAiJob.status.in_(SESSION_GUARD_STATUSES),
+                and_(SddAiJob.status == AiJobStatus.INTERRUPTED, attempt_ownership_predicate()),
+            )
+        )
     return query.order_by(SddAiJob.created_at.desc()).all()
 
 
@@ -689,7 +698,7 @@ def is_job_cancelled_or_final_sync(job_id: str) -> bool:
         return bool(
             job
             and (
-                job.status in FINAL_STATUSES
+                is_settled_job(job)
                 or job.status in {AiJobStatus.TERMINATING, AiJobStatus.ORPHANED}
                 or job.cancel_requested_at is not None
             )

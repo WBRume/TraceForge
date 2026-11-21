@@ -553,8 +553,9 @@ def _job_row_execution_kind(job: SddAiJob, evidence: AttemptFinalizerEvidence) -
     return EXECUTION_KIND_LOCAL_PROCESS
 
 
-def _persisted_user_stop_mode(job: SddAiJob) -> str | None:
-    mode = (job.context_json or {}).get("termination_mode")
+def persisted_stop_mode(job: SddAiJob) -> str | None:
+    context = job.context_json if isinstance(job.context_json, dict) else {}
+    mode = context.get("termination_mode")
     return mode if job.cancel_requested_at is not None and mode in ("INTERRUPT", "CANCEL") else None
 
 
@@ -571,7 +572,7 @@ def _resolve_termination_outcome(job: SddAiJob, request: AttemptConvergenceReque
     if (
         request.intent == ConvergenceIntent.REAPER_FINALIZE
         and request.requested_status is not None
-        and _persisted_user_stop_mode(job)
+        and persisted_stop_mode(job)
     ):
         # The provider outcome can prove cleanup while the committed stop
         # still determines the business status.
@@ -587,7 +588,7 @@ def _derive_termination_business_status(
     if request.requested_status is not None:
         return request.requested_status
     queue_key = str(job.queue_key or "")
-    mode = _persisted_user_stop_mode(job) or request.termination_mode
+    mode = persisted_stop_mode(job) or request.termination_mode
     if mode == "INTERRUPT" and job.channel == AiJobChannel.TASK_CHAT:
         # The stop write fences the runner. Its intent preserves a resumable job.
         return AiJobStatus.INTERRUPTED
@@ -678,7 +679,7 @@ def _apply_task_interrupt_in_txn(
 
 
 def _apply_job_interrupt(job, request, reason, now):
-    accepted_stop = _persisted_user_stop_mode(job) == "INTERRUPT"
+    accepted_stop = persisted_stop_mode(job) == "INTERRUPT"
     job.status = AiJobStatus.INTERRUPTED
     job.progress = 100
     stop_message = "AI session interrupted unexpectedly"
@@ -984,6 +985,8 @@ def converge_job_attempt_in_txn(
     本核心不 commit、不 refresh：任何已经处在 ``run_db_txn()`` 或 route
     transaction 中的调用方必须使用本函数，提交所有权归最外层事务。
     """
+    from app.domains.ai.services.jobs.store import is_settled_job
+
     now = datetime.utcnow()
     job = lock_job_in_txn(db, db.query(SddAiJob).filter(SddAiJob.id == request.job_id))
     if job is None:
@@ -998,16 +1001,7 @@ def converge_job_attempt_in_txn(
         )
 
     # 2. 真正终态 / WAITING_HITL：幂等返回。
-    if (
-        job.status
-        in {
-            AiJobStatus.SUCCESS,
-            AiJobStatus.FAILED,
-            AiJobStatus.CANCELLED,
-            AiJobStatus.REVERTED,
-        }
-        or job.status == AiJobStatus.WAITING_HITL
-    ):
+    if is_settled_job(job) or job.status == AiJobStatus.WAITING_HITL:
         return _noop()
 
     # 3. run token / worker boot id 校验。
@@ -1023,6 +1017,14 @@ def converge_job_attempt_in_txn(
 
     runner_exit = request.intent == ConvergenceIntent.RUNNER_EXIT
     request = _resolve_runner_exit_intent(job, request, token)
+    if (
+        request.intent == ConvergenceIntent.TERMINATION_FINALIZE
+        and job.last_reap_attempt_at is not None
+        and (job.last_reap_verified_at is None or job.last_reap_attempt_at > job.last_reap_verified_at)
+    ):
+        # The reaper keeps the run token for process discovery. Its reservation
+        # fences late stop results even when it shares the runner's boot ID.
+        return _noop()
 
     # 4. TASK_CHAT session revision 校验（仅正常收尾路径）。
     if (
@@ -1203,7 +1205,7 @@ def request_attempt_termination_in_txn(
        task 状态；
     7. 不广播、不触发内存 cancel event —— 由最外层事务提交成功后执行。
     """
-    from app.domains.ai.services.jobs.store import has_attempt_ownership
+    from app.domains.ai.services.jobs.store import has_attempt_ownership, is_settled_job
 
     now = datetime.utcnow()
     reason = str(request.reason or request.mode).strip() or request.mode
@@ -1227,13 +1229,13 @@ def request_attempt_termination_in_txn(
             worker_boot_id=str(job.worker_boot_id or "") or None,
         )
 
-    if job.status in {
-        AiJobStatus.SUCCESS,
-        AiJobStatus.FAILED,
-        AiJobStatus.CANCELLED,
-        AiJobStatus.REVERTED,
-    } or (request.mode == "CANCEL" and job.completion_json and not job.cancel_requested_at):
+    if is_settled_job(job) or (request.mode == "CANCEL" and job.completion_json and not job.cancel_requested_at):
         # A committed result cannot be cancelled during provider cleanup.
+        return _result(False)
+
+    if request.mode != "WORKER_SHUTDOWN" and persisted_stop_mode(job):
+        # The first committed stop determines the business outcome while the
+        # original owner or reaper is confirming termination.
         return _result(False)
 
     resolved_session_id = str(request.interrupt_session_id or (job.session_id or "")).strip() or None
@@ -1244,7 +1246,7 @@ def request_attempt_termination_in_txn(
         context["termination_mode"] = request.mode
     job.context_json = context
 
-    if job.status in {AiJobStatus.PENDING, AiJobStatus.WAITING_HITL, AiJobStatus.INTERRUPTED} and (
+    if job.status in {AiJobStatus.PENDING, AiJobStatus.WAITING_HITL} and (
         request.mode != "WORKER_SHUTDOWN" and not has_attempt_ownership(job)
     ):
         # 无活动归属的排队/HITL 作业：直接落 CANCELLED 终态。

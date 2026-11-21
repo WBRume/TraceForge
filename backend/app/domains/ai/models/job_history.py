@@ -79,8 +79,8 @@ def record_event(db, job):
             started_at=job.started_at or datetime.utcnow(),
         )
         db.add(attempt)
-    if attempt and not job.run_token:
-        attempt.finished_at = datetime.utcnow()
+    if attempt and not job.run_token and attempt.finished_at is None:
+        attempt.finished_at = job.finished_at or datetime.utcnow()
         attempt.outcome = str(getattr(job.status, "value", job.status))
         attempt.failure_code = job.failure_code
 

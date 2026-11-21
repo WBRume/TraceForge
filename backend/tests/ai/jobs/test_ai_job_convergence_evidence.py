@@ -43,7 +43,7 @@ from tests.ai.jobs.ai_job_test_utils import (
 
 
 @pytest.mark.parametrize("owner_field", [None, "run_token", "worker_boot_id", "process_pid", "lease_expires_at"])
-def test_cancel_interrupted_attempt_only_finishes_when_ownership_is_clear(owner_field):
+def test_cancel_interrupted_attempt_only_changes_rows_with_ownership(owner_field):
     factory = _session_factory()
     with factory() as db:
         job = _job(db, status=AiJobStatus.INTERRUPTED)
@@ -60,8 +60,8 @@ def test_cancel_interrupted_attempt_only_finishes_when_ownership_is_clear(owner_
             convergence.AttemptTerminationRequest(job_id=job.id, mode="CANCEL"),
         )
         db.commit()
-        assert result.changed
-        assert job.status == (AiJobStatus.TERMINATING if owner_field else AiJobStatus.CANCELLED)
+        assert result.changed is bool(owner_field)
+        assert job.status == (AiJobStatus.TERMINATING if owner_field else AiJobStatus.INTERRUPTED)
         if owner_field:
             assert getattr(job, owner_field) == value
 

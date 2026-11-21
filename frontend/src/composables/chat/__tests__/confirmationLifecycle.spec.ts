@@ -122,9 +122,24 @@ describe('confirmation lifecycle', () => {
     runtime.preparingSubmission.value = true
     expect(runtime.status.canTemporarilyInterrupt.value).toBe(true)
     expect(await runtime.status.interruptCurrentRun()).toBe(true)
-    expect(runtime.interruptTask).toHaveBeenCalledOnce()
+    expect(runtime.interruptTask).toHaveBeenCalledWith('task', expect.any(String), '1')
     expect(runtime.task.value.status).toBe('INTERRUPTED')
     expect(runtime.status.canTemporarilyInterrupt.value).toBe(false)
+    runtime.state.dispose()
+  })
+
+  it('leaves the newly opened task running when an older stop response arrives', async () => {
+    const runtime = createLifecycle()
+    let finishStop!: (payload: any) => void
+    runtime.interruptTask.mockImplementationOnce(() => new Promise(resolve => { finishStop = resolve }))
+    const stopping = runtime.status.interruptCurrentRun()
+    runtime.task.value = { ...runtime.task.value, id: 'another-task' }
+    runtime.jobs.reset()
+    runtime.ingestJob({ id: 'another-job', task_id: 'another-task', status: 'RUNNING', progress: 0 })
+    finishStop({ task_id: 'task', status: 'INTERRUPTED', status_seq: '2' })
+    await stopping
+    expect(runtime.engineRunning.value).toBe(true)
+    expect(runtime.task.value.status).toBe('RUNNING')
     runtime.state.dispose()
   })
 

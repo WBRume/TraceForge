@@ -145,14 +145,15 @@ export function useChatViewModel() {
       }
     }).catch(() => { /* Ordinary dispatch still verifies if the preview could not load. */ })
   })
+  const taskSessionControls = useTaskSessionControls({ getWorkspaceId, getSubmissionMetadata: collaboration.submissionMetadata })
   const submissions = useChatSubmissions({
     workspaceId: getWorkspaceId,
     taskId: () => String(taskState.currentTask.value?.id || ''),
     userId: () => String(authStore.user?.id || ''),
     onAgentSessionUnavailable,
+    resumeInterruptedTask: taskSessionControls.resumeInterruptedTask,
     onAgentSessionChanged: taskId => { if (taskId === taskState.getTaskId()) clearAgentSessionNotice() },
   })
-  const taskSessionControls = useTaskSessionControls({ getWorkspaceId, getSubmissionMetadata: collaboration.submissionMetadata })
   const chatDecision = useChatDecision()
 
   // ─── 工作台模式与滚动 ───
@@ -677,7 +678,6 @@ export function useChatViewModel() {
     getSteeringJobId: () => steeringJobId.value,
     agentSessionSendBlocked: () => agentSessionSendBlocked.value,
     replacingAgentSession: () => replacingAgentSession.value,
-    onAgentSessionUnavailable,
     onAgentSessionAccepted: clearAgentSessionNotice,
     annotations,
     collaborationBlocked: () => collaboration.blocked.value,
@@ -716,8 +716,6 @@ export function useChatViewModel() {
       connect: (taskId) => ws.connect(taskId),
     },
     recoverSession: (reason) => sessionState.recoverSession(reason),
-    resumeInterruptedTask: (taskId, resumeOptions) => taskSessionControls.resumeInterruptedTask(taskId, resumeOptions),
-    applyTaskSessionPayload: sessionState.applyTaskSessionPayload,
     isUndoing: () => isUndoing.value,
     isInitializing: () => startActions.initializingTask.value,
     isHistoryAnchored: () => historyContext.anchored.value,
@@ -730,7 +728,6 @@ export function useChatViewModel() {
       creator_avatar_svg: authStore.user?.avatar_svg || null,
     }),
     scrollTo: (target) => scrollToBottom(target),
-    resolveActionError,
   })
 
   const messageActions = useMessageActions({
@@ -837,7 +834,7 @@ export function useChatViewModel() {
     messagesPush: (message) => messages.messages.value.push(message),
     isHistoryAnchored: () => historyContext.anchored.value,
     scrollToChatBottom: () => scrollToBottom('chat'),
-    interruptTask: (taskId, reason) => taskSessionControls.interruptTask(taskId, reason),
+    interruptTask: taskSessionControls.interruptTask,
     applyTaskSessionPayload: sessionState.applyTaskSessionPayload,
     refreshActiveJobs: (taskId) => jobs.loadActive(taskId),
     loadTasks: (loadOptions) => loadTasks(loadOptions),

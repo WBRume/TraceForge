@@ -256,6 +256,39 @@ def test_dirty_interrupted_with_ownership_is_reaped(monkeypatch):
     _assert_no_ownership(saved)
 
 
+def test_reaper_owns_termination_after_adopting_job_in_same_worker(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    job = _owned_running_job(db)
+    job.lease_expires_at = datetime(2000, 1, 1)
+    db.commit()
+    patch_ai_job_db(monkeypatch, factory)
+
+    assert ai_reaper.adopt_reclaimable_job_sync(job.id, "run-1", "run-1", "LEASE_EXPIRED")
+    assert (
+        ai_attempts.converge_termination_sync(
+            job.id,
+            "run-1",
+            evidence=ai_attempts.termination_evidence_for_row(
+                job, confirmed_dead=True, reason="late stop acknowledgement", failure_code=None
+            ),
+            reason="late stop acknowledgement",
+        )
+        is None
+    )
+    db.refresh(job)
+    assert job.status == AiJobStatus.TERMINATING
+    assert job.run_token == "run-1"
+
+    payload = ai_attempts.finish_termination_sync(
+        job.id, "run-1", confirmed_dead=True, reason="reaper verified", failure_code="LEASE_EXPIRED"
+    )
+
+    assert payload["status"] == AiJobStatus.INTERRUPTED.value
+    db.refresh(job)
+    _assert_no_ownership(job)
+
+
 def test_dirty_interrupted_without_death_proof_is_not_cleared(monkeypatch):
     factory = _session_factory()
     db = factory()

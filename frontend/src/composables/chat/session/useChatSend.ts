@@ -1,28 +1,23 @@
 import api from '@/utils/api'
-import { noteTaskRunInitiated } from '@/utils/taskAwarenessIntent'
 import { formatApiError } from '@/utils/error'
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { generateClientMessageId } from '../shared/messageIdentity'
-import { createResolveActionError } from '../shared/requestGuards'
 import type { HitlCard } from '../types'
 import type { AgentModelSelection } from '@/composables/useAgentModels'
+import type { useChatSubmissions } from '@/composables/useChatSubmissions'
 import type { ContextAnnotations } from '../annotations/useContextAnnotations'
 import { formatAnnotationMessage } from '../annotations/contextAnnotations'
 
 /**
  * 消息发送（composer）：普通输入、HITL 回复、快捷验证三种入口共用
- * sendChatContent 的三通道分发——
- * 1. 常规任务 → REST 提交（submissions，后续由 outbox 事件驱动）；
- * 2. 中断任务 → resume-interrupted 接口恢复执行；
- * 3. 其余 → WebSocket 直发。
+ * 普通消息和中断恢复共用持久回执，HITL 回复走 WebSocket 确认通道。
  */
 export function useChatSend(options: {
   getSteeringJobId?: () => string
   agentSessionSendBlocked?: () => boolean
   replacingAgentSession?: () => boolean
-  onAgentSessionUnavailable?: (taskId: string) => void
   onAgentSessionAccepted?: () => void
   annotations?: ContextAnnotations
   collaborationBlocked?: () => boolean
@@ -42,7 +37,7 @@ export function useChatSend(options: {
   }
   submissions: {
     busy: { value: boolean }
-    send: (taskId: string, clientMessageId: string, content: string, metadata?: Record<string, any>, newAgentSession?: boolean) => Promise<boolean>
+    send: ReturnType<typeof useChatSubmissions>['send']
     current: { value: any[] }
   }
   messages: {
@@ -60,15 +55,12 @@ export function useChatSend(options: {
     connect: (taskId: string) => void
   }
   recoverSession: (reason: string) => Promise<boolean>
-  resumeInterruptedTask: (taskId: string, resumeOptions: { prompt?: string; clientMessageId?: string; agentModel?: AgentModelSelection; newAgentSession?: boolean }) => Promise<any>
-  applyTaskSessionPayload: (payload: any) => void
   isUndoing: () => boolean
   isInitializing?: () => boolean
   isHistoryAnchored: () => boolean
   returnToLatest: () => Promise<void>
   getCreatorMeta: () => Record<string, any>
   scrollTo: (target: 'chat') => void
-  resolveActionError: ReturnType<typeof createResolveActionError>
 }) {
   const { t } = useI18n()
 
@@ -128,7 +120,10 @@ export function useChatSend(options: {
       return false
     }
     if (sendingChat.value || options.isUndoing()) return false
-    if (!confirmationReply && options.submissions.busy.value) return false
+    if (!confirmationReply && options.submissions.busy.value && (
+      !options.task.isTaskInterrupted.value
+      || options.submissions.current.value.some(row => ['SENDING', 'UNKNOWN', 'PREPARING'].includes(row.status))
+    )) return false
     const normalized = String(content || '').trim()
     if (!normalized) return false
     const targetTaskId = options.getTaskId()
@@ -148,12 +143,14 @@ export function useChatSend(options: {
     options.noteSentTime(clientMessageId)
     sendingChat.value = true
     const taskId = options.getTaskId()
-    if (!options.task.isTaskInterrupted.value && !confirmationReply && taskId) {
+    if (!confirmationReply && taskId) {
       try {
         // POST 回执直接应用；后续状态由 outbox 事件（chat_submission_update）驱动。
-        const submission = newAgentSession
-          ? options.submissions.send(taskId, clientMessageId, normalized, sendOptions.metadata, true)
-          : options.submissions.send(taskId, clientMessageId, normalized, sendOptions.metadata)
+        const submission = options.task.isTaskInterrupted.value
+          ? options.submissions.send(taskId, clientMessageId, normalized, sendOptions.metadata, newAgentSession, true)
+          : newAgentSession
+            ? options.submissions.send(taskId, clientMessageId, normalized, sendOptions.metadata, true)
+            : options.submissions.send(taskId, clientMessageId, normalized, sendOptions.metadata)
         options.scrollTo('chat')
         const accepted = await submission
         if (accepted && options.getTaskId() === taskId) options.onAgentSessionAccepted?.()
@@ -161,52 +158,11 @@ export function useChatSend(options: {
         if (options.getTaskId() === taskId && accepted) options.scrollTo('chat')
         if (options.getTaskId() === taskId && options.getWorkspaceId() === targetWorkspaceId
           && options.submissions.current.value.some((row: any) =>
-          row.client_message_id === clientMessageId && row.status === 'UNKNOWN')) {
+          row.client_message_id === clientMessageId && row.creator_id === options.getCreatorMeta().creator_id
+          && row.status === 'UNKNOWN')) {
           void options.recoverSession('send-unknown')
         }
         return accepted
-      } finally {
-        sendingChat.value = false
-      }
-    }
-    if (!confirmationReply && options.task.isTaskInterrupted.value && taskId) {
-      try {
-        const payload = await options.resumeInterruptedTask(taskId, {
-          prompt: normalized,
-          clientMessageId,
-          agentModel: modelSelection,
-          ...(newAgentSession ? { newAgentSession } : {}),
-        })
-        if (!payload?.submission) {
-          options.messages.upsert({
-            id: `local-${clientMessageId}`,
-            role: 'user',
-            content: displayContent,
-            created_at: new Date().toISOString(),
-            message_type: 'text',
-            client_message_id: clientMessageId,
-            delivery_status: 'sent',
-            ...options.getCreatorMeta(),
-            metadata: sendOptions.metadata || null,
-          })
-        }
-        options.applyTaskSessionPayload(payload)
-        if (options.getTaskId() === taskId) options.onAgentSessionAccepted?.()
-        noteTaskRunInitiated(taskId, clientMessageId, payload?.job?.id || payload?.task?.job?.id)
-        options.onModelSubmitted?.(modelSelection)
-        options.engine.engineRunning.value = !payload?.submission
-        if (!options.isHistoryAnchored()) options.scrollTo('chat')
-        return true
-      } catch (e) {
-        const code = (e as any)?.response?.data?.detail?.code
-        if (code === 'AGENT_SESSION_UNAVAILABLE') {
-          options.onAgentSessionUnavailable?.(taskId)
-          return false
-        }
-        if (code === 'AGENT_SESSION_CHANGED' && options.getTaskId() === taskId) options.onAgentSessionAccepted?.()
-        console.error('Resume interrupted task failed', e)
-        ElMessage.error(options.resolveActionError(e, 'chat.errors.resume_interrupted_failed', 'chat.errors.no_permission_start_task'))
-        return false
       } finally {
         sendingChat.value = false
       }
