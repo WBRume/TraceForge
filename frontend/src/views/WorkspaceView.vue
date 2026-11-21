@@ -4,13 +4,14 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useAuthStore } from '@/stores/auth'
-import { Plus, Briefcase, Package, FolderKanban, GitFork, Search, X } from '@/components/icons'
+import { Plus, Briefcase, Package, FolderKanban, GitFork, Search, UserIcon, X } from '@/components/icons'
 import AppSwitcherDropdown from '@/components/AppSwitcherDropdown.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import WorkspaceCreateWorkflowDialog from '@/components/workspace/create-workflow/WorkspaceCreateWorkflowDialog.vue'
 import WorkspaceAdvancedFilter from '@/components/workspace/WorkspaceAdvancedFilter.vue'
 import WorkspaceActiveFilters from '@/components/workspace/WorkspaceActiveFilters.vue'
+import WorkspaceAvatar from '@/components/workspace/WorkspaceAvatar.vue'
 import { useWorkspaceFilters } from '@/composables/useWorkspaceFilters'
 import api from '@/utils/api'
 import UserMenu from '@/components/user/UserMenu.vue'
@@ -60,22 +61,6 @@ const {
   keyword: searchQuery,
   currentUserId: () => authStore.user?.id ?? null,
 })
-
-const getWorkspaceAvatar = (name: string) => {
-  if (!name) return { text: 'WS', bg: '#f0f9ff', color: '#0284c7', border: '#bae6fd' }
-  const clean = name.trim()
-  const firstTwo = clean.length >= 2 ? clean.slice(0, 2).toUpperCase() : clean.toUpperCase()
-  const hash = clean.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
-  const palettes = [
-    { bg: '#f0f9ff', color: '#0284c7', border: '#bae6fd' },
-    { bg: '#f0fdf4', color: '#16a34a', border: '#bbf7d0' },
-    { bg: '#f5f3ff', color: '#7c3aed', border: '#ddd6fe' },
-    { bg: '#fdf4ff', color: '#c026d3', border: '#f5d0fe' },
-    { bg: '#fffbeb', color: '#d97706', border: '#fde68a' },
-    { bg: '#f0fdfa', color: '#0d9488', border: '#99f6e4' },
-  ]
-  return { text: firstTwo, ...palettes[hash % palettes.length] }
-}
 
 onMounted(async () => {
   await wsStore.fetchWorkspaces()
@@ -225,16 +210,7 @@ const confirmDeleteWorkspace = async () => {
           <div>
             <div class="ws-card-header flex justify-between items-center mb-2">
               <div class="flex items-center gap-3 min-w-0">
-                <div
-                  class="ws-avatar-badge"
-                  :style="{
-                    backgroundColor: getWorkspaceAvatar(ws.name).bg,
-                    color: getWorkspaceAvatar(ws.name).color,
-                    borderColor: getWorkspaceAvatar(ws.name).border,
-                  }"
-                >
-                  {{ getWorkspaceAvatar(ws.name).text }}
-                </div>
+                <WorkspaceAvatar :name="ws.name" :avatar-svg="ws.avatar_svg" :avatar-url="ws.avatar_url" aria-hidden="true" />
                 <h3 class="ws-card-title truncate" :title="ws.name">{{ ws.name }}</h3>
               </div>
 
@@ -272,18 +248,23 @@ const confirmDeleteWorkspace = async () => {
               </div>
               <div class="ws-metadata-row" :title="ws.owner?.display_name || ws.owner?.email">
                 <span class="ws-metadata-label">
-                  <UserAvatar
-                    class="ws-meta-icon ws-meta-avatar"
-                    :display-name="ws.owner?.display_name"
-                    :email="ws.owner?.email"
-                    :user-id="ws.owner?.id"
-                    :avatar-svg="ws.owner?.avatar_svg"
-                    :avatar-url="ws.owner?.avatar_url"
-                    size="xs"
-                  />
+                  <UserIcon class="ws-meta-icon" aria-hidden="true" />
                   {{ $t('workspaces.card_creator') }}
                 </span>
-                <span class="ws-metadata-value">{{ ws.owner?.display_name || ws.owner?.email || $t('workspaces.not_set') }}</span>
+                <span class="ws-creator">
+                  <UserAvatar
+                    v-if="ws.owner"
+                    class="ws-meta-avatar"
+                    :display-name="ws.owner.display_name"
+                    :email="ws.owner.email"
+                    :user-id="ws.owner.id"
+                    :avatar-svg="ws.owner.avatar_svg"
+                    :avatar-url="ws.owner.avatar_url"
+                    size="xs"
+                    aria-hidden="true"
+                  />
+                  <span class="ws-metadata-value">{{ ws.owner?.display_name || ws.owner?.email || $t('workspaces.not_set') }}</span>
+                </span>
               </div>
             </div>
           </div>
@@ -530,21 +511,6 @@ const confirmDeleteWorkspace = async () => {
   box-shadow: 0 16px 28px -6px rgba(14, 165, 233, 0.09), 0 6px 10px -4px rgba(14, 165, 233, 0.03);
 }
 
-.ws-avatar-badge {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 0.875rem;
-  border-width: 1px;
-  border-style: solid;
-  flex-shrink: 0;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
-}
-
 .ws-card-title {
   margin: 0;
   font-size: 1.125rem;
@@ -631,9 +597,17 @@ const confirmDeleteWorkspace = async () => {
   flex-shrink: 0;
 }
 
-.ws-meta-avatar {
-  border-radius: 50%;
-  flex-shrink: 0;
+.ws-creator {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  margin-left: 0.375rem;
+  gap: 0.375rem;
+}
+
+.ws-creator .ws-meta-avatar {
+  width: 16px;
+  height: 16px;
 }
 
 .group:hover .group-hover\:opacity-100 {

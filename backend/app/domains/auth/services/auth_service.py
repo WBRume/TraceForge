@@ -3,7 +3,6 @@
 """
 
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
 
 import bcrypt
 from jose import JWTError, jwt
@@ -14,7 +13,7 @@ from app.config import settings
 from app.domains.auth.errors import RegisterEmailNotAllowedError
 from app.domains.auth.models.user import User
 from app.domains.auth.schemas.auth import TokenResponse
-from app.domains.auth.services import avatar_image, avatar_vector
+from app.domains.auth.services.avatar_media import encode_avatar_upload
 from app.domains.task.services import avatar_service
 
 # SERVER_BOOT_ID = str(uuid.uuid4())
@@ -180,13 +179,7 @@ def update_user_avatar(db: Session, user: User, avatar_svg: str) -> User:
 
 def update_user_avatar_image(db: Session, user: User, raw: bytes, media_type: str) -> User:
     """Replace the current avatar with a versioned profile photo."""
-    revision = str(uuid4())
-    if media_type == avatar_vector.SVG_MIME:
-        image, viewport = avatar_vector.encode_avatar_svg(raw)
-        avatar_url = _avatar_image_url(user.id, revision, "svg") + viewport
-    else:
-        image = avatar_image.encode_avatar_image(raw, media_type)
-        avatar_url = _avatar_image_url(user.id, revision, "webp")
+    avatar_url, image = encode_avatar_upload(raw, media_type, f"{avatar_service.AVATAR_IMAGE_URL_PREFIX}{user.id}")
     db.execute(
         update(User).where(User.id == user.id).values(avatar_svg=None, avatar_url=avatar_url, avatar_image=image)
     )

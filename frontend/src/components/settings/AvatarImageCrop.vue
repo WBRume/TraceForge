@@ -5,13 +5,14 @@ import {
   avatarCropSide, centeredAvatarCrop, constrainAvatarCrop, type AvatarCrop,
 } from '@/utils/avatarCrop'
 import type { AvatarImage } from '@/utils/avatarImage'
+import type { AvatarShape } from '@/utils/avatar'
 
-const props = defineProps<{ image: AvatarImage; disabled: boolean }>()
+const props = withDefaults(defineProps<{ image: AvatarImage; disabled: boolean; shape?: AvatarShape }>(), { shape: 'circle' })
 const crop = defineModel<AvatarCrop>({ required: true })
 
 const stageSize = 384
 const stageInset = 32
-const circleFraction = (stageSize - 2 * stageInset) / stageSize
+const cropFraction = (stageSize - 2 * stageInset) / stageSize
 const hintId = useId()
 const zoomId = useId()
 const drag = shallowRef<{ id: number; x: number; y: number } | null>(null)
@@ -38,7 +39,7 @@ function moveDrag(event: PointerEvent) {
   if (!active || active.id !== event.pointerId || props.disabled) return
   const width = (event.currentTarget as HTMLElement).getBoundingClientRect().width
   if (!width) return
-  const imageUnitsPerPixel = avatarCropSide(props.image, crop.value) / (width * circleFraction)
+  const imageUnitsPerPixel = avatarCropSide(props.image, crop.value) / (width * cropFraction)
   moveImage((event.clientX - active.x) * imageUnitsPerPixel, (event.clientY - active.y) * imageUnitsPerPixel)
   active.x = event.clientX
   active.y = event.clientY
@@ -68,7 +69,7 @@ function setZoom(event: Event) {
     :class="{ dragging: drag }"
     role="group"
     :tabindex="disabled ? -1 : 0"
-    :aria-label="$t('settings.appearance.crop_label')"
+    :aria-label="$t(shape === 'square' ? 'settings.workspace_avatar.crop_label' : 'settings.appearance.crop_label')"
     :aria-describedby="hintId"
     :aria-disabled="disabled"
     @pointerdown="startDrag"
@@ -79,7 +80,12 @@ function setZoom(event: Event) {
     @keydown="moveWithKeyboard"
   >
     <AvatarCropPreview class="crop-image" :image="image" :crop="crop" :side="stageSize" :inset="stageInset" />
-    <div class="crop-circle" :style="{ inset: `${stageInset / stageSize * 100}%` }" aria-hidden="true"></div>
+    <div
+      class="crop-outline"
+      :class="{ 'is-square': shape === 'square' }"
+      :style="{ inset: `${stageInset / stageSize * 100}%` }"
+      aria-hidden="true"
+    ></div>
   </div>
   <p :id="hintId" class="crop-hint">{{ $t('settings.appearance.crop_hint') }}</p>
   <div class="crop-controls">
@@ -137,11 +143,15 @@ function setZoom(event: Event) {
   height: 100%;
 }
 
-.crop-circle {
+.crop-outline {
   position: absolute;
   border-radius: 50%;
   box-shadow: 0 0 0 20rem rgba(15, 23, 42, 0.62), inset 0 0 0 2px rgba(255, 255, 255, 0.95);
   pointer-events: none;
+}
+
+.crop-outline.is-square {
+  border-radius: 0;
 }
 
 .crop-hint {

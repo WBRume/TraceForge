@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { proxyRefs, useId, useTemplateRef } from 'vue'
+import { computed, proxyRefs, useId, useTemplateRef } from 'vue'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { Loader2, Palette, Save, UploadCloud } from '@/components/icons'
 import AvatarCropPreview from '@/components/settings/AvatarCropPreview.vue'
 import AvatarImageCrop from '@/components/settings/AvatarImageCrop.vue'
 import UserAvatar from '@/components/user/UserAvatar.vue'
+import WorkspaceAvatar from '@/components/workspace/WorkspaceAvatar.vue'
 import type { AvatarPreference } from '@/composables/useAvatarPreference'
 import { AVATAR_FILE_ACCEPT, AVATAR_SOURCE_LIMIT_MB } from '@/utils/avatarImage'
 
-const props = defineProps<{ preference: AvatarPreference }>()
+const props = withDefaults(defineProps<{
+  preference: AvatarPreference
+  scope?: 'user' | 'workspace'
+}>(), { scope: 'user' })
 const avatar = proxyRefs(props.preference)
+const sectionKey = computed(() => props.scope === 'workspace' ? 'settings.workspace_avatar' : 'settings.appearance')
 const fileInput = useTemplateRef<HTMLInputElement>('fileInput')
 const previewTitle = useId()
 const colorInput = useId()
@@ -34,13 +39,13 @@ function handleFileDrop(event: DragEvent) {
         <Palette class="w-6 h-6" />
       </div>
       <div class="section-title-group">
-        <h2 class="title-gradient-sm">{{ $t('settings.appearance.title') }}</h2>
-        <p>{{ $t('settings.appearance.subtitle') }}</p>
+        <h2 class="title-gradient-sm">{{ $t(`${sectionKey}.title`) }}</h2>
+        <p>{{ $t(`${sectionKey}.subtitle`) }}</p>
       </div>
     </div>
 
     <div class="appearance-layout">
-      <div class="appearance-card">
+      <div v-if="scope === 'user' || avatar.editable" class="appearance-card">
         <div class="pill-switcher-wrap">
           <div class="pill-switcher">
             <button
@@ -104,6 +109,7 @@ function handleFileDrop(event: DragEvent) {
               :image="avatar.editing.image"
               :model-value="avatar.editing.crop"
               :disabled="avatar.busy"
+              :shape="avatar.shape"
               @update:model-value="avatar.updateCrop"
             />
           </template>
@@ -119,18 +125,33 @@ function handleFileDrop(event: DragEvent) {
         <div v-if="avatar.error" class="error-banner mt-sm" role="alert">{{ avatar.error }}</div>
         <div v-if="avatar.success" class="success-banner mt-sm" role="status">{{ avatar.success }}</div>
 
-        <button type="button" class="btn-primary mt-sm" :disabled="!avatar.canSave" @click="avatar.save">
-          <Loader2 v-if="avatar.saving" class="w-4 h-4 spin" />
-          <Save v-else class="w-4 h-4" />
-          {{ $t(avatar.saving ? 'settings.appearance.saving' : 'settings.appearance.save_avatar') }}
-        </button>
+        <div class="avatar-actions">
+          <button type="button" class="btn-primary" :disabled="!avatar.canSave" @click="avatar.save">
+            <Loader2 v-if="avatar.saving" class="w-4 h-4 spin" />
+            <Save v-else class="w-4 h-4" />
+            {{ $t(avatar.saving ? 'settings.appearance.saving' : 'settings.appearance.save_avatar') }}
+          </button>
+          <button
+            v-if="scope === 'workspace' && avatar.hasCustomAvatar"
+            type="button"
+            class="btn-secondary"
+            :disabled="avatar.busy"
+            @click="avatar.reset"
+          >
+            {{ $t('settings.workspace_avatar.reset') }}
+          </button>
+        </div>
+      </div>
+
+      <div v-else class="appearance-card">
+        <p class="avatar-read-only">{{ $t('settings.workspace_avatar.read_only') }}</p>
       </div>
 
       <aside class="appearance-preview" :aria-labelledby="previewTitle">
         <div class="profile-card">
           <div class="profile-card-inner">
             <h3 :id="previewTitle" class="preview-title">{{ $t('settings.appearance.preview') }}</h3>
-            <div class="preview-avatar-wrap">
+            <div class="preview-avatar-wrap" :class="{ 'is-square': avatar.shape === 'square' }">
               <AvatarCropPreview
                 v-if="avatar.editing"
                 class="crop-preview"
@@ -138,19 +159,25 @@ function handleFileDrop(event: DragEvent) {
                 :crop="avatar.editing.crop"
                 :side="256"
               />
+              <WorkspaceAvatar
+                v-else-if="scope === 'workspace'"
+                :name="avatar.target?.display_name || ''"
+                :avatar-svg="avatar.previewSvg"
+                :avatar-url="avatar.previewUrl"
+              />
               <UserAvatar
                 v-else
-                :display-name="avatar.user?.display_name"
-                :email="avatar.user?.email"
-                :user-id="avatar.user?.id"
+                :display-name="avatar.target?.display_name"
+                :email="avatar.target?.email"
+                :user-id="avatar.target?.id"
                 :avatar-svg="avatar.previewSvg"
                 :avatar-url="avatar.previewUrl"
                 size="lg"
               />
             </div>
             <div class="profile-info">
-              <p class="profile-name">{{ avatar.user?.display_name || avatar.user?.email || '-' }}</p>
-              <p class="profile-meta">{{ avatar.user?.email }}</p>
+              <p class="profile-name">{{ avatar.target?.display_name || avatar.target?.email || '-' }}</p>
+              <p v-if="avatar.target?.email" class="profile-meta">{{ avatar.target.email }}</p>
             </div>
           </div>
         </div>
@@ -164,6 +191,22 @@ function handleFileDrop(event: DragEvent) {
 <style scoped>
 .appearance-upload {
   min-width: 0;
+}
+
+.avatar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.avatar-actions .btn-primary:only-child {
+  flex: 1;
+}
+
+.avatar-read-only {
+  margin: 0;
+  color: #475569;
 }
 
 .select-image {
@@ -254,10 +297,18 @@ function handleFileDrop(event: DragEvent) {
 .crop-preview {
   width: 6.5rem;
   height: 6.5rem;
-  border: 1px solid #93c5fd;
   border-radius: 50%;
   background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
   font-size: 2.5rem;
+}
+
+.preview-avatar-wrap.is-square {
+  border-radius: 1.25rem;
+}
+
+.preview-avatar-wrap.is-square :deep(.user-avatar),
+.preview-avatar-wrap.is-square .crop-preview {
+  border-radius: 0.875rem;
 }
 
 .profile-info {

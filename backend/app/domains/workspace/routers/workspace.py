@@ -5,8 +5,9 @@ Workspace API routes.
 import asyncio
 import time
 from contextlib import AsyncExitStack
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import (
@@ -27,6 +28,8 @@ from app.domains.asset.schemas.asset import (
     WorkspaceAgentBackendTestRequest,
     WorkspaceAgentBackendTestResponse,
     WorkspaceAgentBackendUpdate,
+    WorkspaceAvatarResponse,
+    WorkspaceAvatarUpdate,
     WorkspaceCreate,
     WorkspaceInviteLinkCreate,
     WorkspaceInviteLinkListResponse,
@@ -41,7 +44,11 @@ from app.domains.asset.schemas.asset import (
     WorkspaceResponse,
 )
 from app.domains.auth.models.user import User
+from app.domains.auth.routers.avatar_http import AvatarExtension, avatar_image_response, read_avatar_upload
+from app.domains.auth.services.avatar_image import AvatarImageTooLargeError
+from app.domains.auth.services.avatar_media import encode_avatar_upload
 from app.domains.task.routers.task.deps import raise_task_lock_conflict
+from app.domains.task.services.avatar_service import sanitize_avatar_svg
 from app.domains.task.services.task_records import deletion as task_deletion
 from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
 from app.domains.workflow.services import provision_job_service
@@ -220,6 +227,63 @@ def get_workspace(
     if not summary:
         raise HTTPException(status_code=404, detail="Workspace not found or no access")
     return summary
+
+
+@router.put("/{ws_id}/avatar", response_model=WorkspaceAvatarResponse)
+def update_workspace_avatar(
+    ws_id: str,
+    data: WorkspaceAvatarUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceAvatarResponse:
+    """Save a workspace avatar template or restore the default."""
+    _ensure_member_manager(db, ws_id, current_user.id)
+    try:
+        svg = sanitize_avatar_svg(data.avatar_svg) if data.avatar_svg is not None else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not workspace_service.update_workspace_avatar(db, ws_id, avatar_svg=svg):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    db.commit()
+    return WorkspaceAvatarResponse(avatar_svg=svg)
+
+
+@router.put("/{ws_id}/avatar/image", response_model=WorkspaceAvatarResponse)
+async def upload_workspace_avatar_image(
+    ws_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceAvatarResponse:
+    """Replace the workspace avatar with a static or animated crop."""
+    raw, media_type = await read_avatar_upload(request)
+    user_id = current_user.id
+
+    def save_avatar(worker_db: Session) -> WorkspaceAvatarResponse:
+        _ensure_member_manager(worker_db, ws_id, user_id)
+        url, image = encode_avatar_upload(raw, media_type, workspace_service.workspace_avatar_path(ws_id))
+        if not workspace_service.update_workspace_avatar(worker_db, ws_id, avatar_url=url, avatar_image=image):
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        return WorkspaceAvatarResponse(avatar_url=url)
+
+    try:
+        return await run_db_txn_with_bind(db.get_bind(), save_avatar)
+    except AvatarImageTooLargeError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/{ws_id}/avatars/{revision}.{extension}", response_class=Response)
+def get_workspace_avatar_image(
+    ws_id: str,
+    revision: UUID,
+    extension: AvatarExtension,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Serve the image at the versioned URL included in workspace summaries."""
+    image = workspace_service.read_workspace_avatar_image(db, ws_id, str(revision), extension)
+    return avatar_image_response(image, extension)
 
 
 @router.get("/{ws_id}/agent-backends", response_model=WorkspaceAgentBackendResponse)

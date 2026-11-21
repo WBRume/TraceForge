@@ -2,7 +2,6 @@
 Auth & User API Routers
 """
 
-from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -13,13 +12,14 @@ from sqlalchemy.orm import Session
 from app.core.logging import audit_log, get_logger
 from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import User
+from app.domains.auth.routers.avatar_http import AvatarExtension, avatar_image_response, read_avatar_upload
 from app.domains.auth.schemas.auth import (
     TokenResponse,
     UserAvatarUpdate,
     UserRegister,
     UserResponse,
 )
-from app.domains.auth.services import auth_service, avatar_image, avatar_vector
+from app.domains.auth.services import auth_service, avatar_image
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 logger = get_logger(__name__)
@@ -103,18 +103,9 @@ async def upload_my_avatar_image(
     request: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """Save a static or animated crop from the avatar editor."""
-    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    if media_type not in avatar_image.AVATAR_UPLOAD_FORMATS and media_type != avatar_vector.SVG_MIME:
-        raise HTTPException(status_code=415, detail="Expected a PNG, WebP, APNG, or SVG avatar image")
-
-    raw = bytearray()
-    async for chunk in request.stream():
-        if len(raw) + len(chunk) > avatar_image.AVATAR_MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=413, detail="Avatar image exceeds the upload limit")
-        raw.extend(chunk)
-
+    raw, media_type = await read_avatar_upload(request)
     try:
-        return await run_in_threadpool(auth_service.update_user_avatar_image, db, current_user, bytes(raw), media_type)
+        return await run_in_threadpool(auth_service.update_user_avatar_image, db, current_user, raw, media_type)
     except avatar_image.AvatarImageTooLargeError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except ValueError as exc:
@@ -125,16 +116,9 @@ async def upload_my_avatar_image(
 def get_avatar_image(
     user_id: str,
     revision: UUID,
-    extension: Literal["webp", "svg"],
+    extension: AvatarExtension,
     db: Session = Depends(get_db),
 ) -> Response:
     """Serve a profile photo to image tags using its versioned URL."""
     image = auth_service.read_user_avatar_image(db, user_id, str(revision), extension)
-    if image is None:
-        raise HTTPException(status_code=404, detail="Avatar image not found")
-
-    headers = {"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"}
-    if extension == "svg":
-        headers["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:"
-        return Response(image, media_type=avatar_vector.SVG_MIME, headers=headers)
-    return Response(image, media_type="image/webp", headers=headers)
+    return avatar_image_response(image, extension)

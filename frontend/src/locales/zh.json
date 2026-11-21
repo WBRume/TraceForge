@@ -317,7 +317,15 @@
       "retry": "重试"
     },
     "workspace_title": "工作区设置",
-    "workspace_subtitle": "管理工作区成员、Agent、计划文档与工作区 Webhook。",
+    "workspace_subtitle": "管理工作区成员、头像、Agent、计划文档与工作区 Webhook。",
+    "workspace_avatar": {
+      "title": "工作区头像",
+      "subtitle": "设置显示在工作区卡片上的方形头像。",
+      "crop_label": "方形头像裁剪区域",
+      "read_only": "更改头像需要工作区成员管理权限。",
+      "reset": "恢复默认头像",
+      "reset_success": "已恢复默认工作区头像。"
+    },
     "nav": {
       "personal": "个人设置",
       "workspace": "工作区设置",

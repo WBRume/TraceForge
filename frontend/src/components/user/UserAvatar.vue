@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
 import { getApiServerUrl } from '@/utils/api'
-import { scopeAvatarSvgIds } from '@/utils/avatar'
+import { scopeAvatarSvgIds, type AvatarShape } from '@/utils/avatar'
 import { avatarSvgView } from '@/utils/avatarVector'
 
 type AvatarSize = 'xs' | 'sm' | 'md' | 'lg'
@@ -13,6 +13,7 @@ const props = withDefaults(defineProps<{
   avatarSvg?: string | null
   avatarUrl?: string | null
   size?: AvatarSize
+  shape?: AvatarShape
   accentColor?: string | null
   title?: string
 }>(), {
@@ -22,6 +23,7 @@ const props = withDefaults(defineProps<{
   avatarSvg: '',
   avatarUrl: '',
   size: 'md',
+  shape: 'circle',
   accentColor: '',
   title: '',
 })
@@ -44,7 +46,10 @@ const avatarSvgContent = computed(() => {
   return scopeAvatarSvgIds(normalizeSvgMarkup(raw))
 })
 const rawAvatarUrl = computed(() => props.avatarUrl?.trim() || '')
-const isLocalPhoto = computed(() => rawAvatarUrl.value.startsWith('/api/auth/avatars/'))
+const isLocalPhoto = computed(() => (
+  rawAvatarUrl.value.startsWith('/api/auth/avatars/')
+  || /^\/api\/workspaces\/[^/]+\/avatars\//.test(rawAvatarUrl.value)
+))
 const vectorView = computed(() => isLocalPhoto.value ? avatarSvgView(rawAvatarUrl.value) : null)
 const resolvedAvatarUrl = computed(() => (
   isLocalPhoto.value ? `${getApiServerUrl()}${vectorView.value?.src ?? rawAvatarUrl.value}` : rawAvatarUrl.value
@@ -59,17 +64,14 @@ const showFallbackInitial = computed(() => !avatarSvgContent.value && !imageUrl.
 
 const avatarStyle = computed(() => {
   if (!showFallbackInitial.value || !props.accentColor) return undefined
-  return {
-    background: props.accentColor,
-    borderColor: props.accentColor,
-  }
+  return { background: props.accentColor }
 })
 </script>
 
 <template>
   <span
     class="user-avatar"
-    :class="`size-${size}`"
+    :class="[`size-${size}`, { 'shape-square': shape === 'square' }]"
     :title="title || fallbackName"
     :style="avatarStyle"
   >
@@ -84,7 +86,7 @@ const avatarStyle = computed(() => {
       @error="failedUrl = imageUrl"
     >
     <span v-else-if="avatarSvgContent" class="avatar-svg" v-html="avatarSvgContent"></span>
-    <span v-else>{{ initial }}</span>
+    <span v-else><slot>{{ initial }}</slot></span>
   </span>
 </template>
 
@@ -96,12 +98,15 @@ const avatarStyle = computed(() => {
   justify-content: center;
   flex-shrink: 0;
   border-radius: 999px;
-  border: 1px solid #93c5fd;
   background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
   color: #fff;
   font-weight: 700;
   user-select: none;
   overflow: hidden;
+}
+
+.shape-square {
+  border-radius: 12px;
 }
 
 .avatar-svg,

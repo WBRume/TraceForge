@@ -94,6 +94,9 @@ class Workspace(Base):
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     name = Column(String(200), nullable=False)
+    avatar_url = Column(String(500), nullable=True)
+    avatar_svg = Column(Text, nullable=True)
+    avatar_image = deferred(Column(LargeBinary, nullable=True))
     description = Column(Text, nullable=True)
     project_path = Column(String(500), nullable=True)
     git_repo_url = Column(String(500), nullable=True)

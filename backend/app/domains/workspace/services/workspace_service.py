@@ -10,7 +10,7 @@ import secrets
 from types import SimpleNamespace
 from typing import Any, Optional
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -279,9 +279,13 @@ def serialize_workspace_products(project) -> list[dict[str, object]]:
 def serialize_workspace(workspace: Workspace, member: WorkspaceMember) -> dict[str, object]:
     repositories = [serialize_workspace_repository(row) for row in workspace.repositories]
     project = workspace.project
+    permissions = _permission_set_from_json(member.permissions_json, member.role)
     return {
         "id": workspace.id,
         "name": workspace.name,
+        "avatar_url": workspace.avatar_url,
+        "avatar_svg": workspace.avatar_svg,
+        "can_edit_avatar": WorkspacePermission.MANAGE_MEMBERS in permissions,
         "description": workspace.description,
         "project_path": workspace.project_path,
         "git_repo_url": workspace.git_repo_url,
@@ -299,6 +303,40 @@ def serialize_workspace(workspace: Workspace, member: WorkspaceMember) -> dict[s
         "owner": serialize_workspace_owner(workspace.owner),
         "repositories": repositories,
     }
+
+
+def workspace_avatar_path(workspace_id: str) -> str:
+    """Return the path used to publish a workspace's versioned images."""
+    return f"/api/workspaces/{workspace_id}/avatars"
+
+
+def read_workspace_avatar_image(db: Session, workspace_id: str, revision: str, extension: str) -> bytes | None:
+    """Look up the image by its current opaque revision."""
+    url = f"{workspace_avatar_path(workspace_id)}/{revision}.{extension}"
+    if extension == "svg":
+        # Browsers omit the viewport fragment from the image request.
+        match = Workspace.avatar_url.startswith(f"{url}#crop=", autoescape=True)
+    else:
+        match = Workspace.avatar_url == url
+    return db.scalar(select(Workspace.avatar_image).where(Workspace.id == workspace_id, match))
+
+
+def update_workspace_avatar(
+    db: Session,
+    workspace_id: str,
+    *,
+    avatar_svg: str | None = None,
+    avatar_url: str | None = None,
+    avatar_image: bytes | None = None,
+) -> bool:
+    """Replace all avatar fields atomically, including clearing the old representation."""
+    workspace_id_found = db.scalar(
+        update(Workspace)
+        .where(Workspace.id == workspace_id)
+        .values(avatar_svg=avatar_svg, avatar_url=avatar_url, avatar_image=avatar_image)
+        .returning(Workspace.id)
+    )
+    return workspace_id_found is not None
 
 
 def _normalize_optional(value: str | None) -> str | None:

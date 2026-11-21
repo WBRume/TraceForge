@@ -172,6 +172,12 @@ export function useSettingsViewModel(options: SettingsViewModelOptions = {}) {
       description: 'settings.members.subtitle',
     },
     {
+      id: 'workspace_avatar',
+      icon: Palette,
+      label: 'settings.workspace_avatar.title',
+      description: 'settings.workspace_avatar.subtitle',
+    },
+    {
       id: 'connected_accounts',
       icon: Link,
       label: 'settings.connected_accounts.title',

@@ -3,7 +3,7 @@ import { computed, onScopeDispose, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import api, { getApiServerUrl } from '@/utils/api'
-import { buildAvatarSvg, type AvatarTemplateStyle } from '@/utils/avatar'
+import { buildAvatarSvg, type AvatarShape, type AvatarTemplateStyle, type SavedAvatar } from '@/utils/avatar'
 import {
   AvatarImageError, MAX_AVATAR_ANIMATION_FRAMES, MAX_AVATAR_UPLOAD_BYTES, centeredAvatarCrop, type AvatarCrop,
 } from '@/utils/avatarCrop'
@@ -13,9 +13,21 @@ import {
 
 type AvatarMode = 'template' | 'upload'
 type AvatarDraft = { image: AvatarImage; fileName: string; crop: AvatarCrop }
-type SavedAvatar = { avatar_svg: string | null; avatar_url: string | null }
+type AvatarSubject = Partial<SavedAvatar> & {
+  id: string
+  display_name?: string
+  email?: string
+}
 
-export function useAvatarPreference() {
+type AvatarPreferenceOptions = {
+  target: () => AvatarSubject | null
+  endpoint: (id: string) => string
+  onSaved: (id: string, avatar: SavedAvatar) => void
+  canEdit: () => boolean
+  shape: AvatarShape
+}
+
+export function useAvatarPreference(options?: AvatarPreferenceOptions) {
   const auth = useAuthStore()
   const { t } = useI18n()
   const mode = shallowRef<AvatarMode>('upload')
@@ -29,24 +41,34 @@ export function useAvatarPreference() {
   let disposed = false
   let activeEncoding: AbortController | null = null
 
-  const user = computed(() => auth.user)
+  const target = computed(() => options ? options.target() : auth.user)
+  const shape = options?.shape ?? 'circle'
+  const editable = computed(() => Boolean(target.value) && (options?.canEdit() ?? true))
   const templateOptions = computed(() => [
     { value: 'classic', label: t('settings.appearance.style_classic') },
     { value: 'soft', label: t('settings.appearance.style_soft') },
     { value: 'split', label: t('settings.appearance.style_split') },
   ])
   const templateSvg = computed(() => buildAvatarSvg({
-    displayName: user.value?.display_name,
-    email: user.value?.email,
-    userId: user.value?.id,
+    displayName: target.value?.display_name,
+    email: target.value?.email,
+    userId: target.value?.id,
     style: style.value,
     color: color.value,
+    shape,
   }))
   const editing = computed(() => mode.value === 'upload' ? draft.value : null)
-  const previewSvg = computed(() => mode.value === 'template' ? templateSvg.value : user.value?.avatar_svg)
-  const previewUrl = computed(() => mode.value === 'upload' ? user.value?.avatar_url : null)
+  const previewSvg = computed(() => mode.value === 'template' ? templateSvg.value : target.value?.avatar_svg)
+  const previewUrl = computed(() => mode.value === 'upload' ? target.value?.avatar_url : null)
   const busy = computed(() => loading.value || saving.value)
-  const canSave = computed(() => Boolean(user.value && !busy.value && (mode.value === 'template' || editing.value)))
+  const canSave = computed(() => editable.value && !busy.value && (mode.value === 'template' || !!editing.value))
+  const hasCustomAvatar = computed(() => Boolean(target.value?.avatar_svg || target.value?.avatar_url))
+
+  function captureSession() {
+    const token = auth.token
+    const server = getApiServerUrl()
+    return () => auth.token === token && getApiServerUrl() === server
+  }
 
   function clearFeedback() {
     error.value = ''
@@ -75,19 +97,21 @@ export function useAvatarPreference() {
   }
 
   async function selectFile(file: File) {
-    if (busy.value) return
+    if (!editable.value || busy.value) return
     clearFeedback()
     loading.value = true
-    const token = auth.token
+    const sameSession = captureSession()
+    const id = target.value?.id
+    const isCurrent = () => !disposed && sameSession() && target.value?.id === id
     try {
       const image = await decodeAvatarImage(file)
-      if (disposed || auth.token !== token) {
+      if (!isCurrent()) {
         releaseAvatarImage(image)
         return
       }
       replaceDraft({ image, fileName: file.name, crop: centeredAvatarCrop(image) })
     } catch (cause) {
-      error.value = errorMessage(cause, 'invalid_image')
+      if (isCurrent()) error.value = errorMessage(cause, 'invalid_image')
     } finally {
       loading.value = false
     }
@@ -99,30 +123,40 @@ export function useAvatarPreference() {
     clearFeedback()
   }
 
-  async function save() {
-    if (!canSave.value || !auth.user) return
+  async function persist(useDefault: boolean) {
+    const id = target.value?.id
+    const allowed = useDefault
+      ? options && editable.value && !busy.value && hasCustomAvatar.value
+      : canSave.value
+    if (!id || !allowed) return
     clearFeedback()
     saving.value = true
-    const photo = editing.value
+    const photo = useDefault ? null : editing.value
+    const svg = useDefault ? null : templateSvg.value
     const encoding = photo && isAnimatedAvatar(photo.image) ? new AbortController() : null
     activeEncoding = encoding
-    const userId = auth.user.id
-    const token = auth.token
-    const server = getApiServerUrl()
-    const sameSession = () => auth.user?.id === userId && auth.token === token && getApiServerUrl() === server
+    const sameSession = captureSession()
+    const isCurrent = () => !disposed && sameSession() && target.value?.id === id
+    const endpoint = options?.endpoint(id) ?? '/auth/me/avatar'
     try {
       const image = photo ? await encodeAvatarCrop(photo.image, photo.crop, encoding?.signal) : null
-      if (!sameSession() || encoding?.signal.aborted) return
+      if (!isCurrent() || !editable.value || encoding?.signal.aborted) return
       const response = image
-        ? await api.put<SavedAvatar>('/auth/me/avatar/image', image, { headers: { 'Content-Type': image.type } })
-        : await api.put<SavedAvatar>('/auth/me/avatar', { avatar_svg: templateSvg.value })
+        ? await api.put<SavedAvatar>(`${endpoint}/image`, image, { headers: { 'Content-Type': image.type } })
+        : await api.put<SavedAvatar>(endpoint, { avatar_svg: svg })
 
-      if (!auth.user || !sameSession()) return
-      auth.setUser({ ...auth.user, avatar_url: response.data.avatar_url, avatar_svg: response.data.avatar_svg })
-      if (photo) replaceDraft(null)
-      success.value = t('settings.appearance.save_success')
+      if (!sameSession()) return
+      const { avatar_url, avatar_svg } = response.data
+      const saved = { avatar_url, avatar_svg }
+      if (options) options.onSaved(id, saved)
+      else if (auth.user?.id === id) auth.setUser({ ...auth.user, ...saved })
+
+      if (!isCurrent()) return
+      if (photo || useDefault) replaceDraft(null)
+      if (useDefault) mode.value = 'upload'
+      success.value = t(useDefault ? 'settings.workspace_avatar.reset_success' : 'settings.appearance.save_success')
     } catch (cause) {
-      if (encoding?.signal.aborted) return
+      if (!isCurrent() || encoding?.signal.aborted) return
       if (encoding && isAxiosError(cause) && cause.response?.status === 413) {
         cause = new AvatarImageError('animation_too_large')
       }
@@ -133,7 +167,7 @@ export function useAvatarPreference() {
     }
   }
 
-  watch(() => auth.token, () => {
+  watch([() => auth.token, () => target.value?.id], () => {
     activeEncoding?.abort()
     replaceDraft(null)
     clearFeedback()
@@ -146,8 +180,10 @@ export function useAvatarPreference() {
   })
 
   return {
-    user, mode, style, color, templateOptions, editing, previewSvg, previewUrl,
-    loading, saving, busy, canSave, error, success, changeMode, selectFile, updateCrop, save,
+    target, shape, editable, mode, style, color, templateOptions, editing, previewSvg, previewUrl,
+    loading, saving, busy, canSave, hasCustomAvatar, error, success, changeMode, selectFile, updateCrop,
+    save: () => persist(false),
+    reset: () => persist(true),
   }
 }
 

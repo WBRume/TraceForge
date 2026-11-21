@@ -8,21 +8,23 @@ import SettingsLocalDevSection from '@/components/settings/SettingsLocalDevSecti
 import SettingsMembersSection from '@/components/settings/SettingsMembersSection.vue'
 import SettingsPlanDocsSection from '@/components/settings/SettingsPlanDocsSection.vue'
 import SettingsSidebarNav from '@/components/settings/SettingsSidebarNav.vue'
+import SettingsWorkspaceAvatarSection from '@/components/settings/SettingsWorkspaceAvatarSection.vue'
 import WebhookSettingsSection from '@/components/settings/WebhookSettingsSection.vue'
 import { useSettingsViewModel } from '@/composables/useSettingsViewModel'
 
-const WORKSPACE_SECTION_IDS = ['local_dev', 'local_service', 'members', 'agent', 'plan_docs', 'webhook_workspace']
+const WORKSPACE_SECTION_IDS = ['members', 'workspace_avatar', 'agent', 'plan_docs', 'webhook_workspace']
+const LOCAL_SECTION_IDS = ['local_dev', 'local_service']
 
 const rawVm = useSettingsViewModel({
-  sectionIds: WORKSPACE_SECTION_IDS,
+  sectionIds: [...LOCAL_SECTION_IDS, ...WORKSPACE_SECTION_IDS],
   defaultSection: 'members',
 })
 const vm = proxyRefs(rawVm)
 const { t } = useI18n()
 
 const groups = computed(() => [
-  { title: t('settings.nav.local'), ids: ['local_dev', 'local_service'] },
-  { title: t('settings.nav.workspace'), ids: ['members', 'agent', 'plan_docs', 'webhook_workspace'] },
+  { title: t('settings.nav.local'), ids: LOCAL_SECTION_IDS },
+  { title: t('settings.nav.workspace'), ids: WORKSPACE_SECTION_IDS },
 ])
 </script>
 
@@ -44,6 +46,11 @@ const groups = computed(() => [
             <SettingsLocalDevSection v-if="vm.activeSection === 'local_dev'" key="local_dev" />
             <LocalServiceForm v-else-if="vm.activeSection === 'local_service'" key="local_service" :workspace-id="vm.workspaceId" />
             <SettingsMembersSection v-else-if="vm.activeSection === 'members'" key="members" :vm="rawVm" />
+            <SettingsWorkspaceAvatarSection
+              v-else-if="vm.activeSection === 'workspace_avatar'"
+              :key="`workspace-avatar-${vm.workspaceId}`"
+              :workspace-id="vm.workspaceId"
+            />
             <SettingsAgentSection v-else-if="vm.activeSection === 'agent'" key="agent" />
             <SettingsPlanDocsSection v-else-if="vm.activeSection === 'plan_docs'" key="plan_docs" :workspace-id="vm.workspaceId" />
             <WebhookSettingsSection v-else-if="vm.activeSection === 'webhook_workspace'" key="webhook_workspace" scope="workspace" :workspace-id="vm.workspaceId" />

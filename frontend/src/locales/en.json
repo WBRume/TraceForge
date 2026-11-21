@@ -317,7 +317,15 @@
       "retry": "Retry"
     },
     "workspace_title": "Workspace Settings",
-    "workspace_subtitle": "Manage workspace members, agents, plan documents, and workspace webhooks.",
+    "workspace_subtitle": "Manage workspace members, avatars, agents, plan documents, and workspace webhooks.",
+    "workspace_avatar": {
+      "title": "Workspace Avatar",
+      "subtitle": "Set the square avatar displayed on the workspace card.",
+      "crop_label": "Square avatar cropping area",
+      "read_only": "Editing the avatar requires permission to manage workspace members.",
+      "reset": "Restore default avatar",
+      "reset_success": "The default workspace avatar has been restored."
+    },
     "nav": {
       "personal": "Personal",
       "workspace": "Workspace",

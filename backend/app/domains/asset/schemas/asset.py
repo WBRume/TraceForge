@@ -369,7 +369,16 @@ class WorkspaceOwnerSummary(BaseModel):
     avatar_url: str | None = None
 
 
-class WorkspaceResponse(BaseModel):
+class WorkspaceAvatarUpdate(BaseModel):
+    avatar_svg: str | None = Field(..., min_length=1, max_length=20000)
+
+
+class WorkspaceAvatarResponse(BaseModel):
+    avatar_url: str | None = None
+    avatar_svg: str | None = None
+
+
+class WorkspaceResponse(WorkspaceAvatarResponse):
     id: str
     name: str
     description: str | None = None
@@ -384,6 +393,7 @@ class WorkspaceResponse(BaseModel):
     my_role: str | None = None
     my_is_expert: bool | None = None
     can_delete_workspace: bool | None = None
+    can_edit_avatar: bool = False
     project: WorkspaceProjectSummary | None = None
     products: list[WorkspaceProductSummary] = Field(default_factory=list)
     owner: WorkspaceOwnerSummary | None = None

@@ -1,4 +1,10 @@
 type AvatarTemplateStyle = 'classic' | 'soft' | 'split'
+export type AvatarShape = 'circle' | 'square'
+
+export type SavedAvatar = {
+  avatar_svg: string | null
+  avatar_url: string | null
+}
 
 const HEX_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
 
@@ -54,6 +60,7 @@ type BuildAvatarSvgInput = {
   userId?: string | null
   color?: string
   style?: AvatarTemplateStyle
+  shape?: AvatarShape
 }
 
 export const buildAvatarSvg = ({
@@ -62,6 +69,7 @@ export const buildAvatarSvg = ({
   userId = '',
   color = '',
   style = 'classic',
+  shape = 'circle',
 }: BuildAvatarSvgInput): string => {
   const initial = escapeXml(pickInitial(displayName, email, userId))
   const normalizedColor = normalizeHexColor(color || '#0ea5e9')
@@ -72,13 +80,16 @@ export const buildAvatarSvg = ({
   const gradientId = pickGradientId(seed)
 
   if (style === 'soft') {
+    const backgroundRect = shape === 'square'
+      ? '<rect x="0" y="0" width="64" height="64"'
+      : '<rect x="2" y="2" width="60" height="60" rx="30"'
     return (
       `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-hidden="true">`
       + `<defs><linearGradient id="${gradientId}" x1="0" y1="0" x2="1" y2="1">`
       + `<stop offset="0%" stop-color="${startColor}" stop-opacity="0.92"/>`
       + `<stop offset="100%" stop-color="${endColor}" stop-opacity="0.86"/>`
       + `</linearGradient></defs>`
-      + `<rect x="2" y="2" width="60" height="60" rx="30" fill="url(#${gradientId})"/>`
+      + `${backgroundRect} fill="url(#${gradientId})"/>`
       + `<circle cx="32" cy="32" r="27" fill="#ffffff" fill-opacity="0.12"/>`
       + `<text x="32" y="34" text-anchor="middle" dominant-baseline="middle" fill="${textColor}" font-size="28" font-family="'Segoe UI', 'PingFang SC', sans-serif" font-weight="700">${initial}</text>`
       + `</svg>`
@@ -102,7 +113,7 @@ export const buildAvatarSvg = ({
     + `<stop offset="0%" stop-color="${startColor}"/>`
     + `<stop offset="100%" stop-color="${endColor}"/>`
     + `</linearGradient></defs>`
-    + `<rect x="0" y="0" width="64" height="64" rx="32" fill="url(#${gradientId})"/>`
+    + `<rect x="0" y="0" width="64" height="64" rx="${shape === 'square' ? 0 : 32}" fill="url(#${gradientId})"/>`
     + `<circle cx="32" cy="32" r="28" fill="#ffffff" fill-opacity="0.1"/>`
     + `<text x="32" y="34" text-anchor="middle" dominant-baseline="middle" fill="${textColor}" font-size="28" font-family="'Segoe UI', 'PingFang SC', sans-serif" font-weight="700">${initial}</text>`
     + `</svg>`

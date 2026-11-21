@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import api from '@/utils/api'
+import type { SavedAvatar } from '@/utils/avatar'
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const currentWorkspace = ref<any>(null)
@@ -22,6 +23,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     currentWorkspace.value = ws
     localStorage.setItem('sdd_ws_id', ws.id)
   }
+
+  function setWorkspaceAvatar(id: string, avatar: SavedAvatar) {
+    const listed = workspaces.value.find(workspace => workspace.id === id)
+    if (listed) Object.assign(listed, avatar)
+    if (currentWorkspace.value?.id === id) Object.assign(currentWorkspace.value, avatar)
+  }
   
   async function restoreCurrent() {
     const wsId = localStorage.getItem('sdd_ws_id')
@@ -36,5 +43,5 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  return { currentWorkspace, workspaces, fetchWorkspaces, setCurrent, restoreCurrent }
+  return { currentWorkspace, workspaces, fetchWorkspaces, setCurrent, setWorkspaceAvatar, restoreCurrent }
 })
