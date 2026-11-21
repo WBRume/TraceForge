@@ -38,6 +38,7 @@ from app.agents.contract import (
 from app.config import settings
 from app.core.logging import get_logger
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.services.jobs.store import has_attempt_ownership, is_settled_job, merge_json, serialize_job
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import status_machine as sm
 
@@ -68,13 +69,6 @@ class ConvergenceIntent(str, Enum):
     RUNNER_EXIT = "RUNNER_EXIT"
     TERMINATION_FINALIZE = "TERMINATION_FINALIZE"
     REAPER_FINALIZE = "REAPER_FINALIZE"
-
-
-def _merge_json(original: Any, patch: dict[str, Any] | None) -> dict[str, Any]:
-    merged = dict(original) if isinstance(original, dict) else {}
-    if patch:
-        merged.update(patch)
-    return merged
 
 
 def _attr_bool(value: Any) -> bool | None:
@@ -651,9 +645,9 @@ def _apply_task_interrupt_in_txn(
     job.interrupted_by_id = None
     job.interrupted_at = now
     job.finished_at = now
-    job.context_json = _merge_json(job.context_json, patch)
+    job.context_json = merge_json(job.context_json, patch)
     if request.result_patch:
-        job.result_json = _merge_json(job.result_json, request.result_patch)
+        job.result_json = merge_json(job.result_json, request.result_patch)
     if request.evidence.failure_code:
         job.failure_code = request.evidence.failure_code
     if task:
@@ -736,9 +730,9 @@ def _apply_business_status_in_txn(
             job.message = request.message if request.message is not None else job.message
             job.error_message = request.error_message
         if request.result_patch:
-            job.result_json = _merge_json(job.result_json, request.result_patch)
+            job.result_json = merge_json(job.result_json, request.result_patch)
         if request.context_patch:
-            job.context_json = _merge_json(job.context_json, request.context_patch)
+            job.context_json = merge_json(job.context_json, request.context_patch)
         if request.session_id is not None:
             job.session_id = request.session_id
         if request.agent_backend is not None:
@@ -844,7 +838,7 @@ def _apply_orphaned_in_txn(
     job.orphaned_at = job.orphaned_at or now
     job.first_failure_at = job.first_failure_at or now
     if request.evidence.remaining_pids:
-        job.context_json = _merge_json(
+        job.context_json = merge_json(
             job.context_json,
             {
                 "unconfirmed_process_pids": [int(pid) for pid in request.evidence.remaining_pids],
@@ -985,8 +979,6 @@ def converge_job_attempt_in_txn(
     本核心不 commit、不 refresh：任何已经处在 ``run_db_txn()`` 或 route
     transaction 中的调用方必须使用本函数，提交所有权归最外层事务。
     """
-    from app.domains.ai.services.jobs.store import is_settled_job
-
     now = datetime.utcnow()
     job = lock_job_in_txn(db, db.query(SddAiJob).filter(SddAiJob.id == request.job_id))
     if job is None:
@@ -1082,7 +1074,7 @@ def converge_job_attempt_in_txn(
             now,
         )
     db.flush()
-    payload = _serialize_converged_job(job)
+    payload = serialize_job(job)
     is_final = final_status in {
         AiJobStatus.SUCCESS,
         AiJobStatus.FAILED,
@@ -1115,7 +1107,7 @@ def converge_job_attempt_sync(
     db.commit()
     refreshed = db.query(SddAiJob).filter(SddAiJob.id == request.job_id).first()
     if refreshed is not None:
-        result.payload = _serialize_converged_job(refreshed)
+        result.payload = serialize_job(refreshed)
     return result
 
 
@@ -1205,8 +1197,6 @@ def request_attempt_termination_in_txn(
        task 状态；
     7. 不广播、不触发内存 cancel event —— 由最外层事务提交成功后执行。
     """
-    from app.domains.ai.services.jobs.store import has_attempt_ownership, is_settled_job
-
     now = datetime.utcnow()
     reason = str(request.reason or request.mode).strip() or request.mode
     job_query = db.query(SddAiJob).filter(
@@ -1261,7 +1251,7 @@ def request_attempt_termination_in_txn(
             job.interrupted_by_id = request.actor_user_id
             job.interrupted_at = now
             if request.interrupt_context_patch:
-                job.context_json = _merge_json(job.context_json, request.interrupt_context_patch)
+                job.context_json = merge_json(job.context_json, request.interrupt_context_patch)
         _finalize_submission_in_txn(db, job, AiJobStatus.CANCELLED)
         _converge_task_status_in_txn(db, job, AiJobStatus.CANCELLED)
         return _result(True)
@@ -1291,78 +1281,10 @@ def request_attempt_termination_in_txn(
             patch["interrupted_by_id"] = request.actor_user_id
         if request.interrupt_context_patch:
             patch.update(request.interrupt_context_patch)
-        job.context_json = _merge_json(job.context_json, patch)
+        job.context_json = merge_json(job.context_json, patch)
         _mark_task_interrupted(db, job, request, resolved_session_id, reason, now)
 
     return _result(True)
-
-
-def _serialize_converged_job(job: SddAiJob) -> dict[str, Any]:
-    """Serialize the converged row without importing ai_job_service (no cycles)."""
-
-    def _as_text(value: Any) -> str:
-        return value.value if hasattr(value, "value") else str(value)
-
-    return {
-        "id": job.id,
-        "workspace_id": job.workspace_id,
-        "task_id": job.task_id,
-        "asset_id": job.asset_id,
-        "thread_id": job.thread_id,
-        "channel": _as_text(job.channel),
-        "queue_key": job.queue_key,
-        "status": _as_text(job.status),
-        "version": int(job.version or 1),
-        "stage": job.stage,
-        "completion": job.completion_json,
-        "execution_backend": job.execution_backend,
-        "progress": int(job.progress or 0),
-        "message": job.message,
-        "prompt_text": job.prompt_text,
-        "context_json": job.context_json if isinstance(job.context_json, dict) else {},
-        "result_json": job.result_json if isinstance(job.result_json, dict) else {},
-        "error_message": job.error_message,
-        "session_id": job.session_id,
-        "session_turn_id": job.session_turn_id,
-        "session_generation": job.session_generation,
-        "session_revision": job.session_revision,
-        "interrupt_kind": job.interrupt_kind,
-        "interrupt_reason": job.interrupt_reason,
-        "interrupted_by_id": job.interrupted_by_id,
-        "interrupted_at": job.interrupted_at.isoformat() if job.interrupted_at else None,
-        "creator_id": job.creator_id,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
-        "attempt_count": int(job.attempt_count or 0),
-        "max_attempts": int(job.max_attempts or 1),
-        "run_token": job.run_token,
-        "worker_id": job.worker_id,
-        "worker_boot_id": job.worker_boot_id,
-        "heartbeat_at": job.heartbeat_at.isoformat() if job.heartbeat_at else None,
-        "lease_expires_at": job.lease_expires_at.isoformat() if job.lease_expires_at else None,
-        "cancel_requested_at": job.cancel_requested_at.isoformat() if job.cancel_requested_at else None,
-        "process_pid": job.process_pid,
-        "process_started_at": job.process_started_at.isoformat() if job.process_started_at else None,
-        "process_group_id": job.process_group_id,
-        "process_containment_id": job.process_containment_id,
-        "process_execution_kind": job.process_execution_kind,
-        "termination_attempts": int(job.termination_attempts or 0),
-        "failure_code": job.failure_code,
-        "terminal_reason": job.terminal_reason,
-        "orphaned_at": job.orphaned_at.isoformat() if job.orphaned_at else None,
-        "first_failure_at": job.first_failure_at.isoformat() if job.first_failure_at else None,
-        "last_reap_attempt_at": job.last_reap_attempt_at.isoformat() if job.last_reap_attempt_at else None,
-        "last_reap_verified_at": job.last_reap_verified_at.isoformat() if job.last_reap_verified_at else None,
-        "next_reap_at": job.next_reap_at.isoformat() if job.next_reap_at else None,
-        "reap_failure_count": int(job.reap_failure_count or 0),
-        "last_reap_error": job.last_reap_error,
-        "manual_intervention_required": bool(job.manual_intervention_required),
-        "manual_intervention_operator_id": job.manual_intervention_operator_id,
-        "manual_intervention_reason": job.manual_intervention_reason,
-        "manual_intervention_evidence": job.manual_intervention_evidence,
-        "created_at": job.created_at.isoformat() if job.created_at else None,
-        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
-    }
 
 
 __all__ = [
@@ -1381,5 +1303,6 @@ __all__ = [
     "evidence_from_stop_result",
     "converge_job_attempt_in_txn",
     "converge_job_attempt_sync",
+    "persisted_stop_mode",
     "request_attempt_termination_in_txn",
 ]

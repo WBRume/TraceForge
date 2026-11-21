@@ -11,8 +11,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.domains.ai.models.ai_job import AiJobChannel, SddAiJob
-from app.domains.ai.services.jobs.constants import SESSION_GUARD_STATUSES
+from app.domains.ai.services.jobs.store import has_blocking_chat_job
 from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.task.models.task import SddTask, TaskStatus, TaskType
 from app.domains.task.schemas.task_closeout import (
@@ -86,16 +85,7 @@ def _prepare_closeout(db: Session, task: SddTask, actor_id: str, lease_epoch: in
     from app.engine.session.registry import list_task_engines
 
     require_operation(db, task, actor_id, operation="closeout")
-    active_job = (
-        db.query(SddAiJob.id)
-        .filter(
-            SddAiJob.task_id == task.id,
-            SddAiJob.channel == AiJobChannel.TASK_CHAT,
-            SddAiJob.status.in_(SESSION_GUARD_STATUSES),
-        )
-        .first()
-    )
-    if active_job or any(engine.running for engine in list_task_engines(task.id)):
+    if has_blocking_chat_job(db, task.id) or any(engine.running for engine in list_task_engines(task.id)):
         raise TaskCloseoutError(
             "Wait for the Agent to finish before closing this task.",
             status_code=409,

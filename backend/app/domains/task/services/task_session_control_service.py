@@ -36,6 +36,7 @@ from app.domains.ai.services.jobs.registry import runtime as ai_runtime
 from app.domains.ai.services.jobs.store import (
     create_task_chat_job,
     find_active_summary_job,
+    has_blocking_chat_job,
     serialize_job,
 )
 from app.domains.skill.services.runtime import configuration as skill_runtime_configuration
@@ -144,14 +145,7 @@ async def _wait_for_remote_attempt_start(run_txn, task_id: str) -> None:
 
 def _task_payload(task: SddTask, job_payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
-        "task_id": task.id,
-        "workspace_id": task.workspace_id,
-        "status": _as_text(task.status),
-        "status_seq": str(task.status_seq or 0),
-        "status_run_id": task.status_run_id,
-        "interrupt_kind": task.interrupt_kind,
-        "session_generation": task.session_generation,
-        "session_revision": task.session_revision,
+        **sm.snapshot(task),
         "session_id": task.session_id,
         "interrupt_reason": task.interrupt_reason,
         "interrupted_by_id": task.interrupted_by_id,
@@ -740,22 +734,6 @@ async def start_task_session(
     return {**result, "msg": "Task started"}
 
 
-def _initialize_has_active_jobs_sync(db: Session, *, task_id: str) -> bool:
-    """Cancellation is a request, not proof that the old attempt has exited."""
-    from app.domains.task.services.chat_submission_service import BLOCKING
-
-    return (
-        db.query(SddAiJob.id)
-        .filter(
-            SddAiJob.task_id == task_id,
-            SddAiJob.channel == AiJobChannel.TASK_CHAT,
-            SddAiJob.status.in_(BLOCKING),
-        )
-        .first()
-        is not None
-    )
-
-
 def prepare_initialize_sync(
     db: Session, *, ws_id: str, task_id: str, actor_user_id: str | None = None, cancel_jobs: bool = True
 ) -> dict[str, Any]:
@@ -804,7 +782,7 @@ def apply_initialize_sync(
     _ensure_task_not_baselined(task)
     # Cancellation is a request, not proof that the old attempt has exited.
     # Check before clearing the session or advancing its generation.
-    if _initialize_has_active_jobs_sync(db, task_id=task_id):
+    if has_blocking_chat_job(db, task_id):
         raise TaskSessionControlError("旧任务执行尚未清理完成，请稍后重试初始化；无需删除任务。", status_code=409)
     if skill_ids is not None:
         skill_runtime_configuration.replace_task_skills_for_initialize(

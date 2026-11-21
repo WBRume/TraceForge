@@ -8,7 +8,7 @@ from uuid import uuid4
 from app.core.offload import run_file_job
 from app.domains.ai.models.ai_job import SddAiJob
 from app.domains.ai.services.jobs import publishing
-from app.domains.ai.services.jobs.store import serialize_job
+from app.domains.ai.services.jobs.store import has_blocking_chat_job, serialize_job
 from app.domains.local_resource import service as resources
 from app.domains.local_resource.client import ResourceClient
 from app.domains.task.models.session_turn import TaskSessionOperation, TaskSessionOperationStatus
@@ -44,7 +44,7 @@ def _load(db, ws_id, task_id, operation_id):
 def _begin(db, ws_id, task_id, actor_id, operation_id, request, identity=None):
     task = db.query(SddTask).filter_by(id=task_id, workspace_id=ws_id).with_for_update().one()
     control._ensure_task_not_baselined(task)
-    if control._initialize_has_active_jobs_sync(db, task_id=task_id):
+    if has_blocking_chat_job(db, task_id):
         raise state.InitializationError("旧任务执行尚未清理完成，请稍后重试初始化。")
     if (
         db.query(TaskSessionOperation.id)
@@ -220,7 +220,7 @@ async def _stop_previous(run, ws_id, task_id, actor_id, db):
             cancel_jobs=False,
         )
     )
-    if await run(lambda session: control._initialize_has_active_jobs_sync(session, task_id=task_id)):
+    if await run(lambda session: has_blocking_chat_job(session, task_id)):
         # Reuse the stop acknowledgement/finalizer path. Cancelling the job and
         # dropping engine.stop()'s remote ACK can otherwise strand it ORPHANED.
         await control.interrupt_task(

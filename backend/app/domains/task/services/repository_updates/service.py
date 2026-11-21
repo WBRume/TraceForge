@@ -5,11 +5,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.domains.ai.models.ai_job import SddAiJob
+from app.domains.ai.services.jobs.store import blocking_attempt_predicate
 from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.session_turn import TaskSessionOperation, TaskSessionOperationStatus
 from app.domains.task.models.task_repository import SddTaskRepository
 from app.domains.task.services import task_session_snapshot_service as snapshots
-from app.domains.task.services.task_attempt_recovery_service import BLOCKING
 from app.domains.workspace_collaboration.models import CollaborationState
 
 from . import git, storage
@@ -46,7 +46,7 @@ def idle(db, task, *, ignore_job_id=None):
         "FAILED",
     }:
         raise UpdateError("当前任务状态不能更新代码。")
-    query = db.query(SddAiJob.id).filter(SddAiJob.task_id == task.id, SddAiJob.status.in_(BLOCKING))
+    query = db.query(SddAiJob.id).filter(SddAiJob.task_id == task.id, blocking_attempt_predicate())
     if ignore_job_id:
         query = query.filter(SddAiJob.id != ignore_job_id)
     if query.first() or db.query(TaskChatSubmission.id).filter_by(active_task_id=task.id).first():

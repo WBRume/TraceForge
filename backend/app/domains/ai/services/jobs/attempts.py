@@ -50,8 +50,8 @@ from app.domains.ai.services.ai_job_convergence_service import (
 from app.domains.ai.services.ai_job_convergence_service import (
     AttemptFinalizerEvidence as _FinalizerEvidence,
 )
-from app.domains.ai.services.jobs.constants import FINAL_STATUSES
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID, runtime
+from app.domains.ai.services.jobs.store import blocking_attempt_predicate, is_job_cancelled_or_final_sync
 
 logger = get_logger(__name__, category="ai_session")
 
@@ -287,23 +287,6 @@ async def persist_process_identity(identity, attempt: AgentAttemptContext | None
 
 
 # ────────────────────────── 取消/终态判定 ──────────────────────────
-
-
-def is_job_cancelled_or_final_sync(job_id: str) -> bool:
-    """DB 部分取消/终态检查（线程内执行，由 run_db 包装）。"""
-    db = SessionLocal()
-    try:
-        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        return bool(
-            job
-            and (
-                job.status in FINAL_STATUSES
-                or job.status in {AiJobStatus.TERMINATING, AiJobStatus.ORPHANED}
-                or job.cancel_requested_at is not None
-            )
-        )
-    finally:
-        db.close()
 
 
 async def is_job_cancelled_or_final(job_id: str) -> bool:
@@ -566,7 +549,7 @@ def mark_task_chat_jobs_cancelled(
                 SddAiJob.workspace_id == workspace_id,
                 SddAiJob.task_id == task_id,
                 SddAiJob.channel == AiJobChannel.TASK_CHAT,
-                SddAiJob.status.notin_(list(FINAL_STATUSES)),
+                blocking_attempt_predicate(),
             )
             .all()
         )

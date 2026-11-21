@@ -25,7 +25,13 @@ from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.logging import get_logger
 from app.core.offload import run_db, run_db_txn
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
-from app.domains.ai.services.jobs.store import row_has_leaked_interrupted_ownership
+from app.domains.ai.services.jobs.store import (
+    blocking_attempt_predicate,
+    blocks_task_session,
+    has_blocking_chat_job,
+    list_task_jobs,
+    serialize_job,
+)
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.task import SddTask, TaskStatus
@@ -33,12 +39,7 @@ from app.domains.task.models.task_event_outbox import TaskEventOutbox
 from app.domains.task.services import agent_session_switch
 from app.domains.task.services import status_machine as sm
 from app.domains.task.services.conversation import history as task_conversation_history
-from app.domains.task.services.task_attempt_recovery_service import (
-    BLOCKING,
-    active_statuses,
-    blocking_attempt_predicate,
-    recover_task_attempts,
-)
+from app.domains.task.services.task_attempt_recovery_service import active_statuses, recover_task_attempts
 
 logger = get_logger(__name__, category="task_execution")
 _runners: dict[str, asyncio.Task] = {}
@@ -242,11 +243,7 @@ def _accept_sync(
         .first()
     ):
         raise SubmissionError("当前会话正在撤销，请等待完成")
-    if (
-        db.query(SddAiJob.id)
-        .filter(SddAiJob.task_id == task_id, SddAiJob.channel == AiJobChannel.TASK_CHAT, blocking_attempt_predicate())
-        .first()
-    ):
+    if has_blocking_chat_job(db, task_id):
         raise SubmissionError("当前回合正在执行，请等待完成")
     from app.agents.model_selection import apply_task_selection
 
@@ -665,7 +662,7 @@ def _reconcile_sync(db, task_id=None):
                 if row is None or row.status != "EXECUTING":
                     continue
                 job = db.get(SddAiJob, row.ai_job_id) if row.ai_job_id else None
-                if job is not None and (job.status in BLOCKING or row_has_leaked_interrupted_ownership(job)):
+                if job is not None and blocks_task_session(job):
                     continue
                 _recover_execution_status(db, task, row, job)
                 _finish_submission(db, task, row, job, success=job is not None and job.status == AiJobStatus.SUCCESS)
@@ -741,8 +738,6 @@ def build_session_state(db, task_id, *, actor_id, client_message_ids=None):
 
     confirmation_replies, confirmation_messages = live_confirmation_service.snapshot_replies(db, task, actor_id, keys)
     messages.update(confirmation_messages)
-    from app.domains.ai.services.jobs.store import list_task_jobs, serialize_job
-
     for job in list_task_jobs(db, task_id=task_id, active_only=True):
         jobs.setdefault(job.id, job)
 
@@ -756,8 +751,6 @@ def build_session_state(db, task_id, *, actor_id, client_message_ids=None):
     ordered = task_conversation_history.sort_chat_messages(list(messages.values()))
     return {
         **sm.snapshot(task),
-        "session_generation": int(task.session_generation or 0),
-        "session_revision": int(task.session_revision or 0),
         "receipts": [serialize(row) for row in receipts.values()],
         "confirmation_replies": confirmation_replies,
         "jobs": [serialize_job(job) for job in jobs.values()],

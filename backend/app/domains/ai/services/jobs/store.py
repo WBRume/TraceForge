@@ -109,6 +109,18 @@ def row_has_leaked_interrupted_ownership(job: SddAiJob) -> bool:
     return job.status == AiJobStatus.INTERRUPTED and has_attempt_ownership(job)
 
 
+def blocks_task_session(job: SddAiJob) -> bool:
+    return job.status in SESSION_GUARD_STATUSES or row_has_leaked_interrupted_ownership(job)
+
+
+def blocking_attempt_predicate():
+    """SQL equivalent of blocks_task_session for guards and recovery scans."""
+    return or_(
+        SddAiJob.status.in_(SESSION_GUARD_STATUSES),
+        and_(SddAiJob.status == AiJobStatus.INTERRUPTED, attempt_ownership_predicate()),
+    )
+
+
 # ────────────────────────── 执行类别 ──────────────────────────
 
 
@@ -341,39 +353,32 @@ def has_diagnosis_summary_job(db, task_id: str) -> bool:
 
 
 def find_active_summary_job(db, task_id: str) -> SddAiJob | None:
-    """进行中的一键总结任务（PENDING/RUNNING）。"""
-    jobs = (
-        db.query(SddAiJob)
-        .filter(
-            SddAiJob.task_id == task_id,
-            SddAiJob.channel == AiJobChannel.TASK_CHAT,
-            SddAiJob.status.in_([status.value for status in SESSION_GUARD_STATUSES]),
-        )
-        .order_by(SddAiJob.created_at.desc())
-        .all()
-    )
-    for job in jobs:
+    """查找仍占用任务会话的一键总结作业。"""
+    for job in list_task_jobs(db, task_id=task_id):
         if job_kind_of(job) == JOB_KIND_DIAGNOSIS_SUMMARY:
             return job
     return None
 
 
 def find_active_chat_job(db, task_id: str) -> SddAiJob | None:
-    """进行中的聊天任务（PENDING/RUNNING/WAITING_HITL；WAITING_HITL 视为会话进行中）。"""
-    jobs = (
-        db.query(SddAiJob)
-        .filter(
-            SddAiJob.task_id == task_id,
-            SddAiJob.channel == AiJobChannel.TASK_CHAT,
-            SddAiJob.status.in_([status.value for status in SESSION_GUARD_STATUSES]),
-        )
-        .order_by(SddAiJob.created_at.desc())
-        .all()
-    )
-    for job in jobs:
+    """查找仍占用任务会话的聊天作业。"""
+    for job in list_task_jobs(db, task_id=task_id):
         if job_kind_of(job) != JOB_KIND_DIAGNOSIS_SUMMARY:
             return job
     return None
+
+
+def has_blocking_chat_job(db: Session, task_id: str) -> bool:
+    return (
+        db.query(SddAiJob.id)
+        .filter(
+            SddAiJob.task_id == task_id,
+            SddAiJob.channel == AiJobChannel.TASK_CHAT,
+            blocking_attempt_predicate(),
+        )
+        .first()
+        is not None
+    )
 
 
 def get_job(db: Session, *, job_id: str) -> SddAiJob | None:
@@ -407,12 +412,7 @@ def list_task_jobs(
         SddAiJob.channel == AiJobChannel.TASK_CHAT,
     )
     if active_only:
-        query = query.filter(
-            or_(
-                SddAiJob.status.in_(SESSION_GUARD_STATUSES),
-                and_(SddAiJob.status == AiJobStatus.INTERRUPTED, attempt_ownership_predicate()),
-            )
-        )
+        query = query.filter(blocking_attempt_predicate())
     return query.order_by(SddAiJob.created_at.desc()).all()
 
 

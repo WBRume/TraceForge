@@ -175,7 +175,7 @@ async def test_send_after_restart_reclaims_persisted_attempt(task_db, recovery_e
     receipt = await service.accept(task_id="t", actor_id="u", client_message_id="after-restart", content="continue")
     task_db.expire_all()
     assert receipt["status"] == "PREPARING"
-    assert task_db.get(SddAiJob, "job").status not in service.BLOCKING
+    assert not ai_store.blocks_task_session(task_db.get(SddAiJob, "job"))
     assert task_db.get(TaskChatSubmission, row.id).active_task_id is None
     assert scheduled == [receipt["id"]]
     stop.assert_awaited_once()

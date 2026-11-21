@@ -157,7 +157,6 @@ def _prepare_chat_turn_sync(
     if not task:
         raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
     from app.domains.task.services.chat_submission_service import assert_no_preparing_submission
-    from app.domains.task.services.task_attempt_recovery_service import blocking_attempt_predicate
 
     assert_no_preparing_submission(db, task_id, allowed_id=submission_id, initialization_id=initialization_id)
     task_confirmation_service.validate_turn_reply(db, task_id, context_json)
@@ -168,7 +167,7 @@ def _prepare_chat_turn_sync(
         .filter(
             SddAiJob.task_id == task_id,
             SddAiJob.channel == AiJobChannel.TASK_CHAT,
-            blocking_attempt_predicate(),
+            ai_job_store.blocking_attempt_predicate(),
         )
         .first()
     )

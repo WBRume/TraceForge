@@ -3,21 +3,13 @@
 import asyncio
 from datetime import datetime
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import func
 
 from app.config import settings
 from app.core.distributed_lock import lock_task
 from app.core.offload import run_db_txn
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
-from app.domains.ai.services.jobs.store import attempt_ownership_predicate, lease_ttl_seconds
-
-BLOCKING = [
-    AiJobStatus.PENDING,
-    AiJobStatus.RUNNING,
-    AiJobStatus.WAITING_HITL,
-    AiJobStatus.TERMINATING,
-    AiJobStatus.ORPHANED,
-]
+from app.domains.ai.services.jobs.store import blocking_attempt_predicate, lease_ttl_seconds
 
 
 def interrupt_lock_ttl_seconds() -> int:
@@ -32,13 +24,6 @@ def lock_task_for_resume(task_id: str):
         interrupt_lock_ttl_seconds() + max(1.0, 2 * settings.DISTRIBUTED_LOCK_SLEEP_SECONDS),
     )
     return lock_task(task_id, blocking_timeout=wait)
-
-
-def blocking_attempt_predicate():
-    return or_(
-        SddAiJob.status.in_(BLOCKING),
-        and_(SddAiJob.status == AiJobStatus.INTERRUPTED, attempt_ownership_predicate()),
-    )
 
 
 def active_statuses(db, task_id):

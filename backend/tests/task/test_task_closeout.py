@@ -552,7 +552,16 @@ def test_closeout_requires_idle_agent_and_consent_from_the_current_host_owner(ac
         assert response.status_code == 409
         assert response.json()["detail"]["code"] == "CLOSEOUT_AGENT_ACTIVE"
         with _session(sessions) as db:
-            db.get(SddAiJob, job.id).status = AiJobStatus.SUCCESS
+            interrupted_job = db.get(SddAiJob, job.id)
+            interrupted_job.status = AiJobStatus.INTERRUPTED
+            interrupted_job.run_token = "still-owned"
+            db.commit()
+
+        response = client.post(endpoint, json=consent)
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "CLOSEOUT_AGENT_ACTIVE"
+        with _session(sessions) as db:
+            db.get(SddAiJob, job.id).run_token = None
             db.commit()
 
         response = client.post(endpoint, json=consent)
