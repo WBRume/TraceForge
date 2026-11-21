@@ -260,6 +260,7 @@ def serialize_job(job: SddAiJob) -> dict[str, Any]:
         "session_turn_id": job.session_turn_id,
         "session_generation": job.session_generation,
         "session_revision": job.session_revision,
+        "interrupt_kind": job.interrupt_kind,
         "interrupt_reason": job.interrupt_reason,
         "interrupted_by_id": job.interrupted_by_id,
         "interrupted_at": job.interrupted_at.isoformat() if job.interrupted_at else None,

@@ -1,4 +1,4 @@
-import { taskStatusKey } from '@/utils/taskStatus'
+import { taskDisplayStatus, taskStatusKey, type TaskInterruptKind } from '@/utils/taskStatus'
 import { computed, ref } from 'vue'
 import type { ContextAnnotations } from '@/composables/chat/annotations/useContextAnnotations'
 import { formatAnnotationMessage } from '@/composables/chat/annotations/contextAnnotations'
@@ -41,7 +41,7 @@ export interface ChatTerminalBridge {
   replacingAgentSession?: boolean
   agentSessionSendBlocked?: boolean
   steeringJobId?: string
-  currentTask: { id?: string; name?: string; status?: string } | null
+  currentTask: { id?: string; name?: string; status?: string; interrupt_kind?: TaskInterruptKind | null } | null
   messages: any[]
   terminalLogs: any[]
   highlightedTerminalLogId?: string
@@ -209,7 +209,7 @@ export const useChatTerminalController = (vm: ChatTerminalBridge) => {
 
   const emitStatus = () => {
     const taskName = vm.currentTask?.name || '-'
-    const taskStatus = vm.t(taskStatusKey(vm.currentTask?.status))
+    const taskStatus = vm.t(taskStatusKey(taskDisplayStatus(vm.currentTask?.status, vm.currentTask?.interrupt_kind)))
     const running = vm.engineRunning ? 'RUNNING' : 'IDLE'
     appendEcho('info', `task=${taskName} status=${taskStatus} engine=${running}`)
     appendEcho('info', `messages=${vm.messages.length} logs=${vm.terminalLogs.length}`)

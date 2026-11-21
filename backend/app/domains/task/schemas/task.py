@@ -100,6 +100,7 @@ class TaskResponse(BaseModel):
     session_id: str | None = None
     session_generation: int = 0
     session_revision: int = 0
+    interrupt_kind: Literal["MANUAL", "ABNORMAL"] | None = None
     interrupt_reason: str | None = None
     interrupted_by_id: str | None = None
     interrupted_at: datetime | None = None

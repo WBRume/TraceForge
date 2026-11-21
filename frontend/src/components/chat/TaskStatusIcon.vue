@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { CheckCircle2, CircleHelp, Clock, Flag, Loader2, OctagonPause, Play, XCircle } from '@/components/icons'
+import { CheckCircle2, CircleHelp, Clock, Flag, Loader2, OctagonPause, Play, TriangleAlert, XCircle } from '@/components/icons'
 import { normalizeTaskStatus } from '@/utils/taskStatus'
 
 const props = withDefaults(defineProps<{
@@ -18,6 +18,7 @@ const icons = {
   ROUND_COMPLETED: Flag,
   AWAITING_INPUT: CircleHelp,
   INTERRUPTED: OctagonPause,
+  ABNORMAL_INTERRUPTED: TriangleAlert,
   COMPLETED: CheckCircle2,
   FAILED: XCircle,
 }
@@ -51,6 +52,7 @@ const icon = computed(() => icons[status.value as keyof typeof icons] || CircleH
 .task-status-icon[data-status="ROUND_COMPLETED"] { color: #0d9488; }
 .task-status-icon[data-status="AWAITING_INPUT"] { color: #d97706; }
 .task-status-icon[data-status="INTERRUPTED"] { color: #ea580c; }
+.task-status-icon[data-status="ABNORMAL_INTERRUPTED"] { color: #dc2626; }
 .task-status-icon[data-status="COMPLETED"] { color: #16a34a; }
 .task-status-icon[data-status="FAILED"] { color: #dc2626; }
 .task-status-icon[data-status="RUNNING"] .task-status-glyph {

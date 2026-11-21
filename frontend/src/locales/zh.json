@@ -712,6 +712,8 @@
       "ROUND_COMPLETED": "轮次完成",
       "AWAITING_INPUT": "等待用户输入",
       "INTERRUPTED": "已中断",
+      "ABNORMAL_INTERRUPTED": "异常中断",
+      "INTERRUPTED_GROUP": "中断",
       "COMPLETED": "已完成",
       "FAILED": "已失败",
       "PROVISIONING": "准备中",

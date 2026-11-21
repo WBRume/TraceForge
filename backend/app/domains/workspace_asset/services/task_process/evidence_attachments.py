@@ -14,6 +14,7 @@ from app.domains.workspace_asset.models.evidence_attachment import TaskEvidenceA
 from app.domains.workspace_asset.models.workspace_asset import SddEvidence
 from app.domains.workspace_asset.schemas.workspace_asset import EvidenceAttachmentResponse
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
+from app.domains.workspace_asset.services.common.process_presenters import evidence_attachment_response
 
 
 def attachment_path(attachment: TaskEvidenceAttachment) -> Path:
@@ -54,7 +55,7 @@ def upload(db: Session, task: SddTask, actor_id: str, file: UploadFile) -> Evide
         raise
     db.add(attachment)
     db.commit()
-    return _describe(attachment)
+    return evidence_attachment_response(attachment)
 
 
 def load_pending(
@@ -80,21 +81,6 @@ def load_pending(
     if any(not attachment_path(row).is_file() for row in ordered):
         raise WorkspaceAssetError("Attachment file not found", status_code=404)
     return ordered
-
-
-def _describe(row: TaskEvidenceAttachment) -> EvidenceAttachmentResponse:
-    return EvidenceAttachmentResponse(id=row.id, filename=row.filename, content_type=row.content_type, size=row.size)
-
-
-def list_for_evidence(db: Session, evidence: SddEvidence) -> list[EvidenceAttachmentResponse]:
-    """List files attached to the exact evidence, task and workspace."""
-    rows = (
-        db.query(TaskEvidenceAttachment)
-        .filter_by(workspace_id=evidence.workspace_id, task_id=evidence.task_id, evidence_id=evidence.id)
-        .order_by(TaskEvidenceAttachment.created_at, TaskEvidenceAttachment.id)
-        .all()
-    )
-    return [_describe(row) for row in rows]
 
 
 def get_for_evidence(

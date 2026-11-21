@@ -772,6 +772,7 @@ async def test_preparation_failure_releases_slot_and_allows_resume(task_db, reco
     task_db.commit()
     assert row.status == "FAILED" and row.active_task_id is None
     assert task.status == TaskStatus.INTERRUPTED
+    assert task.interrupt_kind == "ABNORMAL"
     assert task.interrupt_reason == "snapshot failed"
     assert task.session_id == "original-session"
     transition = task_db.query(TaskStatusEvent).filter_by(trigger="INPUT_PREPARATION_FAILED").one()
@@ -781,6 +782,7 @@ async def test_preparation_failure_releases_slot_and_allows_resume(task_db, reco
     events = [event.payload_json for event in task_db.query(TaskEventOutbox).order_by(TaskEventOutbox.id)]
     assert events[-2]["event_type"] == "task_status_changed"
     assert events[-2]["status"] == "INTERRUPTED"
+    assert events[-2]["interrupt_kind"] == "ABNORMAL"
     assert events[-1]["receipt"]["status"] == "FAILED"
 
     monkeypatch.setattr(agent_session_switch, "check_task_session", AsyncMock(return_value=(None, "available")))
@@ -791,6 +793,7 @@ async def test_preparation_failure_releases_slot_and_allows_resume(task_db, reco
     assert result["submission"]["status"] == "PREPARING"
     assert recovery_env == [result["submission"]["id"]]
     assert task.status == TaskStatus.RUNNING
+    assert task.interrupt_kind is None
 
     service._fail_sync(task_db, row.id, "late failure")
     task_db.commit()
@@ -1158,6 +1161,25 @@ def test_session_state_resolves_unconfirmed_key_beyond_any_window(task_db):
     assert "never-seen" not in by_client
     assert state["session_generation"] == 9
     assert any(message["id"] == "user" for message in state["messages"])
+
+
+def test_session_state_restores_failed_preparation_without_client_keys(task_db):
+    receipt = accepted(task_db, "failed-preparation", content="message that was not prepared")
+    service._fail_sync(task_db, receipt.id, "消息准备失败，请重试")
+    task_db.commit()
+
+    state = service.build_session_state(task_db, "t", actor_id="u")
+    assert state["receipts"] == [service.serialize(receipt)]
+    assert state["messages"] == []
+    assert service.build_session_state(task_db, "t", actor_id="another-user")["receipts"] == []
+
+    task = task_db.get(SddTask, "t")
+    task.session_revision += 1
+    task_db.commit()
+    assert service.build_session_state(task_db, "t", actor_id="u")["receipts"] == [service.serialize(receipt)]
+    task.session_generation += 1
+    task_db.commit()
+    assert service.build_session_state(task_db, "t", actor_id="u")["receipts"] == []
 
 
 @pytest.mark.asyncio

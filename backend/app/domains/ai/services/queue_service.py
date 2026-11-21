@@ -489,6 +489,7 @@ def _present_job(db: Session, job: SddAiJob, user_id: str) -> QueueJobItem:  # n
         job_id=job.id,
         job_type=job_type,
         status=status,
+        interrupt_kind=job.interrupt_kind,
         progress=int(job.progress or 0),
         stage=job.stage,
         message=job.message,

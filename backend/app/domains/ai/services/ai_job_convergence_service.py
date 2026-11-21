@@ -677,6 +677,22 @@ def _apply_task_interrupt_in_txn(
     _clear_ownership_fields(job)
 
 
+def _apply_job_interrupt(job, request, reason, now):
+    accepted_stop = _persisted_user_stop_mode(job) == "INTERRUPT"
+    job.status = AiJobStatus.INTERRUPTED
+    job.progress = 100
+    stop_message = "AI session interrupted unexpectedly"
+    if job.interrupt_kind == "MANUAL":
+        stop_message = "AI session interrupted by user"
+    elif accepted_stop and job.interrupt_reason:
+        stop_message = job.interrupt_reason
+    job.message = request.message or stop_message
+    job.error_message = request.error_message if accepted_stop or request.error_message is not None else reason
+    job.finished_at = now
+    job.interrupt_reason = (job.interrupt_reason or reason) if accepted_stop else reason
+    _clear_ownership_fields(job)
+
+
 def _apply_business_status_in_txn(
     db: Session,
     job: SddAiJob,
@@ -701,18 +717,7 @@ def _apply_business_status_in_txn(
         task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
         _apply_task_interrupt_in_txn(db, job, task, request, now)
     elif final_status == AiJobStatus.INTERRUPTED:
-        interrupted_by_user = _persisted_user_stop_mode(job) == "INTERRUPT"
-        job.status = AiJobStatus.INTERRUPTED
-        job.progress = 100
-        job.message = request.message or (
-            "AI session interrupted by user" if interrupted_by_user else "AI session interrupted unexpectedly"
-        )
-        job.error_message = (
-            request.error_message if interrupted_by_user or request.error_message is not None else reason
-        )
-        job.finished_at = now
-        job.interrupt_reason = (job.interrupt_reason or reason) if interrupted_by_user else reason
-        _clear_ownership_fields(job)
+        _apply_job_interrupt(job, request, reason, now)
     else:
         job.status = final_status
         job.progress = 100
@@ -1319,6 +1324,7 @@ def _serialize_converged_job(job: SddAiJob) -> dict[str, Any]:
         "session_turn_id": job.session_turn_id,
         "session_generation": job.session_generation,
         "session_revision": job.session_revision,
+        "interrupt_kind": job.interrupt_kind,
         "interrupt_reason": job.interrupt_reason,
         "interrupted_by_id": job.interrupted_by_id,
         "interrupted_at": job.interrupted_at.isoformat() if job.interrupted_at else None,

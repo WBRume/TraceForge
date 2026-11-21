@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink, useRouter, type RouteLocationRaw } from 'vue-router'
 import type { RequirementSummary } from '@/types/workspaceAssets'
-import { taskStatusKey } from '@/utils/taskStatus'
+import { taskDisplayStatus, taskStatusKey } from '@/utils/taskStatus'
 import { canSubmitRequirementAcceptance } from '@/utils/requirementStatus'
 
 const props = defineProps<{ requirement: RequirementSummary }>()
@@ -45,7 +45,10 @@ const items = computed(() => {
     seenTasks.add(task.task_id)
     result.push({
       key: task.task_id,
-      label: t('workspace_assets.requirements.pending.task', { status: t(taskStatusKey(task.task_status)), name: task.task_name }),
+      label: t('workspace_assets.requirements.pending.task', {
+        status: t(taskStatusKey(taskDisplayStatus(task.task_status, task.task_interrupt_kind))),
+        name: task.task_name,
+      }),
       to: { name: 'taskChat', params: { wsId: row.workspace_id, taskId: task.task_id } },
     })
   }

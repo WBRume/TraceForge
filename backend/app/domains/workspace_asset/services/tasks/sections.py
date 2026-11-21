@@ -24,6 +24,7 @@ from app.domains.workflow.models.task_change import (
     SddTaskConflictReport,
     SddTaskVerificationRun,
 )
+from app.domains.workspace_asset.models.evidence_attachment import TaskEvidenceAttachment
 from app.domains.workspace_asset.models.workspace_asset import (
     SddAiOutput,
     SddClarification,
@@ -767,8 +768,10 @@ def get_task_evidence(
 
 
 def get_task_evidence_detail(db: Session, workspace_id: str, task_id: str, evidence_id: str) -> EvidenceResponse | None:
-    from app.domains.workspace_asset.services.common.process_presenters import evidence_response
-    from app.domains.workspace_asset.services.task_process.evidence_attachments import list_for_evidence
+    from app.domains.workspace_asset.services.common.process_presenters import (
+        evidence_attachment_response,
+        evidence_response,
+    )
 
     evidence = (
         db.query(SddEvidence)
@@ -781,8 +784,14 @@ def get_task_evidence_detail(db: Session, workspace_id: str, task_id: str, evide
     )
     if not evidence:
         return None
+    attachments = (
+        db.query(TaskEvidenceAttachment)
+        .filter_by(workspace_id=workspace_id, task_id=task_id, evidence_id=evidence_id)
+        .order_by(TaskEvidenceAttachment.created_at, TaskEvidenceAttachment.id)
+        .all()
+    )
     result = evidence_response(evidence)
-    result.attachments = list_for_evidence(db, evidence)
+    result.attachments = [evidence_attachment_response(row) for row in attachments]
     return result
 
 

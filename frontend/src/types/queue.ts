@@ -1,5 +1,6 @@
 import type { JobCompletion } from '../../shared/contracts/generated/jobCompletion'
 import type { QueueJobActionResponse } from '../../shared/contracts/generated/queueJobActionResponse'
+import type { TaskInterruptKind } from '@/utils/taskStatus'
 export type { QueueJobActionResponse }
 
 export type QueueSource = 'provision' | 'api_mock' | 'bootstrap' | 'skill_analysis' | 'agent'
@@ -17,6 +18,7 @@ export type QueueJobItem = {
   job_id: string
   job_type: string
   status: QueueStatus
+  interrupt_kind?: TaskInterruptKind | null
   progress: number
   stage?: string | null
   message?: string | null

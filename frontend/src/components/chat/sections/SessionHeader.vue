@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   Play,
@@ -20,7 +20,7 @@ import CollaborationEntry from '@/components/collaboration/CollaborationEntry.vu
 import TaskStatusIcon from '@/components/chat/TaskStatusIcon.vue'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
-import { normalizeTaskStatus, taskStatusKey } from '@/utils/taskStatus'
+import { taskDisplayStatus, taskStatusKey } from '@/utils/taskStatus'
 
 /**
  * 会话头部动作域：引擎启停、初始化、技能/文档抽屉入口、补丁工作流、
@@ -45,6 +45,9 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const displayStatus = computed(() => taskDisplayStatus(props.vm.currentTask?.status, props.vm.currentTask?.interrupt_kind))
+const statusLabel = computed(() => t(taskStatusKey(displayStatus.value)))
+const showStatusLabel = computed(() => ['INTERRUPTED', 'ABNORMAL_INTERRUPTED'].includes(displayStatus.value))
 const workspaceStore = useWorkspaceStore()
 
 // 工具栏悬浮在会话区之上，其高度决定内容首屏的让位距离。
@@ -99,11 +102,10 @@ onBeforeUnmount(() => {
       </button>
       <h2 :title="props.vm.currentTask.name">{{ props.vm.currentTask.name }}</h2>
       <TaskPinButton :task-id="props.vm.currentTask.id" :task-name="props.vm.currentTask.name" :workspace-id="String(props.vm.route.params.wsId || '')" :workspace-name="workspaceStore.currentWorkspace?.name || ''" />
-      <span class="task-status-indicator" data-testid="session-task-status" role="status"
-        :title="t(taskStatusKey(props.vm.currentTask.status))"
-        :aria-label="t(taskStatusKey(props.vm.currentTask.status))"
-        :data-status="normalizeTaskStatus(props.vm.currentTask.status)">
-        <TaskStatusIcon :status="props.vm.currentTask.status" :size="20" />
+      <span class="task-status-indicator" :class="{ 'with-label': showStatusLabel }" data-testid="session-task-status" role="status"
+        :title="statusLabel" :aria-label="statusLabel" :data-status="displayStatus">
+        <TaskStatusIcon :status="displayStatus" :size="20" />
+        <span v-if="showStatusLabel" aria-hidden="true">{{ statusLabel }}</span>
       </span>
       <span
         v-if="props.vm.isLocalTask"
@@ -310,6 +312,17 @@ onBeforeUnmount(() => {
   justify-content: center;
   width: 30px;
   height: 30px;
+}
+.task-status-indicator.with-label {
+  width: auto;
+  white-space: nowrap;
+  gap: 4px;
+  color: #c2410c;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.task-status-indicator[data-status="ABNORMAL_INTERRUPTED"] {
+  color: #b91c1c;
 }
 .badge {
   font-size: 0.75rem;

@@ -242,8 +242,8 @@ watch(
           <!-- Hero Progress Card -->
           <section class="hero-card glass-panel">
             <div class="hero-top">
-              <span class="queue-status-hero" :class="`status-${String(job.status || '').toLowerCase()}`">
-                {{ queueStatusLabel(job.status, t) }}
+              <span class="queue-status-hero" :class="job.interrupt_kind === 'ABNORMAL' ? 'status-failed' : `status-${job.status.toLowerCase()}`">
+                {{ queueStatusLabel(job.status, t, job.interrupt_kind) }}
               </span>
               <span class="hero-stage">{{ queueStageLabel(job, t) }}</span>
             </div>

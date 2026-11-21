@@ -17,6 +17,7 @@ const task = {
   id: 'task-1',
   name: '定位任务列表标题被状态标签挤压的问题',
   status: 'INTERRUPTED',
+  interrupt_kind: 'MANUAL' as const,
   task_type: 'DIAGNOSIS',
   creator_name: 'xfc',
   created_at: '2026-08-27T14:08:58Z',
@@ -47,6 +48,14 @@ describe('ChatTaskListItem', () => {
     expect(wrapper.find('.task-state-row').text()).toContain('chat.status.INTERRUPTED')
     expect(wrapper.find('.task-meta').text()).toContain('xfc')
     expect(wrapper.find('.task-select').attributes('aria-current')).toBe('page')
+  })
+
+  it('labels abnormal stops in the task rail', async () => {
+    const wrapper = mountItem()
+    await wrapper.setProps({ task: { ...task, interrupt_kind: 'ABNORMAL' } })
+    expect(wrapper.find('.task-status').text()).toBe('chat.status.ABNORMAL_INTERRUPTED')
+    expect(wrapper.find('.task-status').attributes('data-status')).toBe('ABNORMAL_INTERRUPTED')
+    wrapper.unmount()
   })
 
   it('emits select and delete without selecting again from the delete action', async () => {

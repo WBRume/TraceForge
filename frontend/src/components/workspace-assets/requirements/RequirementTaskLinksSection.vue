@@ -4,7 +4,7 @@ import { RouterLink } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessageBox } from 'element-plus'
 import { ArrowsRightLeftIcon, Link2, MoreHorizontal, Plus } from '@/components/icons'
-import { taskStatusKey } from '@/utils/taskStatus'
+import { taskDisplayStatus, taskStatusKey } from '@/utils/taskStatus'
 import RequirementTaskLinkDialog from './RequirementTaskLinkDialog.vue'
 import RequirementTaskProgress from './RequirementTaskProgress.vue'
 import type {
@@ -162,7 +162,7 @@ async function handleTaskCommand(task: RequirementLinkedTask, command: unknown) 
             </template>
           </span>
           <span class="task-status" :data-status="task.task_status" :title="task.current_phase || undefined">
-            <span aria-hidden="true" />{{ t(taskStatusKey(task.task_status)) }}
+            <span aria-hidden="true" />{{ t(taskStatusKey(taskDisplayStatus(task.task_status, task.task_interrupt_kind))) }}
           </span>
         </div>
       </article>

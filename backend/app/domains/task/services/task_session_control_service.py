@@ -147,6 +147,7 @@ def _task_payload(task: SddTask, job_payload: dict[str, Any] | None = None) -> d
         "status": _as_text(task.status),
         "status_seq": str(task.status_seq or 0),
         "status_run_id": task.status_run_id,
+        "interrupt_kind": task.interrupt_kind,
         "session_generation": task.session_generation,
         "session_revision": task.session_revision,
         "session_id": task.session_id,
@@ -188,6 +189,7 @@ def _accept_interrupt_command(
     reason: str | None,
     *,
     workspace_id: str | None = None,
+    user_requested: bool = False,
 ) -> tuple[dict[str, Any], TerminationRequestResult | None]:
     task_query = db.query(SddTask).filter_by(id=task_id)
     if workspace_id is not None:
@@ -206,7 +208,7 @@ def _accept_interrupt_command(
     result = sm.dispatch(
         db,
         task,
-        sm.Trigger.INTERRUPT,
+        sm.Trigger.INTERRUPT if user_requested else sm.Trigger.SYSTEM_INTERRUPT,
         event_key=event_key,
         actor_id=actor_id,
         expected_seq=sequence,
@@ -215,7 +217,8 @@ def _accept_interrupt_command(
     if result.get("duplicate"):
         return {**sm.receipt(db, task_id, event_key), "duplicate": True}, None
 
-    reason_text = str(reason or "User temporarily interrupted the AI session").strip()
+    default_reason = "User temporarily interrupted the AI session" if user_requested else "AI session stopped by system"
+    reason_text = str(reason or default_reason).strip()
     stopped = None
     if job is not None:
         stopped = request_attempt_termination_in_txn(
@@ -226,8 +229,11 @@ def _accept_interrupt_command(
                 actor_user_id=actor_id,
                 reason=reason_text,
                 mode="INTERRUPT",
-                message=reason_text if job.status == AiJobStatus.PENDING else "AI session interrupted by user",
-                failure_code="USER_INTERRUPT",
+                message="AI session interrupted by user"
+                if user_requested and job.status != AiJobStatus.PENDING
+                else reason_text,
+                failure_code="USER_INTERRUPT" if user_requested else "SYSTEM_INTERRUPT",
+                interrupt_context_patch={"interrupt_kind": task.interrupt_kind},
             ),
         )
         task.session_id = stopped.session_id or task.session_id
@@ -267,7 +273,9 @@ async def interrupt_task(
     reason: str | None = None,
     command_id: str | None = None,
     expected_status_seq: int | None = None,
+    user_requested: bool = False,
 ) -> dict[str, Any]:
+    """Stop an execution, preserving the source of the interrupt for task and job."""
     db_bind = db.get_bind()
     if task is None:
         db.close()
@@ -281,7 +289,14 @@ async def interrupt_task(
     await _wait_for_remote_attempt_start(run_interrupt_txn, resolved_task_id)
     receipt, target = await run_interrupt_txn(
         lambda session: _accept_interrupt_command(
-            session, resolved_task_id, actor_user_id, command_id, expected_status_seq, reason, workspace_id=workspace_id
+            session,
+            resolved_task_id,
+            actor_user_id,
+            command_id,
+            expected_status_seq,
+            reason,
+            workspace_id=workspace_id,
+            user_requested=user_requested,
         )
     )
     if receipt.get("duplicate"):

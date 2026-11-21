@@ -114,6 +114,7 @@ class RequirementLinkedTaskResponse(BaseModel):
     task_id: str
     task_name: str
     task_status: str
+    task_interrupt_kind: Literal["MANUAL", "ABNORMAL"] | None = None
     current_phase: str | None = None
     creator_name: str | None = None
     creator_id: str | None = None
@@ -756,6 +757,7 @@ class TaskSummary(BaseModel):
     name: str
     description: str | None = None
     status: str
+    interrupt_kind: Literal["MANUAL", "ABNORMAL"] | None = None
     current_phase: str | None = None
     requirement_count: int = 0
     spec_count: int = 0

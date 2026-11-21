@@ -109,6 +109,7 @@ def task_summary_from_counts(db: Session, task: SddTask) -> TaskSummary:
         name=task.name,
         description=task.description,
         status=enum_value(task.status),
+        interrupt_kind=task.interrupt_kind,
         current_phase=task.current_phase,
         requirement_count=requirement_count,
         spec_count=spec_count,

@@ -18,6 +18,7 @@ from app.domains.workflow.models.task_change import (
     SddTaskConflictReport,
     SddTaskVerificationRun,
 )
+from app.domains.workspace_asset.models.evidence_attachment import TaskEvidenceAttachment
 from app.domains.workspace_asset.models.workspace_asset import (
     SddAiOutput,
     SddClarification,
@@ -32,6 +33,7 @@ from app.domains.workspace_asset.models.workspace_asset import (
 from app.domains.workspace_asset.schemas.workspace_asset import (
     ClarificationResponse,
     DecisionResponse,
+    EvidenceAttachmentResponse,
     EvidenceResponse,
     ExternalEvidenceRef,
     HumanDeltaFileDiff,
@@ -57,6 +59,15 @@ def external_evidence_ref(evidence: SddEvidence) -> ExternalEvidenceRef:
         source_ref=evidence.source_ref,
         source_path=evidence.source_path,
         source_metadata=evidence.source_metadata_json,
+    )
+
+
+def evidence_attachment_response(attachment: TaskEvidenceAttachment) -> EvidenceAttachmentResponse:
+    return EvidenceAttachmentResponse(
+        id=attachment.id,
+        filename=attachment.filename,
+        content_type=attachment.content_type,
+        size=attachment.size,
     )
 
 

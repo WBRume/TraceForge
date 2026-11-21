@@ -8,6 +8,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Enum,
@@ -32,7 +33,7 @@ class TaskStatus(str, PyEnum):
     RUNNING = "RUNNING"
     ROUND_COMPLETED = "ROUND_COMPLETED"
     AWAITING_INPUT = "AWAITING_INPUT"
-    INTERRUPTED = "INTERRUPTED"  # 用户临时中断，可恢复
+    INTERRUPTED = "INTERRUPTED"  # 可恢复中断
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
@@ -53,6 +54,7 @@ class PlanNodeStatus(str, PyEnum):
 class SddTask(Base):
     __tablename__ = "sdd_tasks"
     __table_args__ = (
+        CheckConstraint("interrupt_kind IN ('MANUAL', 'ABNORMAL')", name="ck_sdd_tasks_interrupt_kind"),
         Index("ix_sdd_tasks_workspace_created", "workspace_id", "created_at", "id"),
         {"extend_existing": True},
     )
@@ -90,6 +92,7 @@ class SddTask(Base):
     reading_ready = Column(Boolean, nullable=False, default=False, server_default="0")
     # 粘性 agent backend：任务首次运行后固定，工作区切换 backend 不影响已有会话
     agent_backend = Column(String(40), nullable=True)
+    interrupt_kind = Column(String(16), nullable=True)
     interrupt_reason = Column(Text, nullable=True)
     interrupted_by_id = Column(String(36), ForeignKey("users.id"), nullable=True)
     interrupted_at = Column(DateTime, nullable=True)

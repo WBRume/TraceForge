@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { taskStatusKey } from '@/utils/taskStatus'
+import { taskDisplayStatus, taskStatusKey } from '@/utils/taskStatus'
 import { computed, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LockKeyhole, RotateCw } from '@/components/icons'
@@ -173,7 +173,7 @@ watch(
             <dt>{{ t(`${baseKey}.fields.task`) }}</dt>
             <dd>
               <span class="status-dot" :class="workflow.task.status === 'COMPLETED' ? 'is-done' : 'is-coding'"></span>
-              {{ t(taskStatusKey(workflow.task.status)) }}
+              {{ t(taskStatusKey(taskDisplayStatus(workflow.task.status, workflow.task.interrupt_kind))) }}
             </dd>
           </div>
           <div>

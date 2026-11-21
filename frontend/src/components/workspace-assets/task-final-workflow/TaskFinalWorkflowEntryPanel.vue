@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { taskStatusKey } from '@/utils/taskStatus'
+import { taskDisplayStatus, taskStatusKey } from '@/utils/taskStatus'
 import { computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
@@ -128,7 +128,7 @@ defineExpose({ refresh, workflowStatus })
           <span class="strip-label">{{ t(`${baseKey}.fields.task`) }}</span>
           <span class="strip-value font-bold text-slate-800">
             <span class="status-dot" :class="workflow.task.status === 'COMPLETED' ? 'is-done' : 'is-coding'"></span>
-            {{ t(taskStatusKey(workflow.task.status)) }}
+            {{ t(taskStatusKey(taskDisplayStatus(workflow.task.status, workflow.task.interrupt_kind))) }}
           </span>
         </div>
         <div class="strip-item">

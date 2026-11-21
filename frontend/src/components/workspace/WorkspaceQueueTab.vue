@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { CircleHelp } from '@/components/icons'
 import { formatApiError } from '@/utils/error'
+import { taskStatusGroupKey } from '@/utils/taskStatus'
 import { useProvisioningStore } from '@/stores/provisioning'
 import BaseSelect from '@/components/BaseSelect.vue'
 import {
@@ -83,7 +84,8 @@ const queueStatusOptions = computed(() => [
   { value: 'RUNNING', label: t('workspaces.queue.status.running') },
   { value: 'SUCCESS', label: t('workspaces.queue.status.success') },
   { value: 'FAILED', label: t('workspaces.queue.status.failed') },
-  ...(['WAITING_HITL', 'INTERRUPTED', 'TERMINATING', 'ORPHANED', 'CANCELLED', 'REVERTED'] as const)
+  { value: 'INTERRUPTED', label: t(taskStatusGroupKey('INTERRUPTED')) },
+  ...(['WAITING_HITL', 'TERMINATING', 'ORPHANED', 'CANCELLED', 'REVERTED'] as const)
     .map(value => ({ value, label: queueStatusLabel(value, t) })),
 ])
 
@@ -362,8 +364,8 @@ watch(
               </div>
             </td>
             <td>
-              <span class="queue-status" :class="`status-${String(item.status || '').toLowerCase()}`">
-                {{ queueStatusLabel(item.status, t) }}
+              <span class="queue-status" :class="item.interrupt_kind === 'ABNORMAL' ? 'status-failed' : `status-${item.status.toLowerCase()}`">
+                {{ queueStatusLabel(item.status, t, item.interrupt_kind) }}
               </span>
             </td>
             <td>

@@ -39,4 +39,16 @@ describe('authoritative task status projection', () => {
     applyTaskStatusSnapshot(task, { task_id: 't', status: 'INTERRUPTED', status_seq: '11', status_run_id: null })
     expect(task.status_run_id).toBeNull()
   })
+
+  it('keeps the interruption kind tied to the status sequence', () => {
+    const task = { id: 't', status: 'INTERRUPTED', status_seq: '10', interrupt_kind: null as string | null }
+    mergeTaskSnapshot(task, { status: 'INTERRUPTED', status_seq: '10', interrupt_kind: 'MANUAL' })
+    expect(task.interrupt_kind).toBe('MANUAL')
+    mergeTaskSnapshot(task, { status: 'INTERRUPTED', status_seq: '9', interrupt_kind: 'ABNORMAL' })
+    expect(task.interrupt_kind).toBe('MANUAL')
+    mergeTaskSnapshot(task, { status: 'RUNNING', status_seq: '11' })
+    expect(task.interrupt_kind).toBeNull()
+    applyTaskStatusSnapshot(task, { task_id: 't', status: 'INTERRUPTED', status_seq: '12', interrupt_kind: 'ABNORMAL' })
+    expect(task.interrupt_kind).toBe('ABNORMAL')
+  })
 })

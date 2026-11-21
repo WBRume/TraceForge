@@ -1,3 +1,5 @@
+import type { TaskInterruptKind } from '@/utils/taskStatus'
+
 export interface GitCommitInfo {
   sha: string
   author_name: string
@@ -30,6 +32,7 @@ export interface TaskInspection {
     name: string
     description: string | null
     status: string
+    interrupt_kind?: TaskInterruptKind | null
     task_type: string
     creator_id: string
     creator_name: string | null

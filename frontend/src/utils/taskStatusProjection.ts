@@ -1,10 +1,11 @@
-import { TASK_STATUSES } from './taskStatus'
+import { TASK_STATUSES, type TaskInterruptKind } from './taskStatus'
 
 export type TaskStatusSnapshot = {
   task_id: string
   status: string
   status_seq: string | number
   status_run_id?: string | null
+  interrupt_kind?: TaskInterruptKind | null
   session_generation?: number
   session_revision?: number
 }
@@ -29,18 +30,27 @@ export function applyTaskStatusSnapshot(target: any, payload: unknown): boolean 
   if (![...TASK_STATUSES, 'PROVISIONING'].includes(snapshot.status as any)) return false
   const next = sequence(snapshot.status_seq)
   const current = sequence(target.status_seq)
-  if (next === null || (current !== null && next <= current)) return false
+  if (next === null || (current !== null && next < current)) return false
+  const interruptKind = snapshot.status === 'INTERRUPTED' ? snapshot.interrupt_kind ?? null : null
+  if (next === current) {
+    // A fresh snapshot can supply the kind missing from a legacy replay.
+    if (target.status === snapshot.status && target.interrupt_kind == null && interruptKind) {
+      target.interrupt_kind = interruptKind
+    }
+    return false
+  }
   target.status = snapshot.status
   target.status_seq = String(snapshot.status_seq)
   if (snapshot.status_run_id !== undefined) target.status_run_id = snapshot.status_run_id
+  target.interrupt_kind = interruptKind
   return true
 }
 
 /** REST/list refreshes use the same version fence as WebSocket delivery. */
 export function mergeTaskSnapshot(target: any, payload: Record<string, any>): void {
-  const { status, status_seq, status_run_id, session_generation, session_revision, ...other } = payload
+  const { status, status_seq, status_run_id, interrupt_kind, session_generation, session_revision, ...other } = payload
   Object.assign(target, other)
-  if (applyTaskStatusSnapshot(target, { task_id: target.id, status, status_seq, status_run_id })) {
+  if (applyTaskStatusSnapshot(target, { task_id: target.id, status, status_seq, status_run_id, interrupt_kind })) {
     if (Number.isSafeInteger(session_generation)) target.session_generation = session_generation
     if (Number.isSafeInteger(session_revision)) target.session_revision = session_revision
   }

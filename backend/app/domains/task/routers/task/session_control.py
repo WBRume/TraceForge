@@ -120,6 +120,7 @@ async def interrupt_task(
                 reason=body.reason,
                 command_id=body.command_id,
                 expected_status_seq=body.expected_status_seq,
+                user_requested=True,
             )
     except LockAcquireTimeout as exc:
         raise_task_lock_conflict(exc)
@@ -296,8 +297,7 @@ def get_task_session_state(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Initialization and exception-recovery snapshot: active receipt, receipts for
-    the caller's unconfirmed idempotency keys, active jobs and their messages."""
+    """Restore chat submissions, active jobs and their messages on load or reconnect."""
     verify_workspace_access(ws_id, current_user.id, db)
     if not task_task_records_queries.get_task(db, task_id, ws_id):
         raise HTTPException(404, "Task not found")

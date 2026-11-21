@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { taskStatusKey } from '@/utils/taskStatus'
+import { taskStatusGroupKey } from '@/utils/taskStatus'
 import type { RequirementSummary } from '@/types/workspaceAssets'
 
 const props = defineProps<{ requirement: RequirementSummary }>()
@@ -46,7 +46,7 @@ const statusCounts = computed(() => Object.entries(progress.value?.status_counts
 
         <dl v-if="statusCounts.length" class="progress-stats-list">
           <div v-for="[status, count] in statusCounts" :key="status" class="progress-stat" :data-status="status">
-            <dt><span class="status-dot" aria-hidden="true" />{{ t(taskStatusKey(status)) }}</dt>
+            <dt><span class="status-dot" aria-hidden="true" />{{ t(taskStatusGroupKey(status)) }}</dt>
             <dd>{{ count }}</dd>
           </div>
         </dl>

@@ -3,7 +3,7 @@ Schemas for unified AI async jobs.
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -27,6 +27,7 @@ class AiJobResponse(JobSnapshotFields):
     result_json: dict[str, Any] | None = None
     error_message: str | None = None
     session_id: str | None = None
+    interrupt_kind: Literal["MANUAL", "ABNORMAL"] | None = None
     interrupt_reason: str | None = None
     cancel_requested_at: datetime | None = None
     interrupted_by_id: str | None = None

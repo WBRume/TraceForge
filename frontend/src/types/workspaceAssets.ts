@@ -1,3 +1,5 @@
+import type { TaskInterruptKind } from '@/utils/taskStatus'
+
 export type ConnectionState = 'NOT_CONNECTED' | 'EMPTY' | 'AVAILABLE' | 'ERROR'
 export type CoverageStatus = 'not_available' | 'waiting_evidence' | 'waiting_human_confirmation' | 'verified'
 export type RequirementEditableStatus =
@@ -48,6 +50,7 @@ export type RequirementLinkedTask = {
   task_id: string
   task_name: string
   task_status: string
+  task_interrupt_kind?: TaskInterruptKind | null
   current_phase?: string | null
   creator_id?: string | null
   creator_name?: string | null
@@ -646,6 +649,7 @@ export type TaskSummary = {
   name: string
   description?: string | null
   status: string
+  interrupt_kind?: TaskInterruptKind | null
   current_phase?: string | null
   requirement_count: number
   spec_count: number

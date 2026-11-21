@@ -59,12 +59,13 @@ describe('collaboration status badges', () => {
   for (const locale of ['zh', 'en'] as const) {
     it.each(TASK_STATUSES)(`${locale}: localizes %s without exposing the enum`, status => {
       const messages = { zh, en }
+      const interruptKind = status === 'INTERRUPTED' ? 'MANUAL' : undefined
       const wrapper = mount(SessionHeader, {
-        props: { vm: createMockVm({ currentTask: { id: 't1', name: '状态验证', status } }) },
+        props: { vm: createMockVm({ currentTask: { id: 't1', name: '状态验证', status, interrupt_kind: interruptKind } }) },
         global: { plugins: [createPinia(), createI18n({ legacy: false, locale, messages })] },
       })
       const badge = wrapper.get('[data-testid="session-task-status"]')
-      expect(badge.text()).toBe('')
+      expect(badge.text()).toBe(interruptKind ? messages[locale].chat.status.INTERRUPTED : '')
       expect(badge.attributes('title')).toBe(messages[locale].chat.status[status])
       expect(badge.attributes('aria-label')).toBe(messages[locale].chat.status[status])
       expect(badge.attributes('data-status')).toBe(status)
@@ -123,9 +124,12 @@ describe('SessionHeader local resource badge', () => {
     })
     expect(wrapper.findAll('button').some(button => button.text().includes('钉在窗口中'))).toBe(true)
     expect(wrapper.findAll('button').some(button => button.text() === '取消任务')).toBe(false)
-    await wrapper.setProps({ vm: createMockVm({ currentTask: { id: 't1', name: '静态任务', status: 'INTERRUPTED', business_state: 'TASK_IN_PROGRESS' } }) })
+    await wrapper.setProps({ vm: createMockVm({ currentTask: { id: 't1', name: '静态任务', status: 'INTERRUPTED', interrupt_kind: 'MANUAL', business_state: 'TASK_IN_PROGRESS' } }) })
     expect(wrapper.get('[data-testid="session-task-status"]').attributes('aria-label')).toBe('已中断')
     expect(wrapper.findAll('button').some(button => button.text() === '取消任务')).toBe(false)
+    await wrapper.setProps({ vm: createMockVm({ currentTask: { id: 't1', name: '静态任务', status: 'INTERRUPTED', interrupt_kind: 'ABNORMAL' } }) })
+    expect(wrapper.get('[data-testid="session-task-status"]').attributes('aria-label')).toBe('异常中断')
+    expect(wrapper.get('[data-testid="session-task-status"]').text()).toBe('异常中断')
     wrapper.unmount()
   })
   it('offers requirement linking only for completed diagnosis tasks with permission', async () => {

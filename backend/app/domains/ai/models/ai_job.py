@@ -3,6 +3,7 @@ Unified AI async job model.
 """
 
 from enum import Enum as PyEnum
+from typing import Literal
 
 from sqlalchemy import (
     JSON,
@@ -189,6 +190,24 @@ class SddAiJob(Base):
     session_turn = relationship("TaskSessionTurn", foreign_keys=[session_turn_id])
     outputs = relationship("SddAiOutput", back_populates="ai_job", cascade="all, delete-orphan")
     evidence_items = relationship("SddEvidence", back_populates="ai_job")
+
+    @property
+    def interrupt_kind(self) -> Literal["MANUAL", "ABNORMAL"] | None:
+        if self.status != AiJobStatus.INTERRUPTED or self.channel != AiJobChannel.TASK_CHAT:
+            return None
+        context = self.context_json if isinstance(self.context_json, dict) else {}
+        if (
+            self.cancel_requested_at is not None
+            and self.interrupted_by_id
+            and context.get("termination_mode") == "INTERRUPT"
+        ):
+            kind = context.get("interrupt_kind")
+            if kind in ("MANUAL", "ABNORMAL"):
+                return kind
+            # Older initialization stops used the same mode and actor as manual stops.
+            if self.interrupt_reason != "Task initialized with a fresh session":
+                return "MANUAL"
+        return "ABNORMAL"
 
 
 # Register the transactional audit hook for every runtime importing this model.

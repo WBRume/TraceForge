@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { normalizeTaskStatus, taskStatusKey } from '@/utils/taskStatus'
+import { taskDisplayStatus, taskStatusKey, type TaskInterruptKind } from '@/utils/taskStatus'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import { formatTime } from '@/utils/chatFormatters'
 import { Star, StarSolid } from '@/components/icons'
@@ -13,6 +13,7 @@ interface ChatTaskListItemData {
   id: string
   name?: string | null
   status?: string | null
+  interrupt_kind?: TaskInterruptKind | null
   task_type?: string | null
   execution_location?: string | null
   creator_name?: string | null
@@ -35,6 +36,8 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const displayStatus = computed(() => taskDisplayStatus(props.task.status, props.task.interrupt_kind))
+const statusLabel = computed(() => t(taskStatusKey(displayStatus.value)))
 const isDiagnosis = computed(() => props.task.task_type === 'DIAGNOSIS')
 const hasMetadata = computed(() => Boolean(props.task.creator_name || props.task.created_at))
 
@@ -69,9 +72,9 @@ const toggleFollow = (event?: MouseEvent) => {
             >
               {{ isDiagnosis ? $t('task_types.diagnosis_short') : $t('task_types.development_short') }}
             </span>
-            <span class="task-status" :title="t(taskStatusKey(task.status))" :data-status="normalizeTaskStatus(task.status)">
-              <TaskStatusIcon :status="task.status" :size="16" />
-              {{ t(taskStatusKey(task.status)) }}
+            <span class="task-status" :title="statusLabel" :data-status="displayStatus">
+              <TaskStatusIcon :status="displayStatus" :size="16" />
+              {{ statusLabel }}
             </span>
           </span>
         </span>
@@ -212,6 +215,10 @@ const toggleFollow = (event?: MouseEvent) => {
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.task-status[data-status="ABNORMAL_INTERRUPTED"] {
+  color: #b91c1c;
 }
 
 .task-type-tag {

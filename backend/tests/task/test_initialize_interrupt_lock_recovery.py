@@ -147,6 +147,7 @@ def test_initialize_then_stop_native_question_twice_after_release_disconnect(tas
                 )
                 assert stopped.status_code == 200, stopped.text
                 assert stopped.json()["status"] == "INTERRUPTED"
+                assert stopped.json()["interrupt_kind"] == "MANUAL"
                 assert stopped.json()["job"]["status"] == "INTERRUPTED"
                 assert stopped.json()["job"]["session_generation"] == generation
                 assert not remote.running

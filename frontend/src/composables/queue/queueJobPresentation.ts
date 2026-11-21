@@ -1,4 +1,5 @@
 import type { QueueJobItem, QueueSource } from '@/types/queue'
+import { taskDisplayStatus, taskStatusKey, type TaskInterruptKind } from '@/utils/taskStatus'
 
 type TranslateFn = (key: string, values?: Record<string, unknown>) => string
 
@@ -79,12 +80,15 @@ export const queueSourceLabel = (source: string, t: TranslateFn): string => {
   return source || '-'
 }
 
-export const queueStatusLabel = (status: string, t: TranslateFn): string => {
+export const queueStatusLabel = (status: string, t: TranslateFn, interruptKind?: TaskInterruptKind | null): string => {
   const normalized = String(status || '').toLowerCase()
   if (normalized === 'pending') return t('workspaces.queue.status.pending')
   if (normalized === 'running') return t('workspaces.queue.status.running')
   if (normalized === 'success') return t('workspaces.queue.status.success')
   if (normalized === 'failed') return t('workspaces.queue.status.failed')
+  if (normalized === 'interrupted' && interruptKind) {
+    return t(taskStatusKey(taskDisplayStatus(status, interruptKind)))
+  }
   if (['waiting_hitl', 'interrupted', 'terminating', 'orphaned', 'cancelled', 'reverted'].includes(normalized)) {
     return t(`workspaces.queue.status.${normalized}`)
   }

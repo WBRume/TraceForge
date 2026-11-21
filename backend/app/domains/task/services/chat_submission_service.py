@@ -693,9 +693,9 @@ async def recover():
 def build_session_state(db, task_id, *, actor_id, client_message_ids=None):
     """One snapshot for initialization and exception recovery.
 
-    The active receipt plus any receipts addressed by the caller's unconfirmed
-    idempotency keys are returned with their jobs and formal messages, so a
-    client never depends on a "recent 50" window to resolve an old UNKNOWN.
+    Return the active receipt, the caller's failed preparations in this
+    conversation, and receipts addressed by the caller's unconfirmed keys.
+    Preparation failures have no formal chat message to restore from history.
     """
     task = db.get(SddTask, task_id)
     if not task:
@@ -705,17 +705,25 @@ def build_session_state(db, task_id, *, actor_id, client_message_ids=None):
     if active:
         receipts[active.id] = active
     keys = [str(value or "").strip() for value in (client_message_ids or []) if str(value or "").strip()]
-    if keys:
-        for row in (
-            db.query(TaskChatSubmission)
-            .filter(
-                TaskChatSubmission.task_id == task_id,
-                TaskChatSubmission.creator_id == actor_id,
+    addressed = (
+        db.query(TaskChatSubmission)
+        .filter(
+            TaskChatSubmission.task_id == task_id,
+            TaskChatSubmission.creator_id == actor_id,
+            or_(
                 TaskChatSubmission.client_message_id.in_(keys),
-            )
-            .all()
-        ):
-            receipts.setdefault(row.id, row)
+                and_(
+                    TaskChatSubmission.status == "FAILED",
+                    TaskChatSubmission.ai_job_id.is_(None),
+                    TaskChatSubmission.chat_message_id.is_(None),
+                    TaskChatSubmission.session_generation == task.session_generation,
+                ),
+            ),
+        )
+        .order_by(TaskChatSubmission.created_at, TaskChatSubmission.id)
+    )
+    for row in addressed:
+        receipts.setdefault(row.id, row)
     jobs = {}
     messages = {}
     for row in receipts.values():

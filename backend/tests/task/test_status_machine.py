@@ -31,6 +31,7 @@ LEGAL = {
     sm.Trigger.EXECUTION_INTERRUPTED: ({S.RUNNING, S.AWAITING_INPUT}, S.INTERRUPTED),
     sm.Trigger.EXECUTION_LOST: ({S.RUNNING, S.AWAITING_INPUT}, S.INTERRUPTED),
     sm.Trigger.INTERRUPT: ({S.RUNNING, S.AWAITING_INPUT}, S.INTERRUPTED),
+    sm.Trigger.SYSTEM_INTERRUPT: ({S.RUNNING, S.AWAITING_INPUT}, S.INTERRUPTED),
     sm.Trigger.REVERT: ({S.RUNNING, S.ROUND_COMPLETED, S.AWAITING_INPUT, S.INTERRUPTED}, S.ROUND_COMPLETED),
     sm.Trigger.COMPLETE: ({S.INITIALIZED, S.RUNNING, S.ROUND_COMPLETED, S.AWAITING_INPUT, S.INTERRUPTED}, S.COMPLETED),
     sm.Trigger.FAIL: ({S.INITIALIZED, S.RUNNING, S.ROUND_COMPLETED, S.AWAITING_INPUT, S.INTERRUPTED}, S.FAILED),
@@ -60,6 +61,8 @@ def event(db, task, trigger, key="event", **kwargs):
 @pytest.mark.parametrize("trigger", list(sm.Trigger))
 def test_complete_state_transition_matrix(db, state, trigger):
     task = seed(db, state)
+    if state == S.INTERRUPTED:
+        task.interrupt_kind = "MANUAL"
     allowed, target = LEGAL.get(trigger, (set(), None))
     if state not in allowed:
         if trigger in sm.EXECUTION_TRIGGERS:
@@ -84,6 +87,12 @@ def test_complete_state_transition_matrix(db, state, trigger):
     assert (audit.from_status, audit.to_status) == (state.value, expected.value)
     assert audit.status_seq == (11 if changed else None)
     assert audit.trigger == trigger.value
+    expected_kind = None
+    if expected == S.INTERRUPTED:
+        expected_kind = "MANUAL" if trigger == sm.Trigger.INTERRUPT else "ABNORMAL"
+    assert task.interrupt_kind == audit.result_json["interrupt_kind"] == expected_kind
+    if changed:
+        assert db.query(TaskEventOutbox).one().payload_json["interrupt_kind"] == expected_kind
 
 
 def test_creation_is_audited_and_broadcast_in_the_same_transaction(db):
@@ -239,7 +248,11 @@ def test_receipt_survives_session_restart_and_does_not_touch_a_new_run(db):
         assert restarted.query(TaskStatusEvent).count() == restarted.query(TaskEventOutbox).count() == 3
 
 
-def test_interrupt_command_atomically_persists_its_stop_intent(db):
+@pytest.mark.parametrize(
+    ("user_requested", "trigger", "kind"),
+    [(True, "INTERRUPT", "MANUAL"), (False, "SYSTEM_INTERRUPT", "ABNORMAL")],
+)
+def test_interrupt_command_atomically_persists_its_stop_intent(db, user_requested, trigger, kind):
     from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
     from app.domains.task.services.task_session_control_service import _accept_interrupt_command
 
@@ -255,13 +268,20 @@ def test_interrupt_command_atomically_persists_its_stop_intent(db):
     )
     db.add(job)
     db.commit()
-    _accept_interrupt_command(db, task.id, task.creator_id, "stop", 10, "user stop")
+    receipt, _ = _accept_interrupt_command(
+        db, task.id, task.creator_id, "stop", 10, "stop", user_requested=user_requested
+    )
+    assert receipt["interrupt_kind"] == kind
     with Session(db.get_bind()) as restarted:
         assert restarted.get(SddTask, task.id).status == S.INTERRUPTED
+        assert restarted.get(SddTask, task.id).interrupt_kind == kind
         stopped = restarted.get(SddAiJob, job.id)
         assert stopped.cancel_requested_at is not None
         assert stopped.context_json["termination_mode"] == "INTERRUPT"
-        assert restarted.query(TaskStatusEvent).one().trigger == "INTERRUPT"
+        assert stopped.context_json["interrupt_kind"] == kind
+        stopped.status = AiJobStatus.INTERRUPTED
+        assert stopped.interrupt_kind == kind
+        assert restarted.query(TaskStatusEvent).one().trigger == trigger
         assert restarted.query(TaskEventOutbox).one().payload_json["status"] == "INTERRUPTED"
 
 

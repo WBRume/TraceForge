@@ -41,6 +41,7 @@ class QueueJobItem(BaseModel):
     job_id: str
     job_type: str
     status: QueueStatusValue
+    interrupt_kind: Literal["MANUAL", "ABNORMAL"] | None = None
     progress: int
     stage: str | None = None
     message: str | None = None

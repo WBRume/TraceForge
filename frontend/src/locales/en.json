@@ -712,6 +712,8 @@
       "ROUND_COMPLETED": "Round completed",
       "AWAITING_INPUT": "Awaiting input",
       "INTERRUPTED": "Interrupted",
+      "ABNORMAL_INTERRUPTED": "Unexpected interruption",
+      "INTERRUPTED_GROUP": "Interruptions",
       "COMPLETED": "Completed",
       "FAILED": "Failed",
       "PROVISIONING": "Preparing workspace",

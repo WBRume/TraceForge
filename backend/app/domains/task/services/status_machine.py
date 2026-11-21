@@ -37,6 +37,7 @@ class Trigger(str, Enum):
     EXECUTION_INTERRUPTED = "EXECUTION_INTERRUPTED"
     EXECUTION_LOST = "EXECUTION_LOST"
     INTERRUPT = "INTERRUPT"
+    SYSTEM_INTERRUPT = "SYSTEM_INTERRUPT"
     REVERT = "REVERT"
     COMPLETE = "COMPLETE"
     FAIL = "FAIL"
@@ -59,6 +60,7 @@ TRANSITIONS: dict[Trigger, dict[S | None, S]] = {
     Trigger.EXECUTION_INTERRUPTED: {S.RUNNING: S.INTERRUPTED, S.AWAITING_INPUT: S.INTERRUPTED},
     Trigger.EXECUTION_LOST: {S.RUNNING: S.INTERRUPTED, S.AWAITING_INPUT: S.INTERRUPTED},
     Trigger.INTERRUPT: {S.RUNNING: S.INTERRUPTED, S.AWAITING_INPUT: S.INTERRUPTED},
+    Trigger.SYSTEM_INTERRUPT: {S.RUNNING: S.INTERRUPTED, S.AWAITING_INPUT: S.INTERRUPTED},
     Trigger.REVERT: {state: S.ROUND_COMPLETED for state in OPEN if state != S.INITIALIZED},
     Trigger.COMPLETE: dict.fromkeys(OPEN, S.COMPLETED),
     Trigger.FAIL: dict.fromkeys(OPEN, S.FAILED),
@@ -86,6 +88,7 @@ def snapshot(task: SddTask) -> dict:
         "status": task.status.value,
         "status_seq": str(task.status_seq or 0),
         "status_run_id": task.status_run_id,
+        "interrupt_kind": task.interrupt_kind,
         "session_generation": int(task.session_generation or 0),
         "session_revision": int(task.session_revision or 0),
     }
@@ -187,10 +190,21 @@ def _write(db, task, target, trigger, job_id):
         run_id = job_id
     elif trigger not in EXECUTION_TRIGGERS:
         run_id = None
+    interrupt_kind = None
+    if target == S.INTERRUPTED:
+        interrupt_kind = "MANUAL" if trigger == Trigger.INTERRUPT else "ABNORMAL"
     affected = (
         db.query(SddTask)
         .filter_by(id=task.id, status_seq=sequence)
-        .update({"status": target, "status_seq": sequence + 1, "status_run_id": run_id}, synchronize_session=False)
+        .update(
+            {
+                "status": target,
+                "status_seq": sequence + 1,
+                "status_run_id": run_id,
+                "interrupt_kind": interrupt_kind,
+            },
+            synchronize_session=False,
+        )
     )
     if affected != 1:
         raise StatusTransitionError("Concurrent task status transition; retry with the current sequence")
@@ -241,6 +255,7 @@ def initialize(db: Session, task: SddTask) -> None:
     task.status = TRANSITIONS[Trigger.CREATED][None]
     task.status_seq = 1
     task.status_run_id = None
+    task.interrupt_kind = None
     db.add(task)
     db.flush()
     result = {**snapshot(task), "outcome": "APPLIED"}

@@ -209,6 +209,7 @@ def requirement_linked_task(link: SddTaskRequirement) -> RequirementLinkedTaskRe
         task_id=link.task_id,
         task_name=task.name if task else "",
         task_status=enum_value(task.status) if task else "unknown",
+        task_interrupt_kind=task.interrupt_kind if task else None,
         current_phase=task.current_phase if task else None,
         creator_id=task.creator_id if task else None,
         creator_name=task.creator_name if task else None,
