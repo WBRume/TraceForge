@@ -337,12 +337,10 @@ const avatarInitial = (m: MemberData | null) => {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  box-shadow: 0 2px 6px rgba(14, 165, 233, 0.25);
 }
 
 .perm-drawer-avatar.is-owner {
   background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-  box-shadow: 0 2px 6px rgba(217, 119, 6, 0.3);
 }
 
 .perm-drawer-meta {

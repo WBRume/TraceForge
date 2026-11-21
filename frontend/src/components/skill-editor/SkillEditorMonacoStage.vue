@@ -153,7 +153,8 @@ onBeforeUnmount(() => {
             :key="`popover-reviewer-${vm.avatarPopover.line}-${reviewer.userId}`"
             type="button"
             class="reviewer-switch-btn"
-            :class="{ active: reviewer.userId === vm.avatarPopover.userId }"
+            :aria-label="reviewer.displayName"
+            :aria-pressed="reviewer.userId === vm.avatarPopover.userId"
             @click="vm.switchPopoverReviewer(reviewer)"
           >
             <UserAvatar

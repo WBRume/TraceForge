@@ -71,7 +71,7 @@ const avatarStyle = computed(() => {
 <template>
   <span
     class="user-avatar"
-    :class="[`size-${size}`, { 'shape-square': shape === 'square' }]"
+    :class="[`size-${size}`, { 'shape-square': shape === 'square', 'avatar-fallback': showFallbackInitial }]"
     :title="title || fallbackName"
     :style="avatarStyle"
   >
@@ -98,11 +98,14 @@ const avatarStyle = computed(() => {
   justify-content: center;
   flex-shrink: 0;
   border-radius: 999px;
-  background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
   color: #fff;
   font-weight: 700;
   user-select: none;
   overflow: hidden;
+}
+
+.avatar-fallback {
+  background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
 }
 
 .shape-square {

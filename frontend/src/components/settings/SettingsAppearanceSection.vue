@@ -298,12 +298,7 @@ function handleFileDrop(event: DragEvent) {
   width: 6.5rem;
   height: 6.5rem;
   border-radius: 50%;
-  background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
   font-size: 2.5rem;
-}
-
-.preview-avatar-wrap.is-square {
-  border-radius: 1.25rem;
 }
 
 .preview-avatar-wrap.is-square :deep(.user-avatar),

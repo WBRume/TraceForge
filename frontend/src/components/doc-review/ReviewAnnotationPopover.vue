@@ -115,7 +115,6 @@ function quote(thread: AssetThread) {
           :key="reviewer.id"
           type="button"
           class="reviewer-switch-btn"
-          :class="{ active: reviewer === activeReviewer }"
           :aria-label="reviewer.name"
           :aria-pressed="reviewer === activeReviewer"
           :title="reviewer.name"

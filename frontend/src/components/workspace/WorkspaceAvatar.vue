@@ -20,7 +20,7 @@ const palettes = [
 const fallback = computed(() => {
   const name = props.name.trim()
   const hash = name.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0)
-  return { text: name.slice(0, 2).toUpperCase() || 'WS', style: palettes[hash % palettes.length]! }
+  return { text: name.slice(0, 2).toUpperCase() || 'WS', ...palettes[hash % palettes.length]! }
 })
 </script>
 
@@ -31,7 +31,8 @@ const fallback = computed(() => {
     :display-name="name"
     :avatar-svg="avatarSvg"
     :avatar-url="avatarUrl"
-    :style="fallback.style"
+    :accent-color="fallback.background"
+    :style="{ color: fallback.color }"
   >
     {{ fallback.text }}
   </UserAvatar>
@@ -42,6 +43,5 @@ const fallback = computed(() => {
   width: 40px;
   height: 40px;
   font-size: 0.875rem;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
 }
 </style>

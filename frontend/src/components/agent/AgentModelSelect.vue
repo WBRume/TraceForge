@@ -250,7 +250,6 @@ const selectOption = (opt: ParsedModel) => {
                   :style="{
                     backgroundColor: item.avatarBg,
                     color: item.avatarColor,
-                    border: item.avatarBg === '#FFFFFF' ? '1px solid rgba(226, 232, 240, 0.9)' : undefined,
                   }"
                 >
                   {{ item.avatarText }}

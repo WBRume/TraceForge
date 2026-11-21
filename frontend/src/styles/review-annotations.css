@@ -24,9 +24,6 @@
 
 .line-avatar-stack-item {
   display: flex;
-  border: 1px solid #fff;
-  border-radius: 9999px;
-  background: #fff;
 }
 
 .line-avatar-more {
@@ -91,21 +88,28 @@
 }
 
 .reviewer-switch-btn {
-  background: none;
-  border: 2px solid transparent;
-  padding: 3px;
-  border-radius: 50%;
+  position: relative;
+  display: inline-flex;
+  background: transparent;
+  border: 0;
+  padding: 4px 4px 6px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: transform var(--transition-fast);
 }
 
 .reviewer-switch-btn:hover {
   transform: scale(1.1);
 }
 
-.reviewer-switch-btn.active {
-  border-color: #0ea5e9;
-  background: #eff6ff;
+.reviewer-switch-btn[aria-pressed='true']::after {
+  content: '';
+  position: absolute;
+  inset-inline: 7px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: #0284c7;
 }
 
 .review-popover-list {

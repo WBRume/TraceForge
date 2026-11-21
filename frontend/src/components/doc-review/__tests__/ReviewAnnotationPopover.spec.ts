@@ -42,6 +42,7 @@ it('opens on the earliest initiator and lets each author’s discussions be sele
     expect(wrapper.find('button[aria-label="周安"]').exists()).toBe(false)
     await rows[1]!.trigger('click')
     await wrapper.get('button[aria-label="陈雨"]').trigger('click')
+    expect(wrapper.get('[aria-pressed="true"]').attributes('aria-label')).toBe('陈雨')
     await wrapper.get('.review-popover-list button').trigger('click')
     expect(wrapper.emitted('open-thread')).toEqual([['follow-up'], ['newer']])
   } finally {

@@ -156,7 +156,7 @@ function openRow(row: typeof rows.value[number], event: MouseEvent) {
   background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
 }
 .line-avatar-row { inset-inline-start: 50%; transform: translateX(-50%); }
-.line-avatar-stack-item + .line-avatar-stack-item { margin-inline-start: -8px; }
+.line-avatar-stack-item + .line-avatar-stack-item { margin-inline-start: -6px; }
 .line-avatar-stack-btn:is(:hover, .is-selected) .line-avatar-more { background: #bae6fd; }
 .line-avatar-stack-btn:focus-visible { outline: 2px solid #0ea5e9; outline-offset: 2px; }
 </style>
