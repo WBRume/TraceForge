@@ -179,17 +179,22 @@ onScopeDispose(() => {
   height: 32px;
   padding-right: 4px;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: 8px;
   color: #526176;
-  transition: background-color 130ms ease, border-color 130ms ease, opacity 130ms ease;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, opacity 130ms ease;
 }
-.desktop-tab:hover { background: #e2eaf4; }
-.desktop-tab.is-active { color: #182e45; background: #fff; border-color: #d9e4ef; box-shadow: 0 1px 2px #1536510d; }
-.desktop-tab.is-active::after { content: ''; position: absolute; bottom: -1px; left: 10px; right: 10px; height: 2px; border-radius: 2px; background: var(--color-primary-500); pointer-events: none; }
+.desktop-tab:hover:not(.is-active) { background: #e2eaf4; color: #1e293b; }
+.desktop-tab.is-active {
+  color: #0f172a;
+  background: #ffffff;
+  border-color: #d4e0ec;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 1px rgba(15, 23, 42, 0.03);
+}
+.desktop-tab.is-active .tab-label { font-weight: 600; }
 .desktop-tab.is-grabbed { opacity: .42; }
 .is-dragging .tab-label, .is-window-grip .tab-label { cursor: grabbing; }
 .tab-label, .tab-close { border: 0; background: transparent; color: inherit; }
-.tab-label { display: flex; flex: 1; min-width: 0; align-items: center; gap: 7px; text-align: left; height: 100%; padding: 0 3px 0 9px; border-radius: 6px; font-size: 12px; font-weight: 550; touch-action: none; }
+.tab-label { display: flex; flex: 1; min-width: 0; align-items: center; gap: 7px; text-align: left; height: 100%; padding: 0 3px 0 9px; border-radius: 7px; font-size: 12px; font-weight: 550; touch-action: none; }
 .tab-label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab-icon { width: 15px; height: 15px; flex: none; }
 .is-active .tab-icon { color: var(--color-primary-600); }
@@ -200,9 +205,9 @@ onScopeDispose(() => {
 .drop-before::before { content: ''; position: absolute; z-index: 1; left: -3px; top: 2px; bottom: 2px; width: 3px; border-radius: 2px; background: var(--color-primary-500); pointer-events: none; }
 .has-drop-hint .tab-spacer { background: #dcebf9; }
 .tab-spacer { flex: 1; min-width: 26px; align-self: stretch; }
-.desktop-tab-menu { position: fixed; z-index: 2400; min-width: 184px; padding: 4px; border: 1px solid #dce6ef; border-radius: 8px; background: #fff; box-shadow: 0 8px 26px #182e4524; }
-.desktop-tab-menu button { display: flex; align-items: center; text-align: left; gap: 9px; width: 100%; padding: 7px 9px; border: 0; border-radius: 5px; color: #334155; background: transparent; font-size: 12.5px; }
-.desktop-tab-menu button:hover, .desktop-tab-menu button:focus-visible { background: #edf5fc; color: #0c4a6e; }
+.desktop-tab-menu { position: fixed; z-index: 2400; min-width: 184px; padding: 5px; border: 1px solid #dbe4ee; border-radius: 11px; background: #fff; box-shadow: 0 14px 30px -8px rgba(15, 23, 42, 0.16), 0 4px 10px -4px rgba(15, 23, 42, 0.06); }
+.desktop-tab-menu button { display: flex; align-items: center; text-align: left; gap: 9px; width: 100%; padding: 7px 9px; border: 0; border-radius: 7px; color: #334155; background: transparent; font-size: 12.5px; }
+.desktop-tab-menu button:hover, .desktop-tab-menu button:focus-visible { background: #f0f9ff; color: #0369a1; }
 .desktop-tab-menu svg { width: 15px; height: 15px; flex: none; }
 .return-icon { transform: scaleX(-1); }
 @media (prefers-reduced-motion: reduce) { .desktop-tab { transition: none; } }

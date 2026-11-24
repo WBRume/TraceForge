@@ -14,7 +14,6 @@ import DesktopCaptionButtons from './DesktopCaptionButtons.vue'
 import DesktopTabStrip from './DesktopTabStrip.vue'
 import DesktopWorkspacePicker from './DesktopWorkspacePicker.vue'
 import { describeDesktopTab } from './desktopTabLabels'
-import './desktopTitleBarMenus.css'
 
 const desktop = getSddDesktop()
 const windows = useDesktopTabs()!

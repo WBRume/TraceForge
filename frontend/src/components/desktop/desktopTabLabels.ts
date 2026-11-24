@@ -1,9 +1,20 @@
+import { markRaw, type Component } from 'vue'
 import type { Router } from 'vue-router'
 import {
   Box, Briefcase, ClipboardList, DocumentTextIcon, FolderKanban, GitFork, LayoutDashboard,
   LibraryBig, MessageSquare, Network, ServerCog, Settings, Users, Wrench,
 } from '@/components/icons'
 import type { WorkspaceTab } from '@/types/workspaceWindows'
+
+export type DesktopTabTone = 'sky' | 'emerald' | 'violet' | 'amber' | 'teal' | 'slate'
+
+export interface DesktopTabChoice {
+  key: string
+  path: string
+  label: string
+  icon: Component
+  tone: DesktopTabTone
+}
 
 const labels = {
   workspaces: ['workspaces.title', Briefcase],
@@ -30,14 +41,42 @@ const labels = {
   provisioning: ['desktop_tabs.tasks', MessageSquare],
 } as const
 
-const workspacePages = ['dashboard', 'taskChat', 'workspaceAssetsRequirements', 'apiMock', 'workspaceMemberWorkload', 'settings'] as const
+interface WorkspacePageSpec {
+  name: keyof typeof labels
+  tone: DesktopTabTone
+}
 
-export function workspaceTabChoices(workspaceId: string, router: Router, t: (key: string) => string) {
-  return [...workspacePages, 'workspaces' as const].map(name => {
-    const [key, icon] = labels[name]
-    const params = name === 'workspaces' ? {} : { wsId: workspaceId }
-    return { path: router.resolve({ name, params }).fullPath, label: t(key), icon }
+const workspacePages: readonly WorkspacePageSpec[] = [
+  { name: 'dashboard', tone: 'sky' },
+  { name: 'taskChat', tone: 'emerald' },
+  { name: 'workspaceAssetsRequirements', tone: 'violet' },
+  { name: 'apiMock', tone: 'amber' },
+  { name: 'workspaceMemberWorkload', tone: 'teal' },
+  { name: 'settings', tone: 'slate' },
+]
+
+export function workspaceTabChoices(workspaceId: string, router: Router, t: (key: string) => string): DesktopTabChoice[] {
+  return workspacePages.map(page => {
+    const [key, icon] = labels[page.name]
+    return {
+      key: page.name,
+      path: router.resolve({ name: page.name, params: { wsId: workspaceId } }).fullPath,
+      label: t(key),
+      icon: markRaw(icon),
+      tone: page.tone,
+    }
   })
+}
+
+export function workspaceOverviewChoice(router: Router, t: (key: string) => string): DesktopTabChoice {
+  const [key, icon] = labels.workspaces
+  return {
+    key: 'workspaces',
+    path: router.resolve({ name: 'workspaces', params: {} }).fullPath,
+    label: t(key),
+    icon: markRaw(icon),
+    tone: 'sky',
+  }
 }
 
 export function describeDesktopTab(tab: WorkspaceTab, router: Router, t: (key: string) => string) {
@@ -51,7 +90,7 @@ export function describeDesktopTab(tab: WorkspaceTab, router: Router, t: (key: s
       : route.meta.center === 'ops' ? ['management.ops_layout_title', ServerCog] as const
       : route.meta.center === 'knowledge' ? ['knowledge.layout_title', LibraryBig] as const
       : labels.workspaces)
-  return { ...tab, label: tab.title || t(item[0]), icon: item[1], workspaceId: typeof route.params.wsId === 'string' ? route.params.wsId : '' }
+  return { ...tab, label: tab.title || t(item[0]), icon: markRaw(item[1]), workspaceId: typeof route.params.wsId === 'string' ? route.params.wsId : '' }
 }
 
 export type DesktopTab = ReturnType<typeof describeDesktopTab>

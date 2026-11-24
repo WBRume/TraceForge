@@ -1,66 +1,474 @@
-.desktop-titlebar-menu.el-popper {
+.desktop-titlebar-popover {
+  position: fixed;
+  z-index: 2400;
+  display: flex;
+  flex-direction: column;
+  width: min(var(--desktop-menu-width, 280px), calc(100vw - 24px));
+  max-height: var(--desktop-menu-max-height, calc(100dvh - 64px));
   overflow: hidden;
-  border: 1px solid #d9e4ef;
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 12px 30px #19375524, 0 2px 6px #1937550c;
-  font: 13px 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
-}
-
-.desktop-titlebar-menu .el-dropdown-menu {
-  margin: 0;
-  padding: 5px;
-  background: transparent;
-}
-
-.desktop-titlebar-menu .el-dropdown-menu__item {
-  min-height: 34px;
-  padding: 0;
-  border-radius: 7px;
+  border: 1px solid #dbe4ee;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow:
+    0 20px 40px -12px rgba(15, 23, 42, 0.16),
+    0 4px 12px -4px rgba(15, 23, 42, 0.06);
   color: #334155;
-  font-size: 13px;
+  font: 13px 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+  transform-origin: top left;
+  user-select: none;
+}
+
+.desktop-titlebar-popover button:focus-visible {
+  outline: 2px solid #0ea5e9;
   outline-offset: -2px;
 }
 
-.desktop-titlebar-menu .el-dropdown-menu__item.is-disabled {
-  padding: 0 10px;
+.desktop-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid #f1f5f9;
+  flex: none;
+}
+
+.desktop-popover-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
   color: #64748b;
 }
 
-.desktop-titlebar-menu .el-dropdown-menu__item:not(.is-disabled):is(:hover, :focus) {
-  background: #eff5fb;
-  color: #173956;
+.desktop-popover-count {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
-.desktop-titlebar-menu .el-dropdown-menu__item--divided {
-  margin: 4px 5px;
-  border-color: #e6edf5;
+.desktop-popover-kbd {
+  padding: 2px 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  background: #f8fafc;
+  color: #64748b;
+  font: 600 10.5px/1.1 'Segoe UI', sans-serif;
 }
 
-.desktop-menu-row {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
+.desktop-popover-footer {
+  padding: 6px 10px;
+  border-top: 1px solid #f1f5f9;
+  background: #f8fafc;
+  flex: none;
+}
+
+.desktop-popover-footer-btn {
+  display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   width: 100%;
-  padding: 4px 9px;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: #334155;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease, color 140ms ease;
 }
 
-.desktop-menu-row-icon {
+.desktop-popover-footer-btn:hover,
+.desktop-popover-footer-btn:focus-visible {
+  background: #ffffff;
+  border-color: #dbe4ef;
+  color: #0369a1;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+
+.desktop-popover-footer-icon {
   display: grid;
   place-items: center;
   width: 28px;
   height: 28px;
-  border-radius: 6px;
-  color: #52708d;
+  border-radius: 8px;
+  background: #e0f2fe;
+  color: #0284c7;
+  flex: none;
 }
 
-.desktop-menu-row-icon svg, .desktop-menu-row-check { width: 16px; height: 16px; }
-.desktop-menu-row-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.desktop-page-menu { width: 218px; }
-.desktop-page-menu .desktop-menu-row-icon { height: 24px; }
-.desktop-workspace-menu { width: min(366px, calc(100vw - 24px)); }
-.desktop-workspace-menu .workspace-overview .desktop-menu-row-icon { background: #edf5fc; color: #0369a1; }
-.desktop-workspace-menu .workspace-overview .desktop-menu-row-label { font-weight: 600; }
-.desktop-workspace-menu .el-dropdown-menu__item.is-current { background: #eaf4ff; color: #0c416b; font-weight: 600; }
-.desktop-workspace-menu .desktop-menu-row-check { color: #0284c7; }
+.desktop-popover-footer-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.desktop-popover-footer-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.desktop-popover-footer-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.desktop-popover-footer-desc {
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-popover-footer-arrow {
+  width: 14px;
+  height: 14px;
+  color: #64748b;
+  flex: none;
+  transition: transform 140ms ease, color 140ms ease;
+}
+
+.desktop-popover-footer-btn:hover .desktop-popover-footer-arrow,
+.desktop-popover-footer-btn:focus-visible .desktop-popover-footer-arrow {
+  color: #0284c7;
+  transform: translateX(2px);
+}
+
+.desktop-popover-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 22px 14px;
+  text-align: center;
+  color: #64748b;
+  font-size: 12.5px;
+}
+
+.desktop-popover-state-icon {
+  width: 18px;
+  height: 18px;
+  color: #94a3b8;
+}
+
+.desktop-popover-retry {
+  padding: 4px 12px;
+  border: 1px solid #bae6fd;
+  border-radius: 7px;
+  background: #f0f9ff;
+  color: #0369a1;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.desktop-popover-retry:hover {
+  background: #e0f2fe;
+  border-color: #7dd3fc;
+}
+
+/* 工作区切换面板 */
+.workspace-popover-search {
+  padding: 8px 10px 4px;
+  flex: none;
+}
+
+.workspace-popover-search-box {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #f8fafc;
+  transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.workspace-popover-search-box:focus-within {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  box-shadow: none;
+}
+
+.workspace-popover-search-icon {
+  width: 14px;
+  height: 14px;
+  color: #94a3b8;
+  flex: none;
+}
+
+.workspace-popover-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  padding: 0;
+  font-size: 12.5px;
+  color: #0f172a;
+}
+
+.workspace-popover-search-input:focus,
+.workspace-popover-search-input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.workspace-popover-search-input::placeholder {
+  color: #94a3b8;
+}
+
+.workspace-popover-search-clear {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  flex: none;
+}
+
+.workspace-popover-search-clear:hover {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.workspace-popover-search-clear svg {
+  width: 12px;
+  height: 12px;
+}
+
+.workspace-popover-list {
+  flex: 1;
+  min-height: 0;
+  max-height: 318px;
+  overflow-y: auto;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workspace-popover-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #334155;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+
+.workspace-popover-item:hover:not(.is-current),
+.workspace-popover-item:focus-visible:not(.is-current) {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  color: #0f172a;
+}
+
+.workspace-popover-item.is-current {
+  background: #f0f9ff;
+  border-color: #bae6fd;
+  color: #0c4a6e;
+}
+
+.workspace-popover-item.is-current:hover,
+.workspace-popover-item.is-current:focus-visible {
+  background: #e0f2fe;
+  border-color: #7dd3fc;
+}
+
+.workspace-popover-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  font-size: 10.5px;
+  flex: none;
+}
+
+.workspace-popover-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.workspace-popover-name {
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-popover-item.is-current .workspace-popover-name {
+  font-weight: 650;
+}
+
+.workspace-popover-meta {
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-popover-item.is-current .workspace-popover-meta {
+  color: #0369a1;
+  opacity: 0.85;
+}
+
+.workspace-popover-trailing {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
+.workspace-popover-current-tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #0369a1;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.workspace-popover-check {
+  width: 15px;
+  height: 15px;
+  color: #0284c7;
+}
+
+.workspace-popover-go {
+  width: 14px;
+  height: 14px;
+  color: #94a3b8;
+  opacity: 0;
+  transform: translateX(-2px);
+  transition: opacity 130ms ease, transform 130ms ease, color 130ms ease;
+}
+
+.workspace-popover-item:hover .workspace-popover-go,
+.workspace-popover-item:focus-visible .workspace-popover-go {
+  opacity: 1;
+  transform: translateX(0);
+  color: #0284c7;
+}
+
+/* 新建标签页双排网格菜单 */
+.newtab-popover-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.newtab-popover-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #eef2f6;
+  border-radius: 10px;
+  background: #f8fafc;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.newtab-popover-item:hover,
+.newtab-popover-item:focus-visible {
+  background: #ffffff;
+  border-color: #7dd3fc;
+  box-shadow: 0 2px 8px rgba(14, 165, 233, 0.1);
+}
+
+.newtab-popover-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  flex: none;
+}
+
+.newtab-popover-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.newtab-popover-icon.tone-sky { background: #e0f2fe; color: #0284c7; }
+.newtab-popover-icon.tone-emerald { background: #dcfce7; color: #059669; }
+.newtab-popover-icon.tone-violet { background: #ede9fe; color: #7c3aed; }
+.newtab-popover-icon.tone-amber { background: #fef3c7; color: #d97706; }
+.newtab-popover-icon.tone-teal { background: #ccfbf1; color: #0d9488; }
+.newtab-popover-icon.tone-slate { background: #f1f5f9; color: #475569; }
+
+.newtab-popover-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1e293b;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.newtab-popover-item:hover .newtab-popover-label,
+.newtab-popover-item:focus-visible .newtab-popover-label {
+  color: #0369a1;
+}
+
+/* 弹出动画 */
+.desktop-menu-pop-enter-active,
+.desktop-menu-pop-leave-active {
+  transition: opacity 150ms cubic-bezier(0.16, 1, 0.3, 1), transform 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.desktop-menu-pop-enter-from,
+.desktop-menu-pop-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.98);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desktop-menu-pop-enter-active,
+  .desktop-menu-pop-leave-active,
+  .workspace-popover-item,
+  .newtab-popover-item,
+  .desktop-popover-footer-btn,
+  .workspace-popover-go,
+  .desktop-popover-footer-arrow {
+    transition: none;
+  }
+}
