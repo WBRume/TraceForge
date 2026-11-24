@@ -273,9 +273,10 @@ function onPanelKeydown(event: KeyboardEvent) {
 }
 
 .workspace-picker:hover {
-  background: #e2eaf4;
-  border-color: #d3e0ee;
+  background: #ffffff;
+  border-color: #e2e8f0;
   color: #0f172a;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 
 .workspace-picker.is-open {

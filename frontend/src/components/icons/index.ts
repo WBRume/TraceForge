@@ -129,6 +129,7 @@ import {
 import ChatBubblePlusIconComponent from './ChatBubblePlusIcon.vue'
 import GitBranchIconComponent from './GitBranchIcon.vue'
 import RotateCcwIconComponent from './RotateCcwIcon.vue'
+import RotateCwIconComponent from './RotateCwIcon.vue'
 import GitPullRequestIconComponent from './GitPullRequestIcon.vue'
 import GitCommitIconComponent from './GitCommitIcon.vue'
 import GithubIconComponent from './GithubIcon.vue'
@@ -296,8 +297,9 @@ export const GitPullRequestIcon = wrapIcon(GitPullRequestIconComponent, 'GitPull
 export const GitCommitIcon = wrapIcon(GitCommitIconComponent, 'GitCommitIcon')
 export const GithubIcon = wrapIcon(GithubIconComponent, 'GithubIcon')
 
-// Custom rotation icon in Heroicons 24/outline specifications
+// Custom rotation icons in Heroicons 24/outline specifications
 export const RotateCcwIcon = wrapIcon(RotateCcwIconComponent, 'RotateCcwIcon')
+export const RotateCwIcon = wrapIcon(RotateCwIconComponent, 'RotateCwIcon')
 
 // Converged semantic mappings from previous Lucide variants
 export const Activity = SignalIcon
@@ -443,7 +445,7 @@ export const RefreshCw = ArrowPathIcon
 export const Repeat = ArrowPathIcon
 export const Rocket = RocketLaunchIcon
 export const RotateCcw = RotateCcwIcon
-export const RotateCw = ArrowPathIcon
+export const RotateCw = RotateCwIcon
 export const Save = ArrowDownOnSquareIcon
 export const Scale = ScaleIcon
 export const Scissors = ScissorsIcon

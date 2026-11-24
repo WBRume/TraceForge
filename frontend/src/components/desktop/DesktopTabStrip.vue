@@ -183,12 +183,12 @@ onScopeDispose(() => {
   color: #526176;
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, opacity 130ms ease;
 }
-.desktop-tab:hover:not(.is-active) { background: #e2eaf4; color: #1e293b; }
+.desktop-tab:hover:not(.is-active) { background: rgba(15, 23, 42, 0.045); color: #1e293b; }
 .desktop-tab.is-active {
   color: #0f172a;
   background: #ffffff;
-  border-color: #d4e0ec;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 1px rgba(15, 23, 42, 0.03);
+  border-color: #e2e8f0;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 1px rgba(15, 23, 42, 0.02);
 }
 .desktop-tab.is-active .tab-label { font-weight: 600; }
 .desktop-tab.is-grabbed { opacity: .42; }
@@ -200,7 +200,7 @@ onScopeDispose(() => {
 .is-active .tab-icon { color: var(--color-primary-600); }
 .tab-close { position: relative; display: grid; place-items: center; flex: none; border-radius: 5px; }
 .tab-close { width: 21px; height: 22px; padding: 0; color: #64748b; opacity: .62; }
-.tab-close:hover, .tab-close:focus-visible { opacity: 1; background: #e3ebf4; color: #1e293b; }
+.tab-close:hover, .tab-close:focus-visible { opacity: 1; background: #f1f5f9; color: #0f172a; }
 .tab-close svg { width: 13px; height: 13px; }
 .drop-before::before { content: ''; position: absolute; z-index: 1; left: -3px; top: 2px; bottom: 2px; width: 3px; border-radius: 2px; background: var(--color-primary-500); pointer-events: none; }
 .has-drop-hint .tab-spacer { background: #dcebf9; }

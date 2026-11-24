@@ -168,9 +168,10 @@ defineExpose({
 }
 
 .new-tab:hover:not(:disabled) {
-  background: #e2eaf4;
-  border-color: #d3e0ee;
-  color: #0369a1;
+  background: #ffffff;
+  border-color: #e2e8f0;
+  color: #0284c7;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 
 .new-tab.is-open:not(:disabled) {

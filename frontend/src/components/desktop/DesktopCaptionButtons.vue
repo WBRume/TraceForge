@@ -47,7 +47,7 @@ onScopeDispose(() => window.removeEventListener('resize', refresh))
 <style scoped>
 .caption { align-self: stretch; display: flex; flex: none; }
 .caption button { width: 46px; border: 0; display: grid; place-items: center; background: transparent; color: #334155; }
-.caption button:hover { background: #dce6f0; }
+.caption button:hover { background: rgba(15, 23, 42, 0.06); }
 .caption button.caption-close:hover { background: #c42b1c; color: white; }
 .minimize, .maximize, .restore, .close { position: relative; display: block; }
 .minimize { width: 10px; border-bottom: 1px solid currentColor; }

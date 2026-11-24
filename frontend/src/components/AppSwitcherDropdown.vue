@@ -247,7 +247,7 @@ onUnmounted(() => {
 }
 
 .is-compact .app-switcher-trigger:hover,
-.is-compact .app-switcher-trigger.is-active { background: #dfe8f3; }
+.is-compact .app-switcher-trigger.is-active { background: #ffffff; color: #0284c7; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05); }
 .is-compact .app-switcher-menu { top: calc(100% + 9px); max-width: calc(100vw - 24px); }
 
 .dots-grid-icon {

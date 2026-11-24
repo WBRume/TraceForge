@@ -115,7 +115,8 @@ onScopeDispose(() => {
 </template>
 
 <style scoped>
-.desktop-titlebar { position: relative; z-index: 4; display: flex; align-items: center; height: var(--desktop-titlebar-height); padding-left: 8px; gap: 6px; border-bottom: 1px solid #d8e3ef; background: #edf2f8; color: #334155; font: 12px 'Segoe UI', 'Microsoft YaHei UI', sans-serif; user-select: none; }
+.desktop-titlebar { position: relative; z-index: 4; display: flex; align-items: center; height: var(--desktop-titlebar-height); padding-left: 8px; gap: 6px; background: var(--color-bg-base, #f8fafc); color: #334155; font: 12px 'Segoe UI', 'Microsoft YaHei UI', sans-serif; user-select: none; }
+.desktop-titlebar::after { content: ''; position: absolute; left: 0; right: 0; top: 100%; height: 1px; background: rgba(15, 23, 42, 0.06); pointer-events: none; }
 .desktop-brand { align-self: stretch; display: flex; align-items: center; gap: 8px; padding: 0 6px; flex: none; font-weight: 650; letter-spacing: -.01em; }
 .desktop-brand > img, .desktop-brand > span { pointer-events: none; }
 .desktop-brand img { width: 21px; height: 21px; }
@@ -123,13 +124,13 @@ onScopeDispose(() => {
 .desktop-home:hover { color: #0369a1; }
 .desktop-home:focus-visible { outline: 2px solid #0284c7; outline-offset: 2px; }
 .desktop-drag-region { -webkit-app-region: drag; app-region: drag; }
-.workspace-switcher { flex: none; border-right: 1px solid #d7e2ee; padding-right: 7px; }
+.workspace-switcher { flex: none; border-right: 1px solid #e2e8f0; padding-right: 7px; }
 .empty-titlebar { flex: 1; align-self: stretch; }
 .caption-reserve { flex: 0 0 max(0px, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 138px)))); }
-.titlebar-search { flex: none; display: flex; height: 29px; align-items: center; gap: 7px; border: 1px solid #d7e2ee; border-radius: 6px; padding: 0 7px; font-size: 12px; color: #425168; background: #f9fbfd; transition: background-color 140ms, border-color 140ms; }
-.titlebar-search:hover { background: #fff; border-color: #b6cce1; }
+.titlebar-search { flex: none; display: flex; height: 29px; align-items: center; gap: 7px; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0 8px; font-size: 12px; color: #475569; background: #ffffff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03); transition: background-color 140ms, border-color 140ms, color 140ms; }
+.titlebar-search:hover { background: #ffffff; border-color: #bae6fd; color: #0f172a; }
 .titlebar-search svg { width: 15px; height: 15px; }
-.titlebar-search kbd { margin-left: 6px; padding: 2px 4px; border: 1px solid #dce5ef; border-radius: 4px; color: #516377; font: 10px 'Segoe UI', sans-serif; }
+.titlebar-search kbd { margin-left: 6px; padding: 2px 4px; border: 1px solid #e2e8f0; border-radius: 4px; background: #f8fafc; color: #64748b; font: 10px 'Segoe UI', sans-serif; }
 .desktop-titlebar :deep(button:focus-visible) { outline: 2px solid #0284c7; outline-offset: -2px; }
 @media (max-width: 850px) { .titlebar-search kbd { display: none; } }
 @media (prefers-reduced-motion: reduce) { .titlebar-search { transition: none; } }
