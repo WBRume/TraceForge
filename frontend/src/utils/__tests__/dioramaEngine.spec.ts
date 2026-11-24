@@ -321,4 +321,28 @@ describe('ArchitecturalDioramaEngine', () => {
     expect(rafSpy).toHaveBeenCalledTimes(1)
     engine.destroy()
   })
+
+  it('keeps the painted buffer until a resize can redraw in the same frame', () => {
+    const payload = makePayload([makeRepo('r1', 'api', 3), makeRepo('r2', 'web', 2)])
+    const { engine, canvas, viewport, ctx, rafSpy, flushFrame } = mountEngine(payload)
+    flushFrame()
+    expect([canvas.width, canvas.height]).toEqual([960, 540])
+
+    const box = viewport.getBoundingClientRect()
+    vi.mocked(viewport.getBoundingClientRect).mockReturnValue({ ...box, width: 860, height: 500 })
+    rafSpy.mockClear()
+    const paint = vi.mocked(ctx.fillRect).mockClear()
+    engine.resize()
+    vi.mocked(viewport.getBoundingClientRect).mockReturnValue({ ...box, width: 840, height: 490 })
+    engine.resize()
+
+    expect([canvas.width, canvas.height]).toEqual([960, 540])
+    expect(paint).not.toHaveBeenCalled()
+    expect(rafSpy).toHaveBeenCalledTimes(1)
+
+    flushFrame(32)
+    expect([canvas.width, canvas.height]).toEqual([840, 490])
+    expect(paint).toHaveBeenCalledWith(0, 0, 840, 490)
+    engine.destroy()
+  })
 })

@@ -144,6 +144,7 @@ export class ArchitecturalDioramaEngine {
   private arcPhase = 0
   private rafId = 0
   private lastTs = 0
+  private viewportDirty = false
   private destroyed = false
 
   private pointerDown = false
@@ -180,11 +181,10 @@ export class ArchitecturalDioramaEngine {
     this.boundPointerLeave = () => this.onPointerLeave()
     this.boundDoubleClick = e => this.onDoubleClick(e)
 
+    this.measureViewport()
     this.bindEvents()
     this.setData(data)
-    this.resize()
     this.resetView(true)
-    this.scheduleRender()
   }
 
   private bindEvents(): void {
@@ -254,22 +254,19 @@ export class ArchitecturalDioramaEngine {
   }
 
   public resize(): void {
-    if (this.destroyed) return
+    this.viewportDirty = true
+    this.scheduleRender()
+  }
+
+  private measureViewport(): void {
     const rect = this.viewportEl.getBoundingClientRect()
-    const width = Math.max(320, Math.floor(rect.width))
-    const height = Math.max(260, Math.floor(rect.height))
-    const dpr = Math.min(window.devicePixelRatio || 1, 2)
-    if (this.canvas.width === Math.round(width * dpr) && this.canvas.height === Math.round(height * dpr)
-      && this.width === width && this.height === height && this.dpr === dpr) return
+    const width = Math.round(rect.width)
+    const height = Math.round(rect.height)
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2)
+    if (width < 1 || height < 1 || (width === this.width && height === this.height)) return
     this.width = width
     this.height = height
-    this.dpr = dpr
-    this.canvas.width = Math.round(this.width * this.dpr)
-    this.canvas.height = Math.round(this.height * this.dpr)
-    this.canvas.style.width = `${this.width}px`
-    this.canvas.style.height = `${this.height}px`
     this.fitCameraToStage(false)
-    this.scheduleRender()
   }
 
   private fitCameraToStage(immediate: boolean): void {
@@ -747,6 +744,10 @@ export class ArchitecturalDioramaEngine {
   private frame(now: number): void {
     this.rafId = 0
     if (this.destroyed) return
+    if (this.viewportDirty) {
+      this.viewportDirty = false
+      this.measureViewport()
+    }
     const dt = this.lastTs ? now - this.lastTs : 16
     this.lastTs = now
     const ease = 1 - Math.exp(-dt * 0.014)
@@ -808,12 +809,18 @@ export class ArchitecturalDioramaEngine {
   }
 
   private draw(now: number, impact: ImpactInfo): void {
+    // Resizing clears the canvas. Replace that buffer in the same frame as the redraw.
+    const pixelWidth = Math.max(1, Math.round(this.width * this.dpr))
+    const pixelHeight = Math.max(1, Math.round(this.height * this.dpr))
+    if (this.canvas.width !== pixelWidth) this.canvas.width = pixelWidth
+    if (this.canvas.height !== pixelHeight) this.canvas.height = pixelHeight
+
     const ctx = this.ctx
     const projector = (wx: number, wy: number, wz: number) => this.project(wx, wy, wz)
     this.projectedHitList = []
 
     ctx.save()
-    ctx.scale(this.dpr, this.dpr)
+    ctx.scale(pixelWidth / this.width, pixelHeight / this.height)
 
     const bgGrad = ctx.createRadialGradient(
       this.width * 0.48,
