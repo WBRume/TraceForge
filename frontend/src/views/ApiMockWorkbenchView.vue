@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { formatApiError } from '@/utils/error'
 import { useAuthStore } from '@/stores/auth'
+import { useDesktopTabs } from '@/desktop/workspaceTabs'
 import ApiMockEndpointCatalog from '@/components/api-mock/ApiMockEndpointCatalog.vue'
 import ApiMockEndpointWorkspace from '@/components/api-mock/ApiMockEndpointWorkspace.vue'
 import ApiMockGlobalEntityDrawer from '@/components/api-mock/ApiMockGlobalEntityDrawer.vue'
@@ -21,9 +22,14 @@ import { useProjectEditing } from '@/components/api-mock/workbench/useProjectEdi
 import type { ProjectContext } from '@/components/api-mock/workbench/useProjectContext'
 
 const route = useRoute()
+const router = useRouter()
+const desktopTabs = useDesktopTabs()
 const { t } = useI18n()
 const authStore = useAuthStore()
 const wsId = computed(() => String(route.params.wsId || ''))
+const selectionId = (value: unknown) => typeof value === 'string' && /^[\w-]{1,128}$/.test(value) ? value : ''
+const routeTaskId = computed(() => desktopTabs && route.name === 'apiMock' ? selectionId(route.query.task) : '')
+const routeEndpointId = computed(() => desktopTabs && route.name === 'apiMock' ? selectionId(route.query.endpoint) : '')
 const selectedTaskId = ref('')
 const notifications = useWorkbenchNotifications()
 const workspace = useWorkspaceContext(wsId)
@@ -63,15 +69,24 @@ const showShortcuts = ref(false)
 const showSideTaskPicker = ref(false)
 
 const handleTaskPicked = (taskId: string) => {
-  selectedTaskId.value = taskId
   showSideTaskPicker.value = false
+  if (!desktopTabs) {
+    selectedTaskId.value = taskId
+  } else if (taskId !== routeTaskId.value) {
+    void router.replace({ query: { ...route.query, task: taskId || undefined, endpoint: undefined } })
+  }
 }
 
-const handleSelectEndpoint = async (endpointId: string) => {
+const loadEndpoint = async (endpointId: string) => {
   selectedEndpointId.value = endpointId
   selectedMockCaseId.value = ''
   await loadMockCases()
   sendCollabEvent('draft', { endpoint_id: endpointId })
+}
+
+const handleSelectEndpoint = (endpointId: string) => {
+  if (!desktopTabs) return loadEndpoint(endpointId)
+  if (endpointId !== routeEndpointId.value) return router.replace({ query: { ...route.query, endpoint: endpointId || undefined } })
 }
 
 const openGlobalEntityDrawer = () => {
@@ -115,6 +130,15 @@ const onShortcuts = (event: KeyboardEvent) => {
     }
   }
 }
+if (desktopTabs) {
+  watch([routeTaskId, tasks], ([id, items]) => {
+    selectedTaskId.value = items.some(task => task.id === id) ? id : ''
+  }, { immediate: true })
+  watch(routeEndpointId, id => {
+    if (!selectedTaskId.value || routeTaskId.value !== selectedTaskId.value || id === selectedEndpointId.value) return
+    if (!id || endpoints.value.some(endpoint => endpoint.id === id)) void loadEndpoint(id)
+  })
+}
 watch(selectedTaskId, async (next, prev) => {
   if (next === prev) return
   showSideTaskPicker.value = false
@@ -123,7 +147,7 @@ watch(selectedTaskId, async (next, prev) => {
   resetTaskContext()
   if (!next) return
   const version = contextVersion.value
-  await refreshProjectContext()
+  await refreshProjectContext({ explicitEndpointId: routeEndpointId.value })
   if (version === contextVersion.value) connectCollab()
 })
 async function loadWorkspace() {
@@ -303,11 +327,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onShortcuts))
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
   gap: 1rem;
-  min-height: calc(100vh - 240px);
+  min-height: calc(var(--app-viewport-height, 100vh) - 240px);
 }
 
 .empty-workbench-grid {
-  min-height: calc(100vh - 160px);
+  min-height: calc(var(--app-viewport-height, 100vh) - 160px);
 }
 
 .workbench-sidebar {

@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod task_floats;
+#[cfg(windows)]
+mod workspace_windows;
 
 use serde_json::{json, Value};
 use std::{
@@ -66,13 +68,32 @@ async fn desktop_invoke(
     channel: String,
     payload: Value,
 ) -> Reply {
-    if window.label() != "main" || !channel.starts_with("sdd:") {
+    let label = window.label();
+    #[cfg(windows)]
+    let allowed_window = workspace_windows::is_workspace(label);
+    #[cfg(not(windows))]
+    let allowed_window = label == "main";
+    if !allowed_window || !channel.starts_with("sdd:") {
         return Err("Desktop command is not allowed".into());
+    }
+    if label != "main" && channel.starts_with("sdd:task-float:") {
+        return Err("The task float command requires the main window".into());
     }
     match channel.as_str() {
         "sdd:task-float:prepare" => return task_floats::prepare(window.app_handle(), &payload),
         "sdd:task-float:place" => return task_floats::place(&window, &payload),
         "sdd:task-float:close" => return task_floats::close(window.app_handle(), &payload),
+        #[cfg(windows)]
+        "sdd:attention:set" => {
+            set_attention(&window, &payload)?;
+            return Ok(json!({ "ok": true }));
+        }
+        #[cfg(windows)]
+        "sdd:workspace-window:control" => return workspace_windows::control(&window, &payload),
+        #[cfg(windows)]
+        "sdd:workspace-window:move" => return workspace_windows::move_window(&window, &payload),
+        #[cfg(windows)]
+        "sdd:workspace-window:ready" => return workspace_windows::ready(&window),
         _ => {}
     }
     let id = bridge.sequence.fetch_add(1, Ordering::Relaxed).to_string();
@@ -82,7 +103,9 @@ async fn desktop_invoke(
         .lock()
         .map_err(|e| e.to_string())?
         .insert(id.clone(), reply);
-    if let Err(error) = bridge.write(&json!({ "id": id, "channel": channel, "payload": payload })) {
+    if let Err(error) =
+        bridge.write(&json!({ "id": id, "window": label, "channel": channel, "payload": payload }))
+    {
         bridge
             .pending
             .lock()
@@ -106,6 +129,8 @@ async fn desktop_invoke(
 
 fn native_request(app: &tauri::AppHandle, method: &str, payload: &Value) -> Reply {
     match method {
+        #[cfg(windows)]
+        "workspace-window" => workspace_windows::request(app, payload),
         "attention" => {
             let window = app
                 .get_webview_window("main")
@@ -199,10 +224,15 @@ fn start_bridge(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>
         .sidecar("traceforge-node")?
         .args([
             "--disable-warning=ExperimentalWarning".to_owned(),
-            host_script.to_string_lossy().to_string(),
-            state_root.to_string_lossy().to_string(),
-            downloads.to_string_lossy().to_string(),
-            resources.to_string_lossy().to_string(),
+            // Node resolves its entry point itself and needs an ordinary Win32 path.
+            dunce::simplified(&host_script)
+                .to_string_lossy()
+                .into_owned(),
+            dunce::simplified(&state_root)
+                .to_string_lossy()
+                .into_owned(),
+            dunce::simplified(&downloads).to_string_lossy().into_owned(),
+            dunce::simplified(&resources).to_string_lossy().into_owned(),
         ])
         .spawn()?;
     *app.state::<Bridge>().child.lock().unwrap() = Some(child);
@@ -233,7 +263,19 @@ fn start_bridge(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>
                             }
                         }
                         Some("event") => {
-                            let _ = app.emit_to("main", "desktop-event", json!({ "channel": message["channel"], "payload": message["payload"] }));
+                            let event = json!({ "channel": message["channel"], "payload": message["payload"] });
+                            if message["channel"] == "sdd:collaboration:changed" {
+                                for label in app
+                                    .webview_windows()
+                                    .keys()
+                                    .filter(|label| !label.starts_with("task-float-"))
+                                {
+                                    let _ = app.emit_to(label.as_str(), "desktop-event", &event);
+                                }
+                            } else {
+                                let target = message["window"].as_str().unwrap_or("main");
+                                let _ = app.emit_to(target, "desktop-event", event);
+                            }
                         }
                         Some("native") => {
                             let app = app.clone();
@@ -339,15 +381,26 @@ fn main() {
         .plugin(tauri_plugin_http::init())
         .manage(Bridge::default())
         .manage(task_floats::DetachedFloats::default())
-        .invoke_handler(tauri::generate_handler![desktop_platform, desktop_invoke, task_floats::task_float_finish, task_floats::task_float_drag])
+        .invoke_handler(tauri::generate_handler![
+            desktop_platform,
+            desktop_invoke,
+            task_floats::task_float_finish,
+            task_floats::task_float_drag
+        ])
         .on_window_event(|window, event| {
+            #[cfg(windows)]
+            workspace_windows::on_event(window, event);
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 task_floats::on_destroyed(window);
             }
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
                 task_floats::on_close_requested(window);
             }
-            if window.label() == "main" && matches!(event, tauri::WindowEvent::Focused(true)) {
+            let attention_window = window.label() == "main";
+            #[cfg(windows)]
+            let attention_window =
+                attention_window || workspace_windows::is_secondary(window.label());
+            if attention_window && matches!(event, tauri::WindowEvent::Focused(true)) {
                 let _ = window.request_user_attention(None);
                 #[cfg(target_os = "windows")]
                 let _ = window.set_overlay_icon(None);
@@ -358,7 +411,17 @@ fn main() {
         .setup(|app| {
             start_bridge(app.handle())?;
             let opener = app.handle().clone();
-            tauri::WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?
+            let builder = tauri::WebviewWindowBuilder::from_config(
+                app.handle(),
+                &app.config().app.windows[0],
+            )?;
+            #[cfg(windows)]
+            let builder = builder
+                .decorations(false)
+                .visible(false)
+                .min_inner_size(720.0, 520.0)
+                .on_document_title_changed(workspace_windows::update_title);
+            builder
                 .on_new_window(move |url, _| {
                     if matches!(url.scheme(), "http" | "https") {
                         let _ = opener.opener().open_url(url.as_str(), None::<&str>);

@@ -3,6 +3,7 @@ import type { SddDesktopApi } from '../src/types/sddDesktop'
 export type DesktopBridge = {
   runtime: 'electron' | 'tauri'
   platform: string
+  secondaryWorkspaceWindow?: boolean
   invoke<T>(channel: string, payload?: unknown): Promise<T>
   subscribe(channel: string, listener: (payload: any) => void): () => void
 }
@@ -14,7 +15,17 @@ export function createDesktopApi(bridge: DesktopBridge): SddDesktopApi {
   return {
     runtime: bridge.runtime,
     platform: bridge.platform,
-    taskFloats: {
+    workspaceWindows: bridge.platform === 'win32' ? {
+      isPrimary: !bridge.secondaryWorkspaceWindow,
+      command: command => invoke('workspace-window:command', command),
+      setStrip: strip => invoke('workspace-window:strip', strip),
+      drag: (tabId, phase) => invoke('workspace-window:drag', { tabId, phase }),
+      moveWindow: grab => invoke('workspace-window:move', grab),
+      control: action => invoke('workspace-window:control', action),
+      onUpdate: listener => bridge.subscribe('sdd:workspace-window:update', listener),
+      onDropHint: listener => bridge.subscribe('sdd:workspace-window:drop-hint', listener),
+    } : undefined,
+    taskFloats: bridge.secondaryWorkspaceWindow ? undefined : {
       prepare: request => invoke('task-float:prepare', request),
       place: request => invoke('task-float:place', request),
       close: id => invoke('task-float:close', { id }),

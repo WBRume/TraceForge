@@ -17,11 +17,13 @@ import api from '@/utils/api'
 import UserMenu from '@/components/user/UserMenu.vue'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 import GlobalSearchTrigger from '@/components/global-search/GlobalSearchTrigger.vue'
+import { useDesktopTabs } from '@/desktop/workspaceTabs'
 
 const { t, locale } = useI18n()
 const router = useRouter()
 const wsStore = useWorkspaceStore()
 const authStore = useAuthStore()
+const desktopTabs = useDesktopTabs()
 
 /**
  * Summarize an array of items into a compact label list, e.g.
@@ -109,8 +111,8 @@ const confirmDeleteWorkspace = async () => {
 
 <template>
   <div class="ws-container">
-    <nav class="navbar">
-      <div class="brand-area">
+    <nav class="navbar" :class="{ 'desktop-navbar': desktopTabs }">
+      <div v-if="!desktopTabs" class="brand-area">
         <AppSwitcherDropdown />
         <router-link to="/" class="logo-link" :title="$t('common.home')">
           <span class="logo-text">TraceForge</span>
@@ -125,7 +127,7 @@ const confirmDeleteWorkspace = async () => {
           :avatar-url="authStore.user?.avatar_url"
           size="sm"
         />
-        <GlobalSearchTrigger />
+        <GlobalSearchTrigger v-if="!desktopTabs" />
       </div>
     </nav>
 
@@ -303,7 +305,7 @@ const confirmDeleteWorkspace = async () => {
 @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap');
 
 .ws-container {
-  min-height: 100vh;
+  min-height: var(--app-viewport-height, 100vh);
   background-color: var(--color-bg-base);
   font-family: 'Open Sans', sans-serif;
 }
@@ -319,6 +321,10 @@ const confirmDeleteWorkspace = async () => {
   top: 0;
   z-index: 100;
   border-bottom: 1px solid #e2e8f0;
+}
+.navbar.desktop-navbar {
+  justify-content: flex-end;
+  padding-block: 0.65rem;
 }
 
 .brand-area {

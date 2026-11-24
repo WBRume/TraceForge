@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
+import { useWorkspaceTabTitle } from '@/desktop/workspaceTabs'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
@@ -94,6 +95,7 @@ const splitRequirementId = shallowRef('')
 let detailLoadSeq = 0
 
 const currentRequirement = computed(() => detail.value?.requirement || null)
+useWorkspaceTabTitle(() => currentRequirement.value?.id === requirementId.value ? currentRequirement.value?.title : undefined)
 const taskItems = computed(() => tasks.value?.items || [])
 
 async function reloadDetail() {

@@ -1,7 +1,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
 
 .settings-container {
-  min-height: 100vh;
+  min-height: var(--app-viewport-height, 100vh);
   padding: 2rem 2.5rem;
   background-color: transparent;
   font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;

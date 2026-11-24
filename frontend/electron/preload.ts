@@ -19,6 +19,7 @@ if (process.argv.includes('--traceforge-task-float')) {
   contextBridge.exposeInMainWorld('sddDesktop', createDesktopApi({
     runtime: 'electron',
     platform: process.platform,
+    secondaryWorkspaceWindow: process.argv.includes('--traceforge-workspace-window'),
     invoke: (channel, payload) => ipcRenderer.invoke(channel, payload),
     subscribe: (channel, listener) => {
       const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload)

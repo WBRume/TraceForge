@@ -1,0 +1,66 @@
+.desktop-titlebar-menu.el-popper {
+  overflow: hidden;
+  border: 1px solid #d9e4ef;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 30px #19375524, 0 2px 6px #1937550c;
+  font: 13px 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+}
+
+.desktop-titlebar-menu .el-dropdown-menu {
+  margin: 0;
+  padding: 5px;
+  background: transparent;
+}
+
+.desktop-titlebar-menu .el-dropdown-menu__item {
+  min-height: 34px;
+  padding: 0;
+  border-radius: 7px;
+  color: #334155;
+  font-size: 13px;
+  outline-offset: -2px;
+}
+
+.desktop-titlebar-menu .el-dropdown-menu__item.is-disabled {
+  padding: 0 10px;
+  color: #64748b;
+}
+
+.desktop-titlebar-menu .el-dropdown-menu__item:not(.is-disabled):is(:hover, :focus) {
+  background: #eff5fb;
+  color: #173956;
+}
+
+.desktop-titlebar-menu .el-dropdown-menu__item--divided {
+  margin: 4px 5px;
+  border-color: #e6edf5;
+}
+
+.desktop-menu-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 4px 9px;
+}
+
+.desktop-menu-row-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: #52708d;
+}
+
+.desktop-menu-row-icon svg, .desktop-menu-row-check { width: 16px; height: 16px; }
+.desktop-menu-row-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.desktop-page-menu { width: 218px; }
+.desktop-page-menu .desktop-menu-row-icon { height: 24px; }
+.desktop-workspace-menu { width: min(366px, calc(100vw - 24px)); }
+.desktop-workspace-menu .workspace-overview .desktop-menu-row-icon { background: #edf5fc; color: #0369a1; }
+.desktop-workspace-menu .workspace-overview .desktop-menu-row-label { font-weight: 600; }
+.desktop-workspace-menu .el-dropdown-menu__item.is-current { background: #eaf4ff; color: #0c416b; font-weight: 600; }
+.desktop-workspace-menu .desktop-menu-row-check { color: #0284c7; }

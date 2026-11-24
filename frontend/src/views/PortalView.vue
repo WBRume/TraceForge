@@ -9,13 +9,14 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import api, { getApiServerUrl } from '@/utils/api'
 import { formatApiError } from '@/utils/error'
-import { getSddDesktop } from '@/utils/runtime'
+import { getSddDesktop, isDesktop } from '@/utils/runtime'
 import UserMenu from '@/components/user/UserMenu.vue'
 import OAuthProviderButtons from '@/components/auth/OAuthProviderButtons.vue'
 
 const { locale, t } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
+const desktop = isDesktop()
 
 const toggleLanguage = () => {
   const newLang = locale.value === 'zh' ? 'en' : 'zh'
@@ -225,8 +226,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="portal-container">
-    <nav class="navbar">
-      <div class="logo">
+    <nav class="navbar" :class="{ 'desktop-navbar': desktop }">
+      <div v-if="!desktop" class="logo">
         <div class="logo-icon"></div>
         <span class="logo-text">{{ $t('portal.title') }}</span>
       </div>
@@ -447,6 +448,7 @@ onBeforeUnmount(() => {
   z-index: 100;
   border-bottom: 1px solid #e2e8f0;
 }
+.desktop-navbar { justify-content: flex-end; }
 
 .logo {
   display: flex;

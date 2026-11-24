@@ -24,11 +24,15 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => !!token.value)
   
   function setToken(newToken: string) {
-    if (token.value !== newToken) {
-      user.value = null
-    }
-    token.value = newToken
+    adoptToken(newToken)
     localStorage.setItem('sdd_token', newToken)
+  }
+
+  function adoptToken(nextToken: string | null) {
+    if (token.value === nextToken) return
+    user.value = null
+    boundProviders.value = []
+    token.value = nextToken
   }
   
   /**
@@ -70,17 +74,19 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function fetchCurrentUser() {
-    if (!token.value) return null
+    const currentToken = token.value
+    if (!currentToken) return null
     try {
       const res = await api.get('/auth/me')
+      if (token.value !== currentToken) return null
       user.value = res.data as AuthUser
       boundProviders.value = (res.data as AuthUser).bound_providers ?? []
       return res.data
     } catch (e) {
-      clearSession()
+      if (token.value === currentToken) clearSession()
       return null
     }
   }
 
-  return { token, user, boundProviders, isAuthenticated, setToken, logout, clearSession, setUser, setBoundProviders, fetchCurrentUser }
+  return { token, user, boundProviders, isAuthenticated, setToken, adoptToken, logout, clearSession, setUser, setBoundProviders, fetchCurrentUser }
 })

@@ -17,11 +17,17 @@ export async function initializeTaskFloatRuntime(): Promise<void> {
 
 export async function initializeDesktopRuntime(): Promise<void> {
   if (window.sddDesktop || !('__TAURI_INTERNALS__' in window)) return
-  const [{ invoke }, { listen }, { fetch }] = await Promise.all([
+  const [{ invoke }, { listen }, { fetch }, { getCurrentWindow }] = await Promise.all([
     import('@tauri-apps/api/core'),
     import('@tauri-apps/api/event'),
     import('@tauri-apps/plugin-http'),
+    import('@tauri-apps/api/window'),
   ])
+  if (navigator.platform.startsWith('Win')) {
+    window.addEventListener('traceforge:app-ready', () => {
+      void invoke('desktop_invoke', { channel: 'sdd:workspace-window:ready', payload: null }).catch(console.error)
+    }, { once: true })
+  }
   const listeners = new Map<string, Set<(payload: any) => void>>()
   const unlisten = await listen<{ channel: string; payload: unknown }>('desktop-event', event => {
     for (const listener of listeners.get(event.payload.channel) ?? []) listener(event.payload.payload)
@@ -32,6 +38,7 @@ export async function initializeDesktopRuntime(): Promise<void> {
   window.sddDesktop = createDesktopApi({
     runtime: 'tauri',
     platform,
+    secondaryWorkspaceWindow: getCurrentWindow().label !== 'main',
     invoke: (channel, payload) => {
       // Tauri JSON IPC cannot carry ArrayBuffer/Uint8Array directly.
       if (channel === 'sdd:download:save') {

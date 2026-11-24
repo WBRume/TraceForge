@@ -6,20 +6,21 @@ import type { SavedAvatar } from '@/utils/avatar'
 export const useWorkspaceStore = defineStore('workspace', () => {
   const currentWorkspace = ref<any>(null)
   const workspaces = ref<any[]>([])
+  let currentRequest = 0
   
-  async function fetchWorkspaces() {
+  async function fetchWorkspaces(selectDefault = true) {
     const res = await api.get('/workspaces')
     workspaces.value = res.data
     
     // 如果没有选中，默认选第一个
-    if (!currentWorkspace.value && res.data.length > 0) {
-      currentWorkspace.value = res.data[0]
-      localStorage.setItem('sdd_ws_id', res.data[0].id)
+    if (selectDefault && !currentWorkspace.value && res.data.length > 0) {
+      setCurrent(res.data[0])
     }
     return res.data
   }
   
   function setCurrent(ws: any) {
+    currentRequest++
     currentWorkspace.value = ws
     localStorage.setItem('sdd_ws_id', ws.id)
   }
@@ -30,15 +31,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (currentWorkspace.value?.id === id) Object.assign(currentWorkspace.value, avatar)
   }
   
-  async function restoreCurrent() {
-    const wsId = localStorage.getItem('sdd_ws_id')
+  async function restoreCurrent(wsId = localStorage.getItem('sdd_ws_id')) {
     if (wsId) {
+      const request = ++currentRequest
       try {
-        const res = await api.get(`/workspaces/${wsId}`)
-        currentWorkspace.value = res.data
+        const res = await api.get(`/workspaces/${encodeURIComponent(wsId)}`)
+        if (request === currentRequest) setCurrent(res.data)
       } catch (e) {
+        if (request !== currentRequest) return
         currentWorkspace.value = null
-        localStorage.removeItem('sdd_ws_id')
+        if (localStorage.getItem('sdd_ws_id') === wsId) localStorage.removeItem('sdd_ws_id')
       }
     }
   }

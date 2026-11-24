@@ -5,7 +5,7 @@ import { clearWsCursorMemory } from '@/utils/wsCursor'
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), message: vi.fn() }))
 vi.mock('@/utils/api', () => ({ default: mocks }))
-vi.mock('vue-router', () => ({ useRoute: () => ({ params: { wsId: 'ws' } }) }))
+vi.mock('vue-router', () => ({ useRoute: () => ({ params: { wsId: 'ws' } }), useRouter: () => ({ replace: vi.fn() }) }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('element-plus', () => ({ ElMessage: mocks.message }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ token: 'test', user: { id: 'user' } }) }))

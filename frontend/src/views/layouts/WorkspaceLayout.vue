@@ -12,6 +12,7 @@ import WorkspaceRepoSetupDialog from '@/components/local-agent/WorkspaceRepoSetu
 import TaskHostRail from '@/components/chat/task-rail/TaskHostRail.vue'
 import { useTaskRailStore } from '@/stores/taskRail'
 import { isDesktop } from '@/utils/runtime'
+import { useDesktopTabs } from '@/desktop/workspaceTabs'
 
 const route = useRoute()
 const router = useRouter()
@@ -19,6 +20,7 @@ const wsStore = useWorkspaceStore()
 const localAgent = useLocalAgentStore()
 const authStore = useAuthStore()
 const taskRail = useTaskRailStore()
+const desktopTabs = useDesktopTabs()
 const isTaskModule = computed(() => ['chat', 'taskChat'].includes(String(route.name || '')))
 watch(() => [String(route.params.wsId || ''), String(authStore.user?.id || '')], ([wsId, userId]) => {
   taskRail.setContext(wsId || '', userId || '')
@@ -57,8 +59,7 @@ const loadWorkspaceForRoute = async (wsId: string) => {
     return
   }
   if (!wsStore.currentWorkspace || wsStore.currentWorkspace.id !== wsId) {
-    localStorage.setItem('sdd_ws_id', wsId)
-    await wsStore.restoreCurrent()
+    await wsStore.restoreCurrent(wsId)
   }
   if (seq !== workspaceLoadSeq) return
   loading.value = false
@@ -141,6 +142,7 @@ const sidebarFooterItems = computed(() => {
     <AppSidebar
       :title="wsStore.currentWorkspace?.name || 'Loading...'"
       :back-title="t('skills.list.back_to_workspaces')"
+      :show-header="!desktopTabs?.state.value"
       :toggle-title="t('layout.toggle_sidebar')"
       :nav-items="sidebarNavItems"
       :footer-items="sidebarFooterItems"
@@ -174,7 +176,7 @@ const sidebarFooterItems = computed(() => {
 <style scoped>
 .layout-container {
   display: flex;
-  height: 100vh;
+  height: var(--app-viewport-height, 100vh);
   background-color: var(--color-bg-base, #f1f5f9);
   overflow: hidden;
   padding: 8px 8px 8px 8px;

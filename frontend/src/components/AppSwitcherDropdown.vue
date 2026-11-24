@@ -5,6 +5,8 @@ import { useI18n } from 'vue-i18n'
 import { Settings2, ServerCog, LibraryBig } from '@/components/icons'
 import { useSystemConfigStore } from '@/stores/systemConfig'
 
+defineProps<{ compact?: boolean }>()
+
 const router = useRouter()
 const { t } = useI18n()
 const systemConfigStore = useSystemConfigStore()
@@ -60,13 +62,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-switcher-container">
+  <div class="app-switcher-container" :class="{ 'is-compact': compact }">
     <button
       ref="triggerBtnRef"
       type="button"
       class="app-switcher-trigger"
       :class="{ 'is-active': isOpen }"
       :title="t('management.layout_title') || '平台功能与服务中心'"
+      :aria-label="t('management.layout_title')"
       aria-haspopup="true"
       :aria-expanded="isOpen"
       @click="toggleDropdown"
@@ -233,6 +236,19 @@ onUnmounted(() => {
   color: #0284c7;
   box-shadow: 0 2px 6px -1px rgba(14, 165, 233, 0.15);
 }
+
+.is-compact .app-switcher-trigger {
+  width: 29px;
+  height: 29px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.is-compact .app-switcher-trigger:hover,
+.is-compact .app-switcher-trigger.is-active { background: #dfe8f3; }
+.is-compact .app-switcher-menu { top: calc(100% + 9px); max-width: calc(100vw - 24px); }
 
 .dots-grid-icon {
   width: 16px;

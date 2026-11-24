@@ -14,15 +14,16 @@ export const normalizeServerUrl = (value: string): string => {
 
 export const buildApiBaseUrl = (serverUrl: string): string => `${normalizeServerUrl(serverUrl)}/api`
 
+const storedDesktopServer = isDesktop() ? localStorage.getItem('sdd_server_url') : null
 const api = axios.create({
-  baseURL: buildApiBaseUrl(DEFAULT_SERVER_URL),
+  baseURL: buildApiBaseUrl(storedDesktopServer ?? DEFAULT_SERVER_URL),
   timeout: 15000,
 })
 
-export const setApiServerUrl = (serverUrl: string): string => {
+export const setApiServerUrl = (serverUrl: string, persist = true): string => {
   const normalized = normalizeServerUrl(serverUrl)
   api.defaults.baseURL = buildApiBaseUrl(normalized)
-  localStorage.setItem('sdd_server_url', normalized)
+  if (persist) localStorage.setItem('sdd_server_url', normalized)
   window.dispatchEvent(new Event('sdd-server-changed'))
   return normalized
 }
@@ -37,12 +38,16 @@ export const getApiServerUrl = (): string => {
 
 export const initializeApiFromDesktopConfig = async (): Promise<void> => {
   const desktop = getSddDesktop()
-  setApiServerUrl(DEFAULT_SERVER_URL)
   if (!desktop) {
+    setApiServerUrl(DEFAULT_SERVER_URL)
     return
   }
 
   const config = await desktop.config.getConfig()
+  if (desktop.workspaceWindows?.isPrimary === false) {
+    setApiServerUrl(localStorage.getItem('sdd_server_url') ?? config.serverUrl, false)
+    return
+  }
   setApiServerUrl(config.serverUrl)
   if (config.token) {
     const authStore = useAuthStore()

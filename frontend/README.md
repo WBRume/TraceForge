@@ -24,6 +24,12 @@ Electron 开发沿用快速启动流程，预热入口和首页，在初始路�
 
 Tauri 开发另外需要 Rust stable 和系统构建工具。Windows 安装 Visual Studio C++ Build Tools 和 WebView2，然后执行 `npm run dev:tauri`。Bun 由 npm 开发依赖提供，不要求全局安装。桌面用户无需安装 Node、Bun 或 Rust；本地 Agent 和 Git 的要求与原 Electron 相同。
 
+## Windows 标签页与窗口
+
+顶部标题栏集成配置中心、工作区切换、标签页和全局搜索。在工作区内点击 `+` 或按 `Ctrl+T`，从气泡菜单选择要打开的页面。按住 `Ctrl` 或用鼠标中键点击侧栏链接也能新开标签。直接拖动标签可排序、拆出和合并。拖动标签栏空白处，或按住一个标签片刻再拖动，可移动整个窗口。
+
+关闭主窗口会退出客户端。重新打开后会按账号和服务器恢复退出时仍打开的窗口、标签顺序、当前页面和窗口位置。显示器变动时，超出屏幕的窗口会移回可用区域。
+
 ## 本地协同
 
 适用于 **Agent 在服务器执行的研发任务**：你在本机编辑器中改代码，通过桌面客户端交接修改和接收结果。问题定位任务不提供本地协同。
@@ -59,7 +65,7 @@ Tauri 包含编译后的桌面服务和内置本地资源 Worker，使用系统 
 
 ## 适配边界和检查
 
-`desktop/api.ts` 维护统一命令/事件协议。Electron preload 与 `src/desktop/initialize.ts` 的 Tauri 适配器复用它；Vue 入口在加载路由/API 模块前安装适配器。`desktop/native.ts` 定义原生依赖边界，Tauri 的 Bun 编译阶段替换为 `tauri-native.ts`，复用 `electron/ipc/` 中的业务实现。Rust 只向本地 main 窗口开放桥入口，提供原生对话框、外部打开和服务生命周期管理，IPC 不开放 TCP 端口。
+`desktop/api.ts` 维护统一命令和事件协议。Electron preload 与 `src/desktop/initialize.ts` 的 Tauri 适配器复用它。Vue 入口在加载路由和 API 模块前安装适配器。`desktop/native.ts` 定义原生依赖边界，Tauri 端通过 `tauri-native.ts` 复用 `electron/ipc/` 中的业务实现。Rust 为本地工作区窗口提供原生对话框、外部打开和服务生命周期管理。主窗口管理会话浮窗，工作区标签布局由两个运行时共用的 `desktop/workspaceWindows.ts` 管理。
 
 本地资源实现位于 `desktop/local-resource/`。请求拦截器按原生桥接设置 `X-TraceForge-Client: desktop` 或 `web`；创建 API 拒绝没有桌面标识的 `LOCAL` 请求，返回 `403 / LOCAL_TASK_DESKTOP_REQUIRED`，不会创建任务或资源准备作业。
 

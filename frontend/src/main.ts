@@ -8,6 +8,9 @@ import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
 import './assets/main.css'
 import { initializeApiFromDesktopConfig } from '@/utils/api'
+import { getSddDesktop } from '@/utils/runtime'
+import { useAuthStore } from '@/stores/auth'
+import { createDesktopTabs, desktopTabsKey } from '@/desktop/workspaceTabs'
 
 const app = createApp(App)
 
@@ -22,12 +25,24 @@ initializeApiFromDesktopConfig()
   .then(async () => {
     app.use(router)
     await router.isReady()
+    const windows = getSddDesktop()?.workspaceWindows
+    if (windows) {
+      const tabs = createDesktopTabs(windows, router, useAuthStore())
+      app.provide(desktopTabsKey, tabs)
+      app.onUnmount(tabs.stop)
+      await tabs.start()
+    }
     app.mount('#app')
     await nextTick()
     // Render the initial route before asking the desktop shell to show its window.
-    requestAnimationFrame(() => requestAnimationFrame(() => {
+    let ready = false
+    const show = () => {
+      if (ready) return
+      ready = true
       window.dispatchEvent(new Event('traceforge:app-ready'))
-    }))
+    }
+    requestAnimationFrame(() => requestAnimationFrame(show))
+    if (windows) window.setTimeout(show, 250)
   })
   .catch((error: unknown) => {
     console.error('Failed to mount application', error)

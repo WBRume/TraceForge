@@ -6,6 +6,7 @@ import axios from 'axios'
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), unlisten: vi.fn(), fetch: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }))
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ label: 'main' }) }))
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: mocks.fetch }))
 
 const originalAdapter = axios.defaults.adapter

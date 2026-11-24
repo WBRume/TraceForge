@@ -94,7 +94,7 @@ const backToChat = () => {
 
 <style scoped>
 .task-spec-view {
-  height: 100vh;
+  height: var(--app-viewport-height, 100vh);
   min-height: 0;
   padding: 1rem 1.5rem;
   display: flex;

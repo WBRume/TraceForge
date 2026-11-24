@@ -103,6 +103,7 @@ export type DesktopOAuthTicketListener = (payload: DesktopOAuthStartResult) => v
 import type { OAuthClientType, OAuthIntent } from './oauth'
 
 export type SddDesktopApi = {
+  workspaceWindows?: import('./workspaceWindows').DesktopWorkspaceWindowsApi
   taskFloats?: import('./taskFloat').DesktopTaskFloatsApi
   collaboration?: {
     execute: (request: { kind: string; payload: Record<string, unknown> }) => Promise<any>

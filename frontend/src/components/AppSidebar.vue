@@ -21,6 +21,7 @@ const props = withDefaults(defineProps<{
   collapsible?: boolean
   defaultCollapsed?: boolean
   showBack?: boolean
+  showHeader?: boolean
   backTitle?: string
   showToggle?: boolean
   toggleTitle?: string
@@ -29,6 +30,7 @@ const props = withDefaults(defineProps<{
   collapsible: true,
   defaultCollapsed: true,
   showBack: true,
+  showHeader: true,
   backTitle: 'Back',
   showToggle: true,
   toggleTitle: 'Toggle Sidebar',
@@ -65,7 +67,7 @@ const handleItemClick = (item: SidebarItem) => {
   <aside class="sidebar" :class="{ 'is-collapsed': isCollapsed }">
     <!-- 红框 1：导航主功能岛 -->
     <div class="sidebar-main-island" data-slot="sidebar-main">
-      <div class="sidebar-header">
+      <div v-if="showHeader" class="sidebar-header">
         <button
           v-if="showBack"
           class="back-btn"

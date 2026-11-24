@@ -3,7 +3,7 @@
 
 .mgmt-container {
   display: flex;
-  height: 100vh;
+  height: var(--app-viewport-height, 100vh);
   overflow: hidden;
   background-color: var(--color-bg-base);
   font-family: 'Open Sans', sans-serif;
@@ -52,7 +52,7 @@
 
 .mgmt-layout {
   display: flex;
-  min-height: calc(100vh - 65px);
+  min-height: calc(var(--app-viewport-height, 100vh) - 65px);
 }
 
 .mgmt-sidebar {

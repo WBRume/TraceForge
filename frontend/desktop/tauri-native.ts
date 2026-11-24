@@ -19,7 +19,7 @@ export function receiveNative(message: { id: string; result?: unknown; error?: s
   else pending?.resolve(message.result)
 }
 
-function nativeRequest(method: string, payload: unknown = {}) {
+export function nativeRequest(method: string, payload: unknown = {}) {
   return new Promise<any>((resolve, reject) => {
     const id = `native-${++nativeSequence}`
     pendingNative.set(id, { resolve, reject })

@@ -1,4 +1,28 @@
 {
+  "desktop_tabs": {
+    "workspaces": "工作区",
+    "switch_workspace": "切换工作区",
+    "workspace_load_failed": "工作区加载失败",
+    "tabs": "工作区标签页",
+    "new_tab": "新建标签页",
+    "new_tab_shortcut": "新建标签页 (Ctrl+T)",
+    "close_tab": "关闭标签页",
+    "close_named": "关闭 {name}",
+    "hold_to_move_window": "按住后拖动可移动窗口",
+    "detach": "移到新窗口",
+    "merge": "移回主窗口",
+    "search": "全局搜索",
+    "search_shortcut": "搜索任务与历史消息 (双击 Shift)",
+    "caption": "窗口控制",
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "close_window": "关闭窗口",
+    "operation_failed": "窗口或标签页操作失败",
+    "requirements": "需求列表",
+    "tasks": "任务列表",
+    "spec": "需求规格",
+    "changes": "变更审阅"
+  },
   "task_deliverables": {
     "all": "全部",
     "reports": "报告文档",

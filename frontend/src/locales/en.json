@@ -1,4 +1,28 @@
 {
+  "desktop_tabs": {
+    "workspaces": "Workspaces",
+    "switch_workspace": "Switch workspace",
+    "workspace_load_failed": "Could not load workspaces",
+    "tabs": "Workspace tabs",
+    "new_tab": "New tab",
+    "new_tab_shortcut": "New tab (Ctrl+T)",
+    "close_tab": "Close tab",
+    "close_named": "Close {name}",
+    "hold_to_move_window": "Hold, then drag to move the window",
+    "detach": "Move to new window",
+    "merge": "Move to main window",
+    "search": "Search",
+    "search_shortcut": "Search tasks and messages (double Shift)",
+    "caption": "Window controls",
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "close_window": "Close window",
+    "operation_failed": "Could not complete the window or tab action",
+    "requirements": "Requirements",
+    "tasks": "Tasks",
+    "spec": "Task specification",
+    "changes": "Review changes"
+  },
   "task_deliverables": {
     "all": "All",
     "reports": "Reports",

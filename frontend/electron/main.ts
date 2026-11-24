@@ -8,6 +8,9 @@ import { shutdownSpeech } from './ipc/speech'
 import { shutdownLocalServices } from './ipc/localResources'
 import { guardClosedOutputPipes } from '../desktop/stdio'
 import { registerTaskFloats } from './taskFloats'
+import { DETACHED_WINDOW_SIZE, MIN_WORKSPACE_SIZE, registerWorkspaceWindows, WINDOWS_TITLE_BAR, workspaceWindowBounds } from './workspaceWindows'
+import { MAIN_WORKSPACE_WINDOW } from '../src/types/workspaceWindows'
+import type { WindowPlacement, WindowPoint } from '../src/types/workspaceWindows'
 
 guardClosedOutputPipes()
 
@@ -27,18 +30,28 @@ if (userDataPath === join(app.getPath('appData'), app.getName()) && !existsSync(
 
 let mainWindow: BrowserWindow | null = null
 let closeTaskFloats: () => void
+let workspaceWindows: ReturnType<typeof registerWorkspaceWindows> | undefined
+let quitting = false
+let shutdownComplete = false
 
-const createWindow = async () => {
+const createWindow = async (id = MAIN_WORKSPACE_WINDOW, placement?: WindowPlacement, position?: WindowPoint) => {
+  const primary = id === MAIN_WORKSPACE_WINDOW
+  const windowsShell = !!workspaceWindows
   const window = new BrowserWindow({
     show: false,
-    width: 1440,
-    height: 960,
-    minWidth: 1120,
-    minHeight: 720,
+    ...(primary ? { width: 1440, height: 960 } : DETACHED_WINDOW_SIZE),
+    minWidth: windowsShell ? MIN_WORKSPACE_SIZE.width : 1120,
+    minHeight: windowsShell ? MIN_WORKSPACE_SIZE.height : 720,
+    ...(windowsShell ? {
+      titleBarStyle: 'hidden' as const,
+      titleBarOverlay: WINDOWS_TITLE_BAR,
+      ...workspaceWindowBounds(placement, position),
+    } : {}),
     title: app.getName(),
     backgroundColor: '#f8fafc',
     webPreferences: {
       preload: preloadPath,
+      additionalArguments: primary ? [] : ['--traceforge-workspace-window'],
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -47,20 +60,31 @@ const createWindow = async () => {
       backgroundThrottling: false,
     },
   })
-  mainWindow = window
+  workspaceWindows?.track(id, window)
+  if (windowsShell) window.removeMenu()
   registerAttentionWindow(window)
-  window.on('closed', () => {
-    if (mainWindow === window) mainWindow = null
-    closeTaskFloats()
-  })
-  window.webContents.on('did-start-navigation', ({ isMainFrame, isSameDocument }) => {
-    if (isMainFrame && !isSameDocument) closeTaskFloats()
-  })
+  if (primary) {
+    mainWindow = window
+    window.on('close', event => {
+      if (!quitting && workspaceWindows?.hasDetachedWindows()) {
+        event.preventDefault()
+        app.quit()
+      }
+    })
+    window.on('closed', () => {
+      if (mainWindow === window) mainWindow = null
+      closeTaskFloats()
+    })
+    window.webContents.on('did-start-navigation', ({ isMainFrame, isSameDocument }) => {
+      if (isMainFrame && !isSameDocument) closeTaskFloats()
+    })
+  }
 
   let frameReady = false
   let appReady = false
   const showWindow = () => {
-    if (!frameReady || !appReady) return
+    if (!frameReady || !appReady || window.isDestroyed()) return
+    if (placement?.maximized) window.maximize()
     window.show()
     if (devServerUrl && process.env.TRACEFORGE_DEVTOOLS === '1') {
       window.webContents.openDevTools({ mode: 'detach' })
@@ -84,20 +108,23 @@ const createWindow = async () => {
   }
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url).catch(console.error)
     return { action: 'deny' }
   })
+  if (windowsShell) window.webContents.on('will-navigate', event => event.preventDefault())
 
-  if (devServerUrl) {
-    await window.loadURL(devServerUrl)
-    return
+  try {
+    if (devServerUrl) await window.loadURL(devServerUrl)
+    else await window.loadFile(appFile)
+  } catch (error) {
+    if (!window.isDestroyed()) window.destroy()
+    throw error
   }
-
-  await window.loadFile(appFile)
 }
 
 app.whenReady().then(async () => {
   registerDesktopCommands()
+  if (process.platform === 'win32') workspaceWindows = registerWorkspaceWindows(app.getPath('userData'), createWindow, () => quitting)
   closeTaskFloats = registerTaskFloats(() => mainWindow, preloadPath, appFile, devServerUrl)
   await createWindow()
 
@@ -114,11 +141,12 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
-let shutdownComplete = false
 app.on('before-quit', event => {
   if (shutdownComplete) return
   event.preventDefault()
-  void Promise.allSettled([shutdownSpeech(), shutdownLocalServices()]).finally(() => {
+  if (quitting) return
+  quitting = true
+  void Promise.allSettled([shutdownSpeech(), shutdownLocalServices(), workspaceWindows?.flush()]).finally(() => {
     shutdownComplete = true
     app.quit()
   })

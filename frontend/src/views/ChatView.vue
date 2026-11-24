@@ -38,6 +38,7 @@ import { useDiagnosisPlaybook } from '@/composables/chat/diagnosis/useDiagnosisP
 import DiagnosisSopLayout from '@/components/chat/diagnosis-playbook/DiagnosisSopLayout.vue'
 import { useGuideSession } from '@/composables/chat/diagnosis/useGuideSession'
 import { consumeCollaborationIntent } from '@/components/task-create/lib/localCollaborationIntent'
+import { useWorkspaceTabTitle } from '@/desktop/workspaceTabs'
 
 /**
  * 任务会话工作台（路由级组合面）：三栏布局装配 + 弹窗宿主。
@@ -48,6 +49,7 @@ import { consumeCollaborationIntent } from '@/components/task-create/lib/localCo
 const rawVm = useChatViewModel()
 provide(contextAnnotationsKey, rawVm.annotations)
 const vm = proxyRefs(rawVm)
+useWorkspaceTabTitle(() => vm.currentTask?.id === vm.route.params.taskId ? vm.currentTask?.name : undefined)
 // 向上回看历史时自动收起工具栏，滚动回到底部再展开
 const { hidden: headerHidden, reveal: revealHeader } = useAutoHideHeader({
   container: computed(() => vm.chatWorkbenchMode === 'cli'
