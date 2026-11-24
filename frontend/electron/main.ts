@@ -7,11 +7,14 @@ import { registerAttentionWindow } from '../desktop/attention'
 import { shutdownSpeech } from './ipc/speech'
 import { shutdownLocalServices } from './ipc/localResources'
 import { guardClosedOutputPipes } from '../desktop/stdio'
+import { registerTaskFloats } from './taskFloats'
 
 guardClosedOutputPipes()
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
+const preloadPath = join(__dirname, 'preload.js')
+const appFile = join(__dirname, '../dist/index.html')
 
 // 沿用已有配置目录，避免应用改名后丢失登录和本地资源配置。
 const userDataPath = app.getPath('userData')
@@ -23,6 +26,7 @@ if (userDataPath === join(app.getPath('appData'), app.getName()) && !existsSync(
 }
 
 let mainWindow: BrowserWindow | null = null
+let closeTaskFloats: () => void
 
 const createWindow = async () => {
   const window = new BrowserWindow({
@@ -34,7 +38,7 @@ const createWindow = async () => {
     title: app.getName(),
     backgroundColor: '#f8fafc',
     webPreferences: {
-      preload: join(__dirname, 'preload.js'),
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -47,6 +51,10 @@ const createWindow = async () => {
   registerAttentionWindow(window)
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
+    closeTaskFloats()
+  })
+  window.webContents.on('did-start-navigation', ({ isMainFrame, isSameDocument }) => {
+    if (isMainFrame && !isSameDocument) closeTaskFloats()
   })
 
   let frameReady = false
@@ -85,11 +93,12 @@ const createWindow = async () => {
     return
   }
 
-  await window.loadFile(join(__dirname, '../dist/index.html'))
+  await window.loadFile(appFile)
 }
 
 app.whenReady().then(async () => {
   registerDesktopCommands()
+  closeTaskFloats = registerTaskFloats(() => mainWindow, preloadPath, appFile, devServerUrl)
   await createWindow()
 
   app.on('activate', () => {

@@ -4,13 +4,18 @@ import { useRouter } from 'vue-router'
 import { usePinnedFloatsStore, type PinnedSearchItem } from '@/stores/pinnedFloats'
 import { useTaskAwarenessStore } from '@/stores/taskAwareness'
 import { Loader2, TriangleAlert, Check, XCircle, OctagonPause, ExternalLink, Copy } from '@/components/icons'
+import { useDesktopTaskFloats } from '@/composables/useDesktopTaskFloats'
 import FloatingDockFrame from '@/components/floating/FloatingDockFrame.vue'
+import FloatingDockHeading from '@/components/floating/FloatingDockHeading.vue'
 import UserAvatar from '@/components/user/UserAvatar.vue'
+import type { PanelDrag } from '@/types/taskFloat'
 import SessionContextPanel from './SessionContextPanel.vue'
 
 const store = usePinnedFloatsStore()
 const awareness = useTaskAwarenessStore()
 const router = useRouter()
+const desktopFloats = useDesktopTaskFloats()
+const contexts = new Map<string, InstanceType<typeof SessionContextPanel>>()
 const copied = ref('')
 const label = (item: PinnedSearchItem) => item.kind === 'task' ? '会话' : item.role === 'user' ? '用户发言' : 'AI 回复'
 const tone = (item: PinnedSearchItem) => ({ AI_RUNNING: 'is-running', AI_HITL_SUSPENDED: 'is-waiting', AI_RUN_FINISHED: 'is-finished', AI_RUN_ERROR: 'is-error', AI_RUN_INTERRUPTED: '', AI_RUN_STOPPED: '' })[item.runtimeState || 'AI_RUN_STOPPED'] || (item.kind === 'message' ? item.role === 'user' ? 'is-user' : 'is-assistant' : '')
@@ -26,18 +31,35 @@ const jump = (item: PinnedSearchItem) => { void router.push({ name: 'taskChat', 
 const copy = async (item: PinnedSearchItem) => {
   try { await navigator.clipboard.writeText(item.snippetText); copied.value = item.id; setTimeout(() => { if (copied.value === item.id) copied.value = '' }, 1600) } catch { /* Optional clipboard permission. */ }
 }
+
+function onPanelDrag(item: PinnedSearchItem, drag: PanelDrag) {
+  if (drag.type !== 'start') {
+    desktopFloats.move(item, drag)
+    return
+  }
+  void desktopFloats.prepare(item, () => ({
+    workspaceName: item.workspaceName,
+    taskName: item.taskName,
+    tone: tone(item),
+  }), () => contexts.get(item.id)?.getPreview())
+}
+
+function setContext(id: string, panel: InstanceType<typeof SessionContextPanel> | null) {
+  if (panel) contexts.set(id, panel)
+  else contexts.delete(id)
+}
 </script>
 
 <template>
   <div class="pinned-floats-container">
     <TransitionGroup name="float">
       <FloatingDockFrame v-for="item in store.items" :key="item.id" :geometry="item" :title="`${item.workspaceName} / ${item.taskName}`" :tone="tone(item)"
+        :detachable="desktopFloats.available && item.kind === 'task'" :desktop-drag-active="desktopFloats.isDragging(item.id)"
+        :desktop-preview="desktopFloats.isPreviewing(item.id)" :desktop-detached="desktopFloats.isDetached(item.id)"
         @position="store.updatePosition(item.id, $event)" @size="store.updateSize(item.id, $event)" @dock-top="store.updateDockTop(item.id, $event)"
-        @open="open(item)" @minimize="minimize(item)" @close="close(item)">
+        @open="open(item)" @minimize="minimize(item)" @close="close(item)" @panel-drag="onPanelDrag(item, $event)">
         <template #header>
-          <span class="panel-badge" :class="tone(item)">{{ label(item) }}</span>
-          <span v-if="item.workspaceName" class="panel-ws-badge">{{ item.workspaceName }}</span>
-          <span class="panel-title" :title="item.taskName">{{ item.taskName }}</span>
+          <FloatingDockHeading :label="label(item)" :workspace-name="item.workspaceName" :title="item.taskName" :tone="tone(item)" />
         </template>
         <template #pill>
           <div v-if="item.runtimeState && item.runtimeState !== 'AI_RUN_STOPPED'" class="pill-type-dot" :class="tone(item)" :title="stateLabel(item)">
@@ -56,8 +78,9 @@ const copy = async (item: PinnedSearchItem) => {
           <button v-if="item.kind === 'message'" type="button" class="action-icon-btn" :title="copied === item.id ? '已复制' : '复制消息内容'" @click.stop="copy(item)"><Check v-if="copied === item.id" class="w-3.5 h-3.5" /><Copy v-else class="w-3.5 h-3.5" /></button>
           <button type="button" class="action-icon-btn" title="跳转至完整任务页" aria-label="跳转至完整任务页" @click.stop="jump(item)"><ExternalLink class="w-3.5 h-3.5" /></button>
         </template>
-        <div v-if="stateLabel(item)" class="runtime-notice" :class="tone(item)" role="status">{{ stateLabel(item) }}<span v-if="item.runtimeSummary"> · {{ item.runtimeSummary }}</span></div>
-        <SessionContextPanel v-if="item.kind === 'task'" :workspace-id="item.workspaceId" :task-id="item.taskId" :task-name="item.taskName" />
+        <SessionContextPanel v-if="item.kind === 'task'" :ref="panel => setContext(item.id, panel as InstanceType<typeof SessionContextPanel> | null)"
+          :workspace-id="item.workspaceId" :task-id="item.taskId" :live-output="awareness.outputs[item.taskId]?.text"
+          :suspended="desktopFloats.isDetached(item.id)" />
         <div v-else class="message-float-content">
           <div class="msg-float-meta"><span class="msg-author"><UserAvatar v-if="item.role === 'user'" :display-name="item.creatorName" :avatar-svg="item.creatorAvatarSvg" :avatar-url="item.creatorAvatarUrl" size="xs" />{{ item.creatorName || label(item) }}</span><span>{{ item.workspaceName }} / {{ item.taskName }}</span></div>
           <div class="msg-float-text">{{ item.snippetText }}</div>
@@ -69,9 +92,6 @@ const copy = async (item: PinnedSearchItem) => {
 
 <style scoped>
 .pinned-floats-container { position: fixed; inset: 0; z-index: 3000; pointer-events: none; }
-.panel-badge, .panel-ws-badge { display: inline-flex; padding: 2px 7px; border-radius: 6px; font-size: 10.5px; flex-shrink: 0; color: #0284c7; background: #f0f9ff; border: 1px solid #bae6fd; }
-.panel-ws-badge { background: #f8fafc; color: #475569; border-color: #e2e8f0; max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.panel-title { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pill-type-dot { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #e0f2fe; color: #0284c7; font-size: 10px; font-weight: 700; flex-shrink: 0; }
 .pill-avatar { width: 22px; height: 22px; flex-shrink: 0; }
 .pill-info { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
@@ -83,9 +103,6 @@ const copy = async (item: PinnedSearchItem) => {
 .is-error { color: #be123c; background: #fff1f2; }
 .is-user { color: #d97706; background: #fffbeb; border-color: #fde68a; }
 .is-assistant { color: #7c3aed; background: #faf5ff; border-color: #ddd6fe; }
-.runtime-notice { padding: 7px 12px; font-size: 11px; max-height: 65px; overflow: auto; }
-.action-icon-btn { border: none; background: transparent; color: #64748b; display: inline-flex; padding: 4px; border-radius: 6px; cursor: pointer; }
-.action-icon-btn:hover { background: #f1f5f9; color: #0f172a; }
 .message-float-content { flex: 1; min-height: 0; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .msg-float-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: #64748b; }
 .msg-author { display: inline-flex; align-items: center; gap: 6px; }

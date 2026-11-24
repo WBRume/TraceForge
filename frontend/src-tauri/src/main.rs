@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod task_floats;
+
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -66,6 +68,12 @@ async fn desktop_invoke(
 ) -> Reply {
     if window.label() != "main" || !channel.starts_with("sdd:") {
         return Err("Desktop command is not allowed".into());
+    }
+    match channel.as_str() {
+        "sdd:task-float:prepare" => return task_floats::prepare(window.app_handle(), &payload),
+        "sdd:task-float:place" => return task_floats::place(&window, &payload),
+        "sdd:task-float:close" => return task_floats::close(window.app_handle(), &payload),
+        _ => {}
     }
     let id = bridge.sequence.fetch_add(1, Ordering::Relaxed).to_string();
     let (reply, receiver) = oneshot::channel();
@@ -330,9 +338,16 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .manage(Bridge::default())
-        .invoke_handler(tauri::generate_handler![desktop_platform, desktop_invoke])
+        .manage(task_floats::DetachedFloats::default())
+        .invoke_handler(tauri::generate_handler![desktop_platform, desktop_invoke, task_floats::task_float_finish, task_floats::task_float_drag])
         .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::Focused(true)) {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                task_floats::on_destroyed(window);
+            }
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                task_floats::on_close_requested(window);
+            }
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Focused(true)) {
                 let _ = window.request_user_attention(None);
                 #[cfg(target_os = "windows")]
                 let _ = window.set_overlay_icon(None);
@@ -350,12 +365,11 @@ fn main() {
                     }
                     tauri::webview::NewWindowResponse::Deny
                 })
-                .on_navigation(|url| {
-                    url.scheme() == "tauri"
-                        || url.host_str() == Some("tauri.localhost")
-                        || (cfg!(debug_assertions)
-                            && url.host_str() == Some("127.0.0.1")
-                            && url.port() == Some(5173))
+                .on_navigation(task_floats::local_navigation)
+                .on_page_load(|window, payload| {
+                    if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                        task_floats::close_all(window.app_handle());
+                    }
                 })
                 .build()?;
             Ok(())

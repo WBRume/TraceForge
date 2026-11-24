@@ -1,21 +1,27 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRaw, useTemplateRef, watch } from 'vue'
+import { isAxiosError } from 'axios'
 import { AlertCircle, Loader2 } from '@/components/icons'
 import ChatMessageContent from '@/components/chat/ChatMessageContent.vue'
 import { mapHistoryMessages, type ChatMessageFields } from '@/composables/chat/shared/messageIdentity'
 import { formatMessageTime } from '@/composables/chat/message/presenters'
+import type { SessionPreview } from '@/desktop/taskFloatChannel'
 import api from '@/utils/api'
-import { useTaskAwarenessStore } from '@/stores/taskAwareness'
 
 const props = defineProps<{
   workspaceId: string
   taskId: string
-  taskName: string
+  liveOutput?: string
+  refreshKey?: number
+  followLatest?: boolean
+  initialPreview?: SessionPreview
+  suspended?: boolean
 }>()
 
 const loading = ref(false)
 const error = ref('')
 const messages = ref<ChatMessageFields[]>([])
+const imageScope = computed(() => ({ workspaceId: props.workspaceId, taskId: props.taskId }))
 const displayMessages = computed(() => messages.value.map(msg => ({
   ...msg,
   senderLabel: msg.role === 'user'
@@ -23,22 +29,34 @@ const displayMessages = computed(() => messages.value.map(msg => ({
     : msg.role === 'system' ? '系统' : 'AI 助手',
   isExpert: msg.role === 'user' && msg.creator_is_workspace_expert,
 })))
-const awareness = useTaskAwarenessStore()
-const liveOutput = computed(() => awareness.outputs[props.taskId]?.text || '')
-let requestVersion = 0
+const list = useTemplateRef<HTMLElement>('messageList')
+let following = true
+let loaded = false
+let request: AbortController | undefined
+let refreshQueued = false
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 
+const trackScroll = () => {
+  if (!props.followLatest || !list.value) return
+  const { scrollHeight, scrollTop, clientHeight } = list.value
+  following = scrollHeight - scrollTop - clientHeight < 32
+}
+
 const fetchHistory = async () => {
-  if (!props.workspaceId || !props.taskId) return
-  loading.value = true
-  error.value = ''
-  const version = ++requestVersion
-  const workspaceId = props.workspaceId, taskId = props.taskId
+  if (props.suspended || !props.workspaceId || !props.taskId) return
+  if (request) {
+    refreshQueued = true
+    return
+  }
+  const controller = new AbortController()
+  request = controller
+  loading.value = !loaded
   try {
-    const res = await api.get(`/workspaces/${workspaceId}/tasks/${taskId}/history`, {
-      params: { page: 1, page_size: 60 }
+    const res = await api.get(`/workspaces/${props.workspaceId}/tasks/${props.taskId}/history`, {
+      params: { page: 1, page_size: 60 },
+      signal: controller.signal,
     })
-    if (version !== requestVersion) return
+    if (controller.signal.aborted) return
     const rawMessages = res.data?.messages || []
     messages.value = mapHistoryMessages(rawMessages.map((m: any) => ({
       ...m,
@@ -47,28 +65,79 @@ const fetchHistory = async () => {
       content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content || ''),
       created_at: m.created_at
     })))
-  } catch (err: any) {
-    if (version !== requestVersion) return
-    error.value = err.response?.data?.detail || '加载会话上下文失败，请检查网络或重试。'
+    error.value = ''
+    loaded = true
+    loading.value = false
+    if (props.followLatest) {
+      await nextTick()
+      if (!controller.signal.aborted && following && list.value) list.value.scrollTop = list.value.scrollHeight
+    }
+  } catch (err) {
+    if (controller.signal.aborted) return
+    const response = isAxiosError(err) ? err.response : undefined
+    if (response && [401, 403, 404].includes(response.status)) {
+      messages.value = []
+      loaded = false
+    }
+    if (!loaded) {
+      const detail = response?.data?.detail
+      error.value = typeof detail === 'string' ? detail : '加载会话上下文失败，请检查网络或重试。'
+    }
   } finally {
-    if (version === requestVersion) loading.value = false
+    if (request === controller) {
+      request = undefined
+      loading.value = false
+      if (refreshQueued) {
+        refreshQueued = false
+        void fetchHistory()
+      }
+    }
   }
 }
 
-onMounted(() => {
-  void fetchHistory()
-})
-const onContextChanged = (event: Event) => {
-  if ((event as CustomEvent).detail?.taskId !== props.taskId) return
+const scheduleRefresh = () => {
+  if (props.suspended) return
   clearTimeout(refreshTimer)
   refreshTimer = setTimeout(() => { void fetchHistory() }, 100)
 }
-window.addEventListener('task-context-changed', onContextChanged)
-onBeforeUnmount(() => { requestVersion++; clearTimeout(refreshTimer); window.removeEventListener('task-context-changed', onContextChanged) })
-
-watch(() => [props.workspaceId, props.taskId], () => {
-  void fetchHistory()
+const onContextChanged = (event: Event) => {
+  if ((event as CustomEvent).detail?.taskId === props.taskId) scheduleRefresh()
+}
+onMounted(() => window.addEventListener('task-context-changed', onContextChanged))
+onBeforeUnmount(() => {
+  request?.abort()
+  request = undefined
+  clearTimeout(refreshTimer)
+  window.removeEventListener('task-context-changed', onContextChanged)
 })
+
+watch([() => props.workspaceId, () => props.taskId], async (_, __, onCleanup) => {
+  request?.abort()
+  request = undefined
+  refreshQueued = false
+  const preview = props.initialPreview
+  loaded = Boolean(preview)
+  following = true
+  messages.value = preview?.messages ?? []
+  loading.value = false
+  error.value = ''
+  if (preview) {
+    let active = true
+    onCleanup(() => { active = false })
+    await nextTick()
+    if (!active) return
+    if (list.value) list.value.scrollTop = preview.scrollTop
+    trackScroll()
+  }
+  void fetchHistory()
+}, { immediate: true })
+watch(() => props.refreshKey, scheduleRefresh)
+watch(() => props.suspended, suspended => { if (!suspended) scheduleRefresh() })
+
+function getPreview(): SessionPreview | undefined {
+  if (loaded) return { messages: toRaw(messages.value), scrollTop: list.value?.scrollTop ?? 0 }
+}
+defineExpose({ getPreview })
 </script>
 
 <template>
@@ -78,7 +147,7 @@ watch(() => [props.workspaceId, props.taskId], () => {
       <span>会话只读面板 · 支持滚动查看上下文</span>
     </div>
 
-    <div v-if="liveOutput" class="live-output" aria-label="实时输出"><span>最新输出</span><pre>{{ liveOutput }}</pre></div>
+    <div v-if="liveOutput && !loading && !error" class="live-output" aria-label="实时输出"><span>最新输出</span><pre>{{ liveOutput }}</pre></div>
 
     <!-- 加载中状态 -->
     <div v-if="loading" class="panel-status-area">
@@ -99,7 +168,7 @@ watch(() => [props.workspaceId, props.taskId], () => {
     </div>
 
     <!-- 可滚动查看的对话上下文列表（纯只读，无点击功能） -->
-    <div v-else class="context-scroll-list">
+    <div v-else ref="messageList" class="context-scroll-list" @scroll.passive="trackScroll">
       <ChatMessageContent
         v-for="msg in displayMessages"
         :key="msg.id"
@@ -108,6 +177,7 @@ watch(() => [props.workspaceId, props.taskId], () => {
         :author-label="msg.senderLabel"
         :time-label="formatMessageTime(msg.created_at)"
         :is-expert="msg.isExpert"
+        :image-scope="imageScope"
       />
     </div>
   </div>

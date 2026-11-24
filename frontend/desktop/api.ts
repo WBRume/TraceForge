@@ -14,6 +14,12 @@ export function createDesktopApi(bridge: DesktopBridge): SddDesktopApi {
   return {
     runtime: bridge.runtime,
     platform: bridge.platform,
+    taskFloats: {
+      prepare: request => invoke('task-float:prepare', request),
+      place: request => invoke('task-float:place', request),
+      close: id => invoke('task-float:close', { id }),
+      onClosed: listener => bridge.subscribe('sdd:task-float:closed', listener),
+    },
     speech: {
       status: () => invoke('speech:status'),
       transcribe: payload => invoke('speech:transcribe', payload),

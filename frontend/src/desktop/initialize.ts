@@ -2,6 +2,19 @@ import { createDesktopApi } from '../../desktop/api'
 import type { DesktopSaveRequest } from '../types/sddDesktop'
 import { configureNativeHttp } from '../utils/http'
 
+export async function initializeTaskFloatRuntime(): Promise<void> {
+  const [{ invoke }, { fetch }] = await Promise.all([
+    import('@tauri-apps/api/core'),
+    import('@tauri-apps/plugin-http'),
+  ])
+  configureNativeHttp(fetch)
+  window.sddTaskFloat = {
+    close: () => invoke('task_float_finish', { returnToClient: false }),
+    returnToClient: () => invoke('task_float_finish', { returnToClient: true }),
+    drag: navigator.platform.startsWith('Linux') ? undefined : request => invoke('task_float_drag', { request }),
+  }
+}
+
 export async function initializeDesktopRuntime(): Promise<void> {
   if (window.sddDesktop || !('__TAURI_INTERNALS__' in window)) return
   const [{ invoke }, { listen }, { fetch }] = await Promise.all([

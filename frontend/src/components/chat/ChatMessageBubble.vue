@@ -10,14 +10,12 @@ import {
 import DecisionMarkPopover from './DecisionMarkPopover.vue'
 import DiagnosisResultCard from './DiagnosisResultCard.vue'
 import ChatMessageContent from './ChatMessageContent.vue'
-import ChatMessageImage from './ChatMessageImage.vue'
 import { injectContextAnnotations } from '@/composables/chat/annotations/useContextAnnotations'
 import { readMessageSelection } from '@/composables/chat/annotations/messageSelection'
 import { diagnosisPayloadFromMessage } from '@/types/diagnosis'
 import type { ChatDecisionPayload } from '@/composables/useChatDecision'
 import { confirmationHistoryRecord, confirmationHistoryText } from '@/composables/chat/message/confirmationHistory'
 import { steeringStatus } from '@/composables/chat/shared/messageIdentity'
-import { messageChatImages } from '@/composables/chat/session/useChatImageDraft'
 
 const props = defineProps<{
   msg: Record<string, any>
@@ -41,7 +39,10 @@ function selectForAnnotation(event: MouseEvent | KeyboardEvent) {
 const isPopoverOpen = ref(false)
 
 const isDiagnosisResult = computed(() => String(props.msg?.message_type || props.msg?.type || '') === 'diagnosis_result')
-const attachedImages = computed(() => messageChatImages(props.msg?.metadata))
+const imageScope = computed(() => ({
+  workspaceId: String(props.vm.route?.params?.wsId ?? ''),
+  taskId: String(props.vm.currentTask?.id || props.msg.task_id || ''),
+}))
 
 const diagnosisPayload = computed(() => {
   if (!isDiagnosisResult.value) return null
@@ -177,6 +178,7 @@ function openDiagnosisCase(caseId: string) {
     :is-current-user="vm.isMessageFromCurrentUser(msg)"
     :highlighted="vm.highlightedMessageId === msg.id"
     :diagnosis-result="isDiagnosisResult"
+    :image-scope="imageScope"
   >
     <template v-if="isDiagnosisResult && diagnosisPayload" #body>
       <!-- 问题定位结果：AI 会话反填的结构化卡片（对话内展示，替代独立面板） -->
@@ -196,17 +198,6 @@ function openDiagnosisCase(caseId: string) {
         @export="handleExportDiagnosis"
         @regenerate="handleRegenerateDiagnosis"
       />
-    </template>
-    <template v-if="attachedImages.length" #attachments>
-      <div class="message-images">
-        <ChatMessageImage
-          v-for="image in attachedImages"
-          :key="image.id"
-          :image="image"
-          :workspace-id="String(vm.route.params.wsId)"
-          :task-id="String(vm.currentTask?.id || msg.task_id || '')"
-        />
-      </div>
     </template>
     <template #actions>
       <!-- Bubble Actions (Under the bubble): Mark Decision / Undo / Copy -->
@@ -297,13 +288,6 @@ function openDiagnosisCase(caseId: string) {
 </template>
 
 <style scoped>
-.message-images {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 8px;
-  margin-top: 4px;
-}
 .message-wrapper.is-collab-preinput .message-actions-row {
   justify-content: flex-end;
 }

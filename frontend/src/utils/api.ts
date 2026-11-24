@@ -3,7 +3,7 @@ import { useAuthStore } from '@/stores/auth'
 import { isDesktop, getSddDesktop } from '@/utils/runtime'
 
 export const DEFAULT_SERVER_URL =
-  typeof window !== 'undefined' && !isDesktop()
+  typeof window !== 'undefined' && !isDesktop() && !window.sddTaskFloat
     ? window.location.origin
     : 'http://localhost:8000'
 
@@ -52,7 +52,7 @@ export const initializeApiFromDesktopConfig = async (): Promise<void> => {
 
 // Request interceptor: add auth token
 api.interceptors.request.use((config) => {
-  config.headers.set('X-TraceForge-Client', isDesktop() ? 'desktop' : 'web')
+  config.headers.set('X-TraceForge-Client', isDesktop() || window.sddTaskFloat ? 'desktop' : 'web')
   const authStore = useAuthStore()
   if (authStore.token) {
     config.headers.Authorization = `Bearer ${authStore.token}`
@@ -64,7 +64,7 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 && !window.sddTaskFloat) {
       const authStore = useAuthStore()
       authStore.logout()
     }

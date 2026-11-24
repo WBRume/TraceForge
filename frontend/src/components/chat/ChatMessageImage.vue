@@ -6,7 +6,7 @@ const props = defineProps<{ workspaceId: string; taskId: string; image: ChatImag
 const src = shallowRef('')
 const failed = shallowRef(false)
 
-watch(() => [props.workspaceId, props.taskId, props.image.id] as const, async ([workspaceId, taskId, imageId], _, onCleanup) => {
+watch([() => props.workspaceId, () => props.taskId, () => props.image.id], async ([workspaceId, taskId, imageId], _, onCleanup) => {
   const controller = new AbortController()
   src.value = ''
   failed.value = false

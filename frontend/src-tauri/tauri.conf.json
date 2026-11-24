@@ -15,7 +15,7 @@
       "label": "main", "create": false, "title": "TraceForge", "width": 1440, "height": 960,
       "minWidth": 1120, "minHeight": 720, "backgroundColor": "#f8fafc"
     }],
-    "security": { "csp": null, "capabilities": ["desktop"] }
+    "security": { "csp": null, "capabilities": ["desktop", "task-float"] }
   },
   "bundle": {
     "useLocalToolsDir": true,

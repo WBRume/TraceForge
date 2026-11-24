@@ -5,7 +5,9 @@ import { AlertCircle, Bot } from '@/components/icons'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 import { messageAuthorColor, memberColorFor, memberColorRgba } from '@/composables/chat/message/memberColor'
 import { steeringStatus, type ChatMessageFields } from '@/composables/chat/shared/messageIdentity'
+import { messageChatImages } from '@/composables/chat/session/useChatImageDraft'
 import ConfirmationHistory from './ConfirmationHistory.vue'
+import ChatMessageImage from './ChatMessageImage.vue'
 import ChatMessageMarkdown from './ChatMessageMarkdown.vue'
 import { confirmationHistoryRecord, isRedundantConfirmationReceipt } from '@/composables/chat/message/confirmationHistory'
 
@@ -20,6 +22,7 @@ const props = defineProps<{
   highlighted?: boolean
   diagnosisResult?: boolean
   relatedMessages?: Partial<ChatMessageFields>[]
+  imageScope?: { workspaceId: string; taskId: string }
 }>()
 
 const { t } = useI18n()
@@ -27,6 +30,7 @@ const msgRole = computed(() => String(props.msg?.role || '').toLowerCase())
 const memberColor = computed(() => messageAuthorColor(props.msg))
 const confirmation = computed(() => confirmationHistoryRecord(props.msg, props.relatedMessages))
 const steering = computed(() => steeringStatus(props.msg))
+const attachedImages = computed(() => messageChatImages(props.msg.metadata))
 
 const metadata = computed(() => {
   const meta = props.msg?.metadata
@@ -152,7 +156,12 @@ const showTrailingAvatar = computed(() => (
             :source="content ?? msg.content ?? ''"
           />
           <div v-else class="msg-content">{{ content ?? msg.content }}</div>
-          <slot name="attachments" />
+          <slot name="attachments">
+            <div v-if="imageScope && attachedImages.length" class="message-images">
+              <ChatMessageImage v-for="image in attachedImages" :key="image.id" :image="image"
+                :workspace-id="imageScope.workspaceId" :task-id="imageScope.taskId" />
+            </div>
+          </slot>
         </div>
       </slot>
       <span v-if="steering === 'pending'" class="steering-pending" role="status">{{ t('chat.steering.pending') }}</span>
@@ -323,6 +332,14 @@ const showTrailingAvatar = computed(() => (
   border: 1px solid #d6d3d1;
   background: #f8f7f5;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.message-images {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 .role-user .message-bubble {
