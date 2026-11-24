@@ -350,6 +350,7 @@ watch(
            收集窗口进行中只保留协作编辑框，普通输入框不再显示 -->
       <ChatExecutionInput
         v-if="vm.suggestionOnly || !vm.preInputIsCollecting"
+        :key="vm.currentTask.id"
         ref="chatInputRef"
         :context-key="vm.route.fullPath"
         v-model="vm.chatInput"

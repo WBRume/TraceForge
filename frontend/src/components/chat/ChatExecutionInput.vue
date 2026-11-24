@@ -265,6 +265,7 @@ const handleClickOutside = (event: MouseEvent) => {
 
 onMounted(() => {
   window.addEventListener('click', handleClickOutside)
+  autoGrow()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('click', handleClickOutside)

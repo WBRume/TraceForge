@@ -1,6 +1,6 @@
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
-import { computed, ref } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { generateClientMessageId } from '../shared/messageIdentity'
@@ -10,6 +10,7 @@ import type { useChatSubmissions } from '@/composables/useChatSubmissions'
 import type { ContextAnnotations } from '../annotations/useContextAnnotations'
 import { formatAnnotationMessage } from '../annotations/contextAnnotations'
 import { type ChatImageDraft, useChatImageDraft } from './useChatImageDraft'
+import { type ChatDraftScope, useChatTextDraft } from './useChatTextDraft'
 
 /**
  * 消息发送（composer）：普通输入、HITL 回复、快捷验证三种入口共用
@@ -30,6 +31,7 @@ export function useChatSend(options: {
   canAttachImages?: () => boolean
   getWorkspaceId: () => string
   getTaskId: () => string
+  getDraftScope: () => ChatDraftScope | null
   task: {
     getCurrentTask: () => any
     isTaskPreStart: { value: boolean }
@@ -66,10 +68,17 @@ export function useChatSend(options: {
 }) {
   const { t } = useI18n()
 
-  const chatInput = ref('')
+  const textDraft = useChatTextDraft(options.getDraftScope)
+  const pendingDraft = shallowRef<typeof textDraft.current.value>()
+  const chatInput = computed({
+    get: () => {
+      const { key, content } = textDraft.current.value
+      return pendingDraft.value?.key === key && pendingDraft.value.content === content ? '' : content
+    },
+    set: textDraft.set,
+  })
   const sendingChat = ref(false)
   const imageDraft = useChatImageDraft(options.getWorkspaceId, options.getTaskId)
-  let sendingComposer = false
   let unconfirmedSteering: { jobId: string; taskId: string; content: string; imagesKey: string; clientMessageId: string } | undefined
   const chatInputPlaceholder = computed(() => {
     if (!options.suggestionOnly?.() && options.resourceBlocked?.()) return '本地资源未连接，恢复在线后可发送消息'
@@ -187,26 +196,24 @@ export function useChatSend(options: {
       return false
     }
 
-    // 显示到本地对话气泡
-    options.messages.upsert({
-      id: `local-${clientMessageId}`,
-      role: 'user',
-      content: displayContent,
-      created_at: new Date().toISOString(),
-      message_type: 'text',
-      client_message_id: clientMessageId,
-      delivery_status: 'sending',
-      ...options.getCreatorMeta(),
-      metadata: sendOptions.metadata || null,
-    })
-
-    // 通过 WebSocket 发送给后端 → CLI 引擎
     try {
-      options.ws.sendFrame('chat_message', {
+      const sent = options.ws.sendFrame('chat_message', {
         role: 'user',
         content: normalized,
         client_message_id: clientMessageId,
         metadata: sendOptions.metadata || undefined,
+      })
+      if (!sent) return false
+      options.messages.upsert({
+        id: `local-${clientMessageId}`,
+        role: 'user',
+        content: displayContent,
+        created_at: new Date().toISOString(),
+        message_type: 'text',
+        client_message_id: clientMessageId,
+        delivery_status: 'sending',
+        ...options.getCreatorMeta(),
+        metadata: sendOptions.metadata || null,
       })
       options.engine.engineRunning.value = true
       if (!options.isHistoryAnchored()) options.scrollTo('chat')
@@ -272,28 +279,23 @@ export function useChatSend(options: {
   }
 
   const sendComposer = async (steeringJobId?: string) => {
-    if (sendingComposer) return
+    if (pendingDraft.value) return
     const annotations = options.replacingAgentSession?.() ? undefined : options.annotations?.snapshot()
     const images = options.canAttachImages?.() ? imageDraft.items.value : []
-    if (!chatInput.value.trim() && !annotations?.items.length && !images.length) return
-    const content = chatInput.value
-    const taskId = options.getTaskId()
-    const workspaceId = options.getWorkspaceId()
-    // The submission bubble owns this text during the request. Clearing now
-    // also prevents a slow response from carrying the sent prompt into another task.
-    chatInput.value = ''
-    const prompt = formatAnnotationMessage(content, annotations?.items || [])
-    sendingComposer = true
+    const draft = textDraft.current.value
+    if (!draft.content.trim() && !annotations?.items.length && !images.length) return
+    const prompt = formatAnnotationMessage(draft.content, annotations?.items || [])
+    // Hide the submitted text while the request is pending and keep it on disk until accepted.
+    pendingDraft.value = draft
     try {
       const sent = steeringJobId ? await sendSteeringContent(steeringJobId, prompt, images) : await sendChatContent(prompt, { images })
       if (sent) {
+        textDraft.clearSent(draft)
         if (annotations) options.annotations?.consume(annotations)
         imageDraft.removeSent(images)
-      } else if (options.getTaskId() === taskId && options.getWorkspaceId() === workspaceId && !chatInput.value) {
-        chatInput.value = content
       }
     } finally {
-      sendingComposer = false
+      pendingDraft.value = undefined
     }
   }
 

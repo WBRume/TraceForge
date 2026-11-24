@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { effectScope, ref } from 'vue'
 import { useContextAnnotations } from '../annotations/useContextAnnotations'
 import { formatAnnotationMessage, type AnnotationSelection } from '../annotations/contextAnnotations'
@@ -11,6 +11,7 @@ vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('element-plus', () => ({ ElMessage: { warning: vi.fn(), error: vi.fn(), success: vi.fn() } }))
 
 const scopes: ReturnType<typeof effectScope>[] = []
+beforeEach(() => localStorage.clear())
 afterEach(() => { scopes.splice(0).forEach(scope => scope.stop()); document.body.innerHTML = ''; vi.restoreAllMocks() })
 function setup() {
   const scope = effectScope(); scopes.push(scope)
@@ -24,6 +25,7 @@ function setup() {
   const send = vi.fn().mockResolvedValue(true)
   const options: Parameters<typeof useChatSend>[0] = {
     annotations, getWorkspaceId: () => 'workspace', getTaskId: () => task.value,
+    getDraftScope: () => ['http://localhost', 'user', 'workspace', task.value],
     task: { getCurrentTask: () => ({ id: task.value }), isTaskPreStart: ref(false), isTaskProvisioning: ref(false), isTaskInterrupted: ref(false), isTerminalStatus: ref(false) },
     submissions: { send, busy: ref(false), current: ref([]) }, messages: { upsert: vi.fn() },
     noteSentTime: vi.fn(), findHitlCard: () => undefined, engine: { engineRunning: ref(false) },
@@ -109,6 +111,41 @@ describe('context annotations and message submission', () => {
     annotations.update(annotations.items.value[0]!.id, '新意见'); add('后来添加')
     accept(true); await pending
     expect(annotations.items.value.map(item => item.comment)).toEqual(['新意见', '后来添加'])
+  })
+  it('restores a rejected text draft after switching tasks during submission', async () => {
+    const { composer, task, send } = setup()
+    composer.chatInput.value = '任务 A\n未发送'
+    let finish!: (sent: boolean) => void
+    send.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const pending = composer.sendChat()
+    expect(composer.chatInput.value).toBe('')
+
+    task.value = 'task-b'
+    expect(composer.chatInput.value).toBe('')
+    composer.chatInput.value = '任务 B 草稿'
+    finish(false)
+    await pending
+
+    expect(composer.chatInput.value).toBe('任务 B 草稿')
+    task.value = 'task-a'
+    expect(composer.chatInput.value).toBe('任务 A\n未发送')
+  })
+  it('removes the accepted text from a reopened composer and keeps the other task draft', async () => {
+    const { composer, task, send } = setup()
+    composer.chatInput.value = '任务 A 待确认'
+    let finish!: (sent: boolean) => void
+    send.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const pending = composer.sendChat()
+
+    task.value = 'task-b'
+    composer.chatInput.value = '任务 B 草稿'
+    const reopened = setup().composer
+    expect(reopened.chatInput.value).toBe('任务 A 待确认')
+    finish(true)
+    await pending
+
+    expect(reopened.chatInput.value).toBe('')
+    expect(composer.chatInput.value).toBe('任务 B 草稿')
   })
   it('retains the package when blocked and leaves it out of unrelated quick actions', async () => {
     const { annotations, add, composer, send, options } = setup()

@@ -2,7 +2,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { ShallowUnwrapRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import api from '@/utils/api'
+import api, { getApiServerUrl } from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { useProvisioningStore } from '@/stores/provisioning'
@@ -695,6 +695,13 @@ export function useChatViewModel() {
     canAttachImages: () => acceptsChatImages.value,
     getWorkspaceId,
     getTaskId: taskState.getTaskId,
+    getDraftScope: () => {
+      const userId = authStore.user?.id
+      const workspaceId = getWorkspaceId()
+      const task = taskState.currentTask.value
+      if (!userId || !workspaceId || !task?.id || (task.workspace_id && task.workspace_id !== workspaceId)) return null
+      return [getApiServerUrl(), userId, workspaceId, String(task.id)]
+    },
     task: {
       getCurrentTask: () => taskState.currentTask.value,
       isTaskPreStart: taskState.isTaskPreStart,
