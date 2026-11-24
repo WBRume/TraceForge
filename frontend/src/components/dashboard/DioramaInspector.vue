@@ -26,6 +26,7 @@ import type {
   DioramaRepoItem,
   DioramaTaskItem,
   DioramaTimelineDay,
+  DioramaWindowMode,
 } from '@/types/dashboardDiorama'
 
 const props = defineProps<{
@@ -34,6 +35,8 @@ const props = defineProps<{
   members: DioramaMemberItem[]
   tasks: DioramaTaskItem[]
   timeline: DioramaTimelineDay[]
+  dayIndex: number
+  windowMode: DioramaWindowMode
   moduleHeatMap: Map<string, DioramaModuleHeatStats>
   selectedHit: DioramaHit | null
   pinnedTaskId: string | null
@@ -74,13 +77,7 @@ const selectedRepo = computed(() => props.selectedHit?.repo ?? null)
 
 const selectedModuleHeat = computed<DioramaModuleHeatStats>(() => {
   const mod = selectedModule.value
-  if (!mod) return { commits: 0, added: 0, deleted: 0, score: 0 }
-  return props.moduleHeatMap.get(mod.id) ?? {
-    commits: mod.commits,
-    added: mod.added,
-    deleted: mod.deleted,
-    score: 0,
-  }
+  return (mod && props.moduleHeatMap.get(mod.id)) ?? { commits: 0, added: 0, deleted: 0, score: 0 }
 })
 
 const selectedRepoWindowStats = computed(() => {
@@ -89,6 +86,17 @@ const selectedRepoWindowStats = computed(() => {
   let commits = 0
   let added = 0
   let deleted = 0
+  if (props.timeline[0]?.repo_heat) {
+    const start = props.windowMode === 'day' ? props.dayIndex : 0
+    for (let i = start; i <= props.dayIndex; i++) {
+      const stats = props.timeline[i]?.repo_heat?.[repo.id]
+      if (!stats) continue
+      commits += stats.commits
+      added += stats.added
+      deleted += stats.deleted
+    }
+    return { commits, added, deleted }
+  }
   for (const mod of repo.modules) {
     const st = props.moduleHeatMap.get(mod.id)
     if (st) {

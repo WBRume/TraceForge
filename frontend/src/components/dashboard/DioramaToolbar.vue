@@ -25,7 +25,7 @@ const props = defineProps<{
   repos: DioramaRepoItem[]
   enabledRepoIds: Set<string>
   metric: DioramaMetric
-  days: 14 | 30 | 60
+  days: number
   isoMode: DioramaIsoMode
   zoomPct: number
   showAvatars: boolean
@@ -73,7 +73,7 @@ const searchHits = computed(() => {
 
 const showDropdown = computed(() => searchFocused.value && searchQuery.value.trim().length > 0)
 
-watch(searchQuery, (raw) => {
+watch([searchQuery, () => props.searchCorpus], ([raw]) => {
   const q = raw.trim().toLocaleLowerCase()
   if (!q) {
     emit('search-change', new Set())
@@ -122,6 +122,7 @@ function formatLoc(loc: number): string {
             'is-active': enabledRepoIds.has(repo.id),
             'is-pending': !repo.available,
           }"
+          :aria-pressed="enabledRepoIds.has(repo.id)"
           :title="t('dashboard.diorama.repo_pill_tooltip', { name: repo.name, branch: repo.branch })"
           @click="emit('toggle-repo', repo.id)"
           @dblclick.stop="emit('focus-repo', repo.id)"
@@ -179,6 +180,7 @@ function formatLoc(loc: number): string {
             type="button"
             class="seg-btn"
             :class="{ 'is-active': days === d }"
+            :aria-pressed="days === d"
             @click="emit('update:days', d)"
           >
             {{ t('dashboard.diorama.days_unit', { count: d }) }}

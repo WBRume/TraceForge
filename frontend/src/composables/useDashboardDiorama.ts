@@ -1,7 +1,11 @@
 import { computed, onScopeDispose, shallowRef, toValue, watch, type MaybeRefOrGetter } from 'vue'
-import api from '@/utils/api'
+import { isAxiosError } from 'axios'
+import { useAuthStore } from '@/stores/auth'
+import api, { getApiServerUrl } from '@/utils/api'
 import type {
   DashboardDioramaPayload,
+  DashboardDioramaResponse,
+  DioramaDays,
   DioramaDrillState,
   DioramaHit,
   DioramaIsoMode,
@@ -13,11 +17,48 @@ import type {
   DioramaWindowMode,
 } from '@/types/dashboardDiorama'
 
+const FRESH_FOR_MS = 60_000
+const MAX_CACHED_WORKSPACES = 8
+type CachedPeriod = { data: DashboardDioramaPayload; loadedAt: number }
+const workspaceCache = new Map<string, Map<number, CachedPeriod>>()
+let cacheServer: string | undefined
+let cacheToken: string | null = null
+
+function setCacheScope(server: string, token: string | null) {
+  if (cacheServer === server && cacheToken === token) return
+  workspaceCache.clear()
+  cacheServer = server
+  cacheToken = token
+}
+
+function cacheResponse(response: DashboardDioramaResponse) {
+  const { windows, ...selected } = response
+  const { workspace_id, workspace_name, members, generated_at } = selected
+  const workspace = workspaceCache.get(workspace_id) ?? new Map<number, CachedPeriod>()
+  const loadedAt = Date.now()
+  workspace.set(selected.days, { data: selected, loadedAt })
+  for (const period of Object.values(windows ?? {})) {
+    if (period) {
+      workspace.set(period.days, { data: { workspace_id, workspace_name, members, generated_at, ...period }, loadedAt })
+    }
+  }
+  workspaceCache.delete(workspace_id)
+  workspaceCache.set(workspace_id, workspace)
+  if (workspaceCache.size > MAX_CACHED_WORKSPACES) {
+    const oldest = workspaceCache.keys().next().value
+    if (oldest !== undefined) workspaceCache.delete(oldest)
+  }
+  return workspace
+}
+
 export function useDashboardDiorama(workspaceIdSource: MaybeRefOrGetter<string>) {
+  const auth = useAuthStore()
+  const server = shallowRef(getApiServerUrl())
+  const workspaceId = computed(() => toValue(workspaceIdSource))
   const payload = shallowRef<DashboardDioramaPayload | null>(null)
   const loading = shallowRef(false)
   const error = shallowRef(false)
-  const days = shallowRef<14 | 30 | 60>(30)
+  const days = shallowRef<DioramaDays>(30)
 
   const metric = shallowRef<DioramaMetric>('heat')
   const isoMode = shallowRef<DioramaIsoMode>('3d')
@@ -38,7 +79,7 @@ export function useDashboardDiorama(workspaceIdSource: MaybeRefOrGetter<string>)
   const speedIdx = shallowRef(0)
   const speeds = [1, 2, 4] as const
   let playTimer: number | undefined
-  let fetchSeq = 0
+  let activeRequest: AbortController | undefined
 
   const speedLabel = computed(() => `${speeds[speedIdx.value]}×`)
 
@@ -144,33 +185,79 @@ export function useDashboardDiorama(workspaceIdSource: MaybeRefOrGetter<string>)
     }
   }
 
-  async function load(refresh = false) {
-    const wsId = toValue(workspaceIdSource)
-    if (!wsId) return
-    const seq = ++fetchSeq
-    loading.value = true
+  function showPeriod(next: DashboardDioramaPayload) {
+    if (next === payload.value) return
+    const previous = payload.value
+    const hidden = new Set(previous?.repos.filter(repo => !enabledRepoIds.value.has(repo.id)).map(repo => repo.id))
+    const enabled = next.repos.filter(repo => !hidden.has(repo.id))
+    payload.value = next
+    enabledRepoIds.value = new Set((enabled.length ? enabled : next.repos).map(repo => repo.id))
+    dayIndex.value = Math.max(0, next.timeline.length - 1)
+    clearSceneSelection()
+  }
+
+  function clearData() {
+    payload.value = null
+    enabledRepoIds.value = new Set()
+    clearSceneSelection()
+  }
+
+  async function load({ refresh = false, revalidate = false } = {}) {
+    const wsId = workspaceId.value
+    const token = auth.token
+    const serverUrl = server.value
+    if (!wsId || !token) return
+    setCacheScope(serverUrl, token)
     stopPlayback()
+    error.value = false
+    const requestedDays = days.value
+    if (!refresh) {
+      const cached = workspaceCache.get(wsId)?.get(requestedDays)
+      if (cached) {
+        showPeriod(cached.data)
+        if (!revalidate && Date.now() - cached.loadedAt < FRESH_FOR_MS) return
+      }
+      // The in-flight response can supply any of the three periods.
+      if (activeRequest) return
+    }
+
+    activeRequest?.abort()
+    const controller = new AbortController()
+    activeRequest = controller
+    loading.value = true
+    let loadAnotherPeriod = false
     try {
-      const res = await api.get<DashboardDioramaPayload>(`/workspaces/${wsId}/dashboard/repo-diorama`, {
-        params: { days: days.value, refresh },
+      const res = await api.get<DashboardDioramaResponse>(`/workspaces/${wsId}/dashboard/repo-diorama`, {
+        params: { days: requestedDays, refresh, include_windows: true },
+        signal: controller.signal,
       })
-      if (seq !== fetchSeq) return
-      payload.value = res.data
-      enabledRepoIds.value = new Set(res.data.repos.map(r => r.id))
-      dayIndex.value = Math.max(0, res.data.timeline.length - 1)
-      selectedHit.value = null
-      drill.value = null
-      pinnedTaskId.value = null
-      hoveredTaskId.value = null
-      activeMemberId.value = null
-      error.value = false
+      if (controller.signal.aborted || wsId !== workspaceId.value || token !== auth.token || serverUrl !== server.value) return
+      if (res.data.workspace_id !== wsId || res.data.days !== requestedDays) throw new Error('Unexpected dashboard period')
+      const periods = cacheResponse(res.data)
+      const selected = periods.get(days.value)
+      if (selected) showPeriod(selected.data)
+      else loadAnotherPeriod = true
     } catch (err) {
-      if (seq !== fetchSeq) return
+      if (controller.signal.aborted) return
+      if (isAxiosError(err) && [401, 403, 404].includes(err.response?.status ?? 0)) {
+        workspaceCache.delete(wsId)
+        clearData()
+      }
       console.error('Failed to load repository diorama', err)
       error.value = true
     } finally {
-      if (seq === fetchSeq) loading.value = false
+      if (activeRequest === controller) {
+        activeRequest = undefined
+        loading.value = false
+        if (loadAnotherPeriod) void load()
+      }
     }
+  }
+
+  function clearSceneSelection() {
+    selectedHit.value = null
+    drill.value = null
+    clearFocus()
   }
 
   function toggleRepo(repoId: string) {
@@ -178,6 +265,8 @@ export function useDashboardDiorama(workspaceIdSource: MaybeRefOrGetter<string>)
     if (next.has(repoId)) {
       if (next.size <= 1) return
       next.delete(repoId)
+      if (selectedHit.value?.repo.id === repoId) selectedHit.value = null
+      if (drill.value?.repo.id === repoId) drill.value = null
     } else {
       next.add(repoId)
     }
@@ -243,11 +332,23 @@ export function useDashboardDiorama(workspaceIdSource: MaybeRefOrGetter<string>)
     scheduleNextTick()
   }
 
-  watch(() => [toValue(workspaceIdSource), days.value] as const, () => {
-    void load(false)
+  watch([workspaceId, server, () => auth.token], ([, currentServer, token]) => {
+    activeRequest?.abort()
+    activeRequest = undefined
+    loading.value = false
+    error.value = false
+    clearData()
+    setCacheScope(currentServer, token)
+    void load({ revalidate: true })
   }, { immediate: true })
+  watch(days, () => { void load() })
+
+  const onServerChanged = () => { server.value = getApiServerUrl() }
+  window.addEventListener('sdd-server-changed', onServerChanged)
 
   onScopeDispose(() => {
+    window.removeEventListener('sdd-server-changed', onServerChanged)
+    activeRequest?.abort()
     stopPlayback()
   })
 

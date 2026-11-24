@@ -1,23 +1,17 @@
-"""2.5D multi-repository codebase diorama aggregation service.
-
-Scans actual workspace repositories on disk (respecting .gitignore via `git ls-files`),
-extracts recent commit activity via `git log --numstat`, and links real workspace
-members, tasks, requirements, and task change proposals without calling any LLM.
-"""
+"""Aggregate repository activity and workspace collaboration for the dashboard."""
 
 from __future__ import annotations
 
-import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload, load_only, selectinload
 
-from app.core.subprocess_runner import ProcessTimeoutError, run_git
-from app.domains.auth.models.user import Workspace, WorkspaceMember
+from app.domains.auth.models.user import User, Workspace, WorkspaceMember
 from app.domains.dashboard.schemas.diorama import (
     DashboardDioramaResponse,
     DioramaCommitItem,
@@ -25,88 +19,44 @@ from app.domains.dashboard.schemas.diorama import (
     DioramaFileItem,
     DioramaMemberItem,
     DioramaModuleItem,
+    DioramaPeriod,
     DioramaRepoItem,
     DioramaTaskItem,
     DioramaTimelineDay,
 )
+from app.domains.dashboard.services.diorama_repository import (
+    ParsedCommit,
+    RepositorySnapshot,
+    ScannedFile,
+    infer_module_name,
+    normalize_rel_path,
+    read_repositories,
+)
+from app.domains.dashboard.services.diorama_repository import (
+    invalidate_diorama_cache as invalidate_diorama_cache,
+)
 from app.domains.task.models.task import SddTask
-from app.domains.workflow.models.task_change import SddTaskChangeProposal
+from app.domains.task.models.task_repository import SddTaskRepository
+from app.domains.workflow.models.task_change import (
+    SddTaskChangeProposal,
+    SddTaskChangeProposalFile,
+    SddTaskChangeProposalRepo,
+)
 from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
-
-_CACHE_TTL_SECONDS = 20.0
-_CACHE: dict[tuple[str, int], tuple[float, DashboardDioramaResponse]] = {}
+from app.domains.workspace_asset.models.workspace_asset import SddRequirement, SddTaskRequirement
 
 _REPO_COLORS = ("#0284c7", "#0ea5e9", "#6366f1", "#0d9488", "#2563eb", "#0891b2")
 _MEMBER_COLORS = ("#0284c7", "#059669", "#d97706", "#7c3aed", "#0891b2", "#e11d48")
 
-_SOURCE_EXTS: dict[str, str] = {
-    ".py": "Python",
-    ".ts": "TypeScript",
-    ".tsx": "TypeScript",
-    ".vue": "Vue",
-    ".js": "JavaScript",
-    ".jsx": "JavaScript",
-    ".mjs": "JavaScript",
-    ".cjs": "JavaScript",
-    ".rs": "Rust",
-    ".go": "Go",
-    ".java": "Java",
-    ".kt": "Kotlin",
-    ".cs": "C#",
-    ".cpp": "C++",
-    ".c": "C",
-    ".h": "C/C++",
-    ".css": "CSS",
-    ".scss": "CSS",
-    ".less": "CSS",
-    ".html": "HTML",
-    ".sql": "SQL",
-    ".sh": "Shell",
-    ".yml": "Config",
-    ".yaml": "Config",
-    ".toml": "Config",
-    ".json": "JSON",
-}
-
-_SKIP_DIRS = frozenset(
-    {
-        "node_modules",
-        ".git",
-        "venv",
-        ".venv",
-        "__pycache__",
-        "dist",
-        "dist-electron",
-        "dist-desktop-host",
-        "build",
-        "target",
-        "release",
-        ".vite",
-        ".pytest_cache",
-        ".ruff_cache",
-        "coverage",
-        "backups",
-        "uploads",
-        "tmp",
-        "output",
-        "vendor",
-    }
-)
-
-_CONTAINER_DIRS = frozenset(
-    {"src", "app", "lib", "pkg", "internal", "packages", "apps", "services", "modules", "domains", "components"}
-)
-
-_MAX_FILES_PER_REPO = 4000
-_MAX_FILE_BYTES = 1_500_000
-_MAX_COMMITS_PER_REPO = 180
 _MAX_MODULES_PER_REPO = 24
 _MAX_FILES_PER_MODULE = 18
+_DASHBOARD_WINDOWS = (14, 30, 60)
 
 
 @dataclass(frozen=True)
 class _RepoDescriptor:
     id: str
+    repository_id: str | None
     name: str
     slug: str
     branch: str
@@ -116,186 +66,14 @@ class _RepoDescriptor:
     color: str
 
 
-@dataclass
-class _ScannedFile:
-    path: str
-    name: str
-    module: str
-    loc: int
-    lang: str
-
-
-@dataclass
-class _ParsedCommit:
-    hash: str
-    date: str
-    subject: str
-    files: list[tuple[str, int, int]]
-
-
-def invalidate_diorama_cache(workspace_id: str | None = None) -> None:
-    if workspace_id is None:
-        _CACHE.clear()
-        return
-    stale = [key for key in _CACHE if key[0] == workspace_id]
-    for key in stale:
-        _CACHE.pop(key, None)
-
-
-def _normalize_rel_path(raw: str) -> str:
-    return raw.replace("\\", "/").lstrip("./").strip()
-
-
-def _is_ignored_source_path(rel_path: str) -> bool:
-    parts = rel_path.split("/")
-    if any(part in _SKIP_DIRS or part.startswith(".") for part in parts[:-1]):
-        return True
-    low = rel_path.lower()
-    if low.endswith((".d.ts", ".min.js", ".min.css")):
-        return True
-    return Path(rel_path).suffix.lower() not in _SOURCE_EXTS
-
-
-def infer_module_name(rel_path: str) -> str:
-    """Derive a readable 1-to-2 level module bucket for any repository layout."""
-    parts = [p for p in _normalize_rel_path(rel_path).split("/") if p]
-    if len(parts) <= 1:
-        return "(root)"
-    dirs = parts[:-1]
-    if len(dirs) == 1:
-        return dirs[0]
-    if dirs[0] in _CONTAINER_DIRS:
-        if len(dirs) >= 3 and dirs[1] in _CONTAINER_DIRS:
-            return f"{dirs[1]}/{dirs[2]}"
-        return f"{dirs[0]}/{dirs[1]}"
-    if len(dirs) >= 3 and dirs[1] in _CONTAINER_DIRS:
-        return f"{dirs[0]}/{dirs[2]}"
-    return dirs[0]
-
-
-def _safe_count_lines(full_path: Path) -> int:
-    try:
-        stat = full_path.stat()
-        if not full_path.is_file() or stat.st_size <= 0 or stat.st_size > _MAX_FILE_BYTES:
-            return 0
-        with full_path.open("rb") as fh:
-            data = fh.read()
-        if b"\x00" in data[:1024]:
-            return 0
-        breaks = data.count(b"\n")
-        return breaks + (0 if data.endswith(b"\n") else 1)
-    except OSError:
-        return 0
-
-
-def _list_repo_source_paths(repo_dir: Path) -> tuple[list[str], bool]:
-    """List relative source paths using `git ls-files` when available, else bounded os.walk."""
-    try:
-        res = run_git(["ls-files", "-z"], cwd=str(repo_dir), timeout_seconds=8)
-        if res.returncode == 0 and res.stdout:
-            raw_paths = [p for p in res.stdout.split("\0") if p]
-            filtered = [_normalize_rel_path(p) for p in raw_paths if not _is_ignored_source_path(p)]
-            return filtered[:_MAX_FILES_PER_REPO], True
-    except (OSError, ProcessTimeoutError):
-        pass
-
-    collected: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(repo_dir):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
-        for fn in filenames:
-            if Path(fn).suffix.lower() not in _SOURCE_EXTS:
-                continue
-            rel = _normalize_rel_path(os.path.relpath(os.path.join(dirpath, fn), repo_dir))
-            if _is_ignored_source_path(rel):
-                continue
-            collected.append(rel)
-            if len(collected) >= _MAX_FILES_PER_REPO:
-                return collected, False
-    return collected, False
-
-
-def _scan_repo_files(repo_dir: Path) -> tuple[list[_ScannedFile], bool]:
-    rel_paths, is_git = _list_repo_source_paths(repo_dir)
-    scanned: list[_ScannedFile] = []
-    for rel in rel_paths:
-        loc = _safe_count_lines(repo_dir / rel)
-        if loc <= 0:
-            continue
-        ext = Path(rel).suffix.lower()
-        scanned.append(
-            _ScannedFile(
-                path=rel,
-                name=Path(rel).name,
-                module=infer_module_name(rel),
-                loc=loc,
-                lang=_SOURCE_EXTS.get(ext, "Other"),
-            )
-        )
-    return scanned, is_git
-
-
-def _parse_git_numstat_log(raw_output: str) -> list[_ParsedCommit]:
-    commits: list[_ParsedCommit] = []
-    current: _ParsedCommit | None = None
-    for line in raw_output.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("@@C@@"):
-            if current and current.files:
-                commits.append(current)
-            parts = stripped[5:].split("|", 2)
-            if len(parts) < 3:
-                current = None
-                continue
-            current = _ParsedCommit(hash=parts[0], date=parts[1], subject=parts[2], files=[])
-            continue
-        if current is None:
-            continue
-        cols = line.split("\t")
-        if len(cols) != 3 or "=>" in cols[2]:
-            continue
-        rel = _normalize_rel_path(cols[2])
-        if _is_ignored_source_path(rel):
-            continue
-        ins = int(cols[0]) if cols[0].isdigit() else 0
-        dels = int(cols[1]) if cols[1].isdigit() else 0
-        current.files.append((rel, ins, dels))
-    if current and current.files:
-        commits.append(current)
-    commits.reverse()
-    return commits
-
-
-def _scan_repo_commits(repo_dir: Path, days: int) -> list[_ParsedCommit]:
-    try:
-        res = run_git(
-            [
-                "log",
-                f"--since={days} days ago",
-                f"-n{_MAX_COMMITS_PER_REPO}",
-                "--date=short",
-                "--numstat",
-                "--format=@@C@@%h|%ad|%s",
-            ],
-            cwd=str(repo_dir),
-            timeout_seconds=10,
-        )
-        if res.returncode != 0 or not res.stdout:
-            return []
-        return _parse_git_numstat_log(res.stdout)
-    except (OSError, ProcessTimeoutError):
-        return []
-
-
 def _build_module_items(
     repo_id: str,
-    files: list[_ScannedFile],
-    commits: list[_ParsedCommit],
-) -> tuple[list[DioramaModuleItem], dict[str, list[DioramaCommitItem]], dict[str, dict[str, list[int]]]]:
+    files: list[ScannedFile],
+    commits: list[ParsedCommit],
+) -> tuple[list[DioramaModuleItem], dict[str, list[tuple[int, DioramaCommitItem]]], dict[str, dict[str, list[int]]]]:
     file_stats: dict[str, list[int | str]] = defaultdict(lambda: [0, 0, 0, ""])
     mod_commits: dict[str, list[DioramaCommitItem]] = defaultdict(list)
-    day_commits: dict[str, list[DioramaCommitItem]] = defaultdict(list)
+    day_commits: dict[str, list[tuple[int, DioramaCommitItem]]] = defaultdict(list)
     day_mod_heat: dict[str, dict[str, list[int]]] = defaultdict(lambda: defaultdict(lambda: [0, 0, 0]))
 
     for commit in commits:
@@ -305,7 +83,7 @@ def _build_module_items(
             st[0] = int(st[0]) + 1
             st[1] = int(st[1]) + ins
             st[2] = int(st[2]) + dels
-            st[3] = commit.date
+            st[3] = max(str(st[3]), commit.date)
             mod_name = infer_module_name(rel)
             per_mod[mod_name][0] += ins
             per_mod[mod_name][1] += dels
@@ -313,16 +91,15 @@ def _build_module_items(
         touched_ids = sorted(f"{repo_id}::{m}" for m in per_mod)
         total_ins = sum(v[0] for v in per_mod.values())
         total_del = sum(v[1] for v in per_mod.values())
-        day_commits[commit.date].append(
-            DioramaCommitItem(
-                hash=commit.hash,
-                date=commit.date,
-                subject=commit.subject,
-                added=total_ins,
-                deleted=total_del,
-                modules=touched_ids,
-            )
+        item = DioramaCommitItem(
+            hash=commit.hash,
+            date=commit.date,
+            subject=commit.subject,
+            added=total_ins,
+            deleted=total_del,
+            modules=touched_ids,
         )
+        day_commits[commit.date].append((commit.timestamp, item))
         for mod_name, (ins, dels) in per_mod.items():
             mid = f"{repo_id}::{mod_name}"
             mod_commits[mod_name].append(
@@ -340,7 +117,7 @@ def _build_module_items(
             dh[1] += ins
             dh[2] += dels
 
-    by_mod: dict[str, list[_ScannedFile]] = defaultdict(list)
+    by_mod: dict[str, list[ScannedFile]] = defaultdict(list)
     for f in files:
         by_mod[f.module].append(f)
 
@@ -372,7 +149,7 @@ def _build_module_items(
 
 
 def _pack_module_files(
-    flist_sorted: list[_ScannedFile],
+    flist_sorted: list[ScannedFile],
     file_stats: dict[str, list[int | str]],
 ) -> list[DioramaFileItem]:
     items: list[DioramaFileItem] = []
@@ -419,6 +196,7 @@ def _discover_workspace_repos(db: Session, workspace: Workspace) -> list[_RepoDe
         return [
             _RepoDescriptor(
                 id=row.id,
+                repository_id=row.repository_id,
                 name=row.repo_name or row.repo_slug,
                 slug=row.repo_slug,
                 branch=row.branch_name or "",
@@ -437,6 +215,7 @@ def _discover_workspace_repos(db: Session, workspace: Workspace) -> list[_RepoDe
         return [
             _RepoDescriptor(
                 id=f"ws-legacy-{workspace.id[:8]}",
+                repository_id=None,
                 name=name,
                 slug=name.lower().replace(" ", "-"),
                 branch="",
@@ -478,34 +257,57 @@ def _load_workspace_members(db: Session, workspace_id: str) -> list[DioramaMembe
 
 
 def _resolve_repo_id_for_binding(
-    repo_slug: str | None,
-    repo_name: str | None,
-    repo_url: str | None,
-    repo_lookup: dict[str, str],
+    binding: SddTaskRepository | SddTaskChangeProposalRepo,
+    repositories_by_id: dict[str, str],
+    repo_lookup: dict[tuple[str, str], str | None],
     default_repo_id: str | None,
 ) -> str | None:
-    for candidate in (repo_slug, repo_name, (repo_url or "").rstrip("/").removesuffix(".git").lower()):
-        key = str(candidate or "").strip().lower()
-        if key and key in repo_lookup:
-            return repo_lookup[key]
-    return default_repo_id
+    if binding.repository_id in repositories_by_id:
+        return repositories_by_id[binding.repository_id]
+    for alias in _repo_aliases(binding.repo_url, binding.repo_slug, binding.repo_name):
+        if repo_id := repo_lookup.get(alias):
+            return repo_id
+    return default_repo_id if not binding.repository_id else None
+
+
+def _repo_aliases(url: str | None, slug: str | None, name: str | None) -> list[tuple[str, str]]:
+    return [
+        ("url", (url or "").strip().lower().rstrip("/").removesuffix(".git")),
+        ("slug", (slug or "").strip().lower()),
+        ("name", (name or "").strip().lower()),
+    ]
 
 
 def _load_workspace_tasks(
     db: Session,
     workspace_id: str,
-    repos: list[DioramaRepoItem],
-    descriptors: list[_RepoDescriptor],
-) -> list[DioramaTaskItem]:
+) -> list[tuple[SddTask, SddTaskChangeProposal | None]]:
     tasks = (
         db.query(SddTask)
         .options(
-            joinedload(SddTask.creator),
-            joinedload(SddTask.repo_bindings),
-            joinedload(SddTask.requirement_links),
+            load_only(
+                SddTask.id,
+                SddTask.name,
+                SddTask.status,
+                SddTask.interrupt_kind,
+                SddTask.task_type,
+                SddTask.creator_id,
+                SddTask.updated_at,
+                SddTask.created_at,
+            ),
+            joinedload(SddTask.creator).load_only(User.display_name),
+            selectinload(SddTask.repo_bindings).load_only(
+                SddTaskRepository.repository_id,
+                SddTaskRepository.repo_url,
+                SddTaskRepository.repo_slug,
+                SddTaskRepository.repo_name,
+            ),
+            selectinload(SddTask.requirement_links)
+            .joinedload(SddTaskRequirement.requirement)
+            .load_only(SddRequirement.title),
         )
         .filter(SddTask.workspace_id == workspace_id)
-        .order_by(SddTask.updated_at.desc(), SddTask.created_at.desc())
+        .order_by(func.coalesce(SddTask.updated_at, SddTask.created_at).desc(), SddTask.created_at.desc())
         .limit(18)
         .all()
     )
@@ -513,45 +315,74 @@ def _load_workspace_tasks(
         return []
 
     task_ids = [t.id for t in tasks]
+    latest_patch_sets = (
+        db.query(SddTaskChangeProposal.task_id, func.max(SddTaskChangeProposal.patch_set_no).label("patch_set_no"))
+        .filter(SddTaskChangeProposal.task_id.in_(task_ids))
+        .group_by(SddTaskChangeProposal.task_id)
+        .subquery()
+    )
     proposals = (
         db.query(SddTaskChangeProposal)
-        .options(joinedload(SddTaskChangeProposal.files), joinedload(SddTaskChangeProposal.repo_patches))
-        .filter(SddTaskChangeProposal.task_id.in_(task_ids))
-        .order_by(SddTaskChangeProposal.proposal_no.desc())
+        .join(
+            latest_patch_sets,
+            (SddTaskChangeProposal.task_id == latest_patch_sets.c.task_id)
+            & (SddTaskChangeProposal.patch_set_no == latest_patch_sets.c.patch_set_no),
+        )
+        .options(
+            load_only(SddTaskChangeProposal.task_id),
+            selectinload(SddTaskChangeProposal.files).load_only(
+                SddTaskChangeProposalFile.proposal_repo_id,
+                SddTaskChangeProposalFile.repository_id,
+                SddTaskChangeProposalFile.file_path,
+                SddTaskChangeProposalFile.insertions,
+                SddTaskChangeProposalFile.deletions,
+            ),
+            selectinload(SddTaskChangeProposal.repo_patches).load_only(
+                SddTaskChangeProposalRepo.repository_id,
+                SddTaskChangeProposalRepo.repo_url,
+                SddTaskChangeProposalRepo.repo_slug,
+                SddTaskChangeProposalRepo.repo_name,
+            ),
+        )
         .all()
     )
-    latest_proposal: dict[str, SddTaskChangeProposal] = {}
-    for prop in proposals:
-        latest_proposal.setdefault(prop.task_id, prop)
+    latest_proposal = {prop.task_id: prop for prop in proposals}
+    return [(task, latest_proposal.get(task.id)) for task in tasks]
 
-    repo_lookup: dict[str, str] = {}
-    valid_modules: dict[str, set[str]] = {r.id: {m.id for m in r.modules} for r in repos}
+
+def _build_workspace_tasks(
+    tasks: list[tuple[SddTask, SddTaskChangeProposal | None]],
+    repos: list[DioramaRepoItem],
+    descriptors: list[_RepoDescriptor],
+) -> list[DioramaTaskItem]:
+    repositories_by_id = {desc.repository_id: desc.id for desc in descriptors if desc.repository_id}
+    repo_lookup: dict[tuple[str, str], str | None] = {}
     for desc in descriptors:
-        for key in (desc.slug, desc.name, desc.repo_url.rstrip("/").removesuffix(".git")):
-            norm = key.strip().lower()
-            if norm:
-                repo_lookup[norm] = desc.id
+        for alias in _repo_aliases(desc.repo_url, desc.slug, desc.name):
+            if alias[1] and repo_lookup.setdefault(alias, desc.id) != desc.id:
+                repo_lookup[alias] = None
+    modules_by_repo = {repo.id: [module.id for module in repo.modules] for repo in repos}
     default_repo_id = repos[0].id if len(repos) == 1 else None
 
-    result: list[DioramaTaskItem] = []
-    for task in tasks:
-        result.append(
-            _build_task_item(
-                task,
-                latest_proposal.get(task.id),
-                repo_lookup,
-                valid_modules,
-                default_repo_id,
-            )
+    return [
+        _build_task_item(
+            task,
+            proposal,
+            repositories_by_id,
+            repo_lookup,
+            modules_by_repo,
+            default_repo_id,
         )
-    return result
+        for task, proposal in tasks
+    ]
 
 
 def _build_task_item(
     task: SddTask,
     proposal: SddTaskChangeProposal | None,
-    repo_lookup: dict[str, str],
-    valid_modules: dict[str, set[str]],
+    repositories_by_id: dict[str, str],
+    repo_lookup: dict[tuple[str, str], str | None],
+    modules_by_repo: dict[str, list[str]],
     default_repo_id: str | None,
 ) -> DioramaTaskItem:
     repo_set: set[str] = set()
@@ -561,43 +392,43 @@ def _build_task_item(
     deleted_sum = 0
 
     for binding in task.repo_bindings or []:
-        rid = _resolve_repo_id_for_binding(
-            binding.repo_slug, binding.repo_name, binding.repo_url, repo_lookup, default_repo_id
-        )
+        rid = _resolve_repo_id_for_binding(binding, repositories_by_id, repo_lookup, default_repo_id)
         if rid:
             repo_set.add(rid)
 
     if proposal:
         prop_repo_map: dict[str, str] = {}
         for pr in proposal.repo_patches or []:
-            rid = _resolve_repo_id_for_binding(pr.repo_slug, pr.repo_name, pr.repo_url, repo_lookup, default_repo_id)
+            rid = _resolve_repo_id_for_binding(pr, repositories_by_id, repo_lookup, default_repo_id)
             if rid:
                 prop_repo_map[pr.id] = rid
                 repo_set.add(rid)
 
-        fallback_rid = next(iter(repo_set), default_repo_id)
+        fallback_rid = next(iter(repo_set)) if len(repo_set) == 1 else default_repo_id
         for pf in proposal.files or []:
-            rid = prop_repo_map.get(pf.proposal_repo_id or "", fallback_rid)
-            if not rid:
-                continue
-            repo_set.add(rid)
-            rel = _normalize_rel_path(pf.file_path)
+            rel = normalize_rel_path(pf.file_path)
             file_set.add(rel)
-            mid = f"{rid}::{infer_module_name(rel)}"
-            if mid in valid_modules.get(rid, set()):
-                mod_churn[mid] += max(1, (pf.insertions or 0) + (pf.deletions or 0))
             added_sum += pf.insertions or 0
             deleted_sum += pf.deletions or 0
 
-    # If a task is bound to repos but has no generated change proposal yet, anchor lightly to top modules
-    if not mod_churn and repo_set:
-        for rid in sorted(repo_set):
-            mods = sorted(valid_modules.get(rid, set()))
-            if mods:
-                mod_churn[mods[0]] = 1
+            rid = prop_repo_map.get(pf.proposal_repo_id) or repositories_by_id.get(pf.repository_id)
+            if not rid and not pf.proposal_repo_id and not pf.repository_id:
+                rid = fallback_rid
+            if not rid:
+                continue
+            repo_set.add(rid)
+            mid = f"{rid}::{infer_module_name(rel)}"
+            if mid in modules_by_repo[rid]:
+                mod_churn[mid] += max(1, (pf.insertions or 0) + (pf.deletions or 0))
 
-    sorted_mods = [m for m, _ in sorted(mod_churn.items(), key=lambda kv: -kv[1])]
-    reqs = [link.requirement for link in (task.requirement_links or []) if getattr(link, "requirement", None)]
+    # If a task is bound to repos but has no generated change proposal yet, anchor lightly to top modules
+    if not file_set:
+        for rid in sorted(repo_set):
+            if modules := modules_by_repo[rid]:
+                mod_churn[modules[0]] = 1
+
+    sorted_mods = sorted(mod_churn, key=lambda mid: (-mod_churn[mid], mid))
+    reqs = [link.requirement for link in task.requirement_links if link.requirement is not None]
     status_val = task.status.value if hasattr(task.status, "value") else str(task.status)
 
     return DioramaTaskItem(
@@ -620,38 +451,21 @@ def _build_task_item(
     )
 
 
-def get_repo_diorama(
-    db: Session,
-    workspace_id: str,
+def _build_period(
     *,
-    days: int = 30,
-    refresh: bool = False,
-) -> DashboardDioramaResponse:
-    cache_key = (workspace_id, days)
-    now_mono = time.monotonic()
-    if not refresh and cache_key in _CACHE:
-        cached_at, cached_payload = _CACHE[cache_key]
-        if now_mono - cached_at < _CACHE_TTL_SECONDS:
-            return cached_payload
-
-    workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
-    if not workspace:
-        return DashboardDioramaResponse(
-            workspace_id=workspace_id,
-            workspace_name="",
-            days=days,
-            generated_at=datetime.now(timezone.utc),
-        )
-
-    descriptors = _discover_workspace_repos(db, workspace)
+    days: int,
+    cutoff: int,
+    descriptors: list[_RepoDescriptor],
+    snapshots: dict[str, RepositorySnapshot],
+    tasks: list[tuple[SddTask, SddTaskChangeProposal | None]],
+) -> DioramaPeriod:
     repo_items: list[DioramaRepoItem] = []
-    merged_day_commits: dict[str, list[DioramaCommitItem]] = defaultdict(list)
-    merged_day_heat: dict[str, dict[str, list[int]]] = defaultdict(lambda: defaultdict(lambda: [0, 0, 0]))
-
+    merged_day_commits: dict[str, list[tuple[int, DioramaCommitItem]]] = defaultdict(list)
+    merged_day_heat: dict[str, dict[str, DioramaDayHeat]] = defaultdict(dict)
+    merged_repo_heat: dict[str, dict[str, DioramaDayHeat]] = defaultdict(dict)
     for desc in descriptors:
-        repo_path = Path(desc.base_dir) if desc.base_dir else None
-        available = bool(repo_path and repo_path.is_dir())
-        if not available or repo_path is None:
+        snapshot = snapshots.get(desc.id)
+        if snapshot is None:
             repo_items.append(
                 DioramaRepoItem(
                     id=desc.id,
@@ -665,18 +479,21 @@ def get_repo_diorama(
             )
             continue
 
-        scanned_files, is_git = _scan_repo_files(repo_path)
-        commits = _scan_repo_commits(repo_path, days) if is_git else []
-        modules, day_commits, day_heat = _build_module_items(desc.id, scanned_files, commits)
+        files = snapshot.files
+        commits = [commit for commit in snapshot.commits or [] if commit.timestamp >= cutoff]
+        modules, day_commits, day_heat = _build_module_items(desc.id, files, commits)
 
         for d, clist in day_commits.items():
             merged_day_commits[d].extend(clist)
+            merged_repo_heat[d][desc.id] = DioramaDayHeat(
+                commits=len(clist),
+                added=sum(c.added for _, c in clist),
+                deleted=sum(c.deleted for _, c in clist),
+            )
         for d, mdict in day_heat.items():
-            for mid, vals in mdict.items():
-                slot = merged_day_heat[d][mid]
-                slot[0] += vals[0]
-                slot[1] += vals[1]
-                slot[2] += vals[2]
+            merged_day_heat[d].update(
+                {mid: DioramaDayHeat(commits=vals[0], added=vals[1], deleted=vals[2]) for mid, vals in mdict.items()}
+            )
 
         repo_items.append(
             DioramaRepoItem(
@@ -686,49 +503,82 @@ def get_repo_diorama(
                 branch=desc.branch,
                 state=desc.state,
                 color=desc.color,
-                loc=sum(m.loc for m in modules),
-                file_count=sum(m.file_count for m in modules),
-                module_count=len(modules),
+                loc=sum(file.loc for file in files),
+                file_count=len(files),
+                module_count=len({file.module for file in files}),
                 available=True,
                 modules=modules,
             )
         )
 
     timeline: list[DioramaTimelineDay] = []
-    for date_str in sorted(merged_day_commits.keys()):
-        clist = merged_day_commits[date_str]
-        mheat = {
-            mid: DioramaDayHeat(commits=vals[0], added=vals[1], deleted=vals[2])
-            for mid, vals in merged_day_heat[date_str].items()
-        }
+    for date_str in sorted(merged_day_commits):
+        clist = sorted(merged_day_commits[date_str], key=lambda entry: entry[0], reverse=True)
         timeline.append(
             DioramaTimelineDay(
                 date=date_str,
                 commit_count=len(clist),
-                total_churn=sum(c.added + c.deleted for c in clist),
-                commits=clist[:12],
-                module_heat=mheat,
+                total_churn=sum(c.added + c.deleted for _, c in clist),
+                commits=[commit for _, commit in clist[:12]],
+                module_heat=merged_day_heat[date_str],
+                repo_heat=merged_repo_heat[date_str],
             )
         )
 
-    members = _load_workspace_members(db, workspace_id)
-    tasks = _load_workspace_tasks(db, workspace_id, repo_items, descriptors)
-    date_range = [timeline[0].date, timeline[-1].date] if timeline else []
-
-    payload = DashboardDioramaResponse(
-        workspace_id=workspace.id,
-        workspace_name=workspace.name,
+    return DioramaPeriod(
         days=days,
-        date_range=date_range,
+        date_range=[timeline[0].date, timeline[-1].date] if timeline else [],
         total_loc=sum(r.loc for r in repo_items),
         total_files=sum(r.file_count for r in repo_items),
         total_modules=sum(r.module_count for r in repo_items),
         total_commits=sum(d.commit_count for d in timeline),
         repos=repo_items,
-        members=members,
-        tasks=tasks,
+        tasks=_build_workspace_tasks(tasks, repo_items, descriptors),
         timeline=timeline,
-        generated_at=datetime.now(timezone.utc),
     )
-    _CACHE[cache_key] = (now_mono, payload)
-    return payload
+
+
+def get_repo_diorama(
+    db: Session,
+    workspace_id: str,
+    *,
+    days: int = 30,
+    refresh: bool = False,
+    include_windows: bool = False,
+) -> DashboardDioramaResponse:
+    refresh_started_at = time.monotonic() if refresh else None
+    now = datetime.now(timezone.utc)
+    workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+    if not workspace:
+        return DashboardDioramaResponse(workspace_id=workspace_id, workspace_name="", days=days, generated_at=now)
+
+    descriptors = _discover_workspace_repos(db, workspace)
+    repo_paths = {desc.id: Path(desc.base_dir) for desc in descriptors if desc.base_dir}
+    scans = read_repositories(
+        workspace_id,
+        [path for path in repo_paths.values() if path.is_dir()],
+        since=int((now - timedelta(days=max(days, _DASHBOARD_WINDOWS[-1]))).timestamp()),
+        refresh_started_at=refresh_started_at,
+    )
+    snapshots = {repo_id: scans[path] for repo_id, path in repo_paths.items() if path in scans}
+    tasks = _load_workspace_tasks(db, workspace_id)
+    members = _load_workspace_members(db, workspace_id)
+    windows = {
+        period: _build_period(
+            days=period,
+            cutoff=int((now - timedelta(days=period)).timestamp()),
+            descriptors=descriptors,
+            snapshots=snapshots,
+            tasks=tasks,
+        )
+        for period in dict.fromkeys((days, *_DASHBOARD_WINDOWS) if include_windows else (days,))
+    }
+    selected = windows.pop(days)
+    return DashboardDioramaResponse(
+        **dict(selected),
+        workspace_id=workspace.id,
+        workspace_name=workspace.name,
+        members=members,
+        generated_at=datetime.now(timezone.utc),
+        windows=windows,
+    )

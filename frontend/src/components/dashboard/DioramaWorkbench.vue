@@ -86,12 +86,7 @@ const tooltipStyle = computed(() => {
 const hoveredHeat = computed(() => {
   const hit = hoverState.value?.hit
   if (!hit || hit.kind !== 'module' || !hit.module) return null
-  return moduleHeatMap.value.get(hit.module.id) ?? {
-    commits: hit.module.commits,
-    added: hit.module.added,
-    deleted: hit.module.deleted,
-    score: 0,
-  }
+  return moduleHeatMap.value.get(hit.module.id)
 })
 
 function formatLoc(loc: number): string {
@@ -128,7 +123,7 @@ function ensureEngine() {
       },
     })
   } else {
-    engineRef.value.setData(data, true)
+    engineRef.value.setData(data, enabledRepoIds.value)
   }
 
   const eng = engineRef.value
@@ -139,11 +134,14 @@ function ensureEngine() {
   eng.setHighlight(activeTaskId.value, effectiveMemberId.value)
 }
 
-watch(payload, async () => {
-  hoverState.value = null
-  await nextTick()
-  ensureEngine()
-})
+watch([payload, enabledRepoIds], ([data, ids], [previous]) => {
+  if (data !== previous) {
+    hoverState.value = null
+    ensureEngine()
+  } else {
+    engineRef.value?.setEnabledRepos(ids)
+  }
+}, { flush: 'post' })
 
 watch(locale, () => {
   engineRef.value?.setPendingRepoLabel(t('dashboard.diorama.repo_pending'))
@@ -153,9 +151,6 @@ watch(metric, val => engineRef.value?.setMetric(val))
 watch(isoMode, val => engineRef.value?.setIsoMode(val))
 watch([showAvatars, showLabels], ([avatars, labels]) => {
   engineRef.value?.setLayers({ avatars, labels })
-})
-watch(enabledRepoIds, ids => {
-  engineRef.value?.setEnabledRepos(ids)
 })
 watch([dayIndex, windowMode], ([idx, mode]) => {
   engineRef.value?.setTimeline(idx, mode, playing.value)
@@ -201,6 +196,11 @@ function handleSelectSearchModule(moduleId: string) {
 
 function handleResetView() {
   engineRef.value?.resetView(false)
+}
+
+function handleDaysChange(next: typeof days.value) {
+  if (next !== days.value) days.value = next
+  else if (error.value) void load()
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -249,12 +249,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="diorama-workbench">
+  <section class="diorama-workbench" :aria-busy="loading">
     <DioramaToolbar
       :repos="payload?.repos ?? []"
       :enabled-repo-ids="enabledRepoIds"
       :metric="metric"
-      :days="days"
+      :days="payload?.days ?? days"
       :iso-mode="isoMode"
       :zoom-pct="zoomPct"
       :show-avatars="showAvatars"
@@ -264,17 +264,22 @@ onBeforeUnmount(() => {
       @toggle-repo="toggleRepo"
       @focus-repo="handleFocusRepo"
       @update:metric="metric = $event"
-      @update:days="days = $event"
+      @update:days="handleDaysChange"
       @update:iso-mode="isoMode = $event"
       @update:show-avatars="showAvatars = $event"
       @update:show-labels="showLabels = $event"
       @rotate="engineRef?.rotateView($event)"
       @zoom="engineRef?.zoomBy($event)"
       @reset-view="handleResetView"
-      @refresh="load(true)"
+      @refresh="load({ refresh: true })"
       @search-change="handleSearchChange"
       @select-search-module="handleSelectSearchModule"
     />
+
+    <div v-if="error && payload" class="update-error" role="alert">
+      <span>{{ t('dashboard.diorama.load_failed') }}</span>
+      <el-button size="small" @click="load({ refresh: true })">{{ t('dashboard.retry') }}</el-button>
+    </div>
 
     <div class="workbench-body">
       <div class="stage-column">
@@ -284,7 +289,7 @@ onBeforeUnmount(() => {
           <!-- Error Banner -->
           <div v-if="error && !payload" class="stage-overlay-state">
             <el-empty :description="t('dashboard.diorama.load_failed')">
-              <el-button type="primary" @click="load(true)">
+              <el-button type="primary" @click="load({ refresh: true })">
                 <RefreshCw class="overlay-btn-icon" />
                 <span>{{ t('dashboard.retry') }}</span>
               </el-button>
@@ -439,6 +444,8 @@ onBeforeUnmount(() => {
         :members="payload?.members ?? []"
         :tasks="payload?.tasks ?? []"
         :timeline="payload?.timeline ?? []"
+        :day-index="dayIndex"
+        :window-mode="windowMode"
         :module-heat-map="moduleHeatMap"
         :selected-hit="selectedHit"
         :pinned-task-id="pinnedTaskId"
@@ -458,6 +465,18 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.update-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
+  font-size: 13px;
+}
+
 .diorama-workbench {
   display: flex;
   flex-direction: column;

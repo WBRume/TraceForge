@@ -97,11 +97,10 @@ class DioramaTimelineDay(BaseModel):
     total_churn: int = 0
     commits: list[DioramaCommitItem] = Field(default_factory=list)
     module_heat: dict[str, DioramaDayHeat] = Field(default_factory=dict)
+    repo_heat: dict[str, DioramaDayHeat] = Field(default_factory=dict)
 
 
-class DashboardDioramaResponse(BaseModel):
-    workspace_id: str
-    workspace_name: str
+class DioramaPeriod(BaseModel):
     days: int = 30
     date_range: list[str] = Field(default_factory=list)
     total_loc: int = 0
@@ -109,7 +108,13 @@ class DashboardDioramaResponse(BaseModel):
     total_modules: int = 0
     total_commits: int = 0
     repos: list[DioramaRepoItem] = Field(default_factory=list)
-    members: list[DioramaMemberItem] = Field(default_factory=list)
     tasks: list[DioramaTaskItem] = Field(default_factory=list)
     timeline: list[DioramaTimelineDay] = Field(default_factory=list)
+
+
+class DashboardDioramaResponse(DioramaPeriod):
+    workspace_id: str
+    workspace_name: str
+    members: list[DioramaMemberItem] = Field(default_factory=list)
     generated_at: datetime
+    windows: dict[int, DioramaPeriod] = Field(default_factory=dict)

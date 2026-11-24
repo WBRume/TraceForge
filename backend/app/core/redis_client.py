@@ -6,12 +6,45 @@ from __future__ import annotations
 
 import asyncio
 import weakref
+from threading import Lock
 from typing import Any
+
+from redis import Redis
+from redis.backoff import NoBackoff
+from redis.retry import Retry
 
 from app.config import settings
 
 _REDIS_CLIENTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any] = weakref.WeakKeyDictionary()
 _REDIS_CLIENT_LOCK = asyncio.Lock()
+_REDIS_CACHE_CLIENT: Redis | None = None
+_REDIS_CACHE_LOCK = Lock()
+
+
+def _connection_options() -> dict[str, Any]:
+    return {
+        "password": str(settings.REDIS_PASSWORD or "").strip() or None,
+        "socket_timeout": float(settings.REDIS_SOCKET_TIMEOUT_SECONDS or 3.0),
+        "socket_connect_timeout": float(settings.REDIS_CONNECT_TIMEOUT_SECONDS or 3.0),
+        "decode_responses": False,
+        "health_check_interval": 30,
+    }
+
+
+def get_sync_redis_cache_client() -> Redis:
+    """Share a short-timeout connection pool for optional caches in sync workers."""
+    global _REDIS_CACHE_CLIENT
+    with _REDIS_CACHE_LOCK:
+        if _REDIS_CACHE_CLIENT is None:
+            options = _connection_options()
+            for timeout in ("socket_timeout", "socket_connect_timeout"):
+                options[timeout] = min(options[timeout], 0.5)
+            _REDIS_CACHE_CLIENT = Redis.from_url(
+                str(settings.REDIS_URL or "").strip(),
+                **options,
+                retry=Retry(NoBackoff(), 0),
+            )
+        return _REDIS_CACHE_CLIENT
 
 
 def _load_redis_asyncio_module() -> Any:
@@ -34,14 +67,9 @@ async def get_redis_client() -> Any:
             return cached_client
 
         redis_asyncio = _load_redis_asyncio_module()
-        redis_password = str(settings.REDIS_PASSWORD or "").strip()
         client = redis_asyncio.from_url(
             str(settings.REDIS_URL or "").strip(),
-            password=redis_password or None,
-            socket_timeout=float(settings.REDIS_SOCKET_TIMEOUT_SECONDS or 3.0),
-            socket_connect_timeout=float(settings.REDIS_CONNECT_TIMEOUT_SECONDS or 3.0),
-            decode_responses=False,
-            health_check_interval=30,
+            **_connection_options(),
         )
         _REDIS_CLIENTS[loop] = client
         return client
@@ -53,6 +81,12 @@ async def ping_redis_client() -> bool:
 
 
 async def close_redis_client() -> None:
+    global _REDIS_CACHE_CLIENT
+    with _REDIS_CACHE_LOCK:
+        cache_client, _REDIS_CACHE_CLIENT = _REDIS_CACHE_CLIENT, None
+    if cache_client is not None:
+        await asyncio.to_thread(cache_client.close)
+
     async with _REDIS_CLIENT_LOCK:
         clients = list(_REDIS_CLIENTS.values())
         _REDIS_CLIENTS.clear()

@@ -88,11 +88,10 @@ export interface DioramaTimelineDay {
   total_churn: number
   commits: DioramaCommitItem[]
   module_heat: Record<string, DioramaDayHeat>
+  repo_heat?: Record<string, DioramaDayHeat>
 }
 
-export interface DashboardDioramaPayload {
-  workspace_id: string
-  workspace_name: string
+export interface DioramaPeriod {
   days: number
   date_range: string[]
   total_loc: number
@@ -100,12 +99,22 @@ export interface DashboardDioramaPayload {
   total_modules: number
   total_commits: number
   repos: DioramaRepoItem[]
-  members: DioramaMemberItem[]
   tasks: DioramaTaskItem[]
   timeline: DioramaTimelineDay[]
+}
+
+export interface DashboardDioramaPayload extends DioramaPeriod {
+  workspace_id: string
+  workspace_name: string
+  members: DioramaMemberItem[]
   generated_at: string
 }
 
+export interface DashboardDioramaResponse extends DashboardDioramaPayload {
+  windows?: Partial<Record<DioramaDays, DioramaPeriod>>
+}
+
+export type DioramaDays = 14 | 30 | 60
 export type DioramaMetric = 'heat' | 'loc' | 'impact'
 export type DioramaIsoMode = '3d' | 'top'
 export type DioramaWindowMode = 'cumulative' | 'day'

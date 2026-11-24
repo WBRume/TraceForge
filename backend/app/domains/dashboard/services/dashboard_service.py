@@ -26,79 +26,36 @@ HEATMAP_DAYS = 7
 
 
 def get_overview(db: Session, workspace_id: str) -> DashboardOverview:
-    # 0. 任务总数应覆盖工作区全部任务（包含 PENDING / 进行中 / 已完成）
-    total_tasks = db.query(sqlfunc.count(SddTask.id)).filter(SddTask.workspace_id == workspace_id).scalar() or 0
-
-    # 1. 活跃任务数：已启动且未终结 (实时从 Task 表)
-    active = (
-        db.query(sqlfunc.count(SddTask.id))
-        .filter(
-            SddTask.workspace_id == workspace_id,
-            SddTask.status.notin_(ACTIVE_EXCLUDED_STATUSES),
+    total_tasks, active, done_count, failed_count = (
+        db.query(
+            sqlfunc.count(SddTask.id),
+            sqlfunc.count(case((SddTask.status.notin_(ACTIVE_EXCLUDED_STATUSES), 1))),
+            sqlfunc.count(case((SddTask.status.in_(SUCCESS_STATUSES), 1))),
+            sqlfunc.count(case((SddTask.status.in_(FAILURE_STATUSES), 1))),
         )
-        .scalar()
-        or 0
+        .filter(SddTask.workspace_id == workspace_id)
+        .one()
     )
-
-    # 2. 成功率：与状态分布同源的实时任务状态口径（不回看历史指标）
-    done_count = (
-        db.query(sqlfunc.count(SddTask.id))
-        .filter(
-            SddTask.workspace_id == workspace_id,
-            SddTask.status.in_(SUCCESS_STATUSES),
-        )
-        .scalar()
-        or 0
-    )
-
-    failed_count = (
-        db.query(sqlfunc.count(SddTask.id))
-        .filter(
-            SddTask.workspace_id == workspace_id,
-            SddTask.status.in_(FAILURE_STATUSES),
-        )
-        .scalar()
-        or 0
-    )
-
     finished_count = done_count + failed_count
-    success_rate = (done_count / finished_count) if finished_count > 0 else 0.0
+    success_rate = done_count / finished_count if finished_count > 0 else 0.0
 
-    # 3. 累计费用
-    total_cost = (
-        db.query(sqlfunc.sum(SddDashboardMetric.metric_value))
-        .filter(SddDashboardMetric.workspace_id == workspace_id, SddDashboardMetric.metric_type == "COST")
-        .scalar()
-        or 0.0
-    )
-
-    # 4. 累计节省时间 (小时)
-    # Time Saved = SUM(REQUIREMENT_DURATION) - SUM(DURATION / 3600000)
-    total_req_hours = (
-        db.query(sqlfunc.sum(SddDashboardMetric.metric_value))
+    metrics = dict(
+        db.query(SddDashboardMetric.metric_type, sqlfunc.sum(SddDashboardMetric.metric_value))
         .filter(
-            SddDashboardMetric.workspace_id == workspace_id, SddDashboardMetric.metric_type == "REQUIREMENT_DURATION"
+            SddDashboardMetric.workspace_id == workspace_id,
+            SddDashboardMetric.metric_type.in_(("COST", "REQUIREMENT_DURATION", "DURATION")),
         )
-        .scalar()
-        or 0.0
+        .group_by(SddDashboardMetric.metric_type)
+        .all()
     )
-
-    total_exec_ms = (
-        db.query(sqlfunc.sum(SddDashboardMetric.metric_value))
-        .filter(SddDashboardMetric.workspace_id == workspace_id, SddDashboardMetric.metric_type == "DURATION")
-        .scalar()
-        or 0.0
-    )
-
-    total_exec_hours = total_exec_ms / 3600000.0
-    time_saved_hours = max(0.0, total_req_hours - total_exec_hours)
+    time_saved_hours = max(0.0, metrics.get("REQUIREMENT_DURATION", 0.0) - metrics.get("DURATION", 0.0) / 3600000.0)
 
     return DashboardOverview(
         total_tasks=total_tasks,
-        success_rate=round(success_rate, 3),  # 返回 0-1 之间的值，由前端处理百分比
+        success_rate=round(success_rate, 3),
         active_tasks=active,
-        time_saved_hours=round(time_saved_hours, 1),
-        total_cost_usd=round(total_cost, 4),
+        time_saved_hours=time_saved_hours,
+        total_cost_usd=round(metrics.get("COST", 0.0), 4),
     )
 
 

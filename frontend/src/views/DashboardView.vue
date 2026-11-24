@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, defineAsyncComponent, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Activity,
@@ -11,51 +11,56 @@ import {
   TrendingUp,
 } from '@/components/icons'
 import api from '@/utils/api'
-import NewTaskModal from '@/components/task-create/NewTaskModal.vue'
 import DioramaWorkbench from '@/components/dashboard/DioramaWorkbench.vue'
 
+const NewTaskModal = defineAsyncComponent(() => import('@/components/task-create/NewTaskModal.vue'))
 const route = useRoute()
 const router = useRouter()
 const wsId = computed(() => String(route.params.wsId || ''))
 
-const overview = ref({
+const emptyOverview = {
   total_tasks: 0,
   success_rate: 0,
   active_tasks: 0,
   time_saved_hours: 0,
   total_cost_usd: 0,
-})
+}
+const overview = shallowRef(emptyOverview)
 const loadError = shallowRef(false)
-const workspace = ref<Record<string, any> | null>(null)
-const workspacePermissions = ref<Record<string, any> | null>(null)
+const workspace = shallowRef<{ project_path?: string; git_repo_url?: string } | null>(null)
+const workspacePermissions = shallowRef<Record<string, boolean> | null>(null)
 const canCreateTask = computed(() => Boolean(workspacePermissions.value?.create_task))
 
 const showTaskModal = shallowRef(false)
+let workspaceRequest: AbortController | undefined
 
 const loadDashboardOverview = async () => {
   const id = wsId.value
+  const signal = workspaceRequest?.signal
   if (!id) return
   try {
-    const resOverview = await api.get(`/workspaces/${id}/dashboard/overview`)
+    const resOverview = await api.get<typeof emptyOverview>(`/workspaces/${id}/dashboard/overview`, { signal })
+    if (signal?.aborted) return
     overview.value = resOverview.data
     loadError.value = false
   } catch (e) {
+    if (signal?.aborted) return
     console.error('Failed to load dashboard overview', e)
     loadError.value = true
   }
 }
 
-const loadWorkspace = async () => {
-  const id = wsId.value
-  if (!id) return
+const loadWorkspace = async (id: string, signal: AbortSignal) => {
   try {
     const [wsRes, permissionRes] = await Promise.all([
-      api.get(`/workspaces/${id}`),
-      api.get(`/workspaces/${id}/permissions/me`),
+      api.get<typeof workspace.value>(`/workspaces/${id}`, { signal }),
+      api.get<{ permissions?: Record<string, boolean> }>(`/workspaces/${id}/permissions/me`, { signal }),
     ])
+    if (signal.aborted) return
     workspace.value = wsRes.data
     workspacePermissions.value = permissionRes.data?.permissions || null
   } catch (e) {
+    if (signal.aborted) return
     console.error('Failed to load workspace info', e)
   }
 }
@@ -73,17 +78,19 @@ const onTaskCreated = (payload: { jobId: string; taskId: string; workspaceId: st
   router.push(`/ops/queue/provision/${jobId}${expectSpec}`)
 }
 
-onMounted(() => {
-  loadDashboardOverview()
-  loadWorkspace()
-})
-
-watch(wsId, (next, prev) => {
-  if (next && next !== prev) {
-    loadDashboardOverview()
-    loadWorkspace()
-  }
-})
+watch(wsId, (id, _, onCleanup) => {
+  const controller = new AbortController()
+  workspaceRequest = controller
+  onCleanup(() => controller.abort())
+  overview.value = emptyOverview
+  workspace.value = null
+  workspacePermissions.value = null
+  loadError.value = false
+  showTaskModal.value = false
+  if (!id) return
+  void loadDashboardOverview()
+  void loadWorkspace(id, controller.signal)
+}, { immediate: true })
 </script>
 
 <template>
@@ -170,6 +177,7 @@ watch(wsId, (next, prev) => {
     <DioramaWorkbench :workspace-id="wsId" />
 
     <NewTaskModal
+      v-if="showTaskModal"
       :show="showTaskModal"
       :wsId="wsId"
       @close="showTaskModal = false"

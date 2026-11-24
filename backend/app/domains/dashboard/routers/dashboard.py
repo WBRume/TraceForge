@@ -68,8 +68,9 @@ def get_dashboard_repo_diorama(
     ws_id: str,
     days: int = Query(30, ge=7, le=90),
     refresh: bool = Query(False),
+    include_windows: bool = Query(False),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     _verify_dashboard_access(ws_id, current_user, db)
-    return diorama_service.get_repo_diorama(db, ws_id, days=days, refresh=refresh)
+    return diorama_service.get_repo_diorama(db, ws_id, days=days, refresh=refresh, include_windows=include_windows)

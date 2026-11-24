@@ -181,7 +181,7 @@ export class ArchitecturalDioramaEngine {
     this.boundDoubleClick = e => this.onDoubleClick(e)
 
     this.bindEvents()
-    this.setData(data, true)
+    this.setData(data)
     this.resize()
     this.resetView(true)
     this.scheduleRender()
@@ -221,19 +221,23 @@ export class ArchitecturalDioramaEngine {
     this.scheduleRender()
   }
 
-  public setData(data: DashboardDioramaPayload, resetFilter = false): void {
+  public setData(data: DashboardDioramaPayload, enabledRepos = new Set(data.repos.map(r => r.id))): void {
+    const hadSelection = this.selected !== null
     this.data = data
     this.memberById = new Map(data.members.map(m => [m.id, m]))
-    if (resetFilter || !this.enabledRepos.size) {
-      this.enabledRepos = new Set(data.repos.map(r => r.id))
-    } else {
-      const validIds = new Set(data.repos.map(r => r.id))
-      const next = new Set([...this.enabledRepos].filter(id => validIds.has(id)))
-      this.enabledRepos = next.size ? next : validIds
-    }
+    this.enabledRepos = new Set(enabledRepos)
+    this.selected = null
+    this.onPointerLeave()
+    this.projectedHitList = []
+    this.ripples = []
     this.dayIndex = Math.max(0, data.timeline.length - 1)
     this.buildCityGeometry()
     this.recomputeHeat(false)
+    for (const building of this.buildings) {
+      building.curH = building.targetH
+      building.curGlow = building.targetGlow
+    }
+    if (hadSelection) this.resetView(false)
     this.scheduleRender()
   }
 
@@ -252,9 +256,14 @@ export class ArchitecturalDioramaEngine {
   public resize(): void {
     if (this.destroyed) return
     const rect = this.viewportEl.getBoundingClientRect()
-    this.width = Math.max(320, Math.floor(rect.width))
-    this.height = Math.max(260, Math.floor(rect.height))
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2)
+    const width = Math.max(320, Math.floor(rect.width))
+    const height = Math.max(260, Math.floor(rect.height))
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    if (this.canvas.width === Math.round(width * dpr) && this.canvas.height === Math.round(height * dpr)
+      && this.width === width && this.height === height && this.dpr === dpr) return
+    this.width = width
+    this.height = height
+    this.dpr = dpr
     this.canvas.width = Math.round(this.width * this.dpr)
     this.canvas.height = Math.round(this.height * this.dpr)
     this.canvas.style.width = `${this.width}px`
@@ -283,12 +292,14 @@ export class ArchitecturalDioramaEngine {
   }
 
   public setMetric(metric: DioramaMetric): void {
+    if (metric === this.metric) return
     this.metric = metric
     this.updateBuildingTargets()
     this.scheduleRender()
   }
 
   public setIsoMode(mode: DioramaIsoMode): void {
+    if (mode === this.isoMode) return
     this.isoMode = mode
     this.targetPitch = mode === 'top' ? 0.96 : 0.52
     this.updateBuildingTargets()
@@ -307,13 +318,22 @@ export class ArchitecturalDioramaEngine {
   }
 
   public setEnabledRepos(repoIds: Set<string>): void {
+    if (this.selected) {
+      const selectedRepoId = this.selected.kind === 'repo'
+        ? this.selected.id
+        : this.buildingById.get(this.selected.id)?.repoId
+      if (selectedRepoId && !repoIds.has(selectedRepoId)) this.selected = null
+    }
+    if (this.hovered && !repoIds.has(this.hovered.repo.id)) this.onPointerLeave()
+    this.projectedHitList = []
     this.enabledRepos = new Set(repoIds)
     this.buildCityGeometry()
-    this.updateBuildingTargets()
+    this.recomputeHeat(false)
     this.resetView(false)
   }
 
   public setHighlight(taskId: string | null, memberId: string | null): void {
+    if (this.highlightTaskId === taskId && this.highlightMemberId === memberId) return
     this.highlightTaskId = taskId
     this.highlightMemberId = memberId
     this.updateBuildingTargets()
@@ -326,7 +346,9 @@ export class ArchitecturalDioramaEngine {
   }
 
   public setTimeline(dayIndex: number, windowMode: DioramaWindowMode, emitRipples: boolean): void {
-    this.dayIndex = clamp(dayIndex, 0, Math.max(0, this.data.timeline.length - 1))
+    const index = clamp(dayIndex, 0, Math.max(0, this.data.timeline.length - 1))
+    if (!emitRipples && index === this.dayIndex && windowMode === this.windowMode) return
+    this.dayIndex = index
     this.windowMode = windowMode
     this.recomputeHeat(emitRipples)
     this.scheduleRender()
@@ -416,13 +438,8 @@ export class ArchitecturalDioramaEngine {
       this.plinthById.set(plinth.id, plinth)
 
       if (!lr.ref.modules.length) continue
-      const sortedMods = lr.ref.modules
-        .slice()
-        .sort((a, b) => (b.commits * 400 + b.loc) - (a.commits * 400 + a.loc))
-        .slice(0, 18)
-
       const pad = 16
-      const blockItems = sortedMods.map(m => ({
+      const blockItems = lr.ref.modules.map(m => ({
         ref: m,
         weight: Math.max(120, Math.pow(Math.max(m.loc, 120), 0.72)),
       }))
@@ -469,7 +486,6 @@ export class ArchitecturalDioramaEngine {
   private recomputeHeat(emitRipples: boolean): void {
     this.modHeat.clear()
     const timeline = this.data.timeline
-    let maxScore = 1
 
     if (timeline.length) {
       const startIdx = this.windowMode === 'day' ? this.dayIndex : 0
@@ -485,7 +501,6 @@ export class ArchitecturalDioramaEngine {
           prev.deleted += st.deleted
           prev.score += (st.commits * 1.8 + Math.log1p(st.added + st.deleted) * 0.65) * recency
           this.modHeat.set(mid, prev)
-          if (prev.score > maxScore) maxScore = prev.score
         }
       }
     } else {
@@ -498,12 +513,11 @@ export class ArchitecturalDioramaEngine {
             deleted: b.module.deleted,
             score,
           })
-          if (score > maxScore) maxScore = score
         }
       }
     }
 
-    this.maxModScore = maxScore
+    this.maxModScore = this.buildings.reduce((max, b) => Math.max(max, this.modHeat.get(b.id)?.score ?? 0), 1)
     this.updateBuildingTargets()
 
     if (emitRipples && timeline.length) {
@@ -566,6 +580,7 @@ export class ArchitecturalDioramaEngine {
     const impact = this.getImpactInfo()
     const flatMode = this.isoMode === 'top'
     const maxTowerH = flatMode ? 4 : 128
+    const hasAnyHeat = this.buildings.some(b => this.modHeat.has(b.id))
 
     for (const b of this.buildings) {
       const mh = this.modHeat.get(b.id)
@@ -586,7 +601,6 @@ export class ArchitecturalDioramaEngine {
         b.targetH = flatMode ? 3 : (6 + normLoc * (maxTowerH - 12))
         b.targetGlow = normLoc * 0.72
       } else if (!mh || mh.commits === 0) {
-        const hasAnyHeat = this.modHeat.size > 0
         b.targetH = hasAnyHeat ? 3 : (flatMode ? 3 : (5 + normLoc * 46))
         b.targetGlow = hasAnyHeat ? 0 : normLoc * 0.28
       } else {
@@ -733,7 +747,7 @@ export class ArchitecturalDioramaEngine {
   private frame(now: number): void {
     this.rafId = 0
     if (this.destroyed) return
-    const dt = this.lastTs ? Math.min(40, now - this.lastTs) : 16
+    const dt = this.lastTs ? now - this.lastTs : 16
     this.lastTs = now
     const ease = 1 - Math.exp(-dt * 0.014)
     const hEase = 1 - Math.exp(-dt * 0.011)
@@ -780,7 +794,7 @@ export class ArchitecturalDioramaEngine {
     const impact = this.getImpactInfo()
     const hasArcs = impact.strict && impact.modSet.size > 1
     if (hasArcs) {
-      this.arcPhase = (this.arcPhase + dt * 0.025) % 1000
+      this.arcPhase = (this.arcPhase + Math.min(40, dt) * 0.025) % 1000
       moving = true
     }
 
@@ -790,6 +804,7 @@ export class ArchitecturalDioramaEngine {
     this.cb.onZoomChange?.(Math.round((this.cam.scale / (this.baseFitScale || 0.8)) * 100))
     this.draw(now, impact)
     if (moving) this.scheduleRender()
+    else this.lastTs = 0
   }
 
   private draw(now: number, impact: ImpactInfo): void {

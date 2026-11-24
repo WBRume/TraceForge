@@ -294,4 +294,31 @@ describe('ArchitecturalDioramaEngine', () => {
     expect(removeWinSpy).toHaveBeenCalledWith('pointermove', expect.any(Function))
     expect(removeWinSpy).toHaveBeenCalledWith('pointerup', expect.any(Function))
   })
+
+  it('renders every delivered module and keeps the selected repository filter across ranges', () => {
+    const data = makePayload([makeRepo('r1', 'api', 24), makeRepo('r2', 'web', 2)])
+    const { engine, onSelect } = mountEngine(data)
+    engine.setEnabledRepos(new Set(['r1']))
+    engine.setData({ ...data, days: 60 }, new Set(['r1']))
+
+    expect(engine.getPlinthCount()).toBe(1)
+    expect(engine.getBuildingCount()).toBe(24)
+    engine.focusEntity('module', 'r1/mod-0')
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'r1/mod-0' }))
+    engine.destroy()
+  })
+
+  it('draws loaded windows at their final building heights in the first frame', () => {
+    const data = makePayload([makeRepo('r1', 'api', 3), makeRepo('r2', 'web', 2)])
+    const { engine, rafSpy, flushFrame } = mountEngine(data)
+    rafSpy.mockClear()
+    flushFrame(16)
+    expect(rafSpy).not.toHaveBeenCalled()
+
+    engine.setData({ ...data, days: 14, timeline: data.timeline.slice(0, 1) })
+    expect(rafSpy).toHaveBeenCalledTimes(1)
+    flushFrame(32)
+    expect(rafSpy).toHaveBeenCalledTimes(1)
+    engine.destroy()
+  })
 })
