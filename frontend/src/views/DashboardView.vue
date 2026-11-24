@@ -1,118 +1,57 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useI18n } from 'vue-i18n'
-import { 
-  Activity, 
+import {
+  Activity,
   CheckCircle,
   Clock,
+  GitBranch,
+  Plus,
+  TerminalSquare,
   TrendingUp,
-  Plus, 
-  TerminalSquare
 } from '@/components/icons'
 import api from '@/utils/api'
 import NewTaskModal from '@/components/task-create/NewTaskModal.vue'
-import {
-  buildDurationChartOption,
-  buildHeatmapOption,
-  buildSuccessChartOption,
-  type DashboardPhaseDurationItem,
-  type DashboardRetryHeatmapItem,
-  type DashboardSuccessRateItem
-} from '@/utils/dashboardCharts'
+import DioramaWorkbench from '@/components/dashboard/DioramaWorkbench.vue'
 
-// ECharts imports
-import VChart from 'vue-echarts'
-import { use } from 'echarts/core'
-import { CanvasRenderer } from 'echarts/renderers'
-import { PieChart, BarChart, HeatmapChart } from 'echarts/charts'
-import {
-  TitleComponent,
-  TooltipComponent,
-  LegendComponent,
-  GridComponent,
-  VisualMapComponent
-} from 'echarts/components'
-
-use([
-  CanvasRenderer,
-  PieChart,
-  BarChart,
-  HeatmapChart,
-  TitleComponent,
-  TooltipComponent,
-  LegendComponent,
-  GridComponent,
-  VisualMapComponent
-])
-
-const { locale, t } = useI18n()
 const route = useRoute()
 const router = useRouter()
-const wsId = route.params.wsId
+const wsId = computed(() => String(route.params.wsId || ''))
 
-const overview = ref<any>({
+const overview = ref({
   total_tasks: 0,
   success_rate: 0,
   active_tasks: 0,
   time_saved_hours: 0,
-  total_cost_usd: 0
+  total_cost_usd: 0,
 })
-const loading = ref(true)
-const loadError = ref(false)
-const workspace = ref<any>(null)
-const workspacePermissions = ref<any>(null)
+const loadError = shallowRef(false)
+const workspace = ref<Record<string, any> | null>(null)
+const workspacePermissions = ref<Record<string, any> | null>(null)
 const canCreateTask = computed(() => Boolean(workspacePermissions.value?.create_task))
 
-// Task creation state
-const showTaskModal = ref(false)
+const showTaskModal = shallowRef(false)
 
-// Raw dashboard data (kept separate from chart options so locale switches
-// only rebuild the options instead of re-fetching every endpoint)
-const statusData = ref<DashboardSuccessRateItem[]>([])
-const durationData = ref<DashboardPhaseDurationItem[]>([])
-const heatmapData = ref<DashboardRetryHeatmapItem[]>([])
-
-// Chart Options
-const successChartOptions = ref<any>({})
-const durationChartOptions = ref<any>({})
-const heatmapOptions = ref<any>({})
-
-const buildCharts = () => {
-  successChartOptions.value = buildSuccessChartOption(statusData.value, t)
-  durationChartOptions.value = buildDurationChartOption(durationData.value, t)
-  heatmapOptions.value = buildHeatmapOption(heatmapData.value, locale.value)
-}
-
-const loadDashboardData = async () => {
-  loading.value = true
+const loadDashboardOverview = async () => {
+  const id = wsId.value
+  if (!id) return
   try {
-    const [resOverview, resSuccess, resDuration, resHeatmap] = await Promise.all([
-      api.get(`/workspaces/${wsId}/dashboard/overview`),
-      api.get(`/workspaces/${wsId}/dashboard/success-rate`),
-      api.get(`/workspaces/${wsId}/dashboard/phase-duration`),
-      api.get(`/workspaces/${wsId}/dashboard/retry-heatmap`)
-    ])
-
+    const resOverview = await api.get(`/workspaces/${id}/dashboard/overview`)
     overview.value = resOverview.data
-    statusData.value = Array.isArray(resSuccess.data) ? resSuccess.data : []
-    durationData.value = Array.isArray(resDuration.data) ? resDuration.data : []
-    heatmapData.value = Array.isArray(resHeatmap.data) ? resHeatmap.data : []
-    buildCharts()
     loadError.value = false
   } catch (e) {
-    console.error('Failed to load dashboard metrics', e)
+    console.error('Failed to load dashboard overview', e)
     loadError.value = true
-  } finally {
-    loading.value = false
   }
 }
 
 const loadWorkspace = async () => {
+  const id = wsId.value
+  if (!id) return
   try {
     const [wsRes, permissionRes] = await Promise.all([
-      api.get(`/workspaces/${wsId}`),
-      api.get(`/workspaces/${wsId}/permissions/me`),
+      api.get(`/workspaces/${id}`),
+      api.get(`/workspaces/${id}/permissions/me`),
     ])
     workspace.value = wsRes.data
     workspacePermissions.value = permissionRes.data?.permissions || null
@@ -135,342 +74,308 @@ const onTaskCreated = (payload: { jobId: string; taskId: string; workspaceId: st
 }
 
 onMounted(() => {
-  loadDashboardData()
+  loadDashboardOverview()
   loadWorkspace()
 })
 
-// 监听语言变化：只重建图表配置（含 Title / Legend / Tooltip），不重复请求接口
-watch(locale, () => {
-  buildCharts()
+watch(wsId, (next, prev) => {
+  if (next && next !== prev) {
+    loadDashboardOverview()
+    loadWorkspace()
+  }
 })
 </script>
 
 <template>
-  <div class="dashboard-wrap p-8">
-    <div class="mb-8 flex justify-between items-center">
-      <div class="flex-1">
-        <h1 class="text-3xl font-bold text-primary-900 mb-1">{{ $t('dashboard.title') }}</h1>
-        <div class="flex items-center gap-4 text-sm text-slate-500">
-           <div class="flex items-center gap-1"><TerminalSquare class="w-4 h-4" /> {{ workspace?.project_path || 'No Path' }}</div>
-           <div class="flex items-center gap-1" v-if="workspace?.git_repo_url"><Plus class="w-4 h-4 rotate-45" /> {{ workspace.git_repo_url }}</div>
+  <div class="dashboard-wrap">
+    <header class="dashboard-header">
+      <div class="header-title-group">
+        <h1 class="dashboard-title">{{ $t('dashboard.title') }}</h1>
+        <div class="workspace-meta">
+          <span v-if="workspace?.project_path" class="meta-item" :title="workspace.project_path">
+            <TerminalSquare class="meta-icon" />
+            <span class="meta-text">{{ workspace.project_path }}</span>
+          </span>
+          <span v-if="workspace?.git_repo_url" class="meta-item" :title="workspace.git_repo_url">
+            <GitBranch class="meta-icon" />
+            <span class="meta-text">{{ workspace.git_repo_url }}</span>
+          </span>
         </div>
       </div>
-      <button class="btn-primary flex items-center gap-2" :disabled="!canCreateTask" @click="openNewTaskModal">
-        <Plus class="w-4 h-4" /> {{ $t('dashboard.new_task') }}
-      </button>
-    </div>
+
+      <div class="header-actions">
+        <button class="btn-primary new-task-btn" :disabled="!canCreateTask" @click="openNewTaskModal">
+          <Plus class="btn-icon" />
+          <span>{{ $t('dashboard.new_task') }}</span>
+        </button>
+      </div>
+    </header>
 
     <div v-if="loadError" class="error-banner">
       <span>{{ $t('dashboard.load_error') }}</span>
-      <button class="btn-secondary" @click="loadDashboardData">{{ $t('dashboard.retry') }}</button>
+      <button class="btn-secondary" @click="loadDashboardOverview">{{ $t('dashboard.retry') }}</button>
     </div>
 
-    <!-- KPI Banner -->
-    <div class="kpi-grid grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
-      <div class="kpi-card glass-panel flex flex-col justify-center">
-        <div class="flex items-center gap-3 text-slate-500 mb-2">
-          <Activity class="w-5 h-5 text-primary-500" />
-          <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.total_tasks') }}</span>
+    <!-- Compact 5-KPI Overview Strip -->
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-head">
+          <Activity class="kpi-icon text-primary-500" />
+          <span class="kpi-label">{{ $t('dashboard.total_tasks') }}</span>
         </div>
-        <div class="text-3xl font-bold text-primary-900">{{ overview.total_tasks }}</div>
+        <div class="kpi-value text-primary-900">{{ overview.total_tasks }}</div>
       </div>
-      
-      <div class="kpi-card glass-panel flex flex-col justify-center">
-        <div class="flex items-center gap-3 text-slate-500 mb-2">
-          <TrendingUp class="w-5 h-5 text-emerald-500" />
-          <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.success_rate') }}</span>
+
+      <div class="kpi-card">
+        <div class="kpi-head">
+          <TrendingUp class="kpi-icon text-emerald-500" />
+          <span class="kpi-label">{{ $t('dashboard.success_rate') }}</span>
         </div>
-        <div class="text-3xl font-bold" :class="overview.success_rate > 0.8 ? 'text-emerald-500' : 'text-amber-500'">
+        <div class="kpi-value" :class="overview.success_rate > 0.8 ? 'text-emerald-500' : 'text-amber-500'">
           {{ (overview.success_rate * 100).toFixed(1) }}%
         </div>
       </div>
-      
-      <div class="kpi-card glass-panel flex flex-col justify-center">
-        <div class="flex items-center gap-3 text-slate-500 mb-2">
-          <Clock class="w-5 h-5 text-amber-500" />
-          <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.active_tasks') }}</span>
+
+      <div class="kpi-card">
+        <div class="kpi-head">
+          <Clock class="kpi-icon text-amber-500" />
+          <span class="kpi-label">{{ $t('dashboard.active_tasks') }}</span>
         </div>
-        <div class="text-3xl font-bold text-slate-700">{{ overview.active_tasks }}</div>
+        <div class="kpi-value text-slate-700">{{ overview.active_tasks }}</div>
       </div>
 
-      <div class="kpi-card glass-panel flex flex-col justify-center border-l-4 border-l-indigo-500">
-        <div class="flex items-center gap-3 text-slate-500 mb-2">
-          <TerminalSquare class="w-5 h-5 text-indigo-500" />
-          <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.total_cost') }}</span>
+      <div class="kpi-card kpi-card-cost">
+        <div class="kpi-head">
+          <TerminalSquare class="kpi-icon text-indigo-500" />
+          <span class="kpi-label">{{ $t('dashboard.total_cost') }}</span>
         </div>
-        <div class="text-3xl font-bold text-indigo-600">${{ overview.total_cost_usd?.toFixed(4) || '0.0000' }}</div>
+        <div class="kpi-value text-indigo-600">${{ overview.total_cost_usd?.toFixed(4) || '0.0000' }}</div>
       </div>
-      
-      <div class="kpi-card bg-primary-600 text-white flex flex-col justify-center relative overflow-hidden">
-        <div class="relative z-10">
-          <div class="flex items-center gap-3 text-primary-100 mb-2">
-            <CheckCircle class="w-5 h-5" />
-            <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.time_saved') }}</span>
+
+      <div class="kpi-card kpi-card-accent">
+        <div class="kpi-accent-content">
+          <div class="kpi-head">
+            <CheckCircle class="kpi-icon text-primary-100" />
+            <span class="kpi-label text-primary-100">{{ $t('dashboard.time_saved') }}</span>
           </div>
-          <div class="text-3xl font-bold">{{ overview.time_saved_hours?.toFixed(1) || '0.0' }}h</div>
+          <div class="kpi-value text-white">{{ overview.time_saved_hours?.toFixed(1) || '0.0' }}h</div>
         </div>
-        <!-- Abstract shape -->
-        <div class="absolute right-0 bottom-0 opacity-20 transform translate-x-4 translate-y-4">
-          <Activity class="w-24 h-24" />
+        <div class="kpi-accent-bg" aria-hidden="true">
+          <Activity class="kpi-bg-icon" />
         </div>
       </div>
     </div>
 
-    <!-- Charts Grid -->
-    <div v-if="loading" class="text-center py-12 text-slate-500">Loading metrics...</div>
-    
-    <div v-else class="charts-grid grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <!-- Success Rate Pie -->
-      <div class="chart-container glass-panel">
-        <h3 class="font-semibold text-lg text-slate-800 mb-4">{{ $t('dashboard.status_dist') }}</h3>
-        <v-chart class="chart h-[300px]" :option="successChartOptions" autoresize />
-      </div>
-      
-      <!-- Phase Duration Bar -->
-      <div class="chart-container glass-panel">
-        <h3 class="font-semibold text-lg text-slate-800 mb-4">{{ $t('dashboard.avg_phase') }}</h3>
-        <v-chart class="chart h-[300px]" :option="durationChartOptions" autoresize />
-      </div>
-      
-      <!-- Error/Retry Heatmap -->
-      <div class="chart-container glass-panel lg:col-span-2">
-        <h3 class="font-semibold text-lg text-slate-800 mb-4">{{ $t('dashboard.retry_heatmap') }}</h3>
-        <v-chart class="chart h-[300px]" :option="heatmapOptions" autoresize />
-      </div>
-    </div>
+    <!-- 2.5D Multi-Repository Architectural Diorama -->
+    <DioramaWorkbench :workspace-id="wsId" />
 
-    <NewTaskModal 
-      :show="showTaskModal" 
-      :wsId="(wsId as string)" 
-      @close="showTaskModal = false" 
-      @created="onTaskCreated" 
+    <NewTaskModal
+      :show="showTaskModal"
+      :wsId="wsId"
+      @close="showTaskModal = false"
+      @created="onTaskCreated"
     />
   </div>
 </template>
 
 <style scoped>
-/* Resets and utilities */
-.p-8 { padding: 2rem; }
-.mb-8 { margin-bottom: 2rem; }
-.mb-4 { margin-bottom: 1rem; }
-.mb-2 { margin-bottom: 0.5rem; }
-.py-12 { padding-top: 3rem; padding-bottom: 3rem; }
-.text-3xl { font-size: 1.875rem; line-height: 2.25rem; }
-.text-lg { font-size: 1.125rem; line-height: 1.75rem; }
-.text-sm { font-size: 0.875rem; line-height: 1.25rem; }
-.font-bold { font-weight: 700; }
-.font-semibold { font-weight: 600; }
-.font-medium { font-weight: 500; }
-.uppercase { text-transform: uppercase; }
-.tracking-wide { letter-spacing: 0.025em; }
-.text-slate-500 { color: #64748b; }
-.text-slate-700 { color: #334155; }
-.text-slate-800 { color: #1e293b; }
-.text-primary-900 { color: var(--color-primary-900); }
-.text-primary-600 { color: var(--color-primary-600); }
-.text-primary-500 { color: var(--color-primary-500); }
-.text-primary-100 { color: var(--color-primary-100); }
-.text-emerald-500 { color: #10B981; }
-.text-amber-500 { color: #F59E0B; }
-.text-white { color: #fff; }
-.bg-primary-600 { background-color: var(--color-primary-600); }
-.flex { display: flex; }
-.flex-col { flex-direction: column; }
-.items-center { align-items: center; }
-.justify-center { justify-content: center; }
-.gap-3 { gap: 0.75rem; }
-.gap-6 { gap: 1.5rem; }
-.grid { display: grid; }
-.grid-cols-1 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
-.relative { position: relative; }
-.absolute { position: absolute; }
-.overflow-hidden { overflow: hidden; }
-.z-10 { z-index: 10; }
-.top-0 { top: 0; }
-.right-0 { right: 0; }
-.bottom-0 { bottom: 0; }
-.transform { transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y)); }
-.translate-x-4 { --tw-translate-x: 1rem; }
-.translate-y-4 { --tw-translate-y: 1rem; }
-.opacity-20 { opacity: 0.2; }
-.h-\[300px\] { height: 300px; }
-.text-center { text-align: center; }
+.dashboard-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 100%;
+  padding: clamp(16px, 2vw, 24px);
+}
 
-/* Error banner */
+.dashboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.header-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.dashboard-title {
+  margin: 0;
+  font-size: 1.5rem;
+  line-height: 1.9rem;
+  font-weight: 700;
+  color: var(--color-primary-900);
+}
+
+.workspace-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+.meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 420px;
+}
+
+.meta-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: #94a3b8;
+}
+
+.meta-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.new-task-btn {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+}
+
 .error-banner {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
-  padding: 0.75rem 1rem;
-  border: 1px solid #FECACA;
-  border-radius: 0.5rem;
-  background: #FEF2F2;
-  color: #B91C1C;
-  font-size: 0.875rem;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-md);
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 13px;
 }
 
-@media (min-width: 768px) {
-  .md\:grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-}
-@media (min-width: 1024px) {
-  .lg\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .lg\:col-span-2 { grid-column: span 2 / span 2; }
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
 }
 
-/* Custom Component Styles */
 .kpi-card {
-  height: 120px;
-  padding: 0 var(--space-6);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-height: 80px;
+  padding: 12px 16px;
   border-radius: var(--radius-xl);
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  box-shadow: var(--shadow-md);
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  background: var(--color-surface-white);
+  border: 1px solid #e2e8f0;
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .kpi-card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-lg);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
 }
 
-.chart-container {
-  padding: var(--space-6);
-  border-radius: var(--radius-xl);
-  background: white;
-  border: 1px solid rgba(0,0,0,0.05);
-  box-shadow: var(--shadow-sm);
+.kpi-card-cost {
+  border-left: 3px solid #6366f1;
 }
 
-.chart {
-  width: 100%;
+.kpi-card-accent {
+  background: var(--color-primary-600);
+  border-color: var(--color-primary-600);
+  color: #ffffff;
 }
 
-/* Modal */
-.modal-overlay {
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(15, 23, 42, 0.4);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 50;
-}
-
-.modal {
-  width: 90%;
-  max-width: 500px;
-  padding: var(--space-8);
-  background-color: white;
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-2xl);
-}
-
-.modal-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
-}
-.modal-header h2 {
-  margin: 0;
-  font-size: 1.25rem;
-  font-weight: 700;
-}
-
-.modal-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
-.form-group {
+.kpi-accent-content {
+  position: relative;
+  z-index: 2;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.form-group label {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: #475569;
+
+.kpi-accent-bg {
+  position: absolute;
+  right: -10px;
+  bottom: -14px;
+  opacity: 0.18;
+  pointer-events: none;
 }
 
-.input-field {
-  padding: 10px 14px;
-  border: 1px solid #E2E8F0;
-  border-radius: var(--radius-md);
-  font-family: inherit;
-  font-size: 1rem;
-  width: 100%;
-  box-sizing: border-box;
-}
-.input-field:focus {
-  border-color: var(--color-primary-500);
-  outline: none;
+.kpi-bg-icon {
+  width: 72px;
+  height: 72px;
 }
 
-.file-upload-box {
-  border: 1px dashed var(--color-primary-100);
+.kpi-head {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  margin-top: 4px;
-}
-.file-upload-box:hover { border-style: solid; border-color: var(--color-primary-500); }
-.file-name {
-  flex: 1;
-  font-size: 0.875rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.file-choose-btn { padding: 4px 12px; font-size: 0.75rem; cursor: pointer; }
-
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-3);
-  margin-top: var(--space-4);
+  gap: 7px;
 }
 
-/* Button variants if not global */
-.btn-secondary {
-  background: white;
-  color: #475569;
-  border: 1px solid #E2E8F0;
-  padding: 8px 18px;
-  border-radius: var(--radius-md);
+.kpi-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.kpi-label {
+  font-size: 12px;
   font-weight: 500;
-  cursor: pointer;
+  color: var(--color-text-muted);
 }
 
-.btn-primary {
-  background: var(--color-primary-500);
-  color: white !important;
-  border: none;
-  padding: 8px 18px;
-  border-radius: var(--radius-md);
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 4px 6px -1px rgba(14, 165, 233, 0.2);
+.kpi-value {
+  font-size: 1.5rem;
+  line-height: 1.8rem;
+  font-weight: 700;
+  font-family: var(--font-heading);
 }
 
-.btn-primary:hover {
-  background: var(--color-primary-600);
-  transform: translateY(-1px);
-  box-shadow: 0 10px 15px -3px rgba(14, 165, 233, 0.3), 0 4px 6px -2px rgba(14, 165, 233, 0.1);
-  text-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+.text-primary-900 { color: var(--color-primary-900); }
+.text-primary-500 { color: var(--color-primary-500); }
+.text-primary-100 { color: var(--color-primary-100); }
+.text-emerald-500 { color: #10b981; }
+.text-amber-500 { color: #f59e0b; }
+.text-indigo-500 { color: #6366f1; }
+.text-indigo-600 { color: #4f46e5; }
+.text-slate-700 { color: #334155; }
+.text-white { color: #ffffff; }
+
+@media (max-width: 1120px) {
+  .kpi-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
-.btn-primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.hidden-input {
-  display: none;
+@media (max-width: 768px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 </style>

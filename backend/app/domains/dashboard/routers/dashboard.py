@@ -2,13 +2,14 @@
 Dashboard API routes.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_db
 from app.domains.asset.schemas.asset import DashboardOverview, PhaseDurationData, RetryHeatmapData, SuccessRateData
 from app.domains.auth.models.user import User, WorkspacePermission
-from app.domains.dashboard.services import dashboard_service
+from app.domains.dashboard.schemas.diorama import DashboardDioramaResponse
+from app.domains.dashboard.services import dashboard_service, diorama_service
 from app.domains.workspace.services import workspace_service
 
 router = APIRouter(prefix="/workspaces/{ws_id}/dashboard", tags=["Dashboard"])
@@ -60,3 +61,15 @@ def get_dashboard_retry_heatmap(
 ):
     _verify_dashboard_access(ws_id, current_user, db)
     return dashboard_service.get_retry_heatmap(db, ws_id)
+
+
+@router.get("/repo-diorama", response_model=DashboardDioramaResponse)
+def get_dashboard_repo_diorama(
+    ws_id: str,
+    days: int = Query(30, ge=7, le=90),
+    refresh: bool = Query(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _verify_dashboard_access(ws_id, current_user, db)
+    return diorama_service.get_repo_diorama(db, ws_id, days=days, refresh=refresh)
