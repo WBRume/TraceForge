@@ -43,6 +43,7 @@ from app.domains.skill.services.runtime import configuration as skill_runtime_co
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import context_token_service, task_event_publisher
 from app.domains.task.services import status_machine as sm
+from app.domains.task.services.chat_images import CHAT_IMAGES_KEY
 from app.domains.task.services.conversation import messages as task_conversation_messages
 from app.domains.task.services.task_records import queries as task_task_records_queries
 from app.domains.websocket.ws.manager import manager as task_ws_manager
@@ -356,6 +357,7 @@ def _prepare_interrupted_resume(
     confirm_continue,
     new_agent_session=False,
     agent_model=None,
+    images=None,
 ) -> dict[str, Any]:
     _require_local_actor(db, task_id, actor_user_id)
     if idempotency_key:
@@ -370,6 +372,7 @@ def _prepare_interrupted_resume(
             confirm_continue,
             new_agent_session=new_agent_session,
             agent_model=agent_model,
+            images=images,
         )
         if existing_receipt:
             return {"duplicate_payload": existing_receipt}
@@ -390,7 +393,7 @@ def _prepare_interrupted_resume(
     prompt_text = str(prompt or "").strip()
     if not prompt_text and confirm_continue:
         prompt_text = "Please continue the interrupted task from the current session context."
-    if not prompt_text:
+    if not prompt_text and not images:
         raise TaskSessionControlError("Prompt is required to resume an interrupted task", status_code=400)
 
     job = find_resume_source_job(db, task)
@@ -440,6 +443,7 @@ async def resume_interrupted_task(
         confirm_continue=confirm_continue,
         new_agent_session=new_agent_session,
         agent_model=message_metadata.get("agent_model"),
+        images=message_metadata.get(CHAT_IMAGES_KEY),
     )
 
     prepared = await run_db_txn(_prepare_resume_sync)

@@ -38,6 +38,7 @@ from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_event_outbox import TaskEventOutbox
 from app.domains.task.services import agent_session_switch
 from app.domains.task.services import status_machine as sm
+from app.domains.task.services.chat_images import CHAT_IMAGES_KEY, ChatImageRef
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.task_attempt_recovery_service import active_statuses, recover_task_attempts
 
@@ -78,7 +79,7 @@ def require_chat_actor(db, task, actor_id):
 
 
 def serialize(row):
-    return {
+    payload = {
         "id": row.id,
         "task_id": row.task_id,
         "client_message_id": row.client_message_id,
@@ -91,6 +92,9 @@ def serialize(row):
         "version": int(row.version or 1),
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
+    if images := (row.metadata_json or {}).get(CHAT_IMAGES_KEY):
+        payload["metadata"] = {CHAT_IMAGES_KEY: images}
+    return payload
 
 
 def validate_transition(row, target_status):
@@ -291,7 +295,16 @@ def _accept_sync(
     return serialize(row)
 
 
-async def accept(*, task_id, actor_id, client_message_id, content, metadata=None, new_agent_session=False):
+async def accept(
+    *,
+    task_id,
+    actor_id,
+    client_message_id,
+    content,
+    metadata=None,
+    new_agent_session=False,
+    images: list[ChatImageRef] | None = None,
+):
     from app.domains.task.services.task_confirmation_service import reply_reference
 
     if isinstance(metadata, dict) and reply_reference(metadata):
@@ -299,7 +312,7 @@ async def accept(*, task_id, actor_id, client_message_id, content, metadata=None
             "Confirmation replies must be sent through the task conversation", "CONFIRMATION_REQUIRED"
         )
     client_id, text = str(client_message_id or "").strip(), str(content or "").strip()
-    if not client_id or len(client_id) > MAX_CLIENT_MESSAGE_ID_LENGTH or not text:
+    if not client_id or len(client_id) > MAX_CLIENT_MESSAGE_ID_LENGTH or not (text or images):
         raise SubmissionError("消息内容和消息标识不能为空", "MESSAGE_INVALID", 400)
     if client_id.lower().startswith(PRE_INPUT_CLIENT_ID_PREFIX):
         raise SubmissionError("该消息标识由协作预输入保留", "MESSAGE_INVALID", 400)
@@ -310,6 +323,7 @@ async def accept(*, task_id, actor_id, client_message_id, content, metadata=None
         "knowledge_state",
         "client_message_id",
         "steering",
+        CHAT_IMAGES_KEY,
         "_collaboration_control",
         "_new_agent_session",
         "_agent_session_check_failed",
@@ -324,6 +338,8 @@ async def accept(*, task_id, actor_id, client_message_id, content, metadata=None
         clean.pop(key, None)
     if new_agent_session:
         clean["_new_agent_session"] = True
+    if images:
+        clean[CHAT_IMAGES_KEY] = images
     try:
         # Return a durable duplicate even when its runner holds the task lock.
         receipt = await run_db_txn(lambda db: _existing_submission_sync(db, task_id, actor_id, client_id, text, clean))

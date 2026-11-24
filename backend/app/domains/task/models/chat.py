@@ -4,7 +4,20 @@
 
 from enum import Enum as PyEnum
 
-from sqlalchemy import JSON, BigInteger, Column, DateTime, Enum, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Column,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -61,3 +74,16 @@ class ChatMessage(Base):
     # Relationships
     task = relationship("SddTask", back_populates="messages")
     session_turn = relationship("TaskSessionTurn", foreign_keys=[session_turn_id])
+
+
+class TaskChatImage(Base):
+    """Immutable image bytes referenced by task conversation messages."""
+
+    __tablename__ = "task_chat_images"
+
+    id = Column(String(36), primary_key=True)
+    task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    creator_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"))
+    filename = Column(String(255), nullable=False)
+    media_type = Column(String(32), nullable=False)
+    data = Column(LargeBinary, nullable=False)

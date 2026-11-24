@@ -152,6 +152,7 @@ const showTrailingAvatar = computed(() => (
             :source="content ?? msg.content ?? ''"
           />
           <div v-else class="msg-content">{{ content ?? msg.content }}</div>
+          <slot name="attachments" />
         </div>
       </slot>
       <span v-if="steering === 'pending'" class="steering-pending" role="status">{{ t('chat.steering.pending') }}</span>

@@ -51,6 +51,10 @@ class AgentSteeringClosedError(AgentError):
     """The active provider execution cannot accept steering."""
 
 
+class AgentSteeringRejectedError(AgentError):
+    """The provider definitively rejected an input before it entered the active run."""
+
+
 class AgentTimeoutError(AgentError):
     """Agent 回合超时。"""
 

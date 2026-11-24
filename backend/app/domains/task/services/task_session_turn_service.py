@@ -20,6 +20,7 @@ from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTur
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import status_machine as sm
 from app.domains.task.services import task_confirmation_service, task_session_snapshot_service
+from app.domains.task.services.chat_images import CHAT_IMAGES_KEY
 from app.domains.task.services.reading_capture_service import load_message_reading_info
 from app.domains.task.services.status_policy import is_terminal
 from app.domains.task.services.task_session_helpers import (
@@ -243,7 +244,7 @@ def _accept_turn_input(db, task, turn, actor_id):
         sm.dispatch(db, task, sm.Trigger.INPUT_SUBMITTED, event_key=f"input-turn:{turn.id}", actor_id=actor_id)
 
 
-def _chat_turn_metadata(db, task, context_json, client_message_id, generation, revision, replacing):
+def _chat_turn_metadata(db, task, context_json, client_message_id, generation, revision, replacing, submission):
     from app.agents.model_selection import apply_task_selection
 
     metadata = dict(context_json or {})
@@ -251,6 +252,9 @@ def _chat_turn_metadata(db, task, context_json, client_message_id, generation, r
     metadata.pop("_agent_session_check_failed", None)
     metadata.pop("_agent_session_replacement_check", None)
     metadata.pop("steering", None)
+    metadata.pop(CHAT_IMAGES_KEY, None)
+    if submission is not None and (images := (submission.metadata_json or {}).get(CHAT_IMAGES_KEY)):
+        metadata[CHAT_IMAGES_KEY] = images
     if replacing:
         metadata.update(fresh_session=True, agent_service_replacement=True)
     try:
@@ -325,6 +329,7 @@ def _persist_chat_turn_sync(
         generation,
         revision,
         prepared.get("replace_agent_session"),
+        submission,
     )
     message = _new_chat_message(
         db,
@@ -510,7 +515,7 @@ async def create_task_chat_turn(
         prompt_text = None
         session_id = None
     prompt = str(prompt_text if prompt_text is not None else content or "")
-    if not str(content or "").strip() or not prompt.strip():
+    if not (context_json or {}).get(CHAT_IMAGES_KEY) and (not str(content or "").strip() or not prompt.strip()):
         raise TaskSessionUndoError("Message content is empty", code="MESSAGE_EMPTY", status_code=400)
 
     prepared = await run_db_txn(

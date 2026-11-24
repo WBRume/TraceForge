@@ -193,10 +193,20 @@ def _accept_resumed_control(db, task, actor_id, prepared, client_id, metadata, *
 
 
 def existing_resume(
-    db, task_id, actor_id, client_id, prompt, confirm_continue, *, new_agent_session=False, agent_model=None
+    db,
+    task_id,
+    actor_id,
+    client_id,
+    prompt,
+    confirm_continue,
+    *,
+    new_agent_session=False,
+    agent_model=None,
+    images=None,
 ):
     from app.domains.task.models.chat_submission import TaskChatSubmission
     from app.domains.task.services import chat_submission_service
+    from app.domains.task.services.chat_images import CHAT_IMAGES_KEY
     from app.domains.task.services.task_session_control_service import TaskSessionControlError
 
     row = (
@@ -215,6 +225,7 @@ def existing_resume(
         or metadata.get("source") != "task_resume"
         or bool(metadata.get("_new_agent_session")) != new_agent_session
         or metadata.get("agent_model") != agent_model
+        or (metadata.get(CHAT_IMAGES_KEY) or []) != (images or [])
     ):
         raise TaskSessionControlError("相同消息标识不能用于不同内容", status_code=409)
     return {"task_id": task_id, "submission": chat_submission_service.serialize(row), "job": None}

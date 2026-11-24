@@ -950,6 +950,16 @@
     "hitl_answer_done": "Completed",
     "ai_job_failed_default": "AI job failed",
     "message_failed": "This message could not be completed",
+    "images": {
+      "add": "Upload images",
+      "selected": "Images to send",
+      "remove": "Remove image {name}",
+      "too_many": "You can attach up to {count} images per message.",
+      "invalid_file": "Could not add {name}. Choose a PNG, JPEG, WebP, or GIF up to 5 MiB.",
+      "upload_failed": "Could not upload images",
+      "restore_failed": "Could not restore images from the withdrawn message",
+      "unavailable": "Could not load image · {name}"
+    },
     "steering": {
       "label": "Steering",
       "placeholder": "Add an instruction for the agent’s next step",

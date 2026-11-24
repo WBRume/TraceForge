@@ -18,7 +18,13 @@ from collections import Counter
 import httpx
 
 from app.agents.adapters.opencode.event_mapper import map_opencode_event, opencode_event_session_id, text_segment_fields
-from app.agents.errors import AgentExecutionDetached, AgentSteeringClosedError, AgentTimeoutError
+from app.agents.contract import AgentInputImage
+from app.agents.errors import (
+    AgentExecutionDetached,
+    AgentSteeringClosedError,
+    AgentSteeringRejectedError,
+    AgentTimeoutError,
+)
 from app.agents.events import AgentEvent
 from app.agents.tool_activity import mcp_tool_fields, wire_event_time
 from app.config import settings
@@ -100,7 +106,7 @@ class ExecutionMonitor:
         self._pending_steers: set[str] = set()
         self._delivered_steers: set[str] = set()
 
-    async def steer(self, message_id: str, content: str) -> None:
+    async def steer(self, message_id: str, content: str, *, images: tuple[AgentInputImage, ...] = ()) -> None:
         async with self._steering_lock:
             if not self.steering_open:
                 raise AgentSteeringClosedError("OpenCode is outside the active prompt")
@@ -113,9 +119,17 @@ class ExecutionMonitor:
             client = await self.adapter._ensure_client()
             response = await client.post(
                 self.adapter._session_url(self.session_id, "/prompt"),
-                json={"id": provider_id, "text": content, "delivery": "steer", "resume": False},
+                json={
+                    **self.adapter._prompt_payload(content, images),
+                    "id": provider_id,
+                    "delivery": "steer",
+                    "resume": False,
+                },
                 timeout=5,
             )
+            if images and response.status_code in {400, 413, 415, 422}:
+                self._pending_steers.discard(provider_id)
+                raise AgentSteeringRejectedError(f"OpenCode 拒绝了图片输入（HTTP {response.status_code}）")
             self.adapter._check_response(response, "steer")
             if response.json().get("data", {}).get("id") != provider_id:
                 raise AgentExecutionDetached("OpenCode steering acceptance could not be confirmed")

@@ -21,6 +21,7 @@ from app.agents.contract import (
     AgentBackend,
     AgentCapabilities,
     AgentEventSink,
+    AgentInputImage,
     AgentRunRequest,
     AgentRunResult,
     AgentStopResult,
@@ -65,6 +66,7 @@ class OpenCodeAdapter(AgentBackend):
         supports_tool_events=True,
         supports_fork=True,
         supports_steering=True,
+        supports_image_input=True,
         hitl_modes=["turn_based", "long_connection"],
         supports_usage=True,
         skill_layouts=["opencode"],
@@ -358,7 +360,7 @@ class OpenCodeAdapter(AgentBackend):
             )
             configured = await client.patch(self._session_url(session_id), json={"permissions": permissions})
             self._check_response(configured, "domain permissions")
-        body = {"text": prompt_text}
+        body = self._prompt_payload(prompt_text, request.images)
         if self._user_message_id:
             body["id"] = self._user_message_id
         response = await client.post(self._session_url(session_id, "/prompt"), json=body)
@@ -378,11 +380,21 @@ class OpenCodeAdapter(AgentBackend):
             response = await client.delete(self._session_url(session_id, "/inbox/" + provider_id), timeout=5)
             response.raise_for_status()
 
-    async def steer(self, message_id: str, content: str) -> None:
+    @staticmethod
+    def _prompt_payload(text: str, images: tuple[AgentInputImage, ...]) -> dict[str, Any]:
+        body: dict[str, Any] = {"text": text}
+        if images:
+            body["files"] = [
+                {"name": image.filename, "uri": f"data:{image.media_type};base64,{image.base64_data()}"}
+                for image in images
+            ]
+        return body
+
+    async def steer(self, message_id: str, content: str, *, images: tuple[AgentInputImage, ...] = ()) -> None:
         monitor = self._execution_monitor
         if not self._running or not monitor or self._interrupted:
             raise AgentSteeringClosedError("OpenCode is outside the active prompt")
-        await monitor.steer(message_id, content)
+        await monitor.steer(message_id, content, images=images)
 
     def accepts_steering(self) -> bool:
         monitor = self._execution_monitor

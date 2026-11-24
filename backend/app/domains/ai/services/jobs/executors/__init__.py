@@ -103,6 +103,7 @@ def load_dispatch_context_sync(job_id: str) -> dict[str, Any] | None:
             "recovering": bool((job.provider_execution_json or {}).get("phase")),
             "agent_service_replacement": bool((job.context_json or {}).get("agent_service_replacement")),
             "prompt_text": job.prompt_text,
+            "has_images": bool(job_context.get("chat_images")),
             "hitl_resume_prompt": str(job_context.get("hitl_resume_prompt") or "").strip() or None,
             "input_revision": str(job_context.get("input_revision") or ""),
         }

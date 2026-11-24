@@ -3,6 +3,7 @@ import api from '@/utils/api'
 import { noteTaskRunInitiated, forgetTaskRunIntent } from '@/utils/taskAwarenessIntent'
 import { messageIdentity } from './chat/shared/messageIdentity'
 import type { useTaskSessionControls } from './useTaskSessionControls'
+import type { ChatImageReference } from './chat/session/useChatImageDraft'
 
 export interface ChatSubmission {
   id?: string
@@ -88,6 +89,8 @@ export function useChatSubmissions(options: {
     newAgentSession?: boolean, resumeInterrupted = false,
   ) => {
     const workspace = options.workspaceId()
+    const { chat_images: images, ...requestMetadata } = metadata || {}
+    const imageIds = (images as ChatImageReference[] | undefined)?.map(image => image.id)
     noteTaskRunInitiated(taskId, clientId)
     put({ task_id: taskId, client_message_id: clientId, content, metadata, new_agent_session: newAgentSession,
       resume_interrupted: resumeInterrupted, status: 'SENDING',
@@ -96,9 +99,11 @@ export function useChatSubmissions(options: {
       const data: ChatSubmission = resumeInterrupted
         ? (await options.resumeInterruptedTask(taskId, {
           prompt: content, clientMessageId: clientId, agentModel: metadata?.agent_model, newAgentSession,
+          ...(imageIds?.length ? { imageIds } : {}),
         })).submission
         : (await api.post(`/workspaces/${workspace}/tasks/${taskId}/chat-submissions`, {
-          client_message_id: clientId, content, metadata,
+          client_message_id: clientId, content, metadata: imageIds?.length ? requestMetadata : metadata,
+          ...(imageIds?.length ? { image_ids: imageIds } : {}),
           ...(newAgentSession ? { new_agent_session: true } : {}),
         })).data
       if (options.workspaceId() === workspace) put(data)

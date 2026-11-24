@@ -356,6 +356,8 @@ watch(
         v-model:pre-input-mode="preInputMode"
         :show-model-selector="!vm.suggestionOnly"
         :selected-model="vm.agentModel" :model-options="vm.agentModelOptions"
+        :can-attach-images="vm.acceptsChatImages" :image-drafts="vm.chatImageDrafts"
+        @add-images="vm.addChatImages" @remove-image="vm.removeChatImage"
         :models-loading="vm.agentModelsLoading" :models-error="vm.agentModelsError"
         @update:selected-model="vm.selectAgentModel" @reload-models="vm.reloadAgentModels"
         :disabled="vm.initializingTask || vm.sendingChat || (!vm.suggestionOnly && (vm.isChatLocked || Boolean(playbook.run && !['COMPLETED', 'CANCELLED'].includes(playbook.run.state))))"

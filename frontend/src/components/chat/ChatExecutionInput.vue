@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChatBubblePlusIcon, Check, Search, ShieldCheck, Send, X, Loader2, Square } from '@/components/icons'
+import { ChatBubblePlusIcon, Check, FileImage, Search, ShieldCheck, Send, X, Loader2, Square } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import AgentModelSelect from '@/components/agent/AgentModelSelect.vue'
 import type { AgentModelOption } from '@/composables/useAgentModels'
@@ -9,7 +9,9 @@ import UserAvatar from '@/components/user/UserAvatar.vue'
 import { speechMode } from '@/utils/speech/mode'
 import { SpeechInsertion } from '@/utils/speech/insertion'
 import AnnotationTray from './annotations/AnnotationTray.vue'
+import ChatImageDrafts from './ChatImageDrafts.vue'
 import { injectContextAnnotations } from '@/composables/chat/annotations/useContextAnnotations'
+import { chatImageAccept, type ChatImageDraft } from '@/composables/chat/session/useChatImageDraft'
 
 const { t } = useI18n()
 const annotations = injectContextAnnotations()
@@ -42,6 +44,8 @@ const props = defineProps<{
   modelsLoading?: boolean
   modelsError?: string
   showModelSelector?: boolean
+  canAttachImages?: boolean
+  imageDrafts?: readonly ChatImageDraft[]
 }>()
 
 const emit = defineEmits<{
@@ -52,6 +56,8 @@ const emit = defineEmits<{
   (e: 'update:selectedModel', value: string): void
   (e: 'reload-models'): void
   (e: 'interrupt'): void
+  (e: 'add-images', files: File[]): void
+  (e: 'remove-image', previewUrl: string): void
   (e: 'start-pre-input', payload: {
     main_text: string
     mentioned_user_ids: string[]
@@ -113,7 +119,27 @@ const onTextareaInput = (event: Event) => {
   emit('update:modelValue', value)
 }
 
-const hasInput = computed(() => Boolean(props.modelValue.trim() || annotations?.items.value.length))
+const imageInput = useTemplateRef<HTMLInputElement>('imageInput')
+const showImageInput = computed(() => props.canAttachImages && !isPreInput.value)
+const imagesDisabled = computed(() => props.disabled || props.sendBlocked || (props.running && !props.steeringJobId))
+const hasInput = computed(() => Boolean(
+  props.modelValue.trim() || annotations?.items.value.length || (showImageInput.value && props.imageDrafts?.length),
+))
+
+function onImageFilesSelected(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  input.value = ''
+  if (showImageInput.value && !imagesDisabled.value && files.length) emit('add-images', files)
+}
+
+function onImagePaste(event: ClipboardEvent) {
+  if (!showImageInput.value || imagesDisabled.value || !event.clipboardData) return
+  const files = Array.from(event.clipboardData.files).filter(file => file.type.startsWith('image/'))
+  if (!files.length) return
+  if (!event.clipboardData.getData('text/plain')) event.preventDefault()
+  emit('add-images', files)
+}
 const primaryAction = computed(() => {
   if (!props.running) return 'send'
   return props.steeringJobId && hasInput.value && !props.interrupting ? 'steer' : 'stop'
@@ -302,6 +328,12 @@ defineExpose({ resetPreInputForm, focusInput })
   <div class="chat-execution-row" :class="{ 'is-running': props.running }">
     <div class="input-card" :class="{ 'is-disabled': props.disabled, 'is-running': props.running, 'is-preinput': isPreInput }">
       <AnnotationTray :disabled="props.disabled" />
+      <ChatImageDrafts
+        v-if="showImageInput && imageDrafts?.length"
+        :items="imageDrafts"
+        :disabled="props.disabled"
+        @remove="emit('remove-image', $event)"
+      />
       <!-- 文本域 -->
       <textarea
         ref="textareaRef"
@@ -312,6 +344,7 @@ defineExpose({ resetPreInputForm, focusInput })
         :disabled="props.disabled"
         @input="onTextareaInput"
         @keydown="handleKeydown"
+        @paste="onImagePaste"
       ></textarea>
 
       <!-- 协作模式：已选成员 chips -->
@@ -415,6 +448,19 @@ defineExpose({ resetPreInputForm, focusInput })
 
         <div class="toolbar-spacer"></div>
 
+        <template v-if="showImageInput">
+          <input ref="imageInput" type="file" :accept="chatImageAccept" multiple hidden @change="onImageFilesSelected" />
+          <button
+            type="button"
+            class="tool-btn chat-image-trigger"
+            :disabled="imagesDisabled"
+            :aria-label="$t('chat.images.add')"
+            :title="$t('chat.images.add')"
+            @click="imageInput?.click()"
+          >
+            <FileImage :size="17" aria-hidden="true" />
+          </button>
+        </template>
         <AgentModelSelect
           v-if="showModelSelector" compact
           :model-value="selectedModel || ''" :options="modelOptions || []"
@@ -677,6 +723,12 @@ defineExpose({ resetPreInputForm, focusInput })
 .tool-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.chat-image-trigger {
+  width: 32px;
+  justify-content: center;
+  padding: 0;
 }
 
 .tool-btn-count {

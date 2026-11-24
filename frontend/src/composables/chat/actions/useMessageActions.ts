@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { generateClientMessageId } from '../shared/messageIdentity'
 import type { ChatDecisionPayload } from '@/composables/useChatDecision'
+import { messageChatImages, type ChatImageReference } from '../session/useChatImageDraft'
 
 /**
  * 消息级动作：撤销用户消息（回滚会话轮次）与标记决策（气泡内 Popover 提交）。
@@ -31,7 +32,7 @@ export function useMessageActions(options: {
   applyTaskSessionVersion: (payload: any) => boolean
   loadHistory: (taskId: string, reset?: boolean) => Promise<void>
   undoTaskMessage: (taskId: string, messageId: string, undoOptions: { operationId: string }) => Promise<any>
-  restoreComposer: (content: string) => void
+  restoreComposer: (content: string, images: readonly ChatImageReference[]) => void | Promise<void>
   scheduleContextWindowRefresh: () => void
   resolveActionError: (error: unknown, fallbackKey: string, noPermissionKey: string) => string
   markMessageAsDecision: (workspaceId: string, taskId: string, messageId: string, payload: ChatDecisionPayload) => Promise<any | null>
@@ -62,7 +63,7 @@ export function useMessageActions(options: {
     if (options.submissions.current().some(row => ['SENDING', 'UNKNOWN', 'PREPARING'].includes(row.status))) return false
     if (String(msg?.role || '').toLowerCase() !== 'user') return false
     if (msg?.decision_id || msg?.message_type === 'init_reason') return false
-    if (!msg?.session_turn_id || !String(msg?.content || '')) return false
+    if (!msg?.session_turn_id || (!msg?.content && !messageChatImages(msg?.metadata).length)) return false
     const currentGeneration = Number(options.getCurrentTask()?.session_generation || 0)
     if (!currentGeneration || Number(msg?.session_generation || 0) !== currentGeneration) return false
     return msg?.can_undo !== false
@@ -73,6 +74,7 @@ export function useMessageActions(options: {
     if (!canUndoMessage(msg) || !options.getCurrentTask()?.id) return false
     const messageId = String(msg.id)
     const taskId = String(options.getCurrentTask().id)
+    const workspaceId = options.getWorkspaceId()
     const key = `${taskId}:${messageId}`
     const operationId = String(msg.undo_operation_id || pendingOperationIds.get(key) || generateClientMessageId())
     pendingOperationIds.set(key, operationId)
@@ -84,6 +86,7 @@ export function useMessageActions(options: {
         { operationId },
       )
       pendingOperationIds.delete(key)
+      if (String(options.getCurrentTask()?.id) !== taskId || options.getWorkspaceId() !== workspaceId) return true
       const removedIds = new Set<string>(
         (Array.isArray(payload?.removed_message_ids) ? payload.removed_message_ids : []).map((id: any) => String(id)),
       )
@@ -97,7 +100,7 @@ export function useMessageActions(options: {
       options.engineResetThinking()
       options.engineRunning.value = false
       options.applyTaskSessionVersion(payload?.task_snapshot)
-      options.restoreComposer(String(payload?.restored_content ?? msg.content ?? ''))
+      await options.restoreComposer(String(payload?.restored_content ?? msg.content ?? ''), messageChatImages(msg.metadata))
       await nextTick()
       document.querySelector<HTMLTextAreaElement>('.card-textarea')?.focus()
       if (options.getCurrentTask()?.id) {

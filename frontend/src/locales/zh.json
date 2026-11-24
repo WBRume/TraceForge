@@ -950,6 +950,16 @@
     "hitl_answer_done": "已完成",
     "ai_job_failed_default": "AI 作业执行失败",
     "message_failed": "本轮消息处理失败",
+    "images": {
+      "add": "上传图片",
+      "selected": "待发送图片",
+      "remove": "移除图片 {name}",
+      "too_many": "每条消息最多可附加 {count} 张图片",
+      "invalid_file": "无法添加 {name}。请选择 5 MiB 以内的 PNG、JPEG、WebP 或 GIF 图片。",
+      "upload_failed": "图片上传失败",
+      "restore_failed": "无法恢复被撤回消息里的图片",
+      "unavailable": "图片无法加载 · {name}"
+    },
     "steering": {
       "label": "运行中引导",
       "placeholder": "追加指令，引导 Agent 的下一步",

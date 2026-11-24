@@ -32,7 +32,8 @@ from app.agents import (
     record_attempt_remote_session_started,
     record_attempt_remote_stop,
 )
-from app.agents.errors import AgentExecutionDetached, AgentSteeringClosedError
+from app.agents.contract import AgentInputImage
+from app.agents.errors import AgentError, AgentExecutionDetached, AgentSteeringClosedError
 from app.agents.run_logging import run_agent_backend_with_logging
 from app.agents.tool_activity import ToolActivityTracker
 from app.config import settings
@@ -293,10 +294,15 @@ class TaskAgentEngine:
             and self.cli.accepts_steering()
         )
 
-    async def steer(self, job_id: str, message_id: str, content: str) -> None:
+    async def steer(
+        self, job_id: str, message_id: str, content: str, *, images: tuple[AgentInputImage, ...] = ()
+    ) -> None:
         if not self.can_steer(job_id):
             raise AgentSteeringClosedError("The task execution has changed")
-        await self.cli.steer(message_id, content)
+        if images:
+            await self.cli.steer(message_id, content, images=images)
+        else:
+            await self.cli.steer(message_id, content)
 
     async def _on_steering_delivered(self, message_id: str) -> None:
         if self.current_job_id and self.is_current():
@@ -304,7 +310,12 @@ class TaskAgentEngine:
 
             await mark_delivered(self.current_job_id, message_id)
 
-    def _configure_run_request(self, request: AgentRunRequest, recovery: dict | None) -> None:
+    def _configure_run_request(
+        self, request: AgentRunRequest, recovery: dict | None, images: tuple[AgentInputImage, ...] = ()
+    ) -> None:
+        if images and not self.cli.capabilities.supports_image_input:
+            raise AgentError("The current Agent backend cannot accept image input")
+        request.images = images
         if self.cli.name == "opencode" and self.attempt is not None:
             request.execution_checkpoint = dict(recovery or {})
             request.on_execution_checkpoint = self._save_execution_checkpoint
@@ -389,7 +400,14 @@ class TaskAgentEngine:
         )
         return project_path, env_overrides
 
-    async def run(self, prompt: str, *, fresh_session: bool = False, recovery: dict | None = None):
+    async def run(
+        self,
+        prompt: str,
+        *,
+        fresh_session: bool = False,
+        recovery: dict | None = None,
+        images: tuple[AgentInputImage, ...] = (),
+    ):
         """
         主入口：将用户 prompt 发送给 agent backend 并处理事件流
         支持首次启动和恢复会话
@@ -443,7 +461,7 @@ class TaskAgentEngine:
                         attempt=self.attempt,
                         on_process_started=self._on_process_started,
                     )
-                    self._configure_run_request(request, recovery)
+                    self._configure_run_request(request, recovery, images)
                     result = await run_agent_backend_with_logging(
                         self.cli,
                         request,
@@ -597,7 +615,7 @@ class TaskAgentEngine:
                 )
             )
 
-    async def send_message(self, prompt: str, *, job_id: str | None = None):
+    async def send_message(self, prompt: str, *, job_id: str | None = None, images: tuple[AgentInputImage, ...] = ()):
         """
         处理用户追加消息：以相同 session_id 启动新的 provider 进程 (--resume)
         """
@@ -623,7 +641,10 @@ class TaskAgentEngine:
             # adapter falling back to legacy events.mux on the current Web Host.
             if str(getattr(self.cli, "name", "")).strip().lower() != "dsh":
                 self.cli = self._create_engine_backend()
-            await self.run(prompt)
+            if images:
+                await self.run(prompt, images=images)
+            else:
+                await self.run(prompt)
 
     async def interrupt(self):
         """临时中断当前 provider 进程，保留会话和引擎注册表用于恢复。

@@ -211,6 +211,7 @@ def test_task_interrupt_with_claimed_attempt_converges_to_resumable_interrupted(
     engine = _FakeEngine()
     published = []
     events = []
+    reason = "DSH rejected the image input because this configured model does not support images."
 
     async def _publish_job(job_id):
         published.append(job_id)
@@ -227,7 +228,7 @@ def test_task_interrupt_with_claimed_attempt_converges_to_resumable_interrupted(
             db,
             task=task,
             actor_user_id="user-1",
-            reason="pause for edits",
+            reason=reason,
         )
     )
 
@@ -235,6 +236,8 @@ def test_task_interrupt_with_claimed_attempt_converges_to_resumable_interrupted(
     db.refresh(job)
     assert task.status == TaskStatus.INTERRUPTED
     assert job.status == AiJobStatus.INTERRUPTED
+    assert job.failure_code == "SYSTEM_INTERRUPT"
+    assert job.terminal_reason == reason
     assert job.session_id == "session-1"
     # ownership 已清空，恢复流程可以直接基于该行重建 attempt。
     assert job.run_token is None

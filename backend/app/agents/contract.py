@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
@@ -666,6 +667,18 @@ class SkillRef:
     materialize_to: str | None = None
 
 
+@dataclass(frozen=True)
+class AgentInputImage:
+    """Binary image on the user input, loaded only for dispatch."""
+
+    filename: str
+    media_type: str
+    data: bytes = field(repr=False)
+
+    def base64_data(self) -> str:
+        return base64.b64encode(self.data).decode("ascii")
+
+
 @dataclass
 class AgentRunRequest:
     """一次 Agent 回合的输入。"""
@@ -697,6 +710,7 @@ class AgentRunRequest:
     # 显式执行类别（doc 7 数据流链路）：与 backend capability 声明一致，
     # 由 bridge/engine 填充；不得通过“是否有本地 PID”推断。
     execution_kind: ExecutionKind = EXECUTION_KIND_LOCAL_PROCESS
+    images: tuple[AgentInputImage, ...] = ()
 
 
 @dataclass
@@ -744,6 +758,7 @@ class AgentCapabilities:
     # 是否支持把既有会话 fork 成独立新会话（baseline 复制上下文给评审线程）
     supports_fork: bool = False
     supports_steering: bool = False
+    supports_image_input: bool = False
     hitl_modes: list[Literal["turn_based", "long_connection"]] = field(default_factory=list)
     supports_usage: bool = True
     skill_layouts: list[str] = field(default_factory=list)
@@ -829,7 +844,7 @@ class AgentBackend(ABC):
         """Read the provider's pending set. None means the state is unavailable."""
         return None
 
-    async def steer(self, message_id: str, content: str) -> None:
+    async def steer(self, message_id: str, content: str, *, images: tuple[AgentInputImage, ...] = ()) -> None:
         """Admit a user instruction at the next step of the active run."""
         from app.agents.errors import AgentSteeringClosedError
 

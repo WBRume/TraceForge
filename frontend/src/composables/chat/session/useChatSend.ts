@@ -9,6 +9,7 @@ import type { AgentModelSelection } from '@/composables/useAgentModels'
 import type { useChatSubmissions } from '@/composables/useChatSubmissions'
 import type { ContextAnnotations } from '../annotations/useContextAnnotations'
 import { formatAnnotationMessage } from '../annotations/contextAnnotations'
+import { type ChatImageDraft, useChatImageDraft } from './useChatImageDraft'
 
 /**
  * 消息发送（composer）：普通输入、HITL 回复、快捷验证三种入口共用
@@ -26,6 +27,7 @@ export function useChatSend(options: {
   onModelSubmitted?: (value?: AgentModelSelection) => void
   resourceBlocked?: () => boolean
   suggestionOnly?: () => boolean
+  canAttachImages?: () => boolean
   getWorkspaceId: () => string
   getTaskId: () => string
   task: {
@@ -66,7 +68,9 @@ export function useChatSend(options: {
 
   const chatInput = ref('')
   const sendingChat = ref(false)
-  let unconfirmedSteering: { jobId: string; taskId: string; content: string; clientMessageId: string } | undefined
+  const imageDraft = useChatImageDraft(options.getWorkspaceId, options.getTaskId)
+  let sendingComposer = false
+  let unconfirmedSteering: { jobId: string; taskId: string; content: string; imagesKey: string; clientMessageId: string } | undefined
   const chatInputPlaceholder = computed(() => {
     if (!options.suggestionOnly?.() && options.resourceBlocked?.()) return '本地资源未连接，恢复在线后可发送消息'
     if (options.suggestionOnly?.()) return '输入建议，提交后由任务创建者采纳'
@@ -85,7 +89,7 @@ export function useChatSend(options: {
 
   const sendChatContent = async (
     content: string,
-    sendOptions: { displayContent?: string; metadata?: Record<string, any> } = {},
+    sendOptions: { displayContent?: string; metadata?: Record<string, any>; images?: readonly ChatImageDraft[] } = {},
   ): Promise<boolean> => {
     if (options.isInitializing?.()) return false
     if (options.task.isTerminalStatus.value || options.task.isTaskProvisioning.value) return false
@@ -125,7 +129,7 @@ export function useChatSend(options: {
       || options.submissions.current.value.some(row => ['SENDING', 'UNKNOWN', 'PREPARING'].includes(row.status))
     )) return false
     const normalized = String(content || '').trim()
-    if (!normalized) return false
+    if (!normalized && (confirmationReply || !sendOptions.images?.length)) return false
     const targetTaskId = options.getTaskId()
     const targetWorkspaceId = options.getWorkspaceId()
     if (options.isHistoryAnchored()) await options.returnToLatest()
@@ -145,6 +149,11 @@ export function useChatSend(options: {
     const taskId = options.getTaskId()
     if (!confirmationReply && taskId) {
       try {
+        if (sendOptions.images?.length) {
+          const images = await imageDraft.upload(sendOptions.images, targetWorkspaceId, targetTaskId)
+          if (options.getTaskId() !== targetTaskId || options.getWorkspaceId() !== targetWorkspaceId) return false
+          sendOptions = { ...sendOptions, metadata: { ...sendOptions.metadata, chat_images: images } }
+        }
         // POST 回执直接应用；后续状态由 outbox 事件（chat_submission_update）驱动。
         const submission = options.task.isTaskInterrupted.value
           ? options.submissions.send(taskId, clientMessageId, normalized, sendOptions.metadata, newAgentSession, true)
@@ -163,6 +172,11 @@ export function useChatSend(options: {
           void options.recoverSession('send-unknown')
         }
         return accepted
+      } catch (error) {
+        if (options.getTaskId() === targetTaskId && options.getWorkspaceId() === targetWorkspaceId) {
+          ElMessage.error(formatApiError(error, t('chat.images.upload_failed'), t))
+        }
+        return false
       } finally {
         sendingChat.value = false
       }
@@ -202,10 +216,12 @@ export function useChatSend(options: {
     }
   }
 
-  const sendSteeringContent = async (jobId: string, content: string): Promise<boolean> => {
+  const sendSteeringContent = async (
+    jobId: string, content: string, drafts: readonly ChatImageDraft[] = [],
+  ): Promise<boolean> => {
     const taskId = options.getTaskId()
     const workspaceId = options.getWorkspaceId()
-    if (!content.trim() || !taskId || sendingChat.value || options.isUndoing()
+    if ((!content.trim() && !drafts.length) || !taskId || sendingChat.value || options.isUndoing()
       || options.collaborationBlocked?.() || options.agentSessionSendBlocked?.()) return false
     if (options.isHistoryAnchored()) await options.returnToLatest()
     if (options.getTaskId() !== taskId || options.getWorkspaceId() !== workspaceId) return false
@@ -213,16 +229,27 @@ export function useChatSend(options: {
       ElMessage.warning(t('chat.steering.run_changed'))
       return false
     }
-    const previous = unconfirmedSteering
-    const clientMessageId = previous?.jobId === jobId && previous.taskId === taskId && previous.content === content
-      ? previous.clientMessageId : generateClientMessageId()
     const revision = options.task.getCurrentTask()?.session_revision
-    unconfirmedSteering = { jobId, taskId, content, clientMessageId }
-    options.noteSentTime(clientMessageId)
+    let submissionStarted = false
     sendingChat.value = true
     try {
+      const imageIds = drafts.length ? (await imageDraft.upload(drafts, workspaceId, taskId)).map(image => image.id) : []
+      if (options.getTaskId() !== taskId || options.getWorkspaceId() !== workspaceId) return false
+      if (jobId !== options.getSteeringJobId?.()) {
+        ElMessage.warning(t('chat.steering.run_changed'))
+        return false
+      }
+      const imagesKey = imageIds.join(',')
+      const previous = unconfirmedSteering
+      const clientMessageId = previous?.jobId === jobId && previous.taskId === taskId
+        && previous.content === content && previous.imagesKey === imagesKey
+        ? previous.clientMessageId : generateClientMessageId()
+      unconfirmedSteering = { jobId, taskId, content, imagesKey, clientMessageId }
+      options.noteSentTime(clientMessageId)
+      submissionStarted = true
       const { data } = await api.post(`/workspaces/${workspaceId}/tasks/${taskId}/chat-steering`, {
         content, job_id: jobId, client_message_id: clientMessageId,
+        ...(imageIds.length ? { image_ids: imageIds } : {}),
       })
       unconfirmedSteering = undefined
       if (options.getTaskId() === taskId && options.getWorkspaceId() === workspaceId
@@ -233,10 +260,10 @@ export function useChatSend(options: {
       return true
     } catch (error) {
       const response = (error as { response?: { status?: number } })?.response
-      if (response?.status && response.status < 500) unconfirmedSteering = undefined
+      if (submissionStarted && response?.status && response.status < 500) unconfirmedSteering = undefined
       if (options.getTaskId() === taskId && options.getWorkspaceId() === workspaceId) {
-        ElMessage.error(formatApiError(error, t('chat.steering.send_failed'), t))
-        if (unconfirmedSteering) void options.recoverSession('steering-unknown')
+        ElMessage.error(formatApiError(error, t(submissionStarted ? 'chat.steering.send_failed' : 'chat.images.upload_failed'), t))
+        if (submissionStarted && unconfirmedSteering) void options.recoverSession('steering-unknown')
       }
       return false
     } finally {
@@ -245,18 +272,28 @@ export function useChatSend(options: {
   }
 
   const sendComposer = async (steeringJobId?: string) => {
+    if (sendingComposer) return
     const annotations = options.replacingAgentSession?.() ? undefined : options.annotations?.snapshot()
-    if (!chatInput.value.trim() && !annotations?.items.length) return
+    const images = options.canAttachImages?.() ? imageDraft.items.value : []
+    if (!chatInput.value.trim() && !annotations?.items.length && !images.length) return
     const content = chatInput.value
     const taskId = options.getTaskId()
+    const workspaceId = options.getWorkspaceId()
     // The submission bubble owns this text during the request. Clearing now
     // also prevents a slow response from carrying the sent prompt into another task.
     chatInput.value = ''
     const prompt = formatAnnotationMessage(content, annotations?.items || [])
-    const sent = steeringJobId ? await sendSteeringContent(steeringJobId, prompt) : await sendChatContent(prompt)
-    if (sent && annotations) options.annotations?.consume(annotations)
-    if (!sent && options.getTaskId() === taskId && !chatInput.value) {
-      chatInput.value = content
+    sendingComposer = true
+    try {
+      const sent = steeringJobId ? await sendSteeringContent(steeringJobId, prompt, images) : await sendChatContent(prompt, { images })
+      if (sent) {
+        if (annotations) options.annotations?.consume(annotations)
+        imageDraft.removeSent(images)
+      } else if (options.getTaskId() === taskId && options.getWorkspaceId() === workspaceId && !chatInput.value) {
+        chatInput.value = content
+      }
+    } finally {
+      sendingComposer = false
     }
   }
 
@@ -302,6 +339,10 @@ export function useChatSend(options: {
 
   return {
     chatInput,
+    imageDrafts: imageDraft.items,
+    addImages: imageDraft.add,
+    removeImage: imageDraft.remove,
+    restoreImages: imageDraft.restore,
     sendingChat,
     chatInputPlaceholder,
     sendChat: () => sendComposer(),

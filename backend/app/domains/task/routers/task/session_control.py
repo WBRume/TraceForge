@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import partial
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, Query, Response, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
@@ -13,6 +13,7 @@ from app.dependencies import get_current_user, get_db
 from app.domains.ai.schemas.ai_job import AiJobListResponse, AiJobResponse
 from app.domains.ai.services.jobs.store import list_task_jobs, serialize_job
 from app.domains.auth.models.user import User, WorkspacePermission
+from app.domains.task.models.chat import TaskChatImage
 from app.domains.task.routers.task.deps import (
     TASKS_ROUTE_PREFIX,
     ensure_task_not_baselined,
@@ -32,6 +33,7 @@ from app.domains.task.schemas.task import (
     TaskUndoMessageRequest,
 )
 from app.domains.task.services import (
+    chat_images,
     chat_steering_service,
     chat_submission_service,
     context_token_service,
@@ -153,11 +155,18 @@ async def resume_interrupted_task(
 
     try:
         async with lock_task_for_resume(task_id):
-            await run_route_db_txn(
-                db,
-                db_bind,
-                lambda session: _load_task_control_context_sync(db=session, ws_id=ws_id, task_id=task_id),
-            )
+
+            def prepare(session: Session) -> dict:
+                _load_task_control_context_sync(db=session, ws_id=ws_id, task_id=task_id)
+                metadata = {"agent_model": body.agent_model.model_dump()} if body.agent_model else {}
+                if body.image_ids:
+                    task = get_task_or_404(session, task_id, ws_id)
+                    metadata[chat_images.CHAT_IMAGES_KEY] = chat_images.resolve_references(
+                        session, task, str(current_user.id), body.image_ids
+                    )
+                return metadata
+
+            metadata = await run_route_db_txn(db, db_bind, prepare)
             return await task_session_control_service.resume_interrupted_task(
                 task_id=task_id,
                 actor_user_id=current_user.id,
@@ -165,8 +174,10 @@ async def resume_interrupted_task(
                 confirm_continue=body.confirm_continue,
                 client_message_id=body.client_message_id,
                 new_agent_session=body.new_agent_session,
-                metadata_json={"agent_model": body.agent_model.model_dump()} if body.agent_model else None,
+                metadata_json=metadata or None,
             )
+    except chat_images.ChatImageError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
     except SessionSwitchError as exc:
         raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
     except (chat_submission_service.SubmissionError, CollaborationError) as exc:
@@ -228,6 +239,47 @@ async def undo_task_message(
     return result
 
 
+@router.post("/{task_id}/chat-images", status_code=201)
+def upload_chat_image(
+    ws_id: str,
+    task_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> chat_images.ChatImageRef:
+    actor_id = str(current_user.id)
+    verify_workspace_access(ws_id, actor_id, db)
+    task = get_task_or_404(db, task_id, ws_id)
+    try:
+        chat_submission_service.require_chat_actor(db, task, actor_id)
+        raw = file.file.read(chat_images.MAX_IMAGE_BYTES + 1)
+        reference = chat_images.store_image(db, task, actor_id, file.filename or "", raw)
+        db.commit()
+        return reference
+    except (chat_images.ChatImageError, chat_submission_service.SubmissionError) as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+@router.get("/{task_id}/chat-images/{image_id}")
+def get_chat_image(
+    ws_id: str,
+    task_id: str,
+    image_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    verify_workspace_access(ws_id, str(current_user.id), db)
+    get_task_or_404(db, task_id, ws_id)
+    image = db.query(TaskChatImage).filter_by(id=image_id, task_id=task_id).one_or_none()
+    if image is None:
+        raise HTTPException(404, "Chat image not found")
+    return Response(
+        image.data,
+        media_type=image.media_type,
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
 @router.post("/{task_id}/chat-submissions", status_code=202)
 async def submit_chat(
     ws_id: str,
@@ -239,14 +291,14 @@ async def submit_chat(
     bind = get_db_bind(db)
     actor_id = str(current_user.id)
 
-    def authorize(session: Session) -> None:
+    def authorize(session: Session) -> list[chat_images.ChatImageRef]:
         verify_workspace_access(ws_id, actor_id, session)
-        if not task_task_records_queries.get_task(session, task_id, ws_id):
-            raise HTTPException(404, "Task not found")
+        task = get_task_or_404(session, task_id, ws_id)
+        return chat_images.resolve_references(session, task, actor_id, payload.get("image_ids"))
 
-    await run_route_db_txn(db, bind, authorize)
-    db.close()
     try:
+        images = await run_route_db_txn(db, bind, authorize)
+        db.close()
         return await chat_submission_service.accept(
             task_id=task_id,
             actor_id=actor_id,
@@ -254,7 +306,10 @@ async def submit_chat(
             content=payload.get("content"),
             metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             new_agent_session=payload.get("new_agent_session") is True,
+            images=images,
         )
+    except chat_images.ChatImageError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
     except SessionSwitchError as exc:
         raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
     except chat_submission_service.SubmissionError as exc:
@@ -281,8 +336,18 @@ async def steer_task_chat(
             job_id=body.job_id,
             client_id=body.client_message_id,
             content=body.content,
+            image_ids=body.image_ids,
             run_txn=partial(run_db_txn_with_bind, bind),
+            interrupt_run=partial(
+                task_session_control_service.interrupt_task,
+                db,
+                task_id=task_id,
+                workspace_id=ws_id,
+                actor_user_id=actor_id,
+            ),
         )
+    except chat_images.ChatImageError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
     except chat_submission_service.SubmissionError as exc:
         raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
     except LockAcquireTimeout as exc:

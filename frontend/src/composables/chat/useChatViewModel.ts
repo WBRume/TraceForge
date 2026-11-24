@@ -674,6 +674,12 @@ export function useChatViewModel() {
   const handleWsMessage = wsRouter.handleWsMessage
 
   // ─── 发送 / 消息动作 / 任务动作 ───
+  const acceptsChatImages = computed(() => {
+    const backend = taskState.currentTask.value?.agent_backend || agentModels.backend.value
+    return (backend === 'opencode' || backend === 'dsh') && !suggestionOnly.value
+      && !taskState.isTaskPreStart.value && !taskState.isTaskProvisioning.value && !taskState.isTerminalStatus.value
+      && !cards.activeHitlCards.value.length
+  })
   const send = useChatSend({
     getSteeringJobId: () => steeringJobId.value,
     agentSessionSendBlocked: () => agentSessionSendBlocked.value,
@@ -686,6 +692,7 @@ export function useChatViewModel() {
     onModelSubmitted: agentModels.submitted,
     resourceBlocked: () => localResource.blocked.value,
     suggestionOnly: () => suggestionOnly.value,
+    canAttachImages: () => acceptsChatImages.value,
     getWorkspaceId,
     getTaskId: taskState.getTaskId,
     task: {
@@ -756,8 +763,9 @@ export function useChatViewModel() {
       await readingProgress.refresh(taskId)
     },
     undoTaskMessage: (taskId, messageId, undoOptions) => taskSessionControls.undoTaskMessage(taskId, messageId, undoOptions),
-    restoreComposer: (content) => {
+    restoreComposer: (content, images) => {
       send.chatInput.value = content
+      return send.restoreImages(images)
     },
     scheduleContextWindowRefresh: contextPanel.scheduleRefresh,
     resolveActionError,
@@ -1172,6 +1180,10 @@ export function useChatViewModel() {
     annotations,
     sendingChat: send.sendingChat,
     chatInputPlaceholder: send.chatInputPlaceholder,
+    acceptsChatImages,
+    chatImageDrafts: send.imageDrafts,
+    addChatImages: send.addImages,
+    removeChatImage: send.removeImage,
     suggestionOnly,
     agentModel: agentModels.selected,
     agentModelOptions: agentModels.options,

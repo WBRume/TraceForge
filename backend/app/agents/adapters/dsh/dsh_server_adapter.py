@@ -35,6 +35,7 @@ from app.agents.contract import (
     AgentBackend,
     AgentCapabilities,
     AgentEventSink,
+    AgentInputImage,
     AgentRunRequest,
     AgentRunResult,
     AgentStopResult,
@@ -44,6 +45,7 @@ from app.agents.errors import (
     AgentError,
     AgentInteractionDeliveryUncertain,
     AgentSteeringClosedError,
+    AgentSteeringRejectedError,
     AgentTimeoutError,
     SessionForkError,
 )
@@ -237,6 +239,7 @@ class DshServerAdapter(AgentBackend):
         supports_tool_binding=False,
         supports_fork=True,  # 文件级 fork（session_files）
         supports_steering=True,
+        supports_image_input=True,
         hitl_modes=["turn_based", "long_connection"],
         supports_usage=True,
         skill_layouts=["dsh"],
@@ -361,8 +364,10 @@ class DshServerAdapter(AgentBackend):
                 raise AgentError(f"DSH server RPC {method} returned malformed envelope")
             if not result.get("ok"):
                 error = result.get("error") or {}
+                code = str(error.get("code") or "unknown")
                 raise AgentError(
-                    f"DSH server RPC {method} failed: {error.get('code', 'unknown')} {error.get('message', '')}"
+                    f"DSH server RPC {method} failed: {code} {error.get('message', '')}",
+                    failure_code=code if code == "session/attachment-invalid" else None,
                 )
             self._gateway_protocol = is_gateway
             value = result.get("value")
@@ -724,26 +729,33 @@ class DshServerAdapter(AgentBackend):
             raw_trace=json.dumps(consumed, ensure_ascii=False, default=str),
         )
 
-    async def _send_prompt(self, session_id, prompt_text):
+    async def _send_prompt(self, session_id, prompt_text, images: tuple[AgentInputImage, ...] = ()):
         from app.domains.ai.services.jobs.agent_dispatch import record_dsh_prompt
 
         request_id = f"tf-{uuid.uuid4().hex}"
         await record_dsh_prompt(session_id, request_id)
         self._prompt_request_id = request_id
-        return await self._submit_prompt(session_id, request_id, prompt_text, mode="queue")
+        return await self._submit_prompt(session_id, request_id, prompt_text, mode="queue", images=images)
 
-    async def _submit_prompt(self, session_id, request_id, prompt_text, *, mode):
+    async def _submit_prompt(
+        self, session_id, request_id, prompt_text, *, mode, images: tuple[AgentInputImage, ...] = ()
+    ):
+        content = [{"type": "text", "text": prompt_text}] if prompt_text or not images else []
+        content.extend(
+            {"type": "image", "mediaType": image.media_type, "data": image.base64_data(), "name": image.filename}
+            for image in images
+        )
         return await self._rpc(
             "session.prompt",
             {
                 "requestId": request_id,
                 "sessionId": session_id,
                 "mode": mode,
-                "content": [{"type": "text", "text": prompt_text}],
+                "content": content,
             },
         )
 
-    async def steer(self, message_id: str, content: str) -> None:
+    async def steer(self, message_id: str, content: str, *, images: tuple[AgentInputImage, ...] = ()) -> None:
         async with self._steering_lock:
             session_id = self._session_id
             if not self.accepts_steering() or not session_id:
@@ -753,7 +765,13 @@ class DshServerAdapter(AgentBackend):
                 raise AgentSteeringClosedError("DSH is outside the active prompt")
             request_id = STEERING_REQUEST_PREFIX + message_id
             self._pending_steering.add(request_id)
-            receipt = await self._submit_prompt(session_id, request_id, content, mode="steer")
+            try:
+                receipt = await self._submit_prompt(session_id, request_id, content, mode="steer", images=images)
+            except AgentError as exc:
+                if images and exc.failure_code == "session/attachment-invalid":
+                    self._pending_steering.discard(request_id)
+                    raise AgentSteeringRejectedError(str(exc)) from exc
+                raise
             if receipt.get("accepted") is not True:
                 raise AgentError("DSH steering acceptance could not be confirmed")
 
@@ -828,7 +846,7 @@ class DshServerAdapter(AgentBackend):
         async def send_when_ready() -> None:
             if ready is not None:
                 await ready.wait()
-            await self._send_prompt(session_id, prompt)
+            await self._send_prompt(session_id, prompt, request.images)
 
         def abort_on_prompt_failure(task: asyncio.Task) -> None:
             if not task.cancelled() and task.exception() is not None:

@@ -749,7 +749,7 @@ def _apply_business_status_in_txn(
     if termination_like:
         # 终止/收割路径的统一 bookkeeping（与旧 _finish_termination_sync 一致）。
         job.terminal_reason = reason
-        job.failure_code = request.evidence.failure_code or reason or job.failure_code
+        job.failure_code = request.evidence.failure_code or job.failure_code
         job.last_reap_verified_at = now
         job.next_reap_at = None
     _finalize_submission_in_txn(db, job, final_status)
@@ -1264,7 +1264,7 @@ def request_attempt_termination_in_txn(
     else:
         job.message = request.message or "Job cancellation requested"
     job.terminal_reason = reason
-    job.failure_code = request.failure_code or (CANCEL_REQUESTED if request.mode == "CANCEL" else reason)
+    job.failure_code = request.failure_code or (CANCEL_REQUESTED if request.mode == "CANCEL" else request.mode)
     job.termination_attempts = int(job.termination_attempts or 0) + 1
     job.finished_at = None
     if request.mode == "INTERRUPT":

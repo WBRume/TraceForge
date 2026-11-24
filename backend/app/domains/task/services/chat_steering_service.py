@@ -8,7 +8,8 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 import httpx
 from sqlalchemy.orm import Session
 
-from app.agents.errors import AgentError, AgentSteeringClosedError
+from app.agents.contract import AgentInputImage
+from app.agents.errors import AgentError, AgentSteeringClosedError, AgentSteeringRejectedError
 from app.core.distributed_lock import lock_task
 from app.core.logging import get_logger
 from app.core.offload import run_db_txn
@@ -17,9 +18,10 @@ from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_event_outbox import TaskEventOutbox
-from app.domains.task.services import reading_capture_service, task_session_service
+from app.domains.task.services import chat_images, reading_capture_service, task_session_service
 from app.domains.task.services.chat_submission_service import SubmissionError, require_chat_actor, wake_event_publisher
 from app.domains.task.services.repository_updates.storage import require_available
+from app.domains.task.services.status_machine import StatusTransitionError
 from app.engine.session.registry import get_engine
 
 logger = get_logger(__name__, category="task_execution")
@@ -38,18 +40,24 @@ def _publish(db: Session, message: ChatMessage) -> dict:
 
 
 def _prepare(
-    db: Session, *, ws_id, task_id, actor_id, job_id, client_id, content, message_id, run_token, session_id
-) -> tuple[dict, bool]:
+    db: Session, *, ws_id, task_id, actor_id, job_id, client_id, content, image_ids, message_id, run_token, session_id
+) -> tuple[dict, int | None, tuple[AgentInputImage, ...]]:
     # Match Job convergence and message reading capture: Task before Job.
     task = db.query(SddTask).filter_by(id=task_id, workspace_id=ws_id).with_for_update().one_or_none()
     if task is None:
         raise SubmissionError("Task not found", "TASK_NOT_FOUND", 404)
     require_chat_actor(db, task, actor_id)
+    references = chat_images.resolve_references(db, task, actor_id, image_ids)
     existing = db.get(ChatMessage, message_id)
     if existing:
-        if existing.content != content or (existing.metadata_json or {}).get("steering", {}).get("job_id") != job_id:
+        metadata = existing.metadata_json or {}
+        if (
+            existing.content != content
+            or metadata.get("steering", {}).get("job_id") != job_id
+            or metadata.get(chat_images.CHAT_IMAGES_KEY, []) != references
+        ):
             raise SubmissionError("相同消息标识不能用于不同的引导指令", "MESSAGE_CONFLICT")
-        return task_session_service._chat_message_event_dto(db, existing), False
+        return task_session_service._chat_message_event_dto(db, existing), None, ()
     if task.status != TaskStatus.RUNNING or not session_id or not run_token:
         raise SubmissionError("当前回合已结束或尚未准备好接收引导", "STEERING_NOT_RUNNING")
     try:
@@ -73,6 +81,8 @@ def _prepare(
     ):
         raise SubmissionError("当前回合已变化，请确认后重新发送", "STEERING_NOT_RUNNING")
     metadata = {"client_message_id": client_id, "steering": {"job_id": job_id, "status": "pending"}}
+    if references:
+        metadata[chat_images.CHAT_IMAGES_KEY] = references
     submission = db.query(TaskChatSubmission.id).filter_by(ai_job_id=job.id).first()
     if submission:
         metadata.update(submission_id=submission[0], knowledge_state="pending")
@@ -88,7 +98,7 @@ def _prepare(
     )
     message.session_turn_id = job.session_turn_id
     reading_capture_service.record_message_change(db, task_id=task_id, message=message)
-    return _publish(db, message), True
+    return _publish(db, message), int(task.status_seq or 0), chat_images.load_agent_images(db, task_id, references)
 
 
 def _set_status(db: Session, message: ChatMessage, status: str) -> None:
@@ -134,16 +144,25 @@ def finalize_in_txn(db: Session, job: SddAiJob) -> None:
 
 
 async def submit(
-    *, ws_id: str, task_id: str, actor_id: str, job_id: str, client_id: str, content: str, run_txn: Callable
+    *,
+    ws_id: str,
+    task_id: str,
+    actor_id: str,
+    job_id: str,
+    client_id: str,
+    content: str,
+    run_txn: Callable,
+    image_ids: list[str] | None = None,
+    interrupt_run: Callable | None = None,
 ) -> dict:
     client_id, content = client_id.strip(), content.strip()
-    if not client_id or not content:
+    if not client_id or not (content or image_ids):
         raise SubmissionError("引导指令和消息标识不能为空", "MESSAGE_INVALID", 422)
     message_id = str(uuid5(NAMESPACE_URL, json.dumps(["task-steering", task_id, actor_id, client_id])))
     async with lock_task(task_id):
         engine = get_engine(task_id)
         active = bool(engine and engine.can_steer(job_id))
-        receipt, created = await run_txn(
+        receipt, status_seq, images = await run_txn(
             lambda db: _prepare(
                 db,
                 ws_id=ws_id,
@@ -152,17 +171,30 @@ async def submit(
                 job_id=job_id,
                 client_id=client_id,
                 content=content,
+                image_ids=image_ids,
                 message_id=message_id,
                 run_token=engine.attempt.run_token if active and engine.attempt else None,
                 session_id=engine.session_id if active else None,
             )
         )
-        if not created:
+        if status_seq is None:
             return receipt
         await wake_event_publisher()
         try:
             async with asyncio.timeout(8):
-                await engine.steer(job_id, message_id, content)
+                if images:
+                    await engine.steer(job_id, message_id, content, images=images)
+                else:
+                    await engine.steer(job_id, message_id, content)
+        except AgentSteeringRejectedError as exc:
+            receipt = await run_txn(lambda db: _update_message(db, job_id, message_id, "failed")) or receipt
+            await wake_event_publisher()
+            if interrupt_run is not None:
+                try:
+                    await interrupt_run(reason=str(exc), expected_status_seq=status_seq)
+                except StatusTransitionError:
+                    # The run already converged while the provider was responding.
+                    pass
         except AgentSteeringClosedError:
             receipt = await run_txn(lambda db: _update_message(db, job_id, message_id, "failed")) or receipt
             await wake_event_publisher()

@@ -227,6 +227,7 @@ async def deliver_confirmation_response(
 
 def _load_task_chat_turn_state_sync(db, job_id: str, run_token: str | None = None) -> dict[str, Any] | None:
     from app.agents.selection import resolve_task_backend
+    from app.domains.task.services.chat_images import CHAT_IMAGES_KEY, load_agent_images
 
     job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
     if not job or not job.task_id:
@@ -247,6 +248,7 @@ def _load_task_chat_turn_state_sync(db, job_id: str, run_token: str | None = Non
         from app.domains.task.services.repository_updates.adaptation import prepare_job
 
         additional_directories = [prepare_job(db, job.id, run_token)]
+    recovery = dict(job.provider_execution_json or {})
     return {
         "task_id": task.id,
         "workspace_id": task.workspace_id,
@@ -257,7 +259,10 @@ def _load_task_chat_turn_state_sync(db, job_id: str, run_token: str | None = Non
         "job_session_id": job.session_id,
         "session_turn_id": getattr(job, "session_turn_id", None),
         "session_revision": getattr(job, "session_revision", None),
-        "recovery": dict(job.provider_execution_json or {}),
+        "recovery": recovery,
+        "images": ()
+        if recovery
+        else load_agent_images(db, task.id, (job.context_json or {}).get(CHAT_IMAGES_KEY) or []),
         "agent_service_replacement": bool((job.context_json or {}).get("agent_service_replacement")),
         "failed_session_check": (job.context_json or {}).get("_agent_session_check_failed"),
         "additional_workspace_directories": additional_directories,
@@ -365,15 +370,16 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> bool | None:
         if not recovery:
             await state.update_job_state(job_id, status=AiJobStatus.RUNNING, progress=55, message="AI is processing")
 
+        image_kwargs = {"images": state_row["images"]} if state_row["images"] else {}
         if recovery:
             engine.session_id = recovery["session_id"]
             await engine.run(prompt, recovery=recovery)
         elif fresh_session:
-            await engine.run(prompt, fresh_session=True)
+            await engine.run(prompt, fresh_session=True, **image_kwargs)
         elif engine.session_id and not engine.running:
-            await engine.send_message(prompt, job_id=job_id)
+            await engine.send_message(prompt, job_id=job_id, **image_kwargs)
         else:
-            await engine.run(prompt)
+            await engine.run(prompt, **image_kwargs)
 
         await finalize_task_chat_job_from_engine(job_id, engine)
         # provider outcome 只能来自引擎收到的真实 provider result；
@@ -401,7 +407,7 @@ async def execute_task_chat_job(job_id: str, dispatch: dict[str, Any]) -> bool |
             ),
         ):
             prompt = str(dispatch.get("hitl_resume_prompt") or dispatch["prompt_text"] or "").strip()
-            if not prompt:
+            if not prompt and not dispatch.get("has_images"):
                 raise ValueError("Empty task chat prompt")
 
             if not dispatch.get("recovering"):

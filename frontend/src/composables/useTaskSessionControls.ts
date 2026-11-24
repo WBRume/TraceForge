@@ -16,6 +16,7 @@ interface ResumeInterruptedOptions {
   confirmContinue?: boolean
   clientMessageId?: string
   newAgentSession?: boolean
+  imageIds?: string[]
 }
 
 interface UndoMessageOptions {
@@ -67,6 +68,7 @@ export function useTaskSessionControls(options: UseTaskSessionControlsOptions) {
           client_message_id: String(resumeOptions.clientMessageId || '').trim() || undefined,
           agent_model: resumeOptions.agentModel,
           ...(resumeOptions.newAgentSession ? { new_agent_session: true } : {}),
+          ...(resumeOptions.imageIds?.length ? { image_ids: resumeOptions.imageIds } : {}),
           metadata: options.getSubmissionMetadata?.(),
         },
         // The server may wait for the previous attempt's stop lease before accepting.

@@ -142,7 +142,8 @@ class TaskStartRequest(BaseModel):
 class TaskSteeringRequest(BaseModel):
     job_id: str = Field(min_length=1, max_length=36)
     client_message_id: str = Field(min_length=1, max_length=128)
-    content: str = Field(min_length=1, max_length=50000)
+    content: str = Field(default="", max_length=50000)
+    image_ids: list[str] = Field(default_factory=list)
 
 
 class TaskInterruptRequest(BaseModel):
@@ -155,6 +156,7 @@ class TaskResumeInterruptedRequest(BaseModel):
     new_agent_session: bool = False
     agent_model: ModelSelection | None = None
     prompt: str | None = None
+    image_ids: list[str] = Field(default_factory=list)
     confirm_continue: bool = False
     client_message_id: str | None = None
 
