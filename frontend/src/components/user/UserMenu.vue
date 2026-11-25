@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import UserAvatar from './UserAvatar.vue'
 
 type BadgeSize = 'sm' | 'md'
+type MenuVariant = 'default' | 'titlebar'
 
 const props = withDefaults(defineProps<{
   displayName?: string | null
@@ -14,6 +15,7 @@ const props = withDefaults(defineProps<{
   avatarSvg?: string | null
   avatarUrl?: string | null
   size?: BadgeSize
+  variant?: MenuVariant
 }>(), {
   displayName: '',
   email: '',
@@ -21,6 +23,7 @@ const props = withDefaults(defineProps<{
   avatarSvg: '',
   avatarUrl: '',
   size: 'sm',
+  variant: 'default',
 })
 
 const router = useRouter()
@@ -73,13 +76,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="root" class="user-menu" :class="{ 'is-open': open }">
+  <div ref="root" class="user-menu" :class="{ 'is-open': open, 'variant-titlebar': variant === 'titlebar' }">
     <button
       type="button"
       class="user-menu-trigger"
       :class="`size-${size}`"
       data-testid="user-menu-trigger"
       :aria-expanded="open"
+      :aria-label="resolvedName"
       aria-haspopup="menu"
       @click="toggle"
     >
@@ -186,6 +190,33 @@ onBeforeUnmount(() => {
   height: 0.9rem;
   opacity: 0.7;
   transition: transform 0.2s ease;
+}
+
+/* Title bar: a quiet avatar-only control that matches the window chrome. */
+.variant-titlebar .user-menu-trigger {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  justify-content: center;
+  border-color: transparent;
+  background: transparent;
+  color: #475569;
+}
+
+.variant-titlebar .user-menu-trigger:hover,
+.variant-titlebar.is-open .user-menu-trigger {
+  border-color: #cbd5e1;
+  background: #eef2f7;
+  box-shadow: none;
+}
+
+.variant-titlebar .user-menu-name,
+.variant-titlebar .user-menu-chevron {
+  display: none;
+}
+
+.variant-titlebar .user-menu-panel {
+  top: calc(100% + 8px);
 }
 
 .user-menu.is-open .user-menu-chevron {

@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Search } from '@/components/icons'
 import AppSwitcherDropdown from '@/components/AppSwitcherDropdown.vue'
+import UserMenu from '@/components/user/UserMenu.vue'
 import { useDesktopTabs } from '@/desktop/workspaceTabs'
 import { useAuthStore } from '@/stores/auth'
 import { useGlobalSearchStore } from '@/stores/globalSearch'
@@ -109,6 +110,17 @@ onScopeDispose(() => {
       <span>{{ t('desktop_tabs.search') }}</span>
       <kbd>Shift × 2</kbd>
     </button>
+    <UserMenu
+      v-if="auth.isAuthenticated"
+      class="titlebar-user"
+      :display-name="auth.user?.display_name"
+      :email="auth.user?.email"
+      :user-id="auth.user?.id"
+      :avatar-svg="auth.user?.avatar_svg"
+      :avatar-url="auth.user?.avatar_url"
+      size="sm"
+      variant="titlebar"
+    />
     <DesktopCaptionButtons v-if="desktop?.runtime === 'tauri'" :api="windows.api" @error="error" />
     <div v-else class="caption-reserve" aria-hidden="true"></div>
   </header>
@@ -125,6 +137,7 @@ onScopeDispose(() => {
 .desktop-home:focus-visible { outline: 2px solid #0284c7; outline-offset: 2px; }
 .desktop-drag-region { -webkit-app-region: drag; app-region: drag; }
 .workspace-switcher { flex: none; border-right: 1px solid #e2e8f0; padding-right: 7px; }
+.titlebar-user { flex: none; -webkit-app-region: no-drag; app-region: no-drag; }
 .empty-titlebar { flex: 1; align-self: stretch; }
 .caption-reserve { flex: 0 0 max(0px, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 138px)))); }
 .titlebar-search { flex: none; display: flex; height: 29px; align-items: center; gap: 7px; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0 8px; font-size: 12px; color: #475569; background: #ffffff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03); transition: background-color 140ms, border-color 140ms, color 140ms; }

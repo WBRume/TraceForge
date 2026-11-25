@@ -10,6 +10,7 @@ import { useAuthStore } from '@/stores/auth'
 import api, { getApiServerUrl } from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { getSddDesktop, isDesktop } from '@/utils/runtime'
+import { useDesktopTabs } from '@/desktop/workspaceTabs'
 import UserMenu from '@/components/user/UserMenu.vue'
 import OAuthProviderButtons from '@/components/auth/OAuthProviderButtons.vue'
 
@@ -17,6 +18,7 @@ const { locale, t } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
 const desktop = isDesktop()
+const desktopTabs = useDesktopTabs()
 
 const toggleLanguage = () => {
   const newLang = locale.value === 'zh' ? 'en' : 'zh'
@@ -237,6 +239,7 @@ onBeforeUnmount(() => {
         <div class="v-divider"></div>
         <template v-if="authStore.isAuthenticated">
           <UserMenu
+            v-if="!desktopTabs"
             :display-name="authStore.user?.display_name"
             :email="authStore.user?.email"
             :user-id="authStore.user?.id"
