@@ -5,6 +5,7 @@ import {
   LibraryBig, MessageSquare, Network, ServerCog, Settings, Users, Wrench,
 } from '@/components/icons'
 import type { WorkspaceTab } from '@/types/workspaceWindows'
+import { isCanvasRoute } from '@/router/workspaceAssetPresentation'
 
 export type DesktopTabTone = 'sky' | 'emerald' | 'violet' | 'amber' | 'teal' | 'slate'
 
@@ -82,7 +83,7 @@ export function workspaceOverviewChoice(router: Router, t: (key: string) => stri
 export function describeDesktopTab(tab: WorkspaceTab, router: Router, t: (key: string) => string) {
   const route = router.resolve(tab.path)
   const name = String(route.name ?? '')
-  const item = labels[name as keyof typeof labels]
+  const item = isCanvasRoute(route) ? ['workspace_canvas.title', Box] as const : labels[name as keyof typeof labels]
     ?? (name.startsWith('workspaceAssetsRequirement') || name === 'workspaceAssetRequirementSplitReview' ? labels.workspaceAssetsRequirements
       : name.startsWith('workspaceAssetsTask') ? labels.workspaceAssetsTasks
       : name.startsWith('workspaceCase') || name.startsWith('workspacePlaybook') ? labels.workspaceCases

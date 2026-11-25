@@ -9,6 +9,7 @@ const props = defineProps<{
   detail: TaskDetail | TaskDetailSummaryResponse | null
   workspaceId: string
   taskId: string
+  compact?: boolean
 }>()
 
 const { t } = useI18n()
@@ -87,10 +88,10 @@ const metaItems = computed(() => [
 </script>
 
 <template>
-  <header class="task-detail-header">
+  <header class="task-detail-header" :class="{ compact }">
     <div class="header-main">
       <div class="title-section">
-        <div class="eyebrow-row">
+        <div v-if="!compact" class="eyebrow-row">
           <div class="id-badges">
             <span class="badge">WS: {{ workspaceId }}</span>
             <span class="badge">TASK: {{ taskId }}</span>
@@ -352,4 +353,7 @@ const metaItems = computed(() => [
     grid-template-columns: minmax(0, 1fr);
   }
 }
+.task-detail-header.compact { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 16px; }
+.task-detail-header.compact .task-title { font-size: 21px; }
+.task-detail-header.compact .meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 </style>

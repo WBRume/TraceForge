@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { shallowRef } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createI18n } from 'vue-i18n'
@@ -52,8 +53,7 @@ vi.mock('element-plus', async (importOriginal) => {
 })
 
 const workspaceAssetsMock = vi.hoisted(() => ({
-  loading: false,
-  error: undefined,
+  clearError: vi.fn(),
   loadRequirements: vi.fn(async () => null),
   createRequirement: vi.fn(),
   updateRequirement: vi.fn(),
@@ -68,7 +68,7 @@ const workspaceAssetsMock = vi.hoisted(() => ({
 }))
 
 vi.mock('@/composables/useWorkspaceAssets', () => ({
-  useWorkspaceAssets: () => workspaceAssetsMock,
+  useWorkspaceAssets: () => ({ ...workspaceAssetsMock, loading: shallowRef(false), error: shallowRef(null) }),
 }))
 
 function i18nPlugin(locale = 'zh') {

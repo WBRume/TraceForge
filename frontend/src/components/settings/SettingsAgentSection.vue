@@ -15,7 +15,7 @@ const dirty = computed(() => {
 </script>
 
 <template>
-  <div class="agent-settings">
+  <div class="choice-settings">
     <section class="settings-card glass-panel animate-pop-in">
       <div class="section-title-row">
         <div class="flex items-start gap-4">
@@ -114,57 +114,8 @@ const dirty = computed(() => {
 </template>
 
 <style scoped src="@/styles/management/management-shared.css"></style>
+<style scoped src="@/styles/settings/choice-section.css"></style>
 <style scoped>
-.agent-settings {
-  display: flex;
-  flex-direction: column;
-  padding-bottom: 2rem;
-}
-
-.settings-card {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  border-radius: 16px;
-  padding: 1.75rem;
-  background: rgba(255, 255, 255, 0.8);
-  backdrop-filter: blur(12px);
-  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.05);
-}
-
-.section-title-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.title-gradient-small {
-  margin: 0;
-  font-size: 1.25rem;
-  font-weight: 800;
-  background: linear-gradient(135deg, #1e3a8a 0%, #0ea5e9 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.subtitle {
-  color: #64748b;
-  font-size: 0.9rem;
-  margin-top: 0.4rem;
-  line-height: 1.5;
-}
-
-.icon-wrapper {
-  background: linear-gradient(135deg, rgba(14, 165, 233, 0.1), rgba(59, 130, 246, 0.1));
-  padding: 0.65rem;
-  border-radius: 12px;
-  color: #0ea5e9;
-  border: 1px solid rgba(14, 165, 233, 0.2);
-  flex-shrink: 0;
-}
-
 .mode-pill {
   border: 1px solid #cbd5e1;
   border-radius: 999px;
@@ -187,57 +138,6 @@ const dirty = computed(() => {
   font-size: 0.875rem;
 }
 
-.option-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.option-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.75rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 0.9rem 1rem;
-  cursor: pointer;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-  background: #fff;
-}
-
-.option-row:hover {
-  border-color: #93c5fd;
-}
-
-.option-row.selected {
-  border-color: #0ea5e9;
-  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
-}
-
-.option-row input[type='radio'] {
-  margin-top: 0.2rem;
-  accent-color: #0ea5e9;
-}
-
-.option-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.option-title {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.option-name {
-  font-weight: 700;
-  color: #1e293b;
-  font-size: 0.95rem;
-}
-
 .default-tag,
 .no-resume-tag {
   border-radius: 999px;
@@ -256,12 +156,6 @@ const dirty = computed(() => {
   border: 1px solid #fed7aa;
   color: #9a3412;
   background: #fff7ed;
-}
-
-.option-desc {
-  color: #64748b;
-  font-size: 0.82rem;
-  line-height: 1.5;
 }
 
 .info-box {
@@ -290,23 +184,6 @@ const dirty = computed(() => {
   font-size: 0.875rem;
   font-weight: 500;
   line-height: 1.5;
-}
-
-.error-text {
-  color: #dc2626;
-  font-size: 0.875rem;
-}
-
-.success-text {
-  color: #059669;
-  font-size: 0.875rem;
-}
-
-.actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 0.75rem;
 }
 
 .test-result {
@@ -349,19 +226,5 @@ const dirty = computed(() => {
   to { transform: rotate(360deg); }
 }
 
-.flex { display: flex; }
-.items-start { align-items: flex-start; }
-.gap-4 { gap: 1rem; }
-.mt-4 { margin-top: 1rem; }
-.mt-6 { margin-top: 1.5rem; }
 .flex-shrink-0 { flex-shrink: 0; }
-
-@keyframes popIn {
-  from { opacity: 0; transform: scale(0.95) translateY(10px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
-}
-
-.animate-pop-in {
-  animation: popIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
 </style>

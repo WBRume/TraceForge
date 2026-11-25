@@ -4,6 +4,8 @@ import api from '@/utils/api'
 import router from '@/router'
 import { getSddDesktop } from '@/utils/runtime'
 
+export type AssetDisplayMode = 'table' | 'canvas'
+
 type AuthUser = {
   id: string
   email: string
@@ -12,6 +14,7 @@ type AuthUser = {
   avatar_svg?: string | null
   is_admin?: boolean
   created_at?: string
+  asset_display_mode?: AssetDisplayMode
   /** 已绑定的三方 provider 名列表（GET /auth/me 增量字段） */
   bound_providers?: string[]
 }
@@ -20,6 +23,8 @@ export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(localStorage.getItem('sdd_token'))
   const user = ref<AuthUser | null>(null)
   const boundProviders = ref<string[]>([])
+  const savingAssetDisplay = ref(false)
+  const assetDisplayMode = computed<AssetDisplayMode>(() => user.value?.asset_display_mode ?? 'table')
   
   const isAuthenticated = computed(() => !!token.value)
   
@@ -73,6 +78,21 @@ export const useAuthStore = defineStore('auth', () => {
     boundProviders.value = providers
   }
 
+  async function setAssetDisplayMode(mode: AssetDisplayMode) {
+    const actor = user.value?.id
+    const currentToken = token.value
+    if (!actor || savingAssetDisplay.value || mode === assetDisplayMode.value) return
+    savingAssetDisplay.value = true
+    try {
+      const { data } = await api.put<{ mode: AssetDisplayMode }>('/auth/me/asset-display', { mode })
+      if (token.value === currentToken && user.value?.id === actor) {
+        user.value = { ...user.value, asset_display_mode: data.mode }
+      }
+    } finally {
+      savingAssetDisplay.value = false
+    }
+  }
+
   async function fetchCurrentUser() {
     const currentToken = token.value
     if (!currentToken) return null
@@ -88,5 +108,6 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  return { token, user, boundProviders, isAuthenticated, setToken, adoptToken, logout, clearSession, setUser, setBoundProviders, fetchCurrentUser }
+  return { token, user, boundProviders, isAuthenticated, assetDisplayMode, savingAssetDisplay, setAssetDisplayMode,
+    setToken, adoptToken, logout, clearSession, setUser, setBoundProviders, fetchCurrentUser }
 })

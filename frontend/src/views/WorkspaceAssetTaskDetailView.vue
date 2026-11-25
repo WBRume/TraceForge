@@ -8,6 +8,7 @@ import {
   Database,
   FileText,
   GitBranch,
+  MessageSquare,
   ShieldCheck,
   TerminalSquare,
 } from '@/components/icons'
@@ -16,6 +17,7 @@ import TaskDetailPanel from '@/components/task-detail/TaskDetailPanel.vue'
 import TaskFilePanel from '@/components/workspace-assets/task-detail/TaskFilePanel.vue'
 import { useTaskDetailSections } from '@/composables/useTaskDetailSections'
 import type { TaskWorkbenchSectionKey } from '@/types/workspaceAssets'
+import { canvasOperationTarget, isCanvasRoute } from '@/router/workspaceAssetPresentation'
 
 const TaskFinalWorkflowEntryPanel = defineAsyncComponent(() => import('@/components/workspace-assets/task-final-workflow/TaskFinalWorkflowEntryPanel.vue'))
 const HumanDeltaPanel = defineAsyncComponent(() => import('@/components/workspace-assets/task-detail/HumanDeltaPanel.vue'))
@@ -33,6 +35,7 @@ type WorkbenchSection = {
 
 const route = useRoute()
 const { t } = useI18n()
+const embedded = computed(() => isCanvasRoute(route))
 
 const {
   summary,
@@ -48,6 +51,7 @@ const {
 const wsId = computed(() => String(route.params.wsId || ''))
 const taskId = computed(() => String(route.params.taskId || ''))
 const backToTasks = computed(() => `/workspaces/${wsId.value}/assets/tasks`)
+const canvasParams = computed(() => ({ wsId: wsId.value, taskId: taskId.value }))
 
 const sectionKeys: DetailSectionKey[] = [
   'taskInfo',
@@ -156,15 +160,24 @@ watch(
 </script>
 
 <template>
-  <div class="task-detail-view">
-    <div class="view-header-bar">
+  <div class="task-detail-view" :class="{ embedded }">
+    <div v-if="!embedded" class="view-header-bar">
       <RouterLink class="back-link" :to="backToTasks">
         <ArrowLeft class="back-icon" />
         <span>{{ t('workspace_assets.task_detail.back_to_tasks') }}</span>
       </RouterLink>
     </div>
 
-    <TaskDetailHeader :detail="summary" :workspace-id="wsId" :task-id="taskId" />
+    <TaskDetailHeader :detail="summary" :workspace-id="wsId" :task-id="taskId" :compact="embedded" />
+
+    <nav v-if="embedded && summary" class="canvas-task-links" :aria-label="t('workspace_canvas.kind.task')">
+      <RouterLink class="btn-primary" :to="canvasOperationTarget('taskChat', canvasParams)">
+        <MessageSquare :size="16" />{{ t('workspace_canvas.actions.task_session') }}
+      </RouterLink>
+      <RouterLink class="btn-secondary" :to="canvasOperationTarget('taskSpec', canvasParams)">
+        <FileText :size="16" />{{ t('workspace_canvas.actions.task_documents') }}
+      </RouterLink>
+    </nav>
 
     <el-alert
       v-if="summaryError"
@@ -287,6 +300,17 @@ watch(
     radial-gradient(circle at 100% 100%, #f0f9ff 0%, transparent 40%);
   color: #0f172a;
   font-family: 'Open Sans', sans-serif;
+}
+
+.task-detail-view.embedded { min-height: 100%; padding: 16px; gap: 12px; background-image: none; }
+.canvas-task-links { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.canvas-task-links a { display: inline-flex; align-items: center; gap: 7px; text-decoration: none; }
+@container (max-width: 900px) {
+  .task-detail-view.embedded .task-workbench { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .task-detail-view.embedded .workbench-nav { position: static; padding: 8px; }
+  .task-detail-view.embedded .nav-items-grid { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+  .task-detail-view.embedded .nav-item { padding: 6px; }
+  .task-detail-view.embedded .nav-item-body { display: none; }
 }
 
 .view-header-bar {

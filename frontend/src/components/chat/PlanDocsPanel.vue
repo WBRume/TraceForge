@@ -61,6 +61,7 @@ const props = withDefaults(defineProps<{
   taskId: string
   readonly?: boolean
   visible?: boolean
+  initialFile?: { section: PlanDocSection; path: string }
 }>(), {
   visible: true,
 })
@@ -89,10 +90,15 @@ const selectedDoc = computed(() => {
   const path = selectedPath.value
   if (!section || !path) return null
   const source = section === 'plans' ? plans.value : specs.value
-  return source.find(item => item.section_path === path) || null
+  const entry = source.find(item => item.section_path === path)
+  if (entry) return entry
+  if (props.initialFile?.section === section && props.initialFile.path === path) {
+    return { section, name: path.split('/').at(-1) || path, section_path: path, relative_path: path, size: 0 }
+  }
+  return null
 })
 
-const hasDocs = computed(() => plans.value.length > 0 || specs.value.length > 0)
+const hasDocs = computed(() => plans.value.length > 0 || specs.value.length > 0 || Boolean(props.initialFile))
 const isDirty = computed(() => content.value !== originalContent.value)
 const canSave = computed(() => Boolean(selectedDoc.value) && isDirty.value && !props.readonly && !saving.value)
 const selectedDocKey = computed(() => {
@@ -249,6 +255,12 @@ const clearEditor = () => {
 const ensureSelection = () => {
   const current = selectedDoc.value
   if (current) return
+
+  if (props.initialFile) {
+    selectedSection.value = props.initialFile.section
+    selectedPath.value = props.initialFile.path
+    return
+  }
 
   if (plans.value.length > 0) {
     selectedSection.value = 'plans'
@@ -468,7 +480,7 @@ watch(
       <span>{{ $t('chat.plan_docs_not_configured') }}</span>
       <RouterLink :to="{ path: `/workspaces/${wsId}/settings`, query: { section: 'plan_docs' } }">{{ $t('chat.plan_docs_configure') }}</RouterLink>
     </div>
-    <p v-else-if="configured && !baselineAvailable && !loadError" class="config-hint" role="status">{{ $t('chat.plan_docs_baseline_unavailable') }}</p>
+    <p v-else-if="configured && !baselineAvailable && !loadError && !initialFile" class="config-hint" role="status">{{ $t('chat.plan_docs_baseline_unavailable') }}</p>
     <div v-else class="panel-body">
       <aside class="doc-list">
         <section class="doc-section">

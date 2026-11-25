@@ -26,7 +26,8 @@ const KNOWN_ERROR_KEYS = new Set(['task_status_not_ready', 'load_failed', 'faile
 // 查看结果后隐藏。取消中的作业必须可见：这是「关闭弹窗已停止 CLI」的可见反馈
 const jobs = computed(() => [...store.jobList.filter((job) => {
   if (job.kind !== 'provision') return (job.handedOver || job.cancelRequested) && !job.viewed
-  const isCurrentTask = route.name === 'taskChat' && route.params.wsId === job.workspaceId && route.params.taskId === job.taskId
+  const isCurrentTask = (route.meta?.assetOperation ?? route.name) === 'taskChat'
+    && route.params.wsId === job.workspaceId && route.params.taskId === job.taskId
   return !(job.ready && isCurrentTask)
 }), ...skillAnalysisStore.jobs])
 const activeJobs = computed(() => jobs.value.filter((job) => !job.terminal))

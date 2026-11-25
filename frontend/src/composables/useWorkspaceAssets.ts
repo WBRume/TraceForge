@@ -482,6 +482,7 @@ export function useWorkspaceAssets() {
   return {
     loading: readonly(loading),
     error: readonly(error),
+    clearError: () => { error.value = null },
     overview: readonly(overview),
     requirements: readonly(requirements),
     tasks: readonly(tasks),

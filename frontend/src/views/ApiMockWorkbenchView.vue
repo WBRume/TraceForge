@@ -28,8 +28,9 @@ const { t } = useI18n()
 const authStore = useAuthStore()
 const wsId = computed(() => String(route.params.wsId || ''))
 const selectionId = (value: unknown) => typeof value === 'string' && /^[\w-]{1,128}$/.test(value) ? value : ''
-const routeTaskId = computed(() => desktopTabs && route.name === 'apiMock' ? selectionId(route.query.task) : '')
-const routeEndpointId = computed(() => desktopTabs && route.name === 'apiMock' ? selectionId(route.query.endpoint) : '')
+const routeTaskId = computed(() => route.name === 'apiMock' ? selectionId(route.query.task) : '')
+const routeEndpointId = computed(() => route.name === 'apiMock' ? selectionId(route.query.endpoint) : '')
+const routeSelection = computed(() => Boolean(desktopTabs || routeTaskId.value))
 const selectedTaskId = ref('')
 const notifications = useWorkbenchNotifications()
 const workspace = useWorkspaceContext(wsId)
@@ -49,7 +50,7 @@ const { activeJob, isAutoMockRunning, isCurrentEndpointAutoMockLocked, isProject
 const { notifyError, notifyProjectSwaggerLocked } = notifications
 const { collabConnected, onlineUsers, connectCollab, closeSocket, sendCollabEvent } = collaboration
 const { syncBusy, importBusy, cancelJobBusy, autoMockStartBusy, onSync, onImportSwagger, onStartAutoMock, onCancelActiveJob, onActivateSource, onUpdateProxy } = sources
-const { savingEndpoint, savingDocument, savingCase, deletingCase, onSaveEndpoint, onSaveDocument, onCreateCase, onSaveCase, onDeleteCase, onCreateEntity, onUpdateEntity, onDeleteEntity } = editing
+const { savingEndpoint, savingDocument, savingCase, deletingCase, onSaveEndpoint: saveEndpoint, onSaveDocument, onCreateCase, onSaveCase, onDeleteCase, onCreateEntity, onUpdateEntity, onDeleteEntity } = editing
 const selectedTask = computed(() => tasks.value.find(item => item.id === selectedTaskId.value) || null)
 const canManageSwagger = computed(() => canManage.value && !isProjectSwaggerMutationLocked.value)
 const endpointCatalogRef = ref<InstanceType<typeof ApiMockEndpointCatalog> | null>(null)
@@ -70,10 +71,18 @@ const showSideTaskPicker = ref(false)
 
 const handleTaskPicked = (taskId: string) => {
   showSideTaskPicker.value = false
-  if (!desktopTabs) {
+  if (!routeSelection.value) {
     selectedTaskId.value = taskId
   } else if (taskId !== routeTaskId.value) {
     void router.replace({ query: { ...route.query, task: taskId || undefined, endpoint: undefined } })
+  }
+}
+
+async function onSaveEndpoint(payload: Parameters<typeof saveEndpoint>[0]) {
+  const task = selectedTaskId.value
+  const id = await saveEndpoint(payload)
+  if (id && routeSelection.value && routeTaskId.value === task && selectedTaskId.value === task && id !== routeEndpointId.value) {
+    await router.replace({ query: { ...route.query, endpoint: id } })
   }
 }
 
@@ -85,7 +94,7 @@ const loadEndpoint = async (endpointId: string) => {
 }
 
 const handleSelectEndpoint = (endpointId: string) => {
-  if (!desktopTabs) return loadEndpoint(endpointId)
+  if (!routeSelection.value) return loadEndpoint(endpointId)
   if (endpointId !== routeEndpointId.value) return router.replace({ query: { ...route.query, endpoint: endpointId || undefined } })
 }
 
@@ -130,15 +139,13 @@ const onShortcuts = (event: KeyboardEvent) => {
     }
   }
 }
-if (desktopTabs) {
-  watch([routeTaskId, tasks], ([id, items]) => {
-    selectedTaskId.value = items.some(task => task.id === id) ? id : ''
-  }, { immediate: true })
-  watch(routeEndpointId, id => {
-    if (!selectedTaskId.value || routeTaskId.value !== selectedTaskId.value || id === selectedEndpointId.value) return
-    if (!id || endpoints.value.some(endpoint => endpoint.id === id)) void loadEndpoint(id)
-  })
-}
+watch([routeTaskId, tasks], ([id, items], previous) => {
+  if (routeSelection.value || previous?.[0]) selectedTaskId.value = items.some(task => task.id === id) ? id : ''
+}, { immediate: true })
+watch(routeEndpointId, id => {
+  if (!selectedTaskId.value || routeTaskId.value !== selectedTaskId.value || id === selectedEndpointId.value) return
+  if (!id || endpoints.value.some(endpoint => endpoint.id === id)) void loadEndpoint(id)
+})
 watch(selectedTaskId, async (next, prev) => {
   if (next === prev) return
   showSideTaskPicker.value = false

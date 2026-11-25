@@ -31,6 +31,8 @@ const props = defineProps<{
   taskId?: string;
   compact?: boolean;
   initialAssetId?: string;
+  initialVersionId?: string;
+  focusBlockId?: string;
   readonly?: boolean;
   revisionJobId?: string;
   /** Spec 基线状态由宿主注入：会话内复用 vm.specBootstrap（WS 推送），独立页接 useTaskSpecBootstrapFeed */
@@ -66,6 +68,7 @@ const ASSET_PAGE_SIZE = 100;
 const discussion = useAssetDiscussion({
   wsId: computed(() => props.wsId),
   assetId: selectedAssetId,
+  initialVersionId: () => selectedAssetId.value === props.initialAssetId ? props.initialVersionId : undefined,
 });
 const {
   documentData,
@@ -113,6 +116,9 @@ const docxSource = computed(() => {
   };
 });
 const visibleBlocks = computed(() => (editing.value && draft.value?.blocks) || documentData.value?.blocks || []);
+const focusBlock = computed(() => selectedAssetId.value === props.initialAssetId
+  && (!props.initialVersionId || activeVersionId.value === props.initialVersionId)
+  && !editing.value ? visibleBlocks.value.find(block => block.id === props.focusBlockId) : undefined);
 const isPdfAsset = computed(() => {
   const versionExt = String(documentData.value?.active_version?.original_ext || "").toLowerCase();
   const assetExt = String(selectedAsset.value?.source_ext || "").toLowerCase();
@@ -306,11 +312,10 @@ const loadAssets = async () => {
       });
     }
 
-    // Fallback: if we have an initial asset id from upload response, fetch directly.
-    if (scopedAssets.length === 0 && props.initialAssetId) {
+    if (props.initialAssetId && !scopedAssets.some(item => item.id === props.initialAssetId)) {
       try {
         const direct = await fetchAssetById(props.initialAssetId);
-        if (direct?.id) scopedAssets = [direct];
+        if (direct?.id && (!props.taskId || direct.task_id === props.taskId)) scopedAssets.push(direct);
       } catch {
         // Ignore direct lookup failure and keep empty state.
       }
@@ -652,6 +657,7 @@ onMounted(() => {
             :threads="threads"
             :selected-thread-id="selectedThreadId"
             :inline-review-enabled="inlineReviewEnabled"
+            :focus-text="focusBlock?.text"
             @open-threads="openAnchoredThreads"
             @select-range="handleSelectRange"
             @clear-selection="selectionPayload = null"
@@ -661,6 +667,7 @@ onMounted(() => {
             :is="docxSource ? DocxReviewCanvas : DocumentCanvas"
             v-bind="docxSource ? { ...docxSource, threads } : {}"
             :blocks="visibleBlocks"
+            :focus-block-id="focusBlock?.id"
             :markers-by-block="editing ? {} : markersByBlock"
             :selected-thread-id="selectedThreadId"
             :inline-review-enabled="inlineReviewEnabled"

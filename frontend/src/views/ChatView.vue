@@ -39,6 +39,7 @@ import DiagnosisSopLayout from '@/components/chat/diagnosis-playbook/DiagnosisSo
 import { useGuideSession } from '@/composables/chat/diagnosis/useGuideSession'
 import { consumeCollaborationIntent } from '@/components/task-create/lib/localCollaborationIntent'
 import { useWorkspaceTabTitle } from '@/desktop/workspaceTabs'
+import { isCanvasRoute } from '@/router/workspaceAssetPresentation'
 
 /**
  * 任务会话工作台（路由级组合面）：三栏布局装配 + 弹窗宿主。
@@ -49,6 +50,7 @@ import { useWorkspaceTabTitle } from '@/desktop/workspaceTabs'
 const rawVm = useChatViewModel()
 provide(contextAnnotationsKey, rawVm.annotations)
 const vm = proxyRefs(rawVm)
+const inAssetCanvas = computed(() => isCanvasRoute(vm.route))
 useWorkspaceTabTitle(() => vm.currentTask?.id === vm.route.params.taskId ? vm.currentTask?.name : undefined)
 // 向上回看历史时自动收起工具栏，滚动回到底部再展开
 const { hidden: headerHidden, reveal: revealHeader } = useAutoHideHeader({
@@ -208,6 +210,7 @@ watch(
   <div class="chat-layout">
     <!-- Left Sidebar: Task List（SOP 模式下可折叠，宽位动画由 .is-collapsed 驱动） -->
     <TaskSidebar
+      v-if="!inAssetCanvas"
       :class="{ 'is-collapsed': sopEnabled && !showSopTasks }"
       :aria-hidden="sopEnabled && !showSopTasks ? 'true' : undefined"
       :vm="vm"
@@ -231,7 +234,7 @@ watch(
       />
       <SessionHeader
         :vm="vm"
-        :show-tasklist-toggle="sopEnabled"
+        :show-tasklist-toggle="sopEnabled && !inAssetCanvas"
         :tasklist-visible="showSopTasks"
         :collapsed="headerHidden"
         @toggle-tasklist="toggleSopTasks"

@@ -53,12 +53,14 @@ export function useProjectEditing(context: ProjectContext, notifications: Workbe
         payload,
       )
       if (version !== contextVersion.value || endpointId !== selectedEndpointId.value) return
-      selectedEndpointId.value = res.data.id
-      await refresh({ explicitEndpointId: res.data.id })
-      if (version !== contextVersion.value || endpointId !== selectedEndpointId.value) return
-      sendCollabEvent('save', { endpoint_id: res.data.id, target: 'endpoint' })
-      if (version !== contextVersion.value || endpointId !== selectedEndpointId.value) return
+      const updatedId = String(res.data.id)
+      selectedEndpointId.value = updatedId
+      await refresh({ explicitEndpointId: updatedId })
+      if (version !== contextVersion.value || updatedId !== selectedEndpointId.value) return
+      sendCollabEvent('save', { endpoint_id: updatedId, target: 'endpoint' })
+      if (version !== contextVersion.value || updatedId !== selectedEndpointId.value) return
       notifySuccess(t('api_mock.endpoint_saved'))
+      return updatedId
     } catch (err) {
       if (version !== contextVersion.value) return
       if (isAutoMockProjectLockError(err)) {

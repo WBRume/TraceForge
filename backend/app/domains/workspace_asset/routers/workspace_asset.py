@@ -5,7 +5,7 @@ Workspace Assets API routes.
 import asyncio
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -103,6 +103,7 @@ from app.domains.workspace_asset.services.tasks import summary_query as task_sum
 from app.domains.workspace_asset.services.traceability import get_traceability
 from app.domains.workspace_asset.services.workload import get_workload
 from app.domains.workspace_asset.services.workload_overview import get_workspace_member_workload
+from app.domains.workspace_canvas.events import notify_canvas_changed
 
 router = APIRouter(prefix="/workspaces/{ws_id}/workspace-assets", tags=["Workspace Assets"])
 
@@ -459,6 +460,7 @@ def link_workspace_asset_requirement_task(
     ws_id: str,
     requirement_id: str,
     payload: RequirementTaskLinkRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -469,6 +471,7 @@ def link_workspace_asset_requirement_task(
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return result
 
 
@@ -498,6 +501,7 @@ def update_workspace_asset_requirement_task_relation(
     requirement_id: str,
     task_id: str,
     payload: RequirementTaskRelationRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -510,6 +514,7 @@ def update_workspace_asset_requirement_task_relation(
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return result
 
 
@@ -567,6 +572,7 @@ def unlink_workspace_asset_requirement_task(
     ws_id: str,
     requirement_id: str,
     task_id: str,
+    background_tasks: BackgroundTasks,
     change_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -585,6 +591,7 @@ def unlink_workspace_asset_requirement_task(
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return result
 
 

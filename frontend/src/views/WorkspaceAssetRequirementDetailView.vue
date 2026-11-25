@@ -2,6 +2,7 @@
 import { computed, shallowRef, watch } from 'vue'
 import { useWorkspaceTabTitle } from '@/desktop/workspaceTabs'
 import { useRoute, useRouter } from 'vue-router'
+import { isCanvasRoute } from '@/router/workspaceAssetPresentation'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft } from '@/components/icons'
@@ -34,6 +35,7 @@ import type {
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
+const embedded = computed(() => isCanvasRoute(route))
 const {
   loading,
   error,
@@ -455,18 +457,22 @@ watch(() => provisioningStore.taskListRefreshToken, () => { void reloadDetail() 
 </script>
 
 <template>
-  <div class="requirement-detail-view">
-    <button class="back-link" type="button" @click="goBack">
+  <div class="requirement-detail-view" :class="{ embedded }">
+    <button v-if="!embedded" class="back-link" type="button" @click="goBack">
       <ArrowLeft class="back-icon" />
       <span>{{ t(backLabelKey) }}</span>
     </button>
     <div v-if="currentRequirement" class="requirement-task-action">
       <h2>{{ currentRequirement.title }}</h2>
-      <RequirementWorkActions :requirement="currentRequirement" :user-id="auth.user?.id"
-        :enabled="taskCreation.canCreateTask.value" :busy="work.busy.value === currentRequirement.id"
-        @claim="work.claim(currentRequirement, $event)" />
-      <button v-if="currentRequirement.can_link_task && currentRequirement.child_count === 0 && taskCreation.canCreateTask.value"
-        type="button" class="btn-primary" @click="taskCreation.open(currentRequirement)">{{ t('task_rail.create_for_requirement') }}</button>
+      <div class="requirement-actions">
+        <button v-if="embedded && taskCreation.canManageRequirements.value" class="btn-secondary" type="button"
+          @click="openEdit(currentRequirement)">{{ t('workspace_canvas.actions.edit_requirement') }}</button>
+        <RequirementWorkActions :requirement="currentRequirement" :user-id="auth.user?.id"
+          :enabled="taskCreation.canCreateTask.value" :busy="work.busy.value === currentRequirement.id"
+          @claim="work.claim(currentRequirement, $event)" />
+        <button v-if="currentRequirement.can_link_task && currentRequirement.child_count === 0 && taskCreation.canCreateTask.value"
+          type="button" class="btn-primary" @click="taskCreation.open(currentRequirement)">{{ t('task_rail.create_for_requirement') }}</button>
+      </div>
     </div>
     <RequirementTaskCreateDialog :workspace-id="wsId" :requirement="taskCreation.selectedRequirement.value"
       @close="taskCreation.close" @created="openCreatedTask" />
@@ -486,6 +492,7 @@ watch(() => provisioningStore.taskListRefreshToken, () => { void reloadDetail() 
         :tasks="taskItems"
         :loading="loading || checking"
         :can-manage="taskCreation.canManageRequirements.value"
+        :hide-edit="embedded"
         :user-id="auth.user?.id"
         @edit="openEdit"
         @split="openSplit"
@@ -532,6 +539,7 @@ watch(() => provisioningStore.taskListRefreshToken, () => { void reloadDetail() 
 
 .requirement-task-action { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:8px 0 20px; }
 .requirement-task-action h2 { font-size:1.1rem; margin:0; }
+.requirement-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
 
 .requirement-detail-view {
   min-height: 100%;
@@ -549,6 +557,13 @@ watch(() => provisioningStore.taskListRefreshToken, () => { void reloadDetail() 
 
 .detail-shell {
   min-width: 0;
+}
+
+.requirement-detail-view.embedded { padding: 16px; gap: 12px; background: #f8fafc; }
+.requirement-detail-view.embedded .requirement-task-action { flex-wrap: wrap; margin: 0; }
+@container (max-width: 900px) {
+  .requirement-detail-view.embedded :deep(.detail-grid) { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .requirement-detail-view.embedded :deep(.sidebar-sticky) { position: static; }
 }
 
 @media (max-width: 720px) {

@@ -8,13 +8,15 @@ import RequirementEditForm from '@/components/workspace-assets/requirements/Requ
 import { useRequirementTaskCreation } from '@/composables/useRequirementTaskCreation'
 import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
 import type { RequirementMutationPayload, RequirementSummary } from '@/types/workspaceAssets'
+import { isCanvasRoute } from '@/router/workspaceAssetPresentation'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const wsId = computed(() => String(route.params.wsId || ''))
 const requirementId = computed(() => String(route.params.requirementId || ''))
-const createChild = computed(() => route.name === 'workspaceAssetsRequirementChild')
+const embedded = computed(() => isCanvasRoute(route))
+const createChild = computed(() => (route.meta?.assetOperation ?? route.name) === 'workspaceAssetsRequirementChild')
 const record = shallowRef<RequirementSummary | null>(null)
 const saving = shallowRef(false)
 const { loading, error, loadRequirementDetail, createRequirement, updateRequirement } = useWorkspaceAssets()
@@ -63,14 +65,14 @@ async function save(payload: RequirementMutationPayload) {
 </script>
 
 <template>
-  <main class="requirement-editor">
+  <main class="requirement-editor" :class="{ embedded }">
     <header>
       <div class="editor-heading">
-        <RouterLink class="back-link" :to="target">
+        <RouterLink v-if="!embedded" class="back-link" :to="target">
           <ArrowLeft class="back-icon" aria-hidden="true" />
           <span>{{ t('common.back') }}</span>
         </RouterLink>
-        <h1>{{ t(createChild ? prefix + 'table.add_child' : 'workspace_assets.delivery.edit') }}</h1>
+        <h1 v-if="!embedded">{{ t(createChild ? prefix + 'table.add_child' : 'workspace_assets.delivery.edit') }}</h1>
       </div>
       <div v-if="record && canManageRequirements" class="actions">
         <el-button @click="router.push(target)">{{ t('common.cancel') }}</el-button>
@@ -94,5 +96,10 @@ async function save(payload: RequirementMutationPayload) {
 .editor-heading { display: grid; gap: 12px; }
 .requirement-editor h1 { margin: 0; font-size: 22px; font-weight: 650; }
 .actions { display: flex; align-items: center; }
+.requirement-editor.embedded { padding: 16px; background: #f8fafc; }
+.requirement-editor.embedded header { justify-content: flex-end; }
+@container (max-width: 760px) {
+  .requirement-editor.embedded :deep(.form-grid) { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+}
 @media (max-width: 720px) { .requirement-editor { padding: 14px; } }
 </style>

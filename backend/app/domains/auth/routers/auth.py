@@ -15,6 +15,7 @@ from app.domains.auth.models.user import User
 from app.domains.auth.routers.avatar_http import AvatarExtension, avatar_image_response, read_avatar_upload
 from app.domains.auth.schemas.auth import (
     TokenResponse,
+    UserAssetDisplayPreference,
     UserAvatarUpdate,
     UserRegister,
     UserResponse,
@@ -84,6 +85,15 @@ def get_me(
     # OAuth 增量（接口 11）：已绑定 provider 名列表，如 ["github"]
     response.bound_providers = sorted({i.provider for i in user.oauth_identities})
     return response
+
+
+@router.put("/me/asset-display", response_model=UserAssetDisplayPreference)
+def update_my_asset_display(
+    payload: UserAssetDisplayPreference, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+) -> UserAssetDisplayPreference:
+    current_user.asset_display_mode = payload.mode
+    db.commit()
+    return payload
 
 
 @router.put("/me/avatar", response_model=UserResponse)

@@ -8,6 +8,7 @@ import RequirementImportDialog from './RequirementImportDialog.vue'
 import RequirementTableWorkbench from './RequirementTableWorkbench.vue'
 import RequirementTaskCreateDialog from './RequirementTaskCreateDialog.vue'
 import { useRequirementTaskCreation } from '@/composables/useRequirementTaskCreation'
+import { trackedJobToPreviewJob, useRequirementAssetCreation } from '@/composables/useRequirementAssetCreation'
 import { useRequirementWork } from '@/composables/useRequirementWork'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
@@ -18,8 +19,6 @@ import type {
   RequirementImportBatch,
   RequirementImportConfirmPayload,
   RequirementListQuery,
-  RequirementMutationPayload,
-  RequirementPreviewJob,
   RequirementSplitPayload,
   RequirementSummary,
   RequirementWorkScope,
@@ -43,12 +42,8 @@ const {
   loading: actionLoading,
   error,
   loadRequirements,
-  createRequirement,
-  createRequirementImportPreviewJob,
   fetchRequirementPreviewJob,
   listActiveRequirementPreviewJobs,
-  directImportRequirement,
-  confirmRequirementImport,
   createRequirementSplitPreviewJob,
   confirmRequirementSplit,
   findRequirementSplitDraft,
@@ -87,35 +82,20 @@ const tableQuery = reactive<RequirementListQuery>({
   page_size: routeNumber('page_size', 20),
 })
 const requirementsResponse = shallowRef<WorkspaceAssetsRequirements | null>(null)
-const createOpen = shallowRef(false)
-// AI 预览作业：创建后交给右下角浮窗后台跟踪（分钟级等待不再阻塞弹窗/页面）
-const createPreviewJobId = shallowRef('')
+const create = useRequirementAssetCreation(() => props.workspaceId, async ({ requirementId, batch }) => {
+  if (requirementId) {
+    await refreshAfterMutation(requirementId)
+    return
+  }
+  if (!batch) return
+  await reloadRequirements()
+  emit('refresh')
+  const root = requirementItems.value.find(item => item.import_batch_id === batch.id && !item.parent_requirement_id)
+  const created = root?.id ?? batch.items.find(item => item.requirement_id)?.requirement_id
+  if (created) await openRequirementById(created)
+})
 const splitDialogOpen = shallowRef(false)
 const splitRequirementId = shallowRef('')
-
-function trackedJobToPreviewJob(job: ProvisionJobView | null): RequirementPreviewJob | null {
-  if (!job) return null
-  return {
-    job_id: job.jobId,
-    domain_milestones: job.domain_milestones,
-    workspace_id: job.workspaceId,
-    status: job.status,
-    progress: job.progress,
-    message: job.message || null,
-    error: job.errorMessage || null,
-    batch: job.batch,
-    cancel_requested: job.cancelRequested,
-  }
-}
-
-const createPreviewJob = computed<RequirementPreviewJob | null>(() => (
-  trackedJobToPreviewJob(provisioningStore.getTrackedJob(createPreviewJobId.value))
-))
-
-const createBatch = computed<RequirementImportBatch | null>(() => {
-  const job = provisioningStore.getTrackedJob(createPreviewJobId.value)
-  return job?.status === 'SUCCESS' ? job.batch : null
-})
 
 // 拆分预览作业绑定：优先非终态（进行中），否则最近一条（SUCCESS 带批次可确认）
 const splitTrackedJob = computed<ProvisionJobView | null>(() => {
@@ -127,7 +107,7 @@ const splitTrackedJob = computed<ProvisionJobView | null>(() => {
   return matched.find((job) => !job.terminal) || matched[matched.length - 1] || null
 })
 
-const splitPreviewJob = computed<RequirementPreviewJob | null>(() => trackedJobToPreviewJob(splitTrackedJob.value))
+const splitPreviewJob = computed(() => trackedJobToPreviewJob(splitTrackedJob.value))
 
 const splitBatch = computed<RequirementImportBatch | null>(() => (
   splitTrackedJob.value?.status === 'SUCCESS' ? splitTrackedJob.value.batch : null
@@ -248,12 +228,6 @@ async function handleQueryChange(query: RequirementListQuery) {
   await reloadRequirements()
 }
 
-function openCreate() {
-  // 重新打开新建弹窗时回到初始步骤；进行中的预览作业留在浮窗继续跑
-  createPreviewJobId.value = ''
-  createOpen.value = true
-}
-
 function openCreateChild(parent: RequirementSummary) {
   void router.push({ name: 'workspaceAssetsRequirementChild', params: { wsId: props.workspaceId, requirementId: parent.id },
     query: { back: route.fullPath } })
@@ -273,68 +247,6 @@ async function refreshAfterMutation(nextRequirementId?: string | null) {
   emit('refresh')
   if (nextRequirementId) {
     await openRequirementById(nextRequirementId)
-  }
-}
-
-async function previewImport(payload: Parameters<typeof createRequirementImportPreviewJob>[1]) {
-  // 导入预览每次都是新内容，总是发起新作业（进行中的旧作业继续后台执行）
-  try {
-    const job = await createRequirementImportPreviewJob(props.workspaceId, payload)
-    if (!job) return
-    provisioningStore.trackRequirementPreviewJob({
-      jobId: job.job_id,
-      workspaceId: job.workspace_id || props.workspaceId,
-      kind: 'requirement_import_preview',
-    })
-    createPreviewJobId.value = job.job_id
-  } catch (err) {
-    ElMessage.error(formatApiError(
-      err,
-      t('workspace_assets.requirements.preview_progress.create_failed'),
-      t,
-    ))
-  }
-}
-
-/** 弹窗点「缩小」：作业收起到右下角浮窗（卡片才出现），关闭弹窗 */
-function minimizeCreatePreview() {
-  if (createPreviewJobId.value) provisioningStore.minimizePreviewJob(createPreviewJobId.value)
-  createOpen.value = false
-  createPreviewJobId.value = ''
-}
-
-async function confirmImport(payload: RequirementImportConfirmPayload) {
-  const previewBatch = createBatch.value
-  if (!previewBatch) return
-  const batch = await confirmRequirementImport(props.workspaceId, previewBatch.id, payload)
-  if (!batch) return
-  createOpen.value = false
-  if (createPreviewJobId.value) provisioningStore.dismiss(createPreviewJobId.value)
-  createPreviewJobId.value = ''
-  await reloadRequirements()
-  emit('refresh')
-  const root = requirementItems.value.find((item) => item.import_batch_id === batch.id && !item.parent_requirement_id)
-  const directCreated = batch.items.find((item) => item.requirement_id)
-  if (root) {
-    await openRequirement(root)
-  } else if (directCreated?.requirement_id) {
-    await openRequirementById(directCreated.requirement_id)
-  }
-}
-
-async function submitCreatedRequirement(payload: RequirementMutationPayload) {
-  const result = await createRequirement(props.workspaceId, payload)
-  if (result) {
-    createOpen.value = false
-    await refreshAfterMutation(result.requirement.id)
-  }
-}
-
-async function directImport(payload: Parameters<typeof directImportRequirement>[1]) {
-  const result = await directImportRequirement(props.workspaceId, payload)
-  if (result) {
-    createOpen.value = false
-    await refreshAfterMutation(result.requirement.id)
   }
 }
 
@@ -445,36 +357,6 @@ async function confirmSplit(payload: RequirementImportConfirmPayload) {
   }
 }
 
-function ignorePreview() {
-  // 丢弃导入预览：清理浮窗作业并回到导入步骤
-  const job = provisioningStore.getTrackedJob(createPreviewJobId.value)
-  if (job) provisioningStore.dismiss(job.jobId)
-  createPreviewJobId.value = ''
-}
-
-function clearCreatePreviewJob() {
-  ignorePreview()
-}
-
-async function cancelRunningPreview(jobId: string) {
-  const ok = await provisioningStore.cancelPreviewJob(jobId)
-  if (!ok) {
-    ElMessage.error(t('provisioning.preview_cancel_failed'))
-  }
-  return ok
-}
-
-function closeCreateDialog() {
-  // 关闭对话框 = 取消后台预览（「缩小」才是转入后台继续执行）
-  const job = provisioningStore.getTrackedJob(createPreviewJobId.value)
-  createOpen.value = false
-  createPreviewJobId.value = ''
-  if (job && !job.terminal) {
-    // 取消请求受理后作业保留在 store（cancelRequested），轮询到 CANCELLED 自动清理
-    void cancelRunningPreview(job.jobId)
-  }
-}
-
 function discardSplitPreview() {
   const job = splitTrackedJob.value
   splitDialogOpen.value = false
@@ -535,8 +417,7 @@ watch(
       splitDialogOpen.value = true
       return
     }
-    createPreviewJobId.value = jobId
-    createOpen.value = true
+    create.show(jobId)
   },
   { immediate: true },
 )
@@ -574,7 +455,7 @@ watch(
 
 <template>
   <section class="requirements-workbench">
-    <p v-if="error" class="error-note">{{ error }}</p>
+    <p v-if="error || create.error.value" class="error-note">{{ error || create.error.value }}</p>
 
     <RequirementTableWorkbench
       :can-create-task="taskCreation.canCreateTask.value"
@@ -591,7 +472,7 @@ watch(
       :loading="props.loading || actionLoading"
       @query-change="handleQueryChange"
       @open="openRequirement"
-      @create="openCreate"
+      @create="create.show()"
       @create-child="openCreateChild"
       @edit="openEdit"
       @split="openSplit"
@@ -600,19 +481,19 @@ watch(
       @close="taskCreation.close" @created="openCreatedTask" />
 
     <RequirementImportDialog
-      :open="createOpen"
+      :open="create.open.value"
       mode="create"
-      :batch="createBatch"
-      :preview-job="createPreviewJob"
-      :loading="actionLoading"
-      @close="closeCreateDialog"
-      @minimize="minimizeCreatePreview"
-      @manual="submitCreatedRequirement"
-      @direct="directImport"
-      @preview="previewImport"
-      @confirm="confirmImport"
-      @discard-preview="ignorePreview"
-      @clear-preview-job="clearCreatePreviewJob"
+      :batch="create.batch.value ?? null"
+      :preview-job="create.preview.value"
+      :loading="create.loading.value"
+      @close="create.close"
+      @minimize="create.minimize"
+      @manual="create.manual"
+      @direct="create.direct"
+      @preview="create.requestPreview"
+      @confirm="create.confirm"
+      @discard-preview="create.discard"
+      @clear-preview-job="create.discard"
     />
 
     <RequirementImportDialog

@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import LocalServiceForm from '@/components/local-resource/LocalServiceForm.vue'
 import SettingsAgentSection from '@/components/settings/SettingsAgentSection.vue'
+import SettingsAssetDisplaySection from '@/components/settings/SettingsAssetDisplaySection.vue'
 import SettingsLocalDevSection from '@/components/settings/SettingsLocalDevSection.vue'
 import SettingsMembersSection from '@/components/settings/SettingsMembersSection.vue'
 import SettingsPlanDocsSection from '@/components/settings/SettingsPlanDocsSection.vue'
@@ -13,17 +14,17 @@ import WebhookSettingsSection from '@/components/settings/WebhookSettingsSection
 import { useSettingsViewModel } from '@/composables/useSettingsViewModel'
 
 const WORKSPACE_SECTION_IDS = ['members', 'workspace_avatar', 'agent', 'plan_docs', 'webhook_workspace']
-const LOCAL_SECTION_IDS = ['local_dev', 'local_service']
+const PERSONAL_SECTION_IDS = ['local_dev', 'local_service', 'asset_display']
 
 const rawVm = useSettingsViewModel({
-  sectionIds: [...LOCAL_SECTION_IDS, ...WORKSPACE_SECTION_IDS],
+  sectionIds: [...PERSONAL_SECTION_IDS, ...WORKSPACE_SECTION_IDS],
   defaultSection: 'members',
 })
 const vm = proxyRefs(rawVm)
 const { t } = useI18n()
 
 const groups = computed(() => [
-  { title: t('settings.nav.local'), ids: LOCAL_SECTION_IDS },
+  { title: t('settings.nav.personal'), ids: PERSONAL_SECTION_IDS },
   { title: t('settings.nav.workspace'), ids: WORKSPACE_SECTION_IDS },
 ])
 </script>
@@ -45,6 +46,7 @@ const groups = computed(() => [
           <transition name="fade-slide" mode="out-in">
             <SettingsLocalDevSection v-if="vm.activeSection === 'local_dev'" key="local_dev" />
             <LocalServiceForm v-else-if="vm.activeSection === 'local_service'" key="local_service" :workspace-id="vm.workspaceId" />
+            <SettingsAssetDisplaySection v-else-if="vm.activeSection === 'asset_display'" key="asset_display" />
             <SettingsMembersSection v-else-if="vm.activeSection === 'members'" key="members" :vm="rawVm" />
             <SettingsWorkspaceAvatarSection
               v-else-if="vm.activeSection === 'workspace_avatar'"

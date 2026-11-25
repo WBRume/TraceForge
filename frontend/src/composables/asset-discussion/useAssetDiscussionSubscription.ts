@@ -23,6 +23,8 @@ export function useAssetDiscussionSubscription(
   let reconnectTimer: number | undefined
   let reconnectAttempt = 0
   let manualClose = true
+  const historicalVersion = () => document.capabilities.value.ai_unavailable_reason === 'historical_version_readonly'
+    ? document.activeVersionId.value : undefined
 
   const clearReconnect = () => {
     if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
@@ -95,7 +97,7 @@ export function useAssetDiscussionSubscription(
       return
     }
     if (eventType === 'version_applied' && eventData.version?.id) {
-      await refresh(String(eventData.version.id), owner)
+      await refresh(historicalVersion() || String(eventData.version.id), owner)
       return
     }
     if (
@@ -145,7 +147,7 @@ export function useAssetDiscussionSubscription(
           connection.close(4000, 'sequence_gap')
           return
         }
-        await refresh(undefined, owner)
+        await refresh(historicalVersion(), owner)
         if (owner.isCurrent() && connection.readyState === WebSocket.OPEN) {
           sendResyncComplete(connection, frame, `asset:${resource.assetId}`)
         }

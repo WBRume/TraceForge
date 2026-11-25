@@ -8,6 +8,7 @@ from enum import Enum as PyEnum
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Enum,
@@ -53,6 +54,7 @@ class WorkspacePermission(str, PyEnum):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (CheckConstraint("asset_display_mode IN ('table', 'canvas')", name="ck_users_asset_display_mode"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     email = Column(String(255), unique=True, nullable=False, index=True)
@@ -62,6 +64,7 @@ class User(Base):
     avatar_svg = Column(Text, nullable=True)
     avatar_image = deferred(Column(LargeBinary, nullable=True))
     is_admin = Column(Boolean, nullable=False, default=False)
+    asset_display_mode = Column(String(16), nullable=False, server_default="table")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

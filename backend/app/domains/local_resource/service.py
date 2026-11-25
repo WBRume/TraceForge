@@ -339,11 +339,11 @@ def remote_patches(db, task):
     return snapshots
 
 
-def task_operation(task_id, kind, payload):
+def task_operation(task_id, kind, payload, *, timeout: float = 300):
     config = task_profile(task_id)
     if not config:
         raise ResourceError("本地执行绑定不存在", "RESOURCE_BINDING_MISSING")
-    return ResourceClient(config).operation(task_id, kind, payload)
+    return ResourceClient(config, timeout=timeout).operation(task_id, kind, payload)
 
 
 def materialize_file(task, relative, content):

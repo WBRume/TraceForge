@@ -48,7 +48,7 @@ def _entry(project: Path, file_path: Path) -> dict:
     }
 
 
-def _local_operation(task: SddTask, action: str, **kwargs) -> dict:
+def _local_operation(task: SddTask, action: str, *, timeout: float | None = None, **kwargs) -> dict:
     from app.domains.local_resource.service import task_operation
     from app.domains.local_resource.snapshots import decode
 
@@ -58,19 +58,12 @@ def _local_operation(task: SddTask, action: str, **kwargs) -> dict:
         owner, initial = decode(checkpoint)
         if owner != task.id:
             raise ValueError("Plan document baseline belongs to a different task")
-    return task_operation(
-        task.id,
-        "documents",
-        {
-            "action": action,
-            "roots": _roots(task),
-            "initial_checkpoint": initial,
-            **kwargs,
-        },
-    )
+    payload = {"action": action, "roots": _roots(task), "initial_checkpoint": initial, **kwargs}
+    options = {} if timeout is None else {"timeout": timeout}
+    return task_operation(task.id, "documents", payload, **options)
 
 
-def list_plan_docs(task: SddTask) -> dict:
+def list_plan_docs(task: SddTask, *, local_timeout: float | None = None) -> dict:
     from app.domains.local_resource.service import is_local
 
     roots = _roots(task)
@@ -85,7 +78,7 @@ def list_plan_docs(task: SddTask) -> dict:
     if not roots:
         return payload
     if is_local(task):
-        return _local_operation(task, "list")
+        return _local_operation(task, "list", timeout=local_timeout)
     baseline = load_baseline(task)
     if baseline is None:
         return payload
@@ -135,11 +128,13 @@ def _resolve_path(task: SddTask, section: str, name: str | None, path: str | Non
     return candidate
 
 
-def read_plan_doc(task: SddTask, section: str, name: str | None = None, path: str | None = None) -> dict:
+def read_plan_doc(
+    task: SddTask, section: str, name: str | None = None, path: str | None = None, *, local_timeout: float | None = None
+) -> dict:
     from app.domains.local_resource.service import is_local
 
     if is_local(task):
-        return _local_operation(task, "read", section=section, path=path or name)
+        return _local_operation(task, "read", section=section, path=path or name, timeout=local_timeout)
     file_path = _resolve_path(task, section, name, path)
     return {
         "task_id": task.id,

@@ -17,6 +17,7 @@ const props = defineProps<{
   tasks: readonly TaskSummary[]
   loading?: boolean
   canManage?: boolean
+  hideEdit?: boolean
   userId?: string
   linkTask?: (payload: RequirementTaskLinkPayload) => Promise<boolean>
 }>()
@@ -120,9 +121,9 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
       <aside class="sidebar-column">
         <div class="sidebar-sticky">
           <!-- Quick Actions -->
-          <div class="content-card actions-card">
+          <div v-if="canManage && (isParent || !hideEdit)" class="content-card actions-card">
             <div class="detail-actions">
-              <el-button type="primary" class="action-btn main-action" @click="emit('edit', activeRequirement)">
+              <el-button v-if="!hideEdit" type="primary" class="action-btn main-action" @click="emit('edit', activeRequirement)">
                 {{ t('workspace_assets.requirements.actions.edit') }}
               </el-button>
               <div class="secondary-actions">

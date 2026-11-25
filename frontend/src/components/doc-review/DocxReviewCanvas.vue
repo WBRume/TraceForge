@@ -16,6 +16,7 @@ const props = defineProps<{
   assetId: string
   versionId?: string
   draftRevision?: number
+  focusBlockId?: string
   name: string
   blocks: ReviewBlock[]
   markersByBlock: Record<string, AssetThreadMarker[]>
@@ -49,6 +50,14 @@ const failed = shallowRef(false)
 const surface = shallowRef<{
   frame: HTMLIFrameElement; content: HTMLElement; index: ReturnType<typeof indexDocxReview>
 }>()
+watch(() => [surface.value, props.focusBlockId] as const, ([current, id], _previous, cleanup) => {
+  if (!current || !id) return
+  const element = current.index.rangesForText(id)[0]?.startContainer.parentElement?.closest('p, td')
+  if (!element) return
+  element.classList.add('tf-focused-paragraph')
+  element.scrollIntoView({ block: 'center' })
+  cleanup(() => element.classList.remove('tf-focused-paragraph'))
+}, { flush: 'post' })
 const editAnchor = shallowRef<{ top: number; left: number }>()
 const editedParagraph = computed(() => surface.value?.index.paragraphs
   .find(paragraph => paragraph.edit?.id === props.editingBlockId)?.edit)
@@ -64,6 +73,7 @@ const annotationGroups = computed(() => groupReviewAnnotations(markerRanges.valu
 const highlightNames = ['traceforge-review-open', 'traceforge-review-closed', 'traceforge-review-selected'] as const
 
 const iframeStyles = `
+  .tf-focused-paragraph {outline:2px solid #80a6ed;outline-offset:3px}
   ::highlight(traceforge-review-open) {background:#e0f2fe;color:inherit}
   ::highlight(traceforge-review-closed) {background:#edf2f7;color:inherit}
   ::highlight(traceforge-review-selected) {background:#bae6fd;color:inherit}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, useTemplateRef, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Pencil } from '@/components/icons';
 import BlockInlineEditor from "./BlockInlineEditor.vue";
@@ -84,9 +84,16 @@ const props = defineProps<{
   inlineReviewEnabled?: boolean;
   canManualEdit?: boolean;
   editingBlockId?: string;
+  focusBlockId?: string;
 }>();
 
 const { t } = useI18n();
+const paper = useTemplateRef<HTMLElement>('paper');
+watch(() => [props.focusBlockId, paper.value] as const, ([id, element]) => {
+  if (!id || !element) return;
+  Array.from(element.children).find(block => (block as HTMLElement).dataset.reviewBlock === id)
+    ?.scrollIntoView({ block: 'center' });
+}, { flush: 'post' });
 
 type RenderBlock = DocumentBlock & {
   renderKind: "heading" | "paragraph" | "list_item" | "toc_entry" | "table";
@@ -899,11 +906,13 @@ const emitSelection = (event: MouseEvent, block: RenderBlock) => {
     <div v-if="!hasBlocks" class="doc-empty glass-panel">
       {{ t("doc_review.no_renderable_blocks") }}
     </div>
-    <div v-else class="doc-paper">
+    <div v-else ref="paper" class="doc-paper">
       <article
         v-for="block in renderBlocks"
         :key="block.id"
         class="doc-block"
+        :data-review-block="block.id"
+        :data-focus-block="block.id === focusBlockId || undefined"
         :class="[
           `kind-${block.renderKind}`,
           blockStateClass(block),
@@ -1127,6 +1136,8 @@ const emitSelection = (event: MouseEvent, block: RenderBlock) => {
 
 <style scoped>
 @import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap");
+
+.doc-block[data-focus-block] { outline: 2px solid #80a6ed; outline-offset: 3px; }
 
 .doc-canvas {
   position: relative;

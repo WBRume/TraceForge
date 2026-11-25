@@ -3,6 +3,7 @@ import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import type { Router } from 'vue-router'
+import { isCanvasRoute, WORKSPACE_ASSET_CANVAS } from '@/router/workspaceAssetPresentation'
 
 /**
  * 会话管理动作：删除任务、导出会话 JSON、清空会话历史。
@@ -58,7 +59,11 @@ export function useTaskAdminActions(options: {
       await options.loadTasks({ reset: true, trySelectRouteTask: false })
       if (options.getCurrentTask()?.id === deletedId) {
         options.clearCurrentTask()
-        options.router.push(`/workspaces/${options.getWorkspaceId()}/chat`)
+        const wsId = options.getWorkspaceId()
+        const route = options.router.currentRoute?.value
+        options.router.push(route && isCanvasRoute(route)
+          ? { name: WORKSPACE_ASSET_CANVAS, params: { wsId } }
+          : `/workspaces/${wsId}/chat`)
       }
     } catch (e) {
       console.error('Failed to delete task', e)

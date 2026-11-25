@@ -1,6 +1,7 @@
 import { createRouter, createWebHashHistory, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { isDesktop } from '@/utils/runtime'
+import { workspaceAssetCanvasRoute, workspaceAssetOperationRoutes, workspaceAssetPresentation } from './workspaceAssetPresentation'
 
 const router = createRouter({
   history: isDesktop()
@@ -281,14 +282,8 @@ const router = createRouter({
           component: () => import('../views/DashboardView.vue')
         },
         {
-          path: 'chat/:taskId/spec',
-          name: 'taskSpec',
-          component: () => import('../views/TaskSpecView.vue')
-        },
-        {
-          path: 'chat/:taskId?',
-          name: 'taskChat',
-          component: () => import('../views/ChatView.vue')
+          path: 'canvas',
+          redirect: to => ({ name: 'workspaceAssetsRequirements', params: { wsId: to.params.wsId } }),
         },
         {
           path: 'chat',
@@ -311,44 +306,9 @@ const router = createRouter({
           component: () => import('../views/AssetView.vue')
         },
         {
-          path: 'assets/requirements/:requirementId',
-          name: 'workspaceAssetsRequirementDetail',
-          component: () => import('../views/WorkspaceAssetRequirementDetailView.vue')
-        },
-        {
-          path: 'assets/requirements/:requirementId/edit',
-          name: 'workspaceAssetsRequirementEdit',
-          component: () => import('../views/WorkspaceAssetRequirementEditView.vue'),
-        },
-        {
-          path: 'assets/requirements/:requirementId/children/new',
-          name: 'workspaceAssetsRequirementChild',
-          component: () => import('../views/WorkspaceAssetRequirementEditView.vue'),
-        },
-        {
-          path: 'assets/requirements/:requirementId/split-review/:batchId',
-          name: 'workspaceAssetRequirementSplitReview',
-          component: () => import('../views/WorkspaceAssetRequirementSplitReviewView.vue')
-        },
-        {
           path: 'assets/tasks',
           name: 'workspaceAssetsTasks',
           component: () => import('../views/AssetView.vue')
-        },
-        {
-          path: 'assets/tasks/:taskId/final-workflow',
-          name: 'workspaceAssetsTaskFinalWorkflow',
-          component: () => import('../views/WorkspaceAssetTaskFinalWorkflowView.vue')
-        },
-        {
-          path: 'assets/tasks/:taskId',
-          name: 'workspaceAssetTaskDetail',
-          component: () => import('../views/WorkspaceAssetTaskDetailView.vue')
-        },
-        {
-          path: 'assets/tasks/:taskId/deltas/:deltaId/workbench',
-          name: 'deltaWorkbench',
-          component: () => import('../views/DeltaWorkbenchView.vue')
         },
         {
           path: 'workload',
@@ -372,32 +332,20 @@ const router = createRouter({
           component: () => import('../views/CaseCenterView.vue')
         },
         {
-          path: 'assets/cases/:caseId',
-          name: 'workspaceCaseDetail',
-          alias: 'cases/:caseId',
-          component: () => import('../views/CaseReportView.vue')
-        },
-        {
-          path: 'assets/cases/playbooks/:playbookId',
-          name: 'workspacePlaybookDetail',
-          alias: ['cases/playbooks/:playbookId', 'playbooks/:playbookId'],
-          component: () => import('../views/PlaybookDetailView.vue')
-        },
-        {
-          path: 'assets/cases/promotions/:jobId',
-          name: 'workspaceCasePromotionReview',
-          alias: 'cases/promotions/:jobId',
-          component: () => import('../views/CasePromotionReviewView.vue')
-        },
-        {
           path: 'assets/knowledge-base',
           name: 'workspaceAssetsKnowledgeBase',
           component: () => import('../views/AssetView.vue')
         },
+        ...workspaceAssetOperationRoutes,
+        workspaceAssetCanvasRoute,
         {
           path: 'api-mock',
           name: 'apiMock',
-          component: () => import('../views/ApiMockWorkbenchView.vue')
+          component: () => import('../views/ApiMockWorkbenchView.vue'),
+        },
+        {
+          path: 'assets/canvas/api-mock',
+          redirect: to => ({ name: 'apiMock', params: { wsId: to.params.wsId }, query: to.query, hash: to.hash }),
         },
         {
           path: 'settings',
@@ -410,7 +358,7 @@ const router = createRouter({
 })
 
 // Navigation Guard
-router.beforeEach(async (to) => {
+router.beforeEach(async (to, from) => {
   const authStore = useAuthStore()
   if (!to.meta.requiresAuth) return true
 
@@ -440,7 +388,7 @@ router.beforeEach(async (to) => {
     }
   }
 
-  return true
+  return workspaceAssetPresentation(to, from, authStore.assetDisplayMode) ?? true
 })
 
 export default router

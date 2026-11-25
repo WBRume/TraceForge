@@ -3,6 +3,7 @@
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -32,6 +33,13 @@ class UserAvatarUpdate(BaseModel):
     avatar_svg: str = Field(..., min_length=1, max_length=20000)
 
 
+AssetDisplayMode = Literal["table", "canvas"]
+
+
+class UserAssetDisplayPreference(BaseModel):
+    mode: AssetDisplayMode
+
+
 class UserResponse(BaseModel):
     id: str
     email: str
@@ -39,6 +47,7 @@ class UserResponse(BaseModel):
     avatar_url: str | None = None
     avatar_svg: str | None = None
     is_admin: bool = False
+    asset_display_mode: AssetDisplayMode = "table"
     created_at: datetime
     # OAuth 增量（接口 11 / GET /auth/me）：已绑定的三方 provider 名列表，如 ["github"]。
     # 纯增量字段，现有前端无感；由 router 从 current_user.oauth_identities 组装。

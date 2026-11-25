@@ -12,6 +12,7 @@ export type * from './asset-discussion/types'
 type UseAssetDiscussionOptions = {
   wsId: MaybeRefOrGetter<string>
   assetId: MaybeRefOrGetter<string | null | undefined>
+  initialVersionId?: MaybeRefOrGetter<string | undefined>
 }
 
 export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
@@ -61,7 +62,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
 
   async function initialize(owner: AssetRequestOwner) {
     try {
-      await refresh(undefined, owner)
+      await refresh(toValue(options.initialVersionId), owner)
     } catch {
       // Keep live synchronization available after a transient initial query failure.
     }

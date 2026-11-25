@@ -34,10 +34,12 @@ import { useMarkdownExport } from '@/composables/useMarkdownExport'
 import CaseFormDialog from './CaseFormDialog.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import { renderInlineMarkdown } from '@/utils/inlineMarkdown'
+import { isCanvasRoute } from '@/router/workspaceAssetPresentation'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+const embedded = computed(() => isCanvasRoute(route))
 const vm = proxyRefs(useCaseCenter())
 const { exportCaseMarkdown } = useMarkdownExport()
 
@@ -188,7 +190,7 @@ async function copyFixCode() {
 </script>
 
 <template>
-  <div class="case-report">
+  <div class="case-report" :class="{ embedded }">
     <!-- ─── Loading ─── -->
     <div v-if="vm.detailLoading" class="report-state">
       <Loader2 :size="20" class="spin" />
@@ -199,7 +201,7 @@ async function copyFixCode() {
     <div v-else-if="!vm.currentCase" class="report-state">
       <BookMarked :size="32" class="report-state-icon" />
       <span>{{ t('case_center.report.not_found') }}</span>
-      <button class="btn-secondary" @click="goBackToList">
+      <button v-if="!embedded" class="btn-secondary" @click="goBackToList">
         <ArrowLeft :size="16" /> {{ t('case_center.report.back') }}
       </button>
     </div>
@@ -208,7 +210,7 @@ async function copyFixCode() {
       <!-- ─── Report Header（对齐产品 / 项目详情风格） ─── -->
       <div class="mgmt-page-header">
         <div>
-          <div class="mgmt-back-row">
+          <div v-if="!embedded" class="mgmt-back-row">
             <button class="mgmt-back-btn" type="button" @click="goBackToList">
               <ArrowLeft :size="16" /> {{ t('case_center.report.back') }}
             </button>
@@ -1411,6 +1413,13 @@ async function copyFixCode() {
   color: #334155;
 }
 
+.case-report.embedded { padding: 16px; }
+@container (max-width: 870px) {
+  .case-report.embedded .report-grid { grid-template-columns: minmax(0, 1fr); }
+  .case-report.embedded .report-aside { position: static; }
+  .case-report.embedded .mgmt-page-header { flex-wrap: wrap; gap: 12px; }
+  .case-report.embedded .case-report-actions { justify-content: flex-start; }
+}
 @media (max-width: 1100px) {
   .report-grid {
     grid-template-columns: minmax(0, 1fr);

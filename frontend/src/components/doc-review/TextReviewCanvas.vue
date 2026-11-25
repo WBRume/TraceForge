@@ -13,6 +13,7 @@ const props = defineProps<{
   threads: AssetThread[]
   selectedThreadId: string
   inlineReviewEnabled: boolean
+  focusText?: string
 }>()
 const emit = defineEmits<{
   'select-range': [selection: {
@@ -31,7 +32,7 @@ const codePointOffsets = computed(() => {
   return offsets
 })
 const highlightId = useId()
-const names = ['open', 'closed', 'current'].map(kind => `tf-text-${highlightId}-${kind}`)
+const names = ['open', 'closed', 'current', 'focus'].map(kind => `tf-text-${highlightId}-${kind}`)
 const paintKey = ref(0)
 
 function sourceNodes() {
@@ -51,6 +52,21 @@ function sourceNodes() {
       start: (i: number) => piece.starts[i] ?? piece.ends[piece.ends.length - 1]!,
       end: (i: number) => piece.ends[i - 1] ?? piece.starts[0]!,
     }]
+  })
+}
+
+function rangesForSource(nodes: ReturnType<typeof sourceNodes>, start: number, end: number) {
+  return nodes.flatMap(piece => {
+    if (piece.start(0) >= end || piece.end(piece.node.length) <= start) return []
+    let from = 0
+    let to = piece.node.length
+    while (from < to && piece.end(from + 1) <= start) from++
+    while (to > from && piece.start(to - 1) >= end) to--
+    if (to <= from) return []
+    const range = document.createRange()
+    range.setStart(piece.node, from)
+    range.setEnd(piece.node, to)
+    return [range]
   })
 }
 
@@ -108,37 +124,37 @@ const markerRanges = computed(() => {
   return Object.values(props.markersByBlock).flat().flatMap(marker => {
     const [start, end] = markerOffsets(marker)
     if (start == null || end == null || end <= start) return []
-    const ranges = nodes.flatMap(piece => {
-      if (piece.start(0) >= end || piece.end(piece.node.length) <= start) return []
-      let from = 0
-      let to = piece.node.length
-      while (from < to && piece.end(from + 1) <= start) from++
-      while (to > from && piece.start(to - 1) >= end) to--
-      if (to <= from) return []
-      const range = document.createRange()
-      range.setStart(piece.node, from)
-      range.setEnd(piece.node, to)
-      return [range]
-    })
+    const ranges = rangesForSource(nodes, start, end)
     return ranges.length ? [{ marker, ranges }] : []
   })
 })
 const annotationGroups = computed(() => groupReviewAnnotations(markerRanges.value))
 watch(() => [body.value, props.source, props.markdown] as const, () => { paintKey.value++ }, { flush: 'post' })
 
-watch(() => [paintKey.value, markerRanges.value, props.selectedThreadId] as const, ([, entries, selected], _, cleanup) => {
+const focusRanges = computed(() => {
+  void paintKey.value
+  const text = props.focusText?.slice(0, 600).trim()
+  if (!text) return []
+  const start = props.source.indexOf(text)
+  if (start >= 0) return rangesForSource(sourceNodes(), start, start + text.length)
+  const pattern = text.split(/\s+/).map(word => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+')
+  const match = new RegExp(pattern).exec(props.source)
+  return match ? rangesForSource(sourceNodes(), match.index, match.index + match[0].length) : []
+})
+
+watch(() => [paintKey.value, markerRanges.value, props.selectedThreadId, focusRanges.value] as const, ([, entries, selected, focused], _, cleanup) => {
   if (!globalThis.CSS?.highlights || !globalThis.Highlight || !body.value) return
   const style = document.createElement('style')
-  const colors = ['#e0f2fe', '#edf2f7', '#bae6fd']
+  const colors = ['#e0f2fe', '#edf2f7', '#bae6fd', '#ffe9a6']
   style.textContent = names.map((name, index) => `::highlight(${name}){background:${colors[index]};color:inherit}`).join('')
   document.head.append(style)
-  const groups: Range[][] = [[], [], []]
+  const groups: Range[][] = [[], [], [], focused]
   for (const { marker, ranges } of entries) {
     groups[marker.thread_id === selected ? 2 : marker.status === 'open' ? 0 : 1]!.push(...ranges)
   }
   names.forEach((name, index) => {
     const highlight = new Highlight(...groups[index]!)
-    highlight.priority = index === 1 ? 0 : index === 0 ? 1 : 2
+    highlight.priority = [1, 0, 3, 2][index] || 0
     CSS.highlights.set(name, highlight)
   })
   cleanup(() => {
@@ -147,9 +163,8 @@ watch(() => [paintKey.value, markerRanges.value, props.selectedThreadId] as cons
   })
 }, { flush: 'post' })
 
-watch(() => [props.selectedThreadId, paintKey.value] as const, ([selected]) => {
-  if (!selected) return
-  const range = markerRanges.value.find(entry => entry.marker.thread_id === selected)?.ranges[0]
+watch(() => [props.selectedThreadId, paintKey.value, focusRanges.value] as const, ([selected, , focused]) => {
+  const range = selected ? markerRanges.value.find(entry => entry.marker.thread_id === selected)?.ranges[0] : focused[0]
   if (!range) return
   const rect = range.getBoundingClientRect()
   const shell = body.value?.closest('.canvas-shell')

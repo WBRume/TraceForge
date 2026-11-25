@@ -13,6 +13,7 @@ import TaskHostRail from '@/components/chat/task-rail/TaskHostRail.vue'
 import { useTaskRailStore } from '@/stores/taskRail'
 import { isDesktop } from '@/utils/runtime'
 import { useDesktopTabs } from '@/desktop/workspaceTabs'
+import { isCanvasRoute, WORKSPACE_ASSET_CANVAS } from '@/router/workspaceAssetPresentation'
 
 const route = useRoute()
 const router = useRouter()
@@ -79,7 +80,7 @@ const goBack = () => router.push('/workspaces')
 const sidebarNavItems = computed(() => {
   const wsId = route.params.wsId as string
   const routeName = String(route.name ?? '')
-  const assetsActive = routeName.startsWith('workspaceAssets')
+  const assetsActive = isCanvasRoute(route) || routeName.startsWith('workspaceAssets')
     || routeName === 'workspaceAssetTaskDetail'
     || routeName.startsWith('workspaceCase')
     || routeName === 'workspacePlaybookDetail'
@@ -109,7 +110,9 @@ const sidebarNavItems = computed(() => {
       key: 'assets',
       label: t('workspace_assets.sidebar_label'),
       icon: Box,
-      to: `/workspaces/${wsId}/assets/requirements`,
+      to: authStore.assetDisplayMode === 'canvas'
+        ? router.resolve({ name: WORKSPACE_ASSET_CANVAS, params: { wsId } }).path
+        : `/workspaces/${wsId}/assets/requirements`,
       active: assetsActive,
     },
     {

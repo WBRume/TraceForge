@@ -4,7 +4,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ArrowLeft, AlertCircle } from '@/components/icons'
 import DocReviewWorkbench from '@/components/doc-review/DocReviewWorkbench.vue'
+import PlanDocsPanel from '@/components/chat/PlanDocsPanel.vue'
 import { useTaskSpecBootstrapFeed } from '@/composables/useTaskSpecBootstrapFeed'
+import { useWorkspaceContext } from '@/composables/chat/tasklist/useWorkspaceContext'
+import { isCanvasRoute } from '@/router/workspaceAssetPresentation'
 import api from '@/utils/api'
 
 const route = useRoute()
@@ -12,7 +15,21 @@ const router = useRouter()
 const { t } = useI18n()
 const wsId = computed(() => String(route.params.wsId || ''))
 const taskId = computed(() => String(route.params.taskId || ''))
+const embedded = computed(() => isCanvasRoute(route))
+const planContext = useWorkspaceContext({ getWorkspaceId: () => wsId.value })
 const revisionJobId = computed(() => typeof route.query.revisionJob === 'string' ? route.query.revisionJob : '')
+const assetId = computed(() => typeof route.query.asset === 'string' ? route.query.asset : undefined)
+const versionId = computed(() => typeof route.query.version === 'string' ? route.query.version : undefined)
+const blockId = computed(() => typeof route.query.block === 'string' ? route.query.block : undefined)
+const documentKey = computed(() => [assetId.value, versionId.value, blockId.value].join(':'))
+const planFile = computed<{ section: 'plans' | 'specs'; path: string } | undefined>(() => {
+  const { plan, path } = route.query
+  if ((plan === 'plans' || plan === 'specs') && typeof path === 'string' && path) return { section: plan, path }
+  return undefined
+})
+watch([wsId, () => Boolean(planFile.value), embedded], ([workspaceId, plan, canvas]) => {
+  if (workspaceId && plan && canvas) void planContext.loadWorkspace().catch(() => {})
+}, { immediate: true })
 
 const clearRevisionJob = (jobId: string) => {
   if (revisionJobId.value !== jobId) return
@@ -63,18 +80,29 @@ const backToChat = () => {
 </script>
 
 <template>
-  <div class="task-spec-view">
-    <div v-if="docReadonly" class="readonly-banner fade-in">
+  <div class="task-spec-view" :class="{ embedded }">
+    <div v-if="docReadonly && !planFile" class="readonly-banner fade-in">
       <AlertCircle class="w-4 h-4" />
       <span>
         {{ t('doc_review.task_readonly_banner_prefix') }}<strong>{{ t('doc_review.readonly_mode') }}</strong>
       </span>
     </div>
 
-    <section class="workbench-shell fade-in-visible">
+    <section v-if="planFile" class="workbench-shell plan-workbench fade-in-visible">
+      <button class="btn-secondary btn-back" @click="backToChat">
+        <ArrowLeft class="w-4 h-4" />{{ t('doc_review.back_to_chat') }}
+      </button>
+      <PlanDocsPanel :key="`${taskId}:${planFile.section}:${planFile.path}`" :ws-id="wsId" :task-id="taskId"
+        :initial-file="planFile" :readonly="!embedded || !planContext.canEditPlanDocs.value" />
+    </section>
+    <section v-else class="workbench-shell fade-in-visible">
       <DocReviewWorkbench
+        :key="documentKey"
         :ws-id="wsId"
         :task-id="taskId"
+        :initial-asset-id="assetId"
+        :initial-version-id="versionId"
+        :focus-block-id="blockId"
         :readonly="docReadonly"
         :bootstrap-status="specBootstrapFeed.bootstrap.value"
         :revision-job-id="revisionJobId"
@@ -138,6 +166,9 @@ const backToChat = () => {
   min-height: 0;
   flex: 1;
 }
+.plan-workbench { display: flex; flex-direction: column; gap: 10px; }
+.plan-workbench .btn-back { align-self: flex-start; }
+.task-spec-view.embedded { height: 100%; padding: 12px; }
 
 /* Animations matching Portal */
 .fade-in {

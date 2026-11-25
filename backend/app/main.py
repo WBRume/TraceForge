@@ -21,7 +21,7 @@ from app.core.logging import (
     get_logger,
     setup_logging,
 )
-from app.core.offload import run_db, shutdown_offload_executors
+from app.core.offload import run_db, run_db_txn, shutdown_offload_executors
 from app.core.redis_client import close_redis_client
 from app.database import SessionLocal
 from app.domains.ai.routers import agent, queue, speech
@@ -77,6 +77,8 @@ from app.domains.websocket.ws.task_handler import TaskWebSocketHandler, TaskWebS
 from app.domains.workflow.routers import provision
 from app.domains.workspace.routers import invite_join, workspace
 from app.domains.workspace_asset.routers import workspace_asset
+from app.domains.workspace_canvas.events import canvas_connections
+from app.domains.workspace_canvas.router import router as workspace_canvas_router
 from app.domains.workspace_collaboration.router import router as workspace_collaboration_router
 from app.engine.session import shutdown_active_engines
 from app.middleware.logging_middleware import LoggingMiddleware
@@ -95,6 +97,7 @@ async def _shutdown_websocket_hubs():
         (manager, "task"),
         (notification_ws_manager, "notification"),
         (asset_discussion_ws_manager, "asset discussion"),
+        (canvas_connections, "workspace canvas"),
     ):
         try:
             await ws_manager.shutdown()
@@ -236,6 +239,7 @@ app.include_router(provision.router, prefix="/api")
 app.include_router(queue.router, prefix="/api")
 app.include_router(workspace_asset.router, prefix="/api")
 app.include_router(workspace_asset.global_router, prefix="/api")
+app.include_router(workspace_canvas_router, prefix="/api")
 app.include_router(notification_router.router, prefix="/api")
 
 app.include_router(task_awareness_router, prefix="/api")
@@ -458,6 +462,43 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
             last_sequence=last_sequence,
         )
         await handler.run()
+
+
+@app.websocket("/ws/workspace-canvas/{workspace_id}")
+async def workspace_canvas_websocket(websocket: WebSocket, workspace_id: str) -> None:
+    context = await _authenticate_user_ws(websocket)
+    if not context:
+        await websocket.close(code=1008)
+        return
+    user_id = context["user_id"]
+    is_member = await run_db_txn(
+        lambda db: (
+            db.query(WorkspaceMember.id).filter_by(workspace_id=workspace_id, user_id=user_id).first() is not None
+        )
+    )
+    if not is_member:
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    connection = await canvas_connections.connect(workspace_id, websocket, message_kind="json")
+    try:
+        while True:
+            raw = await receive_text_until_evicted(websocket, connection)
+            try:
+                frame = json.loads(raw)
+                if isinstance(frame, dict) and frame.get("type") == "resync_complete":
+                    await canvas_connections.complete_resync(
+                        workspace_id,
+                        websocket,
+                        epoch=str(frame.get("epoch") or ""),
+                        barrier_sequence=int(frame.get("barrier_sequence")),
+                    )
+            except (TypeError, ValueError):
+                continue
+    except (WebSocketDisconnect, ConnectionEvicted):
+        pass
+    finally:
+        canvas_connections.disconnect(workspace_id, websocket)
 
 
 @app.websocket("/ws/notifications")
