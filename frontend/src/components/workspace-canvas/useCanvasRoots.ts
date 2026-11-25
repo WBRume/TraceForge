@@ -2,72 +2,110 @@ import { computed, onScopeDispose, shallowRef } from 'vue'
 import api from '@/utils/api'
 import { canvasUrl, type CanvasAssetWindow, type CanvasRootFilters } from './model'
 
-export function useCanvasRoots(workspaceId: string) {
-  const active = shallowRef<{ filters: CanvasRootFilters; cursor?: string } | null>(null)
-  const page = shallowRef<CanvasAssetWindow | null>(null)
-  const history = shallowRef<(string | undefined)[]>([])
-  const loading = shallowRef(false)
-  const filters = computed(() => active.value?.filters ?? {})
-  let pending: AbortController | null = null
+export type RootDirection = 'next' | 'previous'
+interface RootPage {
+  index: number
+  cursor?: string
+  data?: CanvasAssetWindow
+}
 
-  async function read(quarter: string, scope: CanvasRootFilters, cursor?: string) {
-    pending?.abort()
-    const request = new AbortController()
-    pending = request
-    loading.value = true
+const MAX_PAGES = 3
+
+export function useCanvasRoots(workspaceId: string, first: () => CanvasAssetWindow | null) {
+  const active = shallowRef<RootPage[]>([{ index: 0 }])
+  const filters = shallowRef<CanvasRootFilters>({})
+  const loading = shallowRef(false)
+  const history = new Map<number, string>()
+  let pending: AbortController | null = null
+  const resolve = (page: RootPage) => page.data ?? first()
+  const pages = computed(() => active.value.flatMap(page => resolve(page) ?? []))
+  const canContinue = computed(() => Boolean(resolve(active.value.at(-1)!)?.next_cursor))
+  const canReturn = computed(() => active.value[0]!.index > 0)
+
+  async function read(quarter: string, scope: CanvasRootFilters, signal: AbortSignal, cursor?: string, visible: string[] = []) {
+    const { data } = await api.get<CanvasAssetWindow>(`${canvasUrl(workspaceId)}/roots`, {
+      params: { quarter, ...scope, cursor, visible }, paramsSerializer: { indexes: null }, signal, timeout: 5000,
+    })
+    return data
+  }
+
+  function visibleRoots() {
+    return [...new Set(pages.value.flatMap(page => page.assets.map(asset =>
+      `${asset.reference.kind}:${asset.reference.id}`)))].slice(0, 32)
+  }
+
+  async function request(action: (signal: AbortSignal) => Promise<boolean>, background = false) {
+    const controller = new AbortController()
+    pending = controller
+    loading.value = !background
     try {
-      const { data } = await api.get<CanvasAssetWindow>(`${canvasUrl(workspaceId)}/roots`, {
-        params: { quarter, ...scope, cursor }, signal: request.signal, timeout: 5000,
-      })
-      if (request.signal.aborted) return false
-      active.value = { filters: scope, cursor }
-      page.value = data
-      return true
+      return await action(controller.signal)
     } catch (error) {
-      if (!request.signal.aborted) throw error
+      if (!controller.signal.aborted && !background) throw error
       return false
     } finally {
-      if (pending === request) { pending = null; loading.value = false }
+      if (pending === controller) {
+        pending = null
+        loading.value = false
+      }
     }
   }
 
   async function filter(quarter: string, scope: CanvasRootFilters) {
-    if (!await read(quarter, scope)) return false
-    history.value = []
-    return true
+    pending?.abort()
+    return request(async signal => {
+      const data = await read(quarter, scope, signal)
+      if (signal.aborted) return false
+      filters.value = scope
+      history.clear()
+      active.value = [{ index: 0, data }]
+      return true
+    })
   }
 
-  async function next(quarter: string, cursor: string) {
-    const previous = active.value?.cursor
-    if (!await read(quarter, filters.value, cursor)) return false
-    history.value = [...history.value, previous]
-    return true
-  }
-
-  async function previous(quarter: string) {
-    if (!history.value.length || !await read(quarter, filters.value, history.value.at(-1))) return false
-    history.value = history.value.slice(0, -1)
-    return true
+  async function move(quarter: string, direction: RootDirection) {
+    if (loading.value) return false
+    const next = direction === 'next'
+    const edge = next ? active.value.at(-1)! : active.value[0]!
+    const index = edge.index + (next ? 1 : -1)
+    const cursor = next ? resolve(edge)?.next_cursor ?? undefined : history.get(index)
+    if ((next && !cursor) || index < 0 || (!next && index > 0 && !cursor)) return false
+    pending?.abort()
+    return request(async signal => {
+      const data = await read(quarter, filters.value, signal, cursor, visibleRoots())
+      if (signal.aborted) return false
+      if (cursor) history.set(index, cursor)
+      const page = { index, cursor, data }
+      active.value = next ? [...active.value, page].slice(-MAX_PAGES) : [page, ...active.value].slice(0, MAX_PAGES)
+      return true
+    })
   }
 
   function clear() {
     pending?.abort()
     pending = null
-    active.value = null
-    page.value = null
-    history.value = []
+    active.value = [{ index: 0 }]
+    filters.value = {}
+    history.clear()
     loading.value = false
   }
 
   async function sync(quarter: string) {
-    if (!active.value || pending) return
-    try {
-      await read(quarter, active.value.filters, active.value.cursor)
-    } catch {
-      // Keep the current page usable while the canvas reconnects.
-    }
+    if (pending || !active.value.some(page => page.data)) return
+    await request(async signal => {
+      const visible = visibleRoots()
+      const refreshed = []
+      for (const page of active.value) {
+        if (!page.data) { refreshed.push(page); continue }
+        const data = await read(quarter, filters.value, signal, page.cursor, visible)
+        if (signal.aborted) return false
+        refreshed.push({ ...page, data })
+      }
+      active.value = refreshed
+      return true
+    }, true)
   }
 
   onScopeDispose(clear)
-  return { page, filters, loading, history, filter, next, previous, sync, clear }
+  return { pages, filters, loading, canContinue, canReturn, filter, move, sync, clear }
 }

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronLeft, ChevronRight } from '@/components/icons'
 import { TASK_STATUSES, taskStatusKey } from '@/utils/taskStatus'
 import type { CanvasRootFilters, CanvasRootKind, FiscalQuarter } from './model'
 
@@ -10,12 +9,11 @@ const props = defineProps<{
   filters: CanvasRootFilters
   kinds: readonly CanvasRootKind[]
   next: boolean
-  previous: boolean
   empty: boolean
   busy: boolean
   userId?: string
 }>()
-const emit = defineEmits<{ filter: [filters: CanvasRootFilters]; next: []; previous: [] }>()
+const emit = defineEmits<{ filter: [filters: CanvasRootFilters] }>()
 const { t } = useI18n()
 const kind = shallowRef<CanvasRootKind | ''>('')
 const slice = shallowRef('')
@@ -93,23 +91,15 @@ function apply() {
     <input v-if="kind" v-model="query" :disabled="busy" type="search" maxlength="120"
       :aria-label="t('workspace_canvas.tree.title_filter')" :placeholder="t('workspace_canvas.tree.title_filter')"
       @change="apply" @keydown.enter.prevent="apply" />
-    <button v-if="previous" :disabled="busy" type="button" @click="emit('previous')">
-      <ChevronLeft :size="14" />{{ t('workspace_canvas.tree.previous_roots') }}
-    </button>
-    <button v-if="next" :disabled="busy" type="button" @click="emit('next')">
-      {{ t('workspace_canvas.tree.next_roots') }}<ChevronRight :size="14" />
-    </button>
     <span v-if="empty && !busy" class="root-empty" role="status">{{ t(next ? 'workspace_canvas.tree.no_roots_yet' : 'workspace_canvas.tree.no_roots') }}</span>
   </nav>
 </template>
 
 <style scoped>
 .root-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; color: #47627b; font-size: 12px; }
-.root-controls :is(select, button, input[type='search']) { min-height: 30px; border: 1px solid #dbe7f2; border-radius: 7px;
+.root-controls :is(select, input[type='search']) { min-height: 30px; border: 1px solid #dbe7f2; border-radius: 7px;
   padding: 4px 7px; background: #f8fbfe; color: #355a77; font: inherit; }
-.root-controls :is(button, label) { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-.root-controls button { cursor: pointer; }
+.root-controls label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .root-controls input[type='search'] { width: 122px; }
-.root-controls button:disabled { opacity: .55; cursor: default; }
 .root-empty { margin-inline-start: 4px; color: #596d81; }
 </style>

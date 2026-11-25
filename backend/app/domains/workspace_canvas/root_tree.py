@@ -14,7 +14,7 @@ from app.domains.workspace_asset.models.requirement_document import (
     SddRequirementDocumentLink,
 )
 from app.domains.workspace_asset.models.workspace_asset import SddRequirement, SddTaskRequirement
-from app.domains.workspace_canvas import relations, sources
+from app.domains.workspace_canvas import relations, sources, tree_children
 from app.domains.workspace_canvas.quarter_calendar import FiscalCalendar
 from app.domains.workspace_canvas.schemas import CanvasAssetWindow, CanvasRootQuery
 
@@ -239,8 +239,11 @@ def read_roots(
         if asset is not None:
             asset.has_related = related
             assets.append(asset)
+    known = sources.visible_references(params.visible, kinds)
+    tree_children.mark_children(db, workspace_id, kinds, quarter_dates, assets, known=known)
+    shown = sources.assets_for_references(db, workspace_id, known) if assets and known else []
     return CanvasAssetWindow(
         assets=assets,
-        relations=relations.load_relations(db, workspace_id, assets, 128),
+        relations=relations.load_relations(db, workspace_id, [*assets, *shown], 128, focus=assets) if assets else [],
         next_cursor=json.dumps(following, separators=(",", ":")) if any(following.values()) else None,
     )

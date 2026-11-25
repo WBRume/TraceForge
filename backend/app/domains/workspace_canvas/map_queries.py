@@ -1,7 +1,4 @@
-from typing import Annotated
-
 from fastapi import HTTPException
-from pydantic import Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -11,15 +8,12 @@ from app.domains.diagnosis_playbook.models import CasePlaybookLink, PlaybookRun,
 from app.domains.task.models.task import SddTask, TaskType
 from app.domains.workspace_asset.models.requirement_document import SddRequirementDocumentLink
 from app.domains.workspace_asset.models.workspace_asset import SddRequirement, SddTaskRequirement
-from app.domains.workspace_canvas import relations, sources
+from app.domains.workspace_canvas import relations, sources, tree_children
 from app.domains.workspace_canvas.quarter_calendar import FiscalCalendar
-from app.domains.workspace_canvas.schemas import CanvasAssetWindow, SourceReference
+from app.domains.workspace_canvas.schemas import CanvasAssetWindow, SourceReference, VisibleAsset
 
 WINDOW_LIMIT = 12
 RELATION_LIMIT = 128
-VisibleAsset = Annotated[
-    str, Field(pattern=r"^(requirement|task|case|playbook|document|requirement_document):[\w-]{1,36}$")
-]
 NEIGHBOR_KINDS = ("requirement", "requirement_document", "document", "case", "playbook", "task")
 
 
@@ -184,13 +178,29 @@ def read_window(
     quarter: str | None = None,
     visible: list[VisibleAsset] | None = None,
     reveal: VisibleAsset | None = None,
+    children: bool = False,
 ) -> CanvasAssetWindow:
     entry = sources.assign_quarters(sources.assets_for_references(db, workspace_id, [anchor]), calendar)
     if not entry:
         return CanvasAssetWindow(assets=[], relations=[])
     if quarter and anchor.kind == "requirement" and entry[0].quarter and entry[0].quarter.id != quarter:
         return CanvasAssetWindow(assets=entry, relations=[])
-    candidates = Nearby(db, workspace_id, kinds, WINDOW_LIMIT, cursor).candidates(anchor)
+    dates = calendar.dates(calendar.period(quarter)) if quarter else None
+    finder = Nearby(db, workspace_id, kinds, WINDOW_LIMIT, cursor)
+    if children:
+        for child_kind, column, query in tree_children.child_queries(
+            db,
+            workspace_id,
+            kinds,
+            anchor.kind,
+            anchor.id,
+            dates,
+            diagnosis=entry[0].details.task_type == TaskType.DIAGNOSIS.value,
+        ):
+            finder.add(child_kind, column, query)
+        candidates = [candidate for _, candidate in sorted(finder.refs.items())]
+    else:
+        candidates = finder.candidates(anchor)
     page = candidates[:WINDOW_LIMIT]
     ordered = page
     if reveal:
@@ -205,24 +215,21 @@ def read_window(
     related = {ref.model_dump_json() for edge in direct for ref in (edge.source, edge.target)}
     assets = [*entry, *(asset for asset in neighbors[1:] if asset.reference.model_dump_json() in related)]
     window_ids = {asset.node_id for asset in assets}
-    shown = []
-    for item in visible or ():
-        kind, identifier = item.split(":", 1)
-        if kind in kinds:
-            reference = sources.reference_for(kind, identifier)
-            if sources.catalog_node_id(reference) not in window_ids:
-                shown.append(reference)
+    known = [
+        ref for ref in sources.visible_references(visible, kinds) if sources.catalog_node_id(ref) not in window_ids
+    ]
+    tree_children.mark_children(db, workspace_id, kinds, dates, assets, known=known)
     # The window stays one hop. Joining its endpoints to cards that are already
     # on the board keeps shared documents and promoted playbooks connected.
     cross = (
         relations.load_relations(
             db,
             workspace_id,
-            [*assets, *sources.assets_for_references(db, workspace_id, shown)],
+            [*assets, *sources.assets_for_references(db, workspace_id, known)],
             RELATION_LIMIT * 2,
             focus=assets,
         )
-        if shown or len(assets) > 2
+        if known or len(assets) > 2
         else []
     )
     edges = {

@@ -115,6 +115,7 @@ def read_canvas_window(
     quarter: QuarterKey | None = None,
     visible: Annotated[list[map_queries.VisibleAsset] | None, Query(max_length=120)] = None,
     reveal: map_queries.VisibleAsset | None = None,
+    children: bool = False,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CanvasAssetWindow:
@@ -126,7 +127,7 @@ def read_canvas_window(
     with budgeted_read(db):
         calendar = quarters.get_calendar(db, ws_id)
         window = map_queries.read_window(
-            db, ws_id, member.access.source_kinds, anchor, cursor, calendar, quarter, visible, reveal
+            db, ws_id, member.access.source_kinds, anchor, cursor, calendar, quarter, visible, reveal, children
         )
         if not window.assets:
             raise HTTPException(404, "Canvas asset not found")

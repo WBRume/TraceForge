@@ -11,10 +11,12 @@ import type { CanvasContextRequest, CanvasContextTarget } from './contextMenu'
 import { referenceKey, type CanvasConnection, type CanvasGraph, type CanvasNode, type CanvasRelationType, type CanvasSelection,
   type CanvasTool, type NodePatch, type Point, type Size } from './model'
 import { useCanvasInteraction } from './useCanvasInteraction'
+import type { RootDirection } from './useCanvasRoots'
 
 const props = defineProps<{
   data: CanvasGraph; selection: CanvasSelection | null; busy: boolean; summary?: boolean;
   expanded: ReadonlyMap<string, { cursor?: string | null; previous: boolean }>; expanding: string
+  rootStream?: { next: boolean; previous: boolean; loading: boolean; ids: ReadonlySet<string> }
 }>()
 const emit = defineEmits<{
   select: [selection: CanvasSelection | null]
@@ -26,7 +28,7 @@ const emit = defineEmits<{
   openRelation: [id: string]
   context: [request: CanvasContextRequest]
   visibleTasks: [ids: string[]]
-  expand: [id: string]
+  stream: [direction: RootDirection]
   toggleBranch: [id: string]
   moreBranch: [id: string]
   previousBranch: [id: string]
@@ -37,8 +39,8 @@ const surface = useTemplateRef<HTMLElement>('surface')
 const tool = shallowRef<CanvasTool>('select')
 const relationFilter = shallowRef<CanvasRelationType | null>(null)
 const size = shallowRef<Size>({ width: 0, height: 0 })
+let movedViewport = false
 let observer: ResizeObserver | undefined
-let expansion: ReturnType<typeof setTimeout> | undefined
 onMounted(() => {
   if (!surface.value) return
   size.value = { width: surface.value.clientWidth, height: surface.value.clientHeight }
@@ -47,7 +49,7 @@ onMounted(() => {
   })
   observer.observe(surface.value)
 })
-onScopeDispose(() => { observer?.disconnect(); clearTimeout(expansion) })
+onScopeDispose(() => observer?.disconnect())
 const map = useCanvasInteraction({
   surface,
   nodes: () => props.data.nodes,
@@ -90,7 +92,13 @@ watch(() => [...planTasks.value].sort().join(','), (value, _, cleanup) => {
   cleanup(() => clearTimeout(timer))
 }, { immediate: true })
 watch(() => props.data, (current, previous) => {
-  if (current.quarter?.id !== previous.quarter?.id || current.root_tree !== previous.root_tree) { fitEntries(); return }
+  if (current.quarter?.id !== previous.quarter?.id || current.root_tree !== previous.root_tree) {
+    movedViewport = false
+    fitEntries()
+    return
+  }
+  const autoCount = (data: CanvasGraph) => data.nodes.filter(node => node.automatic).length
+  if (!current.root_tree && !movedViewport && autoCount(current) > autoCount(previous)) { fitEntries(); return }
   const planCount = (data: CanvasGraph) => data.nodes.filter(node => node.reference?.kind === 'plan_document').length
   if (moving.value || planCount(current) === planCount(previous)) return
   const id = props.selection?.type === 'node' ? props.selection.id : undefined
@@ -188,7 +196,6 @@ function zoomIntoMap(event: MouseEvent) {
   const id = node?.id ?? (region && props.data.assetNodeIds.get(region.id))
   if (id) {
     map.focusNodes([id]); emit('select', { type: 'node', id })
-    if (props.summary && !props.data.root_tree) emit('expand', id)
     return
   }
   if (region) map.focusRegion(region)
@@ -196,13 +203,29 @@ function zoomIntoMap(event: MouseEvent) {
 }
 
 function wheel(event: WheelEvent) {
+  movedViewport = true
+  const before = viewport.value.y
   map.wheel(event)
-  clearTimeout(expansion)
-  if (!props.summary || props.data.root_tree || tool.value !== 'select'
-    || !(event.ctrlKey || event.metaKey) || event.deltaY >= 0 || viewport.value.scale < 0.86) return
-  const { node, region } = assetsAt(event)
-  const id = node?.automatic ? node.id : region && props.data.assetNodeIds.get(region.id)
-  if (id) expansion = setTimeout(() => { if (props.summary) emit('expand', id) }, 220)
+  if (!event.ctrlKey && !event.metaKey) requestRoots(before)
+}
+
+function pointerMove(event: PointerEvent) {
+  const before = viewport.value
+  map.pointerMove(event)
+  if (viewport.value !== before) movedViewport = true
+  requestRoots(before.y)
+}
+
+function requestRoots(before: number) {
+  const stream = props.rootStream
+  const { y, scale } = viewport.value
+  if (!stream || stream.loading || before === y) return
+  const regions = props.data.regions.filter(region => stream.ids.has(region.id))
+  const first = regions[0]?.position.y ?? 0
+  const last = regions.at(-1)
+  const bottom = last ? last.position.y + last.size.height : 150
+  if (y < before && stream.next && y + bottom * scale < size.value.height + 140) emit('stream', 'next')
+  if (y > before && stream.previous && y + first * scale > -140) emit('stream', 'previous')
 }
 
 function keepInView(position: Point, id: string) {
@@ -226,6 +249,15 @@ function onKeydown(event: KeyboardEvent) {
   if (event.key === '+' || event.key === '=') map.adjustZoom(1.2)
   if (event.key === '-') map.adjustZoom(1 / 1.2)
   if (event.key === '0') map.fit()
+  if (props.rootStream && ['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp'].includes(event.key)) {
+    event.preventDefault()
+    movedViewport = true
+    const direction = event.key.endsWith('Down') ? -1 : 1
+    const step = event.key.startsWith('Page') ? size.value.height * 0.78 : 120
+    const current = viewport.value
+    viewport.value = { ...current, y: current.y + direction * step }
+    requestRoots(current.y)
+  }
   if (event.key === 'Delete' && canRemove.value && !props.busy) { event.preventDefault(); emit('remove') }
 }
 
@@ -237,11 +269,21 @@ function noteAtCenter() {
 function selected(node: CanvasNode) { return props.selection?.type === 'node' && props.selection.id === node.id }
 function isEntry(node: CanvasNode) { return !!node.domainId && props.data.assetNodeIds.get(node.domainId) === node.id }
 function fitEntries() {
-  const first = props.data.root_tree && props.data.nodes.find(isEntry)
+  const first = props.data.nodes.find(isEntry)
+  if (!props.data.root_tree) {
+    map.fit()
+    if (viewport.value.scale >= 0.62 || !first) return
+  }
   if (!first) { map.fit(); return }
   const { width } = size.value
-  const scale = width < 620 ? 0.82 : 0.96
+  const scale = props.data.root_tree ? width < 620 ? 0.82 : 0.96 : 0.72
   viewport.value = { scale, x: Math.min(111, width * 0.18) - first.position.x * scale, y: 34 - first.position.y * scale }
+}
+
+function streamAnchor(direction: RootDirection) {
+  const roots = props.data.nodes.filter(node => node.domainId && props.rootStream?.ids.has(node.domainId) && isEntry(node))
+  const node = direction === 'next' ? roots.at(-1) : roots[0]
+  return node ? { id: node.id, position: node.position } : undefined
 }
 
 function revealChild(parentId: string, childId: string) {
@@ -255,9 +297,9 @@ function revealChild(parentId: string, childId: string) {
     || y + child.position.y * scale < 20
   if (horizontal || vertical) map.focusNodes([parentId, childId])
 }
-onMounted(() => { if (props.data.root_tree) fitEntries() })
+onMounted(fitEntries)
 defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, focusRegion: map.focusRegion,
-  fit: fitEntries, keepInView, revealChild })
+  fit: fitEntries, keepInView, revealChild, streamAnchor })
 </script>
 
 <template>
@@ -266,10 +308,10 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
       :data-root-tree="data.root_tree || undefined" tabindex="0" :style="gridStyle"
       :data-zoom-mode="isOverview ? 'overview' : compact ? 'compact' : 'detail'"
       :class="[`mode-${tool}`, { moving, 'panning-key': space, 'map-scale': isOverview }]"
-      @pointerdown="map.pointerDown" @pointermove="map.pointerMove" @pointercancel="map.cancelGesture" @wheel.prevent="wheel"
+      @pointerdown="map.pointerDown" @pointermove="pointerMove" @pointercancel="map.cancelGesture" @wheel.prevent="wheel"
       @keydown="onKeydown" @contextmenu.prevent="rightClick" @dblclick="zoomIntoMap">
       <CanvasOverviewLayer :nodes="renderedNodes" :regions="data.regions" :relations="shownRelations" :edges="data.edges"
-        :viewport="viewport" :size="size" :overview="isOverview" :featured="summary" :tree="data.root_tree" :selected-id="selectedNode?.id" />
+        :viewport="viewport" :size="size" :overview="isOverview" :featured="summary" :tree="!!data.quarter" :selected-id="selectedNode?.id" />
       <div v-if="!isOverview" class="canvas-scene" :style="sceneStyle">
         <div class="scene-layer frame-layer">
           <CanvasItem v-for="node in frames" :key="node.id" :node="node" :active="selected(node)"
@@ -277,13 +319,14 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
             @focus="emit('select', { type: 'node', id: node.id })" @open="open(node.id)" />
         </div>
         <CanvasArrows :nodes="renderedNodes" :visible-ids="visibleIds" :edges="data.edges" :relations="shownRelations" :selected-id="selectedEdge"
-          :preview="connectionPreview" :regions="data.regions" :tree="data.root_tree"
+          :preview="connectionPreview" :regions="data.regions" :tree="!!data.quarter"
           @select="id => emit('select', { type: 'edge', id })" @open-relation="id => emit('openRelation', id)" />
         <div class="scene-layer card-layer">
           <CanvasItem v-for="node in items" :key="node.id" :node="node" :active="selected(node)"
             :entry="isEntry(node)" :compact="compact" :quarter-id="data.quarter?.id"
-            :tree="data.root_tree" :expanded="expanded.has(branchKey(node))"
-            :has-more="!!expanded.get(branchKey(node))?.cursor" :has-previous="!!expanded.get(branchKey(node))?.previous"
+            :tree="!!data.quarter" :expanded="!!node.expandedChildren"
+            :has-more="!!expanded.get(branchKey(node))?.cursor || (!!node.expandedChildren && !!node.unseenChildren && !expanded.has(branchKey(node)))"
+            :has-previous="!!expanded.get(branchKey(node))?.previous"
             :busy="expanding === branchKey(node)"
             :linked="connectStart?.id === node.id || hoveredTarget === node.id" @press="(event, handle) => map.nodeDown(event, node, handle)"
             @focus="emit('select', { type: 'node', id: node.id })" @open="open(node.id)"
@@ -302,6 +345,9 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
       </div>
       <div v-if="cursorHint" class="cursor-hint" aria-live="polite">{{ cursorHint }}</div>
       <div v-else-if="isOverview" class="map-hint">{{ t('workspace_canvas.domains.map_zoom') }}</div>
+      <div v-else-if="rootStream?.next || rootStream?.loading" class="map-hint root-guidance">
+        {{ t(rootStream.loading ? 'common.loading' : 'workspace_canvas.tree.pan_more') }}
+      </div>
       <CanvasRelationLegend :relations="data.relations" :active="relationFilter"
         @choose="type => relationFilter = relationFilter === type ? null : type" />
       <div class="viewport-controls canvas-control" @pointerdown.stop>

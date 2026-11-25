@@ -10,6 +10,7 @@ interface OpenBranch {
   cursor?: string
   previous: (string | undefined)[]
   reveal?: SourceReference
+  children: boolean
 }
 
 export function useCanvasAssetWindows(workspaceId: string, getQuarter: () => string | undefined, seeds: () => CanvasAsset[]) {
@@ -48,13 +49,13 @@ export function useCanvasAssetWindows(workspaceId: string, getQuarter: () => str
     empty: entry.response.assets.length <= 1 && entry.response.relations.length === 0 && !entry.response.next_cursor,
   }])))
 
-  async function query(reference: SourceReference, signal: AbortSignal, cursor?: string, reveal?: SourceReference) {
+  async function query(reference: SourceReference, signal: AbortSignal, cursor?: string, reveal?: SourceReference, children = false) {
     const visible = [...projection.value.assets.values()].flatMap(asset =>
       asset.reference.kind !== 'plan_document' && !('block' in asset.reference && asset.reference.block)
         ? [`${asset.reference.kind}:${asset.reference.id}`] : []).slice(0, 120)
     const { data } = await api.get<CanvasAssetWindow>(`${url}/window`, {
       params: { kind: reference.kind, id: reference.id, cursor, quarter: getQuarter(), visible,
-        reveal: reveal && `${reveal.kind}:${reveal.id}` },
+        reveal: reveal && `${reveal.kind}:${reveal.id}`, children },
       paramsSerializer: { indexes: null },
       signal,
       timeout: 5000,
@@ -63,10 +64,11 @@ export function useCanvasAssetWindows(workspaceId: string, getQuarter: () => str
   }
 
   async function load(reference: SourceReference,
-    options: { cursor?: string; previous?: boolean; locate?: boolean; reveal?: SourceReference } = {}) {
+    options: { cursor?: string; previous?: boolean; locate?: boolean; reveal?: SourceReference; children?: boolean } = {}) {
     if (reference.kind === 'plan_document' || ('block' in reference && reference.block)) return null
     const key = referenceKey(reference)
     const existing = projection.value.entries.get(key)
+    const children = options.children ?? existing?.children ?? false
     if (!options.locate && !existing && projection.value.entries.size >= PAGE_LIMIT) return 'limit'
     const cursor = options.previous ? existing?.previous.at(-1) : options.cursor
     const previous = options.previous ? existing?.previous.slice(0, -1) ?? []
@@ -76,13 +78,13 @@ export function useCanvasAssetWindows(workspaceId: string, getQuarter: () => str
     pending = request
     loadingKey.value = key
     try {
-      const response = await query(reference, request.signal, cursor, options.reveal)
+      const response = await query(reference, request.signal, cursor, options.reveal, children)
       if (request.signal.aborted || !response.assets.length) return null
       if (options.locate) {
         located.value = response.assets[0]
         branches.value = new Map()
       }
-      branches.value = new Map(branches.value).set(key, { reference, response, cursor, previous, reveal: options.reveal })
+      branches.value = new Map(branches.value).set(key, { reference, response, cursor, previous, reveal: options.reveal, children })
       branches.value = projection.value.entries
       return response
     } catch (error) {
@@ -101,7 +103,7 @@ export function useCanvasAssetWindows(workspaceId: string, getQuarter: () => str
       const result = new Map(branches.value)
       for (const [key, entry] of projection.value.entries) {
         try {
-          const response = await query(entry.reference, request.signal, entry.cursor, entry.reveal)
+          const response = await query(entry.reference, request.signal, entry.cursor, entry.reveal, entry.children)
           if (request.signal.aborted) return
           result.set(key, { ...entry, response })
           if (located.value && referenceKey(located.value.reference) === key) located.value = response.assets[0] ?? null

@@ -41,7 +41,13 @@ export interface CanvasDocumentOwner {
 }
 
 export interface AssetQuarter { id: string; label_year: number; number: number }
-export interface CanvasAsset extends SourceItem { node_id: string; quarter?: AssetQuarter | null; has_related?: boolean | null }
+export interface CanvasAsset extends SourceItem {
+  node_id: string
+  quarter?: AssetQuarter | null
+  has_related?: boolean | null
+  has_tree_children?: boolean
+  has_unseen_children?: boolean
+}
 
 export interface PeriodSlice { id: string; index: number; start: string; end: string }
 export interface FiscalQuarter extends AssetQuarter { year: number; start: string; end: string; months: PeriodSlice[] }
@@ -103,6 +109,8 @@ export interface CanvasNode extends CanvasNodeInput {
   domainId?: string
   historicalQuarter?: AssetQuarter
   expandable?: boolean
+  expandedChildren?: boolean
+  unseenChildren?: boolean
 }
 
 export interface CanvasEdge {
@@ -138,6 +146,7 @@ export interface CanvasSnapshot {
   root_tree?: boolean
   root_cursor?: string | null
   treeParents?: ReadonlyMap<string, string>
+  collapsedAssets?: ReadonlySet<string>
   annotations_limited?: boolean
 }
 

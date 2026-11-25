@@ -224,6 +224,15 @@ def reference_for(kind: SourceKind, identifier: str) -> SourceReference:
     return ObjectReference(kind=kind, id=identifier)
 
 
+def visible_references(tokens, kinds) -> list[SourceReference]:
+    references = []
+    for token in tokens or ():
+        kind, _, identifier = token.partition(":")
+        if kind in kinds:
+            references.append(reference_for(kind, identifier))
+    return references
+
+
 def assets_for_references(db: Session, workspace_id: str, references: Collection[SourceReference]) -> list[CanvasAsset]:
     identifiers = {}
     for ref in references:

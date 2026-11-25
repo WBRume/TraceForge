@@ -64,8 +64,10 @@ const paths = computed(() => {
     const targetRegion = target.domainId ? regionsById.get(target.domainId) : undefined
     const offset = (index - (list.length - 1) / 2) * 14
     const sharedPort = sharedPorts.get(relation.id)
+    const innerLane = sourceRegion && sourceRegion === targetRegion
+      ? Math.min(sourceRegion.position.y + 5 + index * 4, source.position.y - 9, target.position.y - 9) : undefined
     const geometry = sharedPort !== undefined ? branchArrowGeometry(source, target, sharedPort)
-      : props.tree ? arrowGeometry(source, target, (ports.get(relation.id) ?? 0) + offset, true)
+      : props.tree ? arrowGeometry(source, target, (ports.get(relation.id) ?? 0) + offset, true, innerLane)
       : sourceRegion && targetRegion && sourceRegion !== targetRegion
       ? crossDomainGeometry(source, target, sourceRegion, targetRegion, offset, relation.relation_type === 'PREREQUISITE' ? -15 : 0)
       : arrowGeometry(source, target, offset, true, sourceRegion && sourceRegion.position.y + 63 + index * 6)

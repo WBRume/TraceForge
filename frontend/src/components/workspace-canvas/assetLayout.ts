@@ -32,7 +32,7 @@ interface DomainLayout {
 const treeCardSize = { width: 248, height: 122 }
 
 function createDomain(catalog: CanvasCatalog, domain: CanvasDomain, saved: ReadonlyMap<string, CanvasNode>, tile: boolean,
-  quarter?: string, tree = false): DomainLayout {
+  quarter?: string, tree = false, collapsed?: ReadonlySet<string>): DomainLayout {
   const { node_id: root, details } = domain.asset
   const nodes: DomainLayout['nodes'] = []
   const start = tree ? { x: cardOrigin.x, y: localOrigin.y + 14 }
@@ -69,16 +69,24 @@ function createDomain(catalog: CanvasCatalog, domain: CanvasDomain, saved: Reado
     const position = availablePosition(proposed, size, old)
     right = Math.max(right, position.x + size.width)
     bottom = Math.max(bottom, position.y + size.height)
+    const children = catalog.childLinks.get(assetId)
+    const expandedChildren = (catalog.children.get(assetId) ?? []).some(child => children?.has(child))
+    const unseenChildren = Boolean(asset.has_unseen_children)
+    const foldedChildren = Boolean(collapsed?.has(assetId) && (asset.has_tree_children || children?.size))
     nodes.push({ assetId, node: { id, kind: 'card', automatic: true, domainId: root,
       scope_id: root, position, size, reference: asset.reference, details: asset.details, text: '', color: 'blue',
-      historicalQuarter, expandable: !historicalQuarter && asset.reference.kind !== 'plan_document' && asset.has_related !== false } })
+      historicalQuarter, expandedChildren, unseenChildren,
+      expandable: !historicalQuarter && (expandedChildren || unseenChildren || foldedChildren) } })
     return Math.max(proposed.y, position.y) + size.height
   }
   if (tree) {
+    const visited = new Set<string>()
     function placeSubtree(id: string, depth: number, y: number): number {
+      visited.add(id)
       let end = place(id, { x: start.x + depth * columnStride, y })
       let next = y
       for (const child of catalog.children.get(id) ?? []) {
+        if (visited.has(child) || catalog.rootByAsset.get(child) !== root) continue
         end = Math.max(end, placeSubtree(child, depth + 1, next))
         next = end + 22
       }
@@ -206,10 +214,17 @@ export function layoutWorkspace(snapshot: CanvasSnapshot, catalog: CanvasCatalog
   const saved = new Map(snapshot.nodes.map(node => [node.id, node]))
   const assetFor = (node: CanvasNode) => node.reference ? catalog.byReference.get(referenceKey(node.reference)) : undefined
   const connectedAssets = new Set(catalog.relations.flatMap(link => [link.sourceId, link.targetId]))
-  const tree = Boolean(snapshot.root_tree)
-  const domains = catalog.roots.map(root => createDomain(catalog, root, saved,
-    !tree && !featured && catalog.roots.length > 16 && !connectedAssets.has(root.asset.node_id), snapshot.quarter?.id, tree))
-  const placements = tree ? arrangeTree(domains) : arrangeDomains(catalog, domains, featured)
+  const streaming = Boolean(snapshot.root_tree)
+  const tree = Boolean(streaming || snapshot.quarter)
+  const roots = streaming ? catalog.roots : catalog.roots.slice().sort((first, second) =>
+    (first.asset.details.created_at ?? '').localeCompare(second.asset.details.created_at ?? '')
+    || first.asset.node_id.localeCompare(second.asset.node_id))
+  const domains = roots.map(root => createDomain(catalog, root, saved,
+    !tree && !featured && roots.length > 16 && !connectedAssets.has(root.asset.node_id), snapshot.quarter?.id, tree, snapshot.collapsedAssets))
+  const placements = streaming ? arrangeTree(domains) : tree ? {
+    sections: [] as CanvasRegion[],
+    domains: pack(domains, item => item.region.size, 1450, 45, 1450).positions,
+  } : arrangeDomains(catalog, domains, featured)
   const regions = placements.sections.slice()
   const scopeOffsets = new Map<string, Point>()
   const assetNodeIds = new Map<string, string>()

@@ -241,7 +241,7 @@ def test_canvas_projects_catalog_and_canonical_links_without_saved_cards(db):
 def test_large_canvas_bounds_roots_and_reads_real_neighbors_by_cursor(db, monkeypatch):
     client = _canvas_client(db)
     owner = {"x-actor": "owner"}
-    monkeypatch.setattr(quarters, "STATS_LIMIT", 5)
+    monkeypatch.setattr(quarters, "OVERVIEW_DETAIL_LIMIT", 5)
     monkeypatch.setattr(map_queries, "WINDOW_LIMIT", 2)
     task_ids = [f"task-{index}" for index in range(8)]
     db.add(SddRequirement(id="delivery", workspace_id="workspace", title="Delivery"))
@@ -339,6 +339,11 @@ def test_quarter_history_keeps_only_the_summary_and_real_cross_period_edges(db):
     assert {link["source"]["id"] for link in state["relations"]} == {"issue-a", "issue-b"}
     params = {"kind": "requirement", "id": "older", "quarter": "2026-Q4"}
     assert len(client.get("window", params=params, headers=actor).json()["assets"]) == 1
+    directed = client.get(
+        "window", headers=actor, params={"quarter": "2026-Q4", "kind": "task", "id": "issue-a", "children": True}
+    ).json()
+    assert [asset["reference"]["id"] for asset in directed["assets"]] == ["issue-a", "older"]
+    assert not any(asset["has_unseen_children"] for asset in directed["assets"])
     history = client.get(".", params={"quarter": "2022-Q3"}, headers=actor).json()
     assert "old-task" in {asset["reference"]["id"] for asset in history["assets"]}
 
@@ -346,7 +351,7 @@ def test_quarter_history_keeps_only_the_summary_and_real_cross_period_edges(db):
 def test_dense_root_pages_follow_real_links_and_keep_unlinked_roots_reachable(db, monkeypatch):
     client = _canvas_client(db)
     owner = {"x-actor": "owner"}
-    monkeypatch.setattr(quarters, "REQUIREMENT_LIMIT", 4)
+    monkeypatch.setattr(quarters, "OVERVIEW_DETAIL_LIMIT", 4)
     monkeypatch.setattr(root_tree, "SCAN_LIMIT", 4)
     monkeypatch.setattr(root_tree, "TYPE_PAGE", 2)
     when = datetime(2026, 11, 3)
@@ -516,7 +521,15 @@ def test_canvas_projects_real_document_and_diagnosis_provenance(db):
     assert client.get(f"{asset_url}/requirement-documents/{doc_id}/download", headers=owner).content == b"# Four eyes"
 
     state = client.get(".", headers=owner).json()
-    assert state["root_tree"]
+    assert not state["root_tree"]
+    assert not any(asset["has_unseen_children"] for asset in state["assets"])
+    terminal = client.get(
+        "window",
+        headers=owner,
+        params={"quarter": state["quarter"]["id"], "kind": "document", "id": "design", "children": True},
+    ).json()
+    assert [asset["reference"]["id"] for asset in terminal["assets"]] == ["design"]
+    assert terminal["relations"] == []
     visible = [f"{asset['reference']['kind']}:{asset['reference']['id']}" for asset in state["assets"]]
     expansions = []
     for kind, identifier in (

@@ -20,6 +20,7 @@ export interface CanvasCatalog {
   roots: CanvasDomain[]
   rootByAsset: Map<string, string>
   children: Map<string, string[]>
+  childLinks: Map<string, Set<string>>
 }
 
 const ownership: Partial<Record<CanvasRelationType, { priority: number; parent: 'source' | 'target' }>> = {
@@ -47,6 +48,7 @@ export function buildCanvasCatalog(snapshot: CanvasSnapshot, planFiles: CanvasAs
   const parents = new Map<string, { id: string; priority: number }>()
   for (const [child, parent] of snapshot.treeParents ?? []) parents.set(child, { id: parent, priority: 0 })
   const relations: CatalogRelation[] = []
+  const childLinks = new Map<string, Set<string>>()
 
   function link(relation: CanvasRelation) {
     const source = byReference.get(referenceKey(relation.source))
@@ -55,13 +57,16 @@ export function buildCanvasCatalog(snapshot: CanvasSnapshot, planFiles: CanvasAs
     const targetId = target?.node_id
     if (!sourceId || !targetId || sourceId === targetId) return
     relations.push({ ...relation, sourceId, targetId })
-    if (snapshot.treeParents && relation.source.kind !== 'plan_document') return
     const rule = ownership[relation.relation_type]
     if (!rule) return
     const quarter = snapshot.quarter?.id
     const historical = quarter && relation.target.kind === 'requirement' && target?.quarter
       && target.quarter.id !== quarter && source?.quarter?.id === quarter
     const [parent, child] = historical || rule.parent === 'source' ? [sourceId, targetId] : [targetId, sourceId]
+    const structural = childLinks.get(parent) ?? new Set<string>()
+    structural.add(child)
+    childLinks.set(parent, structural)
+    if (snapshot.treeParents && relation.source.kind !== 'plan_document') return
     const existing = parents.get(child)
     if (!existing || rule.priority < existing.priority || (rule.priority === existing.priority && parent < existing.id)) {
       parents.set(child, { id: parent, priority: rule.priority })
@@ -98,7 +103,24 @@ export function buildCanvasCatalog(snapshot: CanvasSnapshot, planFiles: CanvasAs
   for (const asset of assets) if (!parents.has(asset.node_id)) addRoot(asset)
   // Invalid or historical cycles still get an entry and keep their real links.
   for (const asset of assets) if (!rootByAsset.has(asset.node_id)) addRoot(asset)
-  return { assets, byId, byReference, relations, roots, rootByAsset, children }
+  const collapsed = snapshot.collapsedAssets
+  if (!collapsed?.size) return { assets, byId, byReference, relations, roots, rootByAsset, children, childLinks }
+  const visible = new Set(roots.map(root => root.asset.node_id))
+  for (const id of visible) {
+    if (collapsed.has(id)) continue
+    for (const child of children.get(id) ?? []) visible.add(child)
+  }
+  const shown = assets.filter(asset => visible.has(asset.node_id))
+  return {
+    assets: shown,
+    byId: new Map(shown.map(asset => [asset.node_id, asset])),
+    byReference: new Map(shown.map(asset => [referenceKey(asset.reference), asset])),
+    relations: relations.filter(link => visible.has(link.sourceId) && visible.has(link.targetId)),
+    roots,
+    rootByAsset,
+    children: new Map([...children].filter(([id]) => visible.has(id) && !collapsed.has(id))),
+    childLinks,
+  }
 }
 
 export interface DomainVisit { id: string; level: number }

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_task, lock_workspace_repo
@@ -41,6 +41,7 @@ from app.domains.workflow.schemas.provision import (
     ProvisionJobResponse,
 )
 from app.domains.workflow.services import provision_job_service
+from app.domains.workspace_canvas.events import notify_canvas_changed
 from app.engine.session import get_engine
 
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
@@ -51,6 +52,7 @@ def create_task(
     ws_id: str,
     data: TaskCreate,
     request: Request,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -89,6 +91,7 @@ def create_task(
             message="Task provisioning queued",
         )
         provision_job_service.schedule_job(job.id)
+        background_tasks.add_task(notify_canvas_changed, ws_id)
         audit_log(
             action="create_task",
             outcome="accepted",

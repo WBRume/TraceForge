@@ -111,4 +111,32 @@ describe('workspace canvas', () => {
     const collapsedGraph = layoutWorkspace(collapsed, buildCanvasCatalog(collapsed))
     expect(collapsedGraph.nodes).toHaveLength(2)
   })
+
+  it('places a fresh chain from business data and keeps reverse-only cards terminal', () => {
+    const delivery = asset('delivery', { kind: 'requirement', id: 'delivery' })
+    const implementation = asset('implementation', { kind: 'task', id: 'implementation' })
+    const document = asset('document', { kind: 'document', id: 'document' })
+    const observation = asset('observation', { kind: 'case', id: 'observation' })
+    const state = snapshot([delivery, implementation, document, observation])
+    const quarter = { id: '2026-Q4', label_year: 2026, number: 4, year: 2026,
+      start: '2026-10-01', end: '2026-12-31', months: [] }
+    state.quarter = quarter
+    for (const item of state.assets) item.quarter = quarter
+    state.relations = [
+      { source: implementation.reference, target: delivery.reference, relation_type: 'COVERS' },
+      { source: document.reference, target: implementation.reference, relation_type: 'DOCUMENT_TASK' },
+    ]
+    const graph = layoutWorkspace(state, buildCanvasCatalog(state))
+    const placement = (id: string) => graph.nodes.find(node => node.id === graph.assetNodeIds.get(id))!
+    expect(graph.regions.find(region => region.id === delivery.node_id)?.assetCount).toBe(3)
+    expect(placement(delivery.node_id).position.x).toBeLessThan(placement(implementation.node_id).position.x)
+    expect(placement(implementation.node_id).position.x).toBeLessThan(placement(document.node_id).position.x)
+    expect(placement(implementation.node_id).expandedChildren).toBe(true)
+    expect(placement(document.node_id).expandable).toBe(false)
+    expect(placement(observation.node_id).expandable).toBe(false)
+    state.collapsedAssets = new Set([implementation.node_id])
+    const folded = layoutWorkspace(state, buildCanvasCatalog(state))
+    expect(folded.assetNodeIds.has(document.node_id)).toBe(false)
+    expect(folded.nodes.find(node => node.reference?.id === implementation.reference.id)?.expandable).toBe(true)
+  })
 })

@@ -34,6 +34,7 @@ from app.domains.task.services import (
     diagnosis_result_service,
 )
 from app.domains.workspace.services import workspace_service
+from app.domains.workspace_canvas.events import notify_canvas_changed
 
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 logger = get_logger(__name__, category="task_execution")
@@ -110,7 +111,7 @@ async def upload_task_diagnosis_doc(
             if len(content) > 20 * 1024 * 1024:
                 raise HTTPException(status_code=413, detail="Diagnosis document is too large (max 20MB)")
             async with lock_task(task_id):
-                return await run_route_db_txn(
+                document = await run_route_db_txn(
                     db,
                     db_bind,
                     lambda session: _create_diagnosis_doc_sync(
@@ -122,6 +123,8 @@ async def upload_task_diagnosis_doc(
                         file_content=content,
                     ),
                 )
+                await notify_canvas_changed(ws_id)
+                return document
         except LockAcquireTimeout as exc:
             raise_task_lock_conflict(exc)
         except HTTPException:

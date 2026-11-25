@@ -111,6 +111,8 @@ class CanvasAsset(SourceItem):
     node_id: CanvasId
     quarter: "AssetQuarter | None" = None
     has_related: bool | None = None
+    has_tree_children: bool = False
+    has_unseen_children: bool = False
 
 
 class AssetQuarter(CanvasModel):
@@ -205,6 +207,9 @@ BranchKind = Literal["requirements", "requirement_tasks", "cross_quarter", "stan
 RequirementLinkType = Literal["COVERS", "RELATES_TO"]
 SliceKey = Annotated[str, Field(pattern=r"^[MW][1-9][0-9]{0,2}$")]
 RootKind = Literal["requirement", "task", "case", "playbook", "document", "requirement_document"]
+VisibleAsset = Annotated[
+    str, Field(pattern=r"^(requirement|task|case|playbook|document|requirement_document):[\w-]{1,36}$")
+]
 
 
 class CanvasRootQuery(CanvasModel):
@@ -216,6 +221,7 @@ class CanvasRootQuery(CanvasModel):
     creator_id: SourceId | None = None
     q: str | None = Field(default=None, max_length=120)
     cursor: str | None = Field(default=None, max_length=1024)
+    visible: list[VisibleAsset] = Field(default_factory=list, max_length=32)
 
 
 class CanvasBranch(CanvasModel):

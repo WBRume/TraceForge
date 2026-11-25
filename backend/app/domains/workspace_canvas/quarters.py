@@ -16,7 +16,7 @@ from app.domains.workspace_asset.models.workspace_asset import (
     SddTaskRequirement,
     TaskRequirementRelationType,
 )
-from app.domains.workspace_canvas import relations, root_tree, sources
+from app.domains.workspace_canvas import relations, root_tree, sources, tree_children
 from app.domains.workspace_canvas.quarter_calendar import (
     CanvasCalendarSettings,
     DateRange,
@@ -39,7 +39,8 @@ STATS_LIMIT = 1024
 SCAN_LIMIT = 96
 EXTRA_ASSET_LIMIT = 26
 RELATION_LIMIT = 128
-OVERVIEW_DETAIL_LIMIT = 12
+OVERVIEW_DETAIL_LIMIT = 24
+OVERVIEW_HISTORY_LIMIT = 8
 TASK_RELATIONS = ("COVERS", "RELATES_TO")
 KNOWLEDGE_KINDS = ("requirement_document", "document", "case", "playbook")
 
@@ -169,17 +170,6 @@ def _tasks_in_period(db: Session, workspace_id: str, dates: DateRange):
     return in_range(db.query(task.id).filter(task.workspace_id == workspace_id), task.created_at, dates)
 
 
-def _task_overview(db: Session, workspace_id: str, dates: DateRange):
-    task = SddTask
-    limit = min(STATS_LIMIT, 24)
-    scope = _tasks_in_period(db, workspace_id, dates).order_by(task.created_at, task.id).limit(limit + 1).subquery()
-    attached, cross = _task_markers(db, workspace_id, scope.c.id, dates)
-    rows = db.query(scope.c.id, attached, cross).all()
-    cross_ids = [identifier for identifier, _, historical in rows[:limit] if historical]
-    independent_ids = [identifier for identifier, linked, _ in rows[:limit] if not linked]
-    return len(rows) <= limit, independent_ids, cross_ids
-
-
 def _task_neighbors(db: Session, workspace_id: str, kinds, task_ids: list[str], quarter: DateRange, *, cross=False):
     if not task_ids:
         return []
@@ -230,15 +220,6 @@ def _task_neighbors(db: Session, workspace_id: str, kinds, task_ids: list[str], 
     return result[:EXTRA_ASSET_LIMIT]
 
 
-def _knowledge_overview(db: Session, workspace_id: str, kinds, dates: DateRange) -> int:
-    return sum(
-        in_range(query, model.created_at, dates).limit(OVERVIEW_DETAIL_LIMIT + 1).count()
-        for _, model, _, query in sources.catalog_queries(
-            db, workspace_id, [kind for kind in KNOWLEDGE_KINDS if kind in kinds]
-        )
-    )
-
-
 def _load(db, workspace_id, calendar, refs, groups=(), cursor=None, loaded=0):
     unique = list({ref.model_dump_json(): ref for ref in refs}.values())
     assets = sources.assign_quarters(sources.assets_for_references(db, workspace_id, unique), calendar)
@@ -253,43 +234,68 @@ def _load(db, workspace_id, calendar, refs, groups=(), cursor=None, loaded=0):
     )
 
 
+def _period_preview(db, workspace_id, kinds, dates):
+    refs = []
+    for kind, model, _, base in sources.catalog_queries(db, workspace_id, kinds):
+        rows = (
+            in_range(base, model.created_at, dates)
+            .order_by(model.created_at, model.id)
+            .limit(OVERVIEW_DETAIL_LIMIT - len(refs) + 1)
+            .all()
+        )
+        refs.extend(sources.reference_for(kind, row.id) for row in rows)
+        if len(refs) > OVERVIEW_DETAIL_LIMIT:
+            return None
+    return refs
+
+
+def _preview_history(db, workspace_id, kinds, refs, dates):
+    if "requirement" not in kinds:
+        return []
+    req, link = SddRequirement, SddTaskRequirement
+    requirements = {ref.id for ref in refs if ref.kind == "requirement"}
+    tasks = [ref.id for ref in refs if ref.kind == "task"]
+    related = {}
+    if requirements:
+        rows = (
+            db.query(req.parent_requirement_id, req.predecessor_id)
+            .filter(req.workspace_id == workspace_id, req.id.in_(requirements))
+            .order_by(req.created_at, req.id)
+        )
+        for parent, predecessor in rows:
+            for identifier in (parent, predecessor):
+                if identifier and identifier not in requirements:
+                    related[identifier] = None
+    if tasks:
+        start, end = dates.utc_bounds
+        rows = (
+            db.query(req.id)
+            .join(link, req.id == link.requirement_id)
+            .filter(
+                req.workspace_id == workspace_id,
+                link.workspace_id == workspace_id,
+                link.task_id.in_(tasks),
+                or_(req.created_at < start, req.created_at >= end),
+            )
+            .distinct()
+            .order_by(req.id)
+            .limit(OVERVIEW_HISTORY_LIMIT)
+        )
+        related.update(dict.fromkeys(row.id for row in rows))
+    return [sources.reference_for("requirement", identifier) for identifier in list(related)[:OVERVIEW_HISTORY_LIMIT]]
+
+
 def read_quarter(
     db: Session, workspace_id: str, kinds: Collection[SourceKind], calendar: FiscalCalendar, period: FiscalQuarter
 ) -> CanvasBranchWindow:
     dates = calendar.dates(period)
-
-    def roots():
+    refs = _period_preview(db, workspace_id, kinds, dates)
+    if refs is None:
         page = root_tree.read_roots(db, workspace_id, kinds, calendar, CanvasRootQuery(quarter=period.id))
         return CanvasBranchWindow(**page.model_dump(), root_tree=True)
-
-    req_ids = []
-    if "requirement" in kinds:
-        query = _requirement_ids(db, workspace_id, dates)
-        limit = min(REQUIREMENT_LIMIT, OVERVIEW_DETAIL_LIMIT)
-        rows = _date_page(query, SddRequirement, "requirement", None, limit + 1)
-        if len(rows) > limit:
-            return roots()
-        req_ids = [row.id for row in rows]
-    independent_ids, cross_ids = [], []
-    if "task" in kinds:
-        exact, independent_ids, cross_ids = _task_overview(db, workspace_id, dates)
-        if not exact or len(independent_ids) > 4 or len(cross_ids) > 6:
-            return roots()
-    refs, groups = _requirement_content(db, workspace_id, kinds, req_ids, inline=True)
-    if groups:
-        return roots()
-    refs.extend(sources.reference_for("task", identifier) for identifier in [*independent_ids, *cross_ids])
-    refs.extend(_task_neighbors(db, workspace_id, kinds, independent_ids, dates))
-    refs.extend(_task_neighbors(db, workspace_id, kinds, cross_ids, dates, cross=True))
-    knowledge = _knowledge_overview(db, workspace_id, kinds, dates)
-    if knowledge > OVERVIEW_DETAIL_LIMIT:
-        return roots()
-    result = _load(db, workspace_id, calendar, refs)
-    shown_knowledge = sum(
-        asset.reference.kind in KNOWLEDGE_KINDS and asset.quarter is not None and asset.quarter.id == period.id
-        for asset in result.assets
-    )
-    return roots() if knowledge > shown_knowledge or len(result.assets) > OVERVIEW_DETAIL_LIMIT else result
+    result = _load(db, workspace_id, calendar, [*refs, *_preview_history(db, workspace_id, kinds, refs, dates)])
+    tree_children.mark_children(db, workspace_id, kinds, dates, result.assets)
+    return result
 
 
 def _task_filter(query, params: CanvasBranchQuery):

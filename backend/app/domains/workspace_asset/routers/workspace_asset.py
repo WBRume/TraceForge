@@ -3,7 +3,6 @@ Workspace Assets API routes.
 """
 
 import asyncio
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
@@ -22,7 +21,6 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
     WorkflowClarificationCreateRequest,
     WorkflowFinalSummaryUpsertRequest,
 )
-from app.domains.workspace_asset.schemas.workload import WorkloadLimits, WorkspaceMemberWorkload, WorkspaceWorkload
 from app.domains.workspace_asset.schemas.workspace_asset import (
     ClarificationCreateRequest,
     ClarificationResponse,
@@ -101,8 +99,6 @@ from app.domains.workspace_asset.services.tasks import detail as task_detail_rea
 from app.domains.workspace_asset.services.tasks import list_query, sections
 from app.domains.workspace_asset.services.tasks import summary_query as task_summary_query
 from app.domains.workspace_asset.services.traceability import get_traceability
-from app.domains.workspace_asset.services.workload import get_workload
-from app.domains.workspace_asset.services.workload_overview import get_workspace_member_workload
 from app.domains.workspace_canvas.events import notify_canvas_changed
 
 router = APIRouter(prefix="/workspaces/{ws_id}/workspace-assets", tags=["Workspace Assets"])
@@ -212,51 +208,6 @@ def get_workspace_assets_overview(
     return get_overview(db, ws_id)
 
 
-@router.get("/workload", response_model=WorkspaceWorkload)
-def read_workspace_workload(
-    ws_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    _verify_view_assets(ws_id, current_user, db)
-    can_edit = workspace_service.user_has_permission(
-        db, ws_id, current_user.id, WorkspacePermission.MANAGE_REQUIREMENTS
-    )
-    return get_workload(db, ws_id, can_edit_limits=can_edit, as_of=datetime.now(timezone.utc).replace(tzinfo=None))
-
-
-@router.get("/workload/members", response_model=WorkspaceMemberWorkload)
-def read_workspace_member_workload(
-    ws_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    _verify_view_assets(ws_id, current_user, db)
-    can_edit = workspace_service.user_has_permission(
-        db, ws_id, current_user.id, WorkspacePermission.MANAGE_REQUIREMENTS
-    )
-    return get_workspace_member_workload(
-        db, ws_id, current_user.id, can_edit_limits=can_edit, as_of=datetime.now(timezone.utc).replace(tzinfo=None)
-    )
-
-
-@router.put("/workload/members/{user_id}/limits", response_model=WorkloadLimits)
-def update_workspace_workload_limits(
-    ws_id: str,
-    user_id: str,
-    payload: WorkloadLimits,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    _verify_manage_requirements(ws_id, current_user, db)
-    membership = workspace_service.get_workspace_member(db, ws_id, user_id)
-    if not membership:
-        raise HTTPException(status_code=404, detail="Workspace member not found")
-    membership.workload_limits = payload.model_dump()
-    db.commit()
-    return payload
-
-
 @router.get("/requirements", response_model=WorkspaceAssetsRequirementsResponse)
 def list_workspace_asset_requirements(
     ws_id: str,
@@ -297,14 +248,17 @@ def list_workspace_asset_requirements(
 def create_workspace_asset_requirement(
     ws_id: str,
     payload: RequirementCreateRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _verify_manage_requirements(ws_id, current_user, db)
     try:
-        return requirement_writes.create_requirement(db, ws_id, current_user.id, payload)
+        result = requirement_writes.create_requirement(db, ws_id, current_user.id, payload)
     except WorkspaceAssetError as exc:
         _raise_write_error(exc)
+    background_tasks.add_task(notify_canvas_changed, ws_id)
+    return result
 
 
 @router.post(
@@ -410,6 +364,7 @@ def confirm_workspace_asset_requirement_import(
     ws_id: str,
     batch_id: str,
     payload: RequirementImportConfirmRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -420,6 +375,7 @@ def confirm_workspace_asset_requirement_import(
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement import batch not found")
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return result
 
 
@@ -442,6 +398,7 @@ def update_workspace_asset_requirement(
     ws_id: str,
     requirement_id: str,
     payload: RequirementUpdateRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -452,6 +409,7 @@ def update_workspace_asset_requirement(
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return result
 
 

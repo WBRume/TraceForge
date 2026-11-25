@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, shallowRef, useTemplateRef, watch } from
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { LayoutGrid, RefreshCw, Workflow, X } from '@/components/icons'
+import { RefreshCw, Workflow, X } from '@/components/icons'
 import { requirementDocumentsUrl } from '@/components/workspace-assets/requirements/requirementDocuments'
 import { useWorkspaceContext } from '@/composables/chat/tasklist/useWorkspaceContext'
 import { canvasOperationTarget, WORKSPACE_ASSET_CANVAS } from '@/router/workspaceAssetPresentation'
@@ -32,7 +32,7 @@ import { assetOperation, canvasId, isDocument, nodeInput, nodeSizes, referenceKe
   type CanvasNode, type CanvasRelation, type CanvasRootFilters, type CanvasRootKind, type CanvasSelection, type CanvasSnapshot,
   type NodePatch, type Point, type SourceItem, type SourceReference } from './model'
 import { useCanvasAssetWindows } from './useCanvasAssetWindows'
-import { useCanvasRoots } from './useCanvasRoots'
+import { useCanvasRoots, type RootDirection } from './useCanvasRoots'
 import { useWorkspaceCanvas } from './useWorkspaceCanvas'
 
 const props = defineProps<{ workspaceId: string }>()
@@ -45,6 +45,7 @@ const requestedQuarter = computed(() => typeof route.query.quarter === 'string' 
 const stage = useTemplateRef<InstanceType<typeof CanvasStage>>('stage')
 const assetCreation = useTemplateRef<InstanceType<typeof CanvasAssetCreation>>('assetCreation')
 const selection = shallowRef<CanvasSelection | null>(null)
+const collapsed = shallowRef<ReadonlySet<string>>(new Set())
 const editorId = shallowRef('')
 const paragraphId = shallowRef('')
 const selectedRelationId = shallowRef('')
@@ -56,14 +57,20 @@ const jobs = useProvisioningStore()
 const { snapshot, planFiles, readingPlans, setPlanTasks, loading, saving, syncError, saveError, canRetry, refresh, edit, retry, submit } =
   useWorkspaceCanvas(props.workspaceId, () => requestedQuarter.value)
 const quarter = computed(() => snapshot.value?.quarter)
-const roots = useCanvasRoots(props.workspaceId)
-const { page: rootPage, filters: rootFilters, history: rootHistory, loading: loadingRoots } = roots
-const primary = computed(() => rootPage.value ?? snapshot.value)
-const rootCursor = computed(() => rootPage.value ? rootPage.value.next_cursor : snapshot.value?.root_cursor)
+const roots = useCanvasRoots(props.workspaceId, () => {
+  const data = snapshot.value
+  return data ? { assets: data.assets, relations: data.relations, next_cursor: data.root_cursor ?? null } : null
+})
+const { pages: rootPages, filters: rootFilters, canContinue, canReturn, loading: loadingRoots } = roots
+const primary = computed(() => rootPages.value.flatMap(page => page.assets))
+const rootStream = computed(() => snapshot.value?.root_tree ? {
+  next: canContinue.value, previous: canReturn.value, loading: loadingRoots.value,
+  ids: new Set(primary.value.map(asset => asset.node_id)),
+} : undefined)
 const rootKinds = computed(() => snapshot.value?.access.source_kinds.filter((kind): kind is CanvasRootKind =>
   kind !== 'plan_document') ?? [])
 const { windows, located, treeParents, expanded, loadingKey, load, collapse, sync, search, clear: clearWindows } =
-  useCanvasAssetWindows(props.workspaceId, () => quarter.value?.id, () => primary.value?.assets ?? [])
+  useCanvasAssetWindows(props.workspaceId, () => quarter.value?.id, () => primary.value)
 const loadingWindow = computed(() => Boolean(loadingKey.value))
 
 onMounted(() => { void context.loadWorkspace().catch(() => {}) })
@@ -72,6 +79,7 @@ watch(snapshot, async (value, previous) => {
   if (!value || value.quarter?.id !== previous?.quarter?.id || value.root_tree !== previous?.root_tree) {
     clearWindows()
     roots.clear()
+    collapsed.value = new Set()
     selection.value = null
     contextRequest.value = null
     return
@@ -79,7 +87,7 @@ watch(snapshot, async (value, previous) => {
   if (value.root_tree && value.quarter) await roots.sync(value.quarter.id)
   void sync()
 })
-const summaryOnly = computed(() => !windows.value.length)
+const summaryOnly = computed(() => Boolean(snapshot.value?.root_tree && !windows.value.length))
 function mergePages(base: CanvasSnapshot | null, pages: CanvasAssetWindow[]) {
   if (!base) return base
   const assets = new Map(base.assets.map(asset => [asset.node_id, asset]))
@@ -92,15 +100,14 @@ function mergePages(base: CanvasSnapshot | null, pages: CanvasAssetWindow[]) {
     }
   }
   return { ...base, assets: [...assets.values()], relations: [...relations.values()],
-    treeParents: base.root_tree ? treeParents.value : undefined }
+    treeParents: base.root_tree ? treeParents.value : undefined, collapsedAssets: collapsed.value }
 }
 const scene = computed(() => {
   const base = snapshot.value
   if (!base) return null
-  const page = rootPage.value
-  const selected = page ? { ...base, assets: page.assets, relations: page.relations } : base
-  const scoped = located.value ? { ...selected, assets: [...selected.assets, located.value] } : selected
-  return mergePages(scoped, windows.value)
+  const scoped = { ...base, assets: [], relations: [] }
+  const focus = located.value ? [{ assets: [located.value], relations: [], next_cursor: null }] : []
+  return mergePages(scoped, [...rootPages.value, ...focus, ...windows.value])
 })
 const catalog = computed(() => {
   const data = scene.value
@@ -199,6 +206,8 @@ async function locateAsset(asset: CanvasAsset) {
     await selectQuarter(asset.quarter.id)
     await nextTick()
   }
+  openAncestors(asset.node_id)
+  await nextTick()
   if (locateId(asset.node_id)) return
   if (graph.value && await loadWindow(asset.reference, { locate: true })) {
     await nextTick()
@@ -208,9 +217,20 @@ async function locateAsset(asset: CanvasAsset) {
   if (target) void router.push(withQuarter(target, asset.quarter?.id))
 }
 
+function openAncestors(assetId: string) {
+  if (!collapsed.value.size || !scene.value) return
+  const current = buildCanvasCatalog({ ...scene.value, collapsedAssets: undefined })
+  const parents = new Map([...current.children].flatMap(([parent, children]) => children.map(child => [child, parent] as const)))
+  const next = new Set(collapsed.value)
+  const visited = new Set([assetId])
+  for (let parent = parents.get(assetId); parent && !visited.has(parent); parent = parents.get(parent)) {
+    next.delete(parent)
+    visited.add(parent)
+  }
+  if (next.size !== collapsed.value.size) collapsed.value = next
+}
+
 async function fitOverview() {
-  clearWindows()
-  roots.clear()
   selection.value = null
   await nextTick()
   stage.value?.fit()
@@ -221,13 +241,19 @@ async function expandNeighborhood(nodeId: string, keepPosition = false, options:
   const reference = node?.reference
   if (!node || node.historicalQuarter || !reference || reference.kind === 'plan_document' || ('block' in reference && reference.block)) return
   const branch = expanded.value.get(referenceKey(reference))
-  if (branch && !options.cursor && !options.previous && !options.locate && !options.reveal) {
+  if (branch && options.children === undefined && !options.cursor && !options.previous && !options.locate && !options.reveal) {
     if (!keepPosition) stage.value?.focusNodes(neighborIds(nodeId).slice(0, 4))
     return
   }
   const alreadyVisible = new Set(catalog.value?.byId.keys())
   const page = await loadWindow(reference, options)
   if (!page) return
+  const anchor = page.assets[0]
+  if (options.reveal && anchor && collapsed.value.has(anchor.node_id)) {
+    const next = new Set(collapsed.value)
+    next.delete(anchor.node_id)
+    collapsed.value = next
+  }
   await nextTick()
   const asset = catalog.value?.byReference.get(referenceKey(reference))
   const id = asset && graph.value?.assetNodeIds.get(asset.node_id)
@@ -247,20 +273,29 @@ async function expandNeighborhood(nodeId: string, keepPosition = false, options:
 async function toggleBranch(id: string) {
   const node = nodesById.value.get(id)
   if (!node?.expandable || !node.reference) return
-  if (expanded.value.has(referenceKey(node.reference))) {
-    const reference = node.reference
+  const reference = node.reference
+  const asset = catalog.value?.byReference.get(referenceKey(reference))
+  if (!asset) return
+  const next = new Set(collapsed.value)
+  if (node.expandedChildren) {
+    next.add(asset.node_id)
     collapse(reference)
-    await nextTick()
-    const asset = catalog.value?.byReference.get(referenceKey(reference))
-    const moved = asset && graph.value?.assetNodeIds.get(asset.node_id)
-    if (moved) stage.value?.keepInView(node.position, moved)
-  } else await expandNeighborhood(id, true)
+  } else next.delete(asset.node_id)
+  collapsed.value = next
+  await nextTick()
+  const moved = graph.value?.assetNodeIds.get(asset.node_id)
+  if (!moved) return
+  stage.value?.keepInView(node.position, moved)
+  if (!node.expandedChildren && !nodesById.value.get(moved)?.expandedChildren) {
+    await expandNeighborhood(moved, true, { children: true })
+  }
 }
 
 function moreNeighbors(id: string) {
   const ref = nodesById.value.get(id)?.reference
   const cursor = ref && expanded.value.get(referenceKey(ref))?.cursor
   if (cursor) void expandNeighborhood(id, true, { cursor })
+  else if (nodesById.value.get(id)?.unseenChildren) void expandNeighborhood(id, true, { children: true })
 }
 
 function withQuarter(target: ReturnType<typeof canvasOperationTarget>, id = quarter.value?.id) {
@@ -275,24 +310,37 @@ async function selectQuarter(id: string) {
 async function calendarSaved(id: string) {
   clearWindows()
   roots.clear()
+  collapsed.value = new Set()
   await selectQuarter(id)
   await nextTick()
   stage.value?.fit()
 }
 
-async function browseRoots(direction: 'next' | 'previous' | CanvasRootFilters) {
+async function applyRootFilters(filters: CanvasRootFilters) {
   const period = quarter.value
   if (!period) return
   try {
-    const cursor = rootCursor.value
-    const loaded = direction === 'previous' ? await roots.previous(period.id) : direction === 'next'
-      ? Boolean(cursor && await roots.next(period.id, cursor)) : await roots.filter(period.id, direction)
-    if (!loaded || quarter.value?.id !== period.id) return
+    if (!await roots.filter(period.id, filters) || quarter.value?.id !== period.id) return
     clearWindows()
+    collapsed.value = new Set()
     selection.value = null
     contextRequest.value = null
     await nextTick()
     stage.value?.fit()
+  } catch (error) {
+    showReadError(error)
+  }
+}
+
+async function panToRoots(direction: RootDirection) {
+  const period = quarter.value
+  if (!period) return
+  const anchor = stage.value?.streamAnchor(direction)
+  try {
+    if (!await roots.move(period.id, direction) || quarter.value?.id !== period.id) return
+    await nextTick()
+    if (anchor) stage.value?.keepInView(anchor.position, anchor.id)
+    if (selection.value?.type === 'node' && !nodesById.value.has(selection.value.id)) selection.value = null
   } catch (error) {
     showReadError(error)
   }
@@ -675,16 +723,13 @@ defineExpose({ refresh: refreshBoard })
     <nav class="graph-navigation" :aria-label="t('workspace_canvas.title')">
       <CanvasQuarterPicker v-if="quarter" :workspace-id="workspaceId" :quarter="quarter" :busy="loading || saving"
         @select="selectQuarter" @calendar-saved="calendarSaved" />
-      <button v-if="graph" type="button" @click="fitOverview">
-        <LayoutGrid :size="15" />{{ t('workspace_canvas.quarter.overview') }}
-      </button>
       <CanvasAssetSearch class="category-search" :assets="catalog?.assets ?? []" :remote="search" @locate="locateAsset" />
       <span v-if="loading || loadingWindow || loadingRoots" class="graph-summary" role="status">{{ t('common.loading') }}</span>
       <span v-if="snapshot?.annotations_limited" class="graph-summary" role="status">{{ t('workspace_canvas.domains.annotation_limit') }}</span>
     </nav>
     <CanvasRootControls v-if="snapshot?.root_tree && quarter" :key="quarter.id" :quarter="quarter" :kinds="rootKinds"
-      :filters="rootFilters" :next="!!rootCursor" :previous="!!rootHistory.length" :busy="loadingRoots || loading"
-      :empty="!primary?.assets.length" :user-id="auth.user?.id" @filter="browseRoots" @next="browseRoots('next')" @previous="browseRoots('previous')" />
+      :filters="rootFilters" :next="canContinue" :busy="loadingRoots || loading"
+      :empty="!primary.length" :user-id="auth.user?.id" @filter="applyRootFilters" />
 
     <div v-if="saveError && catalog" class="graph-error" role="alert">
       <span>{{ saveError }}</span>
@@ -694,10 +739,10 @@ defineExpose({ refresh: refreshBoard })
 
     <div class="graph-layout">
       <CanvasStage v-if="graph" ref="stage" :data="graph" :selection="selection" :busy="saving || loading" :summary="summaryOnly"
-        :expanded="expanded" :expanding="loadingKey"
+        :expanded="expanded" :expanding="loadingKey" :root-stream="rootStream"
         @select="value => selection = value" @create="create" @update="updateNode" @connect="connect"
         @open="openNode" @remove="removeSelected" @open-relation="openRelation" @context="showContext" @visible-tasks="setPlanTasks"
-        @expand="id => !loading && !loadingWindow && expandNeighborhood(id, true)"
+        @stream="panToRoots"
         @toggle-branch="toggleBranch" @more-branch="moreNeighbors" @previous-branch="id => expandNeighborhood(id, true, { previous: true })">
         <CanvasTextEditor v-if="editor" :key="editor.id" :node="editor" :saving="saving" @save="saveText" @close="editorId = ''" />
         <CanvasParagraphPicker v-if="paragraphSource" :key="paragraphId" :workspace-id="workspaceId" :reference="paragraphSource.reference"

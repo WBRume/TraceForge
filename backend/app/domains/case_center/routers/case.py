@@ -2,7 +2,7 @@
 案例知识中心 API routes.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_db
@@ -17,6 +17,7 @@ from app.domains.case_center.schemas.case import (
 )
 from app.domains.case_center.services import case_service
 from app.domains.workspace.services import workspace_service
+from app.domains.workspace_canvas.events import notify_canvas_changed
 
 router = APIRouter(prefix="/workspaces/{ws_id}/cases", tags=["Case Knowledge Center"])
 global_router = APIRouter(prefix="/cases", tags=["Case Knowledge Center"])
@@ -122,6 +123,7 @@ def list_all_cases(
 def create_case(
     ws_id: str,
     data: CaseCreateRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -130,6 +132,7 @@ def create_case(
         case = case_service.create_case(db, ws_id, current_user, data)
     except case_service.CaseError as exc:
         _raise_case_error(exc)
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return _decorate(case_service.serialize_case(case), db=db, ws_id=ws_id, user=current_user, member=member)
 
 

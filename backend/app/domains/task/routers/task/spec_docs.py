@@ -32,6 +32,7 @@ from app.domains.task.schemas.task import (
 from app.domains.task.services import task_cli_state_service
 from app.domains.task.services.task_workspace import documents as task_task_workspace_documents
 from app.domains.task.services.task_workspace import specification as task_task_workspace_specification
+from app.domains.workspace_canvas.events import notify_canvas_changed
 
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 logger = get_logger(__name__, category="task_execution")
@@ -105,6 +106,7 @@ async def upload_task_spec(
                     }
 
                 upload = await run_db_txn(persist_task_spec_upload)
+                await notify_canvas_changed(ws_id)
                 await task_cli_state_service.publish_bootstrap_snapshot(task_id)
                 # 基线构建改为手动触发，
                 # 避免批量上传 spec 时 CLI 资源被大量并发 bootstrap 抢占。
