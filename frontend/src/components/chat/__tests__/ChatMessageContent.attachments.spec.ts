@@ -45,4 +45,21 @@ describe('shared chat image attachments', () => {
     wrapper.unmount()
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:chat-image')
   })
+
+  it('renders attached images above the message text', async () => {
+    const wrapper = mount(ChatMessageContent, {
+      props: {
+        msg: { ...imageMessage(), content: 'diagnostic notes' },
+        authorLabel: 'User',
+        timeLabel: '18:00',
+        imageScope: { workspaceId: 'w1', taskId: 't1' },
+      },
+      global: { plugins: [createI18n({ legacy: false, locale: 'zh', messages: { zh } })] },
+    })
+    await flushPromises()
+    const [first, second] = Array.from(wrapper.get('.message-bubble').element.children)
+    expect(first.classList.contains('message-images')).toBe(true)
+    expect(second.classList.contains('message-markdown')).toBe(true)
+    wrapper.unmount()
+  })
 })

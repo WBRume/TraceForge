@@ -360,9 +360,18 @@ const confirmDeleteWorkspace = async () => {
 }
 
 .ws-main {
+  /* 默认客户端窗口下保持三列布局 */
   max-width: 1100px;
   margin: 2rem auto 0;
   padding: 0 var(--space-8) var(--space-8);
+}
+
+/* 窗口放大到接近屏幕宽度（如最大化）时放宽容器，最多显示 4 列
+   （4×310px + 3×gap + 左右内边距）。 */
+@media (min-width: 1800px) {
+  .ws-main {
+    max-width: 1440px;
+  }
 }
 
 .ws-header-row {

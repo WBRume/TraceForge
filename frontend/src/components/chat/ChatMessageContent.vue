@@ -135,6 +135,13 @@ const showTrailingAvatar = computed(() => (
 
       <slot name="body">
         <div class="message-bubble">
+          <!-- 附件（图片）展示在文字上方，符合“先图后文”的阅读顺序 -->
+          <slot name="attachments">
+            <div v-if="imageScope && attachedImages.length" class="message-images">
+              <ChatMessageImage v-for="image in attachedImages" :key="image.id" :image="image"
+                :workspace-id="imageScope.workspaceId" :task-id="imageScope.taskId" />
+            </div>
+          </slot>
           <!-- 协作预输入：字符级归属渲染（作者色下划线，悬停可见原作者/修改者） -->
           <ConfirmationHistory v-if="confirmation" :record="confirmation" />
           <div v-else-if="isCollabPreInput && collabSegments.length > 0" class="collab-doc">
@@ -156,12 +163,6 @@ const showTrailingAvatar = computed(() => (
             :source="content ?? msg.content ?? ''"
           />
           <div v-else class="msg-content">{{ content ?? msg.content }}</div>
-          <slot name="attachments">
-            <div v-if="imageScope && attachedImages.length" class="message-images">
-              <ChatMessageImage v-for="image in attachedImages" :key="image.id" :image="image"
-                :workspace-id="imageScope.workspaceId" :task-id="imageScope.taskId" />
-            </div>
-          </slot>
         </div>
       </slot>
       <span v-if="steering === 'pending'" class="steering-pending" role="status">{{ t('chat.steering.pending') }}</span>
@@ -339,7 +340,7 @@ const showTrailingAvatar = computed(() => (
   flex-wrap: wrap;
   align-items: flex-start;
   gap: 8px;
-  margin-top: 4px;
+  margin-bottom: 6px;
 }
 
 .role-user .message-bubble {
