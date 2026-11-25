@@ -16,7 +16,8 @@ const position = computed(() => ({
   height: `${props.node.size.height}px`,
   transform: `translate(${props.node.position.x}px, ${props.node.position.y}px)`,
 }))
-const type = computed(() => props.node.reference?.kind || props.node.kind)
+const type = computed(() => props.node.reference?.kind === 'task' && props.node.details?.task_type === 'DIAGNOSIS'
+  ? 'diagnosis_task' : props.node.reference?.kind || props.node.kind)
 const label = computed(() => t(`workspace_canvas.kind.${type.value}`))
 const name = computed(() => props.node.kind === 'card'
   ? props.node.details?.title || t('workspace_canvas.source_unavailable') : props.node.text || label.value)
@@ -87,8 +88,10 @@ const isParagraph = computed(() => !!props.node.reference && isDocument(props.no
   --note-ink: #6c5113;
 }
 .type-task { --source-color: #186866; --source-tint: #e5f4f1; }
-.type-document, .type-plan_document { --source-color: #895021; --source-tint: #fff2e2; }
+.type-diagnosis_task { --source-color: #235b8a; --source-tint: #e7f2fa; }
+.type-document, .type-plan_document, .type-requirement_document { --source-color: #895021; --source-tint: #fff2e2; }
 .type-case { --source-color: #78488c; --source-tint: #f7ecfe; }
+.type-playbook { --source-color: #365b39; --source-tint: #e9f4e9; }
 .color-mint { --note-fill: #dcf3dd; --note-ink: #2f623f; }
 .color-blue { --note-fill: #deedff; --note-ink: #375d94; }
 .color-lilac { --note-fill: #eee4ff; --note-ink: #67478d; }

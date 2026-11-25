@@ -14,6 +14,11 @@ interface AssetOperation {
 
 const operations: AssetOperation[] = [
   {
+    name: 'workspaceRequirementDocument', path: 'assets/requirement-documents/:documentId',
+    component: () => import('../views/RequirementDocumentView.vue'),
+    title: 'workspace_canvas.kind.requirement_document', wide: true,
+  },
+  {
     name: 'workspaceAssetsRequirementDetail', path: 'assets/requirements/:requirementId',
     component: () => import('../views/WorkspaceAssetRequirementDetailView.vue'), title: 'workspace_canvas.kind.requirement',
   },

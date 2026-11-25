@@ -5,8 +5,11 @@ from app.dependencies import get_current_user, get_db
 from app.domains.asset.models.asset import AssetType, SddAsset, SddAssetVersion
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
 from app.domains.auth.routers.auth import router as auth_router
-from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.case_center.models.case import SddCase
+from app.domains.diagnosis_playbook.models import CasePlaybookLink, PlaybookSpec
+from app.domains.task.models.task import SddTask, TaskStatus, TaskType
 from app.domains.workspace_asset.models.workspace_asset import SddRequirement
+from app.domains.workspace_asset.routers.requirement_documents import router as requirement_documents_router
 from app.domains.workspace_asset.routers.workspace_asset import router as workspace_asset_router
 from app.domains.workspace_canvas.models import WorkspaceCanvas
 from app.domains.workspace_canvas.router import router
@@ -44,6 +47,7 @@ def _canvas_client(db):
     app.include_router(router)
     app.include_router(auth_router)
     app.include_router(workspace_asset_router)
+    app.include_router(requirement_documents_router)
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_current_user] = current_user
     return TestClient(app, base_url="http://testserver/workspaces/workspace/canvas/")
@@ -155,7 +159,7 @@ def test_canvas_omits_legacy_api_mock_cards_and_their_arrows(db):
     db.commit()
 
     state = client.get(".", headers=owner).json()
-    assert state["access"]["source_kinds"] == ["case", "requirement", "task", "document", "plan_document"]
+    assert "endpoint" not in state["access"]["source_kinds"]
     assert [item["reference"]["kind"] for item in state["assets"]] == ["task"]
     assert [item["id"] for item in state["nodes"]] == ["note"]
     assert state["edges"] == []
@@ -177,7 +181,10 @@ def test_canvas_projects_catalog_and_canonical_links_without_saved_cards(db):
     state = client.get(".", headers=owner).json()
     assert state["nodes"] == [] and state["revision"] == 0
     assert [item["reference"]["id"] for item in state["assets"]] == ["requirement", "task"]
-    assert state["relations"] == [{"requirement_id": "requirement", "task_id": "task", "relation_type": "COVERS"}]
+    link = state["relations"][0]
+    assert link["source"] == {"kind": "task", "id": "task"}
+    assert link["target"] == {"kind": "requirement", "id": "requirement"}
+    assert link["relation_type"] == "COVERS"
 
     task_card = state["assets"][1]
     anchor = _node(task_card["node_id"], "card", reference=task_card["reference"])
@@ -189,6 +196,94 @@ def test_canvas_projects_catalog_and_canonical_links_without_saved_cards(db):
 
     assert client.delete(f"{relationship}/task", headers=owner).status_code == 200
     assert client.get(".", headers=owner).json()["relations"] == []
+
+
+def test_canvas_projects_real_document_and_diagnosis_provenance(db):
+    client = _canvas_client(db)
+    owner = {"x-actor": "owner"}
+    member = {"x-actor": "member"}
+    db.add_all(
+        [
+            SddRequirement(id="parent", workspace_id="workspace", title="Parent"),
+            SddTask(
+                id="diagnosis",
+                workspace_id="workspace",
+                creator_id="owner",
+                name="Investigate",
+                task_type=TaskType.DIAGNOSIS.value,
+            ),
+            PlaybookSpec(
+                id="procedure",
+                workspace_id="workspace",
+                spec_key="procedure",
+                version="1.0.0",
+                spec_digest="spec",
+                bundle_digest="bundle",
+                spec_json={"spec": {"metadata": {"title": "Procedure"}}},
+            ),
+            SddAsset(
+                id="design",
+                workspace_id="workspace",
+                task_id="task",
+                creator_id="owner",
+                name="Design.md",
+                asset_type=AssetType.PLAN,
+            ),
+        ]
+    )
+    db.flush()
+    db.add_all(
+        [
+            SddRequirement(
+                id="leaf",
+                workspace_id="workspace",
+                parent_requirement_id="parent",
+                predecessor_id="parent",
+                title="Leaf",
+            ),
+            SddCase(
+                id="case-one",
+                workspace_id="workspace",
+                creator_id="owner",
+                source_task_id="diagnosis",
+                title="Case one",
+            ),
+            SddCase(id="case-two", workspace_id="workspace", creator_id="owner", title="Case two"),
+        ]
+    )
+    db.flush()
+    for case_id in ("case-one", "case-two"):
+        db.add(CasePlaybookLink(case_id=case_id, spec_id="procedure", revision_json={"kind": "CASE_PROMOTION"}))
+    db.commit()
+    asset_url = "http://testserver/workspaces/workspace/workspace-assets"
+    documents_url = f"{asset_url}/requirements/leaf/documents"
+    document = client.post(documents_url, headers=owner, files={"file": ("Need.md", b"# Four eyes", "text/markdown")})
+    assert document.status_code == 201
+    doc_id = document.json()["id"]
+    shared = client.put(f"{documents_url}/task-assets/design", headers=owner)
+    assert shared.status_code == 200
+    assert shared.json() == client.put(f"{documents_url}/task-assets/design", headers=owner).json()
+    disabled = client.post(documents_url, headers=member, files={"file": ("Need.md", b"test", "text/plain")})
+    assert disabled.status_code == 403
+    assert client.get(f"{asset_url}/requirement-documents/{doc_id}/download", headers=owner).content == b"# Four eyes"
+
+    state = client.get(".", headers=owner).json()
+    links = {(link["source"]["id"], link["target"]["id"], link["relation_type"]) for link in state["relations"]}
+    assert links == {
+        (doc_id, "leaf", "DOCUMENT_REQUIREMENT"),
+        ("design", "leaf", "DOCUMENT_REQUIREMENT"),
+        ("design", "task", "DOCUMENT_TASK"),
+        ("case-one", "diagnosis", "CASE_TASK"),
+        ("case-one", "procedure", "CASE_PROMOTION"),
+        ("case-two", "procedure", "CASE_PROMOTION"),
+        ("leaf", "parent", "SUB_REQUIREMENT"),
+        ("leaf", "parent", "PREREQUISITE"),
+    }
+    restricted = client.get(".", headers=member).json()
+    assert {link["relation_type"] for link in restricted["relations"]} == {"CASE_PROMOTION"}
+    assert client.delete(f"{documents_url}/{shared.json()['link_id']}", headers=owner).status_code == 204
+    attached_ids = {item["id"] for item in client.get(documents_url, headers=owner).json()["items"]}
+    assert attached_ids == {doc_id}
 
 
 def test_paragraph_cards_remain_anchored_after_document_publication(db):

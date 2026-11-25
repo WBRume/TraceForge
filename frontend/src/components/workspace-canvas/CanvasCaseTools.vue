@@ -13,7 +13,8 @@ const route = useRoute()
 const { t } = useI18n()
 const workspaceId = computed(() => String(route.params.wsId))
 const requestedJob = computed(() => typeof route.query.promotionJob === 'string' ? route.query.promotionJob : '')
-const active = shallowRef<'playbooks' | 'promotion'>(requestedJob.value ? 'promotion' : 'playbooks')
+const requestedCase = computed(() => typeof route.query.case === 'string' ? route.query.case : '')
+const active = shallowRef<'playbooks' | 'promotion'>(requestedJob.value || requestedCase.value ? 'promotion' : 'playbooks')
 const { canCreateTask, loadWorkspace } = useWorkspaceContext({ getWorkspaceId: () => workspaceId.value })
 const cases = shallowRef<{ id: string; title: string }[]>([])
 const picked = shallowRef<string[]>([])
@@ -23,6 +24,21 @@ let searchSequence = 0
 
 watch(workspaceId, () => { void loadWorkspace().catch(() => {}) }, { immediate: true })
 watch(requestedJob, id => { if (id) active.value = 'promotion' })
+watch([requestedCase, canCreateTask, workspaceId], async ([id, allowed, workspace], _, onCleanup) => {
+  if (!id || !allowed) return
+  active.value = 'promotion'
+  let current = true
+  onCleanup(() => { current = false })
+  try {
+    const { data } = await api.get<{ id: string; title: string; status: string }>(`/workspaces/${workspace}/cases/${encodeURIComponent(id)}`)
+    if (current && data.status === 'APPROVED') {
+      picked.value = [...new Set([...picked.value, data.id])]
+      if (!cases.value.some(item => item.id === data.id)) cases.value = [data, ...cases.value]
+    }
+  } catch (cause) {
+    if (current) error.value = formatApiError(cause, t('workspace_canvas.load_failed'), t)
+  }
+}, { immediate: true })
 watch(active, type => { if (type === 'promotion' && canCreateTask.value) void lookup('') })
 watch(canCreateTask, allowed => { if (allowed && active.value === 'promotion') void lookup('') })
 

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.domains.auth.models.user import Workspace, WorkspacePermission
 from app.domains.workspace.services import workspace_service
-from app.domains.workspace_canvas import sources
+from app.domains.workspace_canvas import relations, sources
 from app.domains.workspace_canvas.models import WorkspaceCanvas
 from app.domains.workspace_canvas.schemas import (
     WORLD_LIMIT,
@@ -41,10 +41,10 @@ def require_member(db: Session, workspace_id: str, user_id: str) -> CanvasMember
     if not member:
         raise HTTPException(status_code=403, detail="No access to this workspace")
     permissions = workspace_service.get_user_permissions(db, workspace_id, user_id)
-    kinds: list[SourceKind] = ["case"]
+    kinds: list[SourceKind] = ["case", "playbook"]
     can_view_assets = WorkspacePermission.VIEW_ASSETS in permissions
     if can_view_assets:
-        kinds.extend(("requirement", "task", "document", "plan_document"))
+        kinds.extend(("requirement", "task", "document", "requirement_document", "plan_document"))
     return CanvasMember(
         access=CanvasAccess(
             source_kinds=kinds,
@@ -79,7 +79,7 @@ def read_canvas(db: Session, workspace_id: str, member: CanvasMember) -> CanvasV
             for node in visible.values()
         ],
         edges=[edge for edge in contents.edges.values() if edge.source in visible and edge.target in visible],
-        relations=sources.load_relations(db, workspace_id, [asset.reference for asset in assets]),
+        relations=relations.load_relations(db, workspace_id, assets),
         access=member.access,
     )
 

@@ -27,6 +27,7 @@ for model_module in (
     "app.domains.rag.models",
     "app.domains.workspace_collaboration.models",
     "app.domains.workspace_asset.models.evidence_attachment",
+    "app.domains.workspace_asset.models.requirement_document",
     "app.domains.workspace_canvas.models",
     "app.models.ai_job",
     "app.models.api_mock",

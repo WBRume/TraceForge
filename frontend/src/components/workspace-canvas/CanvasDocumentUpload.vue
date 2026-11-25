@@ -4,16 +4,22 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
-import type { SourceItem } from './model'
+import { uploadRequirementDocument } from '@/components/workspace-assets/requirements/requirementDocuments'
+import type { CanvasDocumentOwner } from './model'
 
-const props = defineProps<{ workspaceId: string; tasks: readonly SourceItem[] }>()
-const emit = defineEmits<{ close: []; created: [taskId: string, assetId: string] }>()
+const props = defineProps<{
+  workspaceId: string
+  owners: readonly CanvasDocumentOwner[]
+  initialOwner?: CanvasDocumentOwner
+}>()
+const emit = defineEmits<{ close: []; created: [owner: CanvasDocumentOwner, documentId: string] }>()
 const { t } = useI18n()
-const taskId = shallowRef('')
+const ownerKey = (owner: CanvasDocumentOwner) => `${owner.kind}:${owner.id}`
+const target = shallowRef(props.initialOwner ? ownerKey(props.initialOwner) : '')
 const file = shallowRef<File | null>(null)
 const saving = shallowRef(false)
 const error = shallowRef('')
-const options = computed(() => props.tasks.map(task => ({ id: task.reference.id, label: task.details.title })))
+const owner = computed(() => props.owners.find(item => ownerKey(item) === target.value))
 
 function chooseFile(event: Event) {
   file.value = (event.target as HTMLInputElement).files?.[0] ?? null
@@ -21,18 +27,26 @@ function chooseFile(event: Event) {
 }
 
 async function save() {
-  if (!taskId.value || !file.value || saving.value) return
+  const selected = owner.value
+  if (!selected || !file.value || saving.value) return
   saving.value = true
   error.value = ''
-  const data = new FormData()
-  data.append('file', file.value)
   try {
-    const response = await api.post<{ asset_id: string }>(
-      `/workspaces/${props.workspaceId}/tasks/${taskId.value}/upload-spec`, data,
-      { headers: { 'Content-Type': 'multipart/form-data' } },
-    )
+    let documentId: string
+    if (selected.kind === 'requirement') {
+      const result = await uploadRequirementDocument(props.workspaceId, selected.id, file.value)
+      documentId = result.id
+    } else {
+      const data = new FormData()
+      data.append('file', file.value)
+      const uploadPath = selected.taskType === 'DIAGNOSIS' ? 'upload-diagnosis-doc' : 'upload-spec'
+      const response = await api.post<{ asset_id: string }>(
+        `/workspaces/${props.workspaceId}/tasks/${selected.id}/${uploadPath}`, data,
+      )
+      documentId = response.data.asset_id
+    }
     ElMessage.success(t('workspace_canvas.actions.document_uploaded'))
-    emit('created', taskId.value, response.data.asset_id)
+    emit('created', selected, documentId)
   } catch (cause) {
     error.value = formatApiError(cause, t('workspace_canvas.actions.upload_failed'), t)
   } finally {
@@ -46,20 +60,21 @@ async function save() {
     :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving" @close="emit('close')">
     <form class="document-form" @submit.prevent="save">
       <label>
-        <span>{{ t('workspace_canvas.kind.task') }}</span>
-        <el-select v-model="taskId" filterable :disabled="saving" :aria-label="t('workspace_canvas.kind.task')"
-          :placeholder="t('workspace_canvas.actions.choose_task')">
-          <el-option v-for="task in options" :key="task.id" :label="task.label" :value="task.id" />
+        <span>{{ t('workspace_canvas.actions.document_owner') }}</span>
+        <el-select v-model="target" filterable :disabled="saving" :aria-label="t('workspace_canvas.actions.document_owner')"
+          :placeholder="t('workspace_canvas.actions.choose_document_owner')">
+          <el-option v-for="item in owners" :key="ownerKey(item)" :value="ownerKey(item)"
+            :label="`${t(`workspace_canvas.kind.${item.kind}`)} · ${item.title}`" />
         </el-select>
       </label>
       <label>
         <span>{{ t('workspace_canvas.actions.file') }}</span>
-        <input type="file" accept=".docx,.md,.txt" :disabled="saving" @change="chooseFile" />
+        <input type="file" accept=".docx,.md,.markdown,.txt" :disabled="saving" @change="chooseFile" />
       </label>
       <p v-if="error" class="upload-error" role="alert">{{ error }}</p>
       <footer>
         <el-button :disabled="saving" @click="emit('close')">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" native-type="submit" :disabled="!taskId || !file" :loading="saving">
+        <el-button type="primary" native-type="submit" :disabled="!owner || !file" :loading="saving">
           {{ t('workspace_canvas.actions.upload') }}
         </el-button>
       </footer>

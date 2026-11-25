@@ -3,22 +3,24 @@ from hashlib import sha256
 
 from sqlalchemy.orm import Session, load_only
 
-from app.domains.asset.models.asset import AssetType, SddAsset, SddAssetVersion
+from app.domains.asset.models.asset import DOCUMENT_ASSET_TYPES, SddAsset, SddAssetVersion
 from app.domains.asset.services.document import repository
 from app.domains.asset.services.document.markdown_blocks import markdown_to_blocks
 from app.domains.asset.services.review.documents import ensure_active_version
 from app.domains.task.models.task import SddTask
 from app.domains.task.services.task_workspace import documents as plan_docs
+from app.domains.workspace_asset.models.requirement_document import SddRequirementDocument
+from app.domains.workspace_asset.services.requirements import documents as requirement_docs
 from app.domains.workspace_canvas.schemas import (
     DocumentReference,
     DocumentSource,
     PlanDocumentReference,
+    RequirementDocumentReference,
     SourceDetails,
     SourceItem,
     SourcePage,
 )
 
-DOCUMENT_TYPES = (AssetType.PLAN, AssetType.DESIGN_DOC, AssetType.SPEC, AssetType.DIAGNOSIS_DOC)
 PAGE_SIZE = 35
 LOCAL_DOCUMENT_TIMEOUT = 2.0
 
@@ -35,7 +37,7 @@ def asset_query(db: Session, workspace_id: str):
         .filter(
             SddAsset.workspace_id == workspace_id,
             SddTask.workspace_id == workspace_id,
-            SddAsset.asset_type.in_(DOCUMENT_TYPES),
+            SddAsset.asset_type.in_(DOCUMENT_ASSET_TYPES),
         )
     )
 
@@ -85,7 +87,12 @@ def find_task(db: Session, workspace_id: str, task_id: str) -> SddTask | None:
 def select_document_paragraphs(
     db: Session, workspace_id: str, reference: DocumentSource, keyword: str, page: int
 ) -> SourcePage | None:
-    if isinstance(reference, PlanDocumentReference):
+    if isinstance(reference, RequirementDocumentReference):
+        document = requirement_docs.get_document(db, workspace_id, reference.id)
+        if document is None:
+            return None
+        details, blocks = SourceDetails(title=document.filename), plan_blocks(document.markdown)
+    elif isinstance(reference, PlanDocumentReference):
         task = find_task(db, workspace_id, reference.id)
         if not task:
             return None
@@ -119,6 +126,35 @@ def select_document_paragraphs(
         ],
         has_more=offset + PAGE_SIZE < len(matches),
     )
+
+
+def resolve_requirement_documents(
+    db: Session, workspace_id: str, refs: list[RequirementDocumentReference], *, previews: bool
+) -> dict[str, SourceDetails]:
+    if not refs:
+        return {}
+    documents = {
+        doc.id: doc
+        for doc in requirement_docs.workspace_documents(db, workspace_id)
+        .filter(SddRequirementDocument.id.in_({ref.id for ref in refs}))
+        .all()
+    }
+    blocks_by_document: dict[str, dict[str, str]] = {}
+    result = {}
+    for ref in refs:
+        document = documents.get(ref.id)
+        if document is None:
+            continue
+        if ref.block:
+            if document.id not in blocks_by_document:
+                blocks_by_document[document.id] = plan_blocks(document.markdown)
+            text = blocks_by_document[document.id].get(ref.block)
+            if text is None:
+                continue
+        else:
+            text = excerpt(document.markdown)
+        result[ref.model_dump_json()] = SourceDetails(title=document.filename, detail=text if previews else None)
+    return result
 
 
 def resolve_assets(

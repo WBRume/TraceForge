@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { X } from '@/components/icons'
+import { ArrowRight, X } from '@/components/icons'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import type { RequirementTaskRelation } from '@/types/workspaceAssets'
 import type { CanvasRelation } from './model'
@@ -38,10 +38,11 @@ function accept() {
       <h2>{{ t('workspace_canvas.actions.edit_relation') }}</h2>
       <button class="close-relation" type="button" :disabled="saving" :aria-label="t('common.close')" @click="emit('close')"><X :size="17" /></button>
     </header>
-    <dl>
-      <div><dt>{{ t('workspace_canvas.kind.requirement') }}</dt><dd>{{ requirement }}</dd></div>
-      <div><dt>{{ t('workspace_canvas.kind.task') }}</dt><dd>{{ task }}</dd></div>
-    </dl>
+    <div class="directions">
+      <span><small>{{ t('workspace_canvas.kind.task') }}</small><strong>{{ task }}</strong></span>
+      <ArrowRight :size="17" />
+      <span><small>{{ t('workspace_canvas.kind.requirement') }}</small><strong>{{ requirement }}</strong></span>
+    </div>
     <el-select v-model="draft" :disabled="saving" :aria-label="t('workspace_canvas.actions.relation_type')">
       <el-option value="COVERS" :label="t('workspace_assets.requirements.relation_types.covers_short')" />
       <el-option value="RELATES_TO" :label="t('workspace_assets.requirements.relation_types.relates_to_short')" />
@@ -62,8 +63,8 @@ header, footer { display: flex; align-items: center; gap: 8px; justify-content: 
 h2 { margin: 0; font-size: 15px; }
 .close-relation { display: grid; place-items: center; border: 0; border-radius: 7px; padding: 5px; background: transparent; color: var(--canvas-muted); cursor: pointer; }
 .close-relation:hover { background: var(--canvas-hover); }
-dl { display: grid; gap: 6px; margin: 0; font-size: 13px; }
-dl div { display: grid; grid-template-columns: 4em 1fr; gap: 6px; }
-dt { color: var(--canvas-muted); }
-dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.directions { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.directions > span { flex: 1; min-width: 0; overflow-wrap: anywhere; border: 1px solid var(--canvas-line); border-radius: 7px; padding: 7px; }
+.directions small { display: block; margin-bottom: 3px; color: var(--canvas-muted); }
+.directions strong { font-weight: 550; }
 </style>

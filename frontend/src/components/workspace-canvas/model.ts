@@ -1,17 +1,19 @@
-import { BookMarked, ClipboardList, FileText, Folder, MessageSquare } from '@/components/icons'
+import { BookMarked, ClipboardList, FileText, Folder, MessageSquare, Workflow } from '@/components/icons'
 import { canvasOperationTarget } from '@/router/workspaceAssetPresentation'
 import { taskStatusKey } from '@/utils/taskStatus'
 
-export const sourceKinds = ['requirement', 'task', 'case', 'document', 'plan_document'] as const
+export const sourceKinds = ['requirement', 'document', 'requirement_document', 'plan_document', 'task', 'case', 'playbook'] as const
 export type SourceKind = typeof sourceKinds[number]
-export type CanvasCommand = Exclude<SourceKind, 'plan_document'> | 'playbooks'
+export type CanvasCommand = 'requirement' | 'task' | 'case' | 'document' | 'playbooks'
+export type CanvasGroupKind = Exclude<SourceKind, 'requirement_document' | 'plan_document'>
 
 export type DocumentReference =
   | { kind: 'document'; id: string; version_id?: string | null; block?: string | null }
   | { kind: 'plan_document'; id: string; section: 'plans' | 'specs'; path: string; block?: string | null }
+  | { kind: 'requirement_document'; id: string; block?: string | null }
 
 export type SourceReference = DocumentReference
-  | { kind: 'requirement' | 'task' | 'case'; id: string }
+  | { kind: 'requirement' | 'task' | 'case' | 'playbook'; id: string }
 
 export interface SourceDetails {
   title: string
@@ -21,11 +23,19 @@ export interface SourceDetails {
   version: number | null
   historical: boolean
   task_id: string | null
+  task_type?: string | null
 }
 
 export interface SourceItem {
   reference: SourceReference
   details: SourceDetails
+}
+
+export interface CanvasDocumentOwner {
+  kind: 'requirement' | 'task'
+  id: string
+  title: string
+  taskType?: string | null
 }
 
 export interface CanvasAsset extends SourceItem { node_id: string }
@@ -70,9 +80,19 @@ export interface CanvasEdge {
 }
 
 export interface CanvasRelation {
-  requirement_id: string
-  task_id: string
-  relation_type: string
+  source: SourceReference
+  target: SourceReference
+  relation_type: CanvasRelationType
+  link_id?: string | null
+}
+
+export type CanvasRelationType = 'COVERS' | 'RELATES_TO' | 'DOCUMENT_TASK' | 'DOCUMENT_REQUIREMENT' | 'CASE_TASK'
+  | 'CASE_PROMOTION' | 'CASE_PLAYBOOK' | 'TASK_PLAYBOOK' | 'SUB_REQUIREMENT' | 'PREREQUISITE'
+
+export interface CanvasGraphRelation extends CanvasRelation {
+  id: string
+  sourceNodeId: string
+  targetNodeId: string
 }
 
 export interface CanvasSnapshot {
@@ -85,12 +105,13 @@ export interface CanvasSnapshot {
 }
 
 export interface CanvasGroup {
-  kind: SourceKind
+  kind: CanvasGroupKind
   position: Point
 }
 
-export interface CanvasGraph extends Omit<CanvasSnapshot, 'assets'> {
+export interface CanvasGraph extends Omit<CanvasSnapshot, 'assets' | 'relations'> {
   groups: CanvasGroup[]
+  relations: CanvasGraphRelation[]
 }
 
 export type NodePatch = Partial<Pick<CanvasNodeInput, 'position' | 'size' | 'text' | 'color'>> & { expected_text?: string }
@@ -112,18 +133,21 @@ export const sourceIcons = {
   task: MessageSquare,
   document: FileText,
   plan_document: Folder,
+  requirement_document: FileText,
   case: BookMarked,
+  playbook: Workflow,
 }
 
 export const canvasUrl = (workspaceId: string) => `/workspaces/${encodeURIComponent(workspaceId)}/canvas`
 export const canvasId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
 export const isDocument = (reference: SourceReference): reference is DocumentReference =>
-  reference.kind === 'document' || reference.kind === 'plan_document'
+  reference.kind === 'document' || reference.kind === 'plan_document' || reference.kind === 'requirement_document'
 
 export function referenceKey(reference: SourceReference): string {
   switch (reference.kind) {
     case 'document': return JSON.stringify([reference.kind, reference.id, reference.version_id ?? '', reference.block ?? ''])
     case 'plan_document': return JSON.stringify([reference.kind, reference.id, reference.section, reference.path, reference.block ?? ''])
+    case 'requirement_document': return JSON.stringify([reference.kind, reference.id, reference.block ?? ''])
     default: return JSON.stringify([reference.kind, reference.id])
   }
 }
@@ -145,7 +169,8 @@ export function cardStatus(item: SourceItem, translate: Translate, hasTranslatio
   if (!status) return ''
   if (reference.kind === 'task') return translate(taskStatusKey(status))
   const key = reference.kind === 'requirement' ? `workspace_assets.requirements.status_labels.${status}`
-    : reference.kind === 'case' ? `case_center.status.${status}` : ''
+    : reference.kind === 'case' ? `case_center.status.${status}`
+    : reference.kind === 'playbook' ? `workspace_canvas.playbook_status.${status}` : ''
   return key && hasTranslation(key) ? translate(key) : status
 }
 
@@ -157,6 +182,9 @@ export function assetOperation(workspaceId: string, node: CanvasNode) {
     case 'requirement': return canvasOperationTarget('workspaceAssetsRequirementDetail', { ...params, requirementId: reference.id })
     case 'task': return canvasOperationTarget('workspaceAssetTaskDetail', { ...params, taskId: reference.id })
     case 'case': return canvasOperationTarget('workspaceCaseDetail', { ...params, caseId: reference.id })
+    case 'playbook': return canvasOperationTarget('workspacePlaybookDetail', { ...params, playbookId: reference.id })
+    case 'requirement_document': return canvasOperationTarget('workspaceRequirementDocument', { ...params, documentId: reference.id },
+      { block: reference.block || undefined })
     case 'document': return details.task_id ? canvasOperationTarget('taskSpec', { ...params, taskId: details.task_id }, {
       asset: reference.id, version: reference.version_id || undefined, block: reference.block || undefined,
     }) : null

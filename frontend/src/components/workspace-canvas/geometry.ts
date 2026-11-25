@@ -45,17 +45,32 @@ export function frameMembers(frame: CanvasNode, nodes: CanvasNode[]) {
   })
 }
 
-export function arrowPath(source: CanvasNode, target: CanvasNode) {
+export function arrowGeometry(source: CanvasNode, target: CanvasNode, offset = 0, business = false) {
   const from = center(source.position, source.size)
   const to = center(target.position, target.size)
-  const horizontal = Math.abs(to.x - from.x) >= Math.abs(to.y - from.y)
+  const dx = Math.abs(to.x - from.x), dy = Math.abs(to.y - from.y)
+  const separatedColumns = dx > (source.size.width + target.size.width) / 2 + 20
+  if (business && !separatedColumns && dy > Math.max(source.size.height, target.size.height) * 1.5) {
+    const left = Math.min(source.position.x, target.position.x) - 44 - Math.abs(offset)
+    from.x = source.position.x - 2
+    to.x = target.position.x - 8
+    from.y += offset
+    to.y += offset
+    return { path: `M ${from.x} ${from.y} C ${left} ${from.y} ${left} ${to.y} ${to.x} ${to.y}`,
+      label: { x: (from.x + to.x + 6 * left) / 8, y: (from.y + to.y) / 2 } }
+  }
+  const horizontal = dx >= dy || (business && separatedColumns)
   const axis = horizontal ? 'x' : 'y'
+  const across = horizontal ? 'y' : 'x'
   const dimension = horizontal ? 'width' : 'height'
   const direction = to[axis] >= from[axis] ? 1 : -1
   from[axis] += direction * (source.size[dimension] / 2 + 2)
   to[axis] -= direction * (target.size[dimension] / 2 + 8)
+  from[across] += offset
+  to[across] += offset
   const extension = Math.max(38, Math.min(140, Math.abs(to[axis] - from[axis]) * 0.54))
   const controlFrom = { ...from, [axis]: from[axis] + direction * extension }
   const controlTo = { ...to, [axis]: to[axis] - direction * extension }
-  return `M ${from.x} ${from.y} C ${controlFrom.x} ${controlFrom.y} ${controlTo.x} ${controlTo.y} ${to.x} ${to.y}`
+  const path = `M ${from.x} ${from.y} C ${controlFrom.x} ${controlFrom.y} ${controlTo.x} ${controlTo.y} ${to.x} ${to.y}`
+  return { path, label: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 } }
 }

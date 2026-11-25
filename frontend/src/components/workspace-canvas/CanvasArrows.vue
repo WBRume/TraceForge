@@ -1,48 +1,45 @@
 <script setup lang="ts">
 import { computed, useId } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { arrowPath } from './geometry'
-import type { CanvasEdge, CanvasNode, CanvasRelation, Point } from './model'
+import { arrowGeometry } from './geometry'
+import { relationStyles } from './relationStyles'
+import type { CanvasEdge, CanvasGraphRelation, CanvasNode, Point } from './model'
 
 const props = defineProps<{
   nodes: CanvasNode[]
   visibleIds: Set<string>
   edges: CanvasEdge[]
-  relations: CanvasRelation[]
+  relations: CanvasGraphRelation[]
   selectedId?: string
-  canLink: boolean
   preview: { source: Point; target: Point } | null
 }>()
-const emit = defineEmits<{ select: [id: string]; editRelation: [relation: CanvasRelation] }>()
+const emit = defineEmits<{ select: [id: string]; openRelation: [id: string] }>()
 const { t } = useI18n()
 const markerId = `canvas-arrow-${useId()}`
+const pairKey = (source: string, target: string) => [source, target].sort().join(':')
 
 const paths = computed(() => {
   const nodesById = new Map(props.nodes.map(node => [node.id, node]))
-  const taskNodes = new Map<string, CanvasNode[]>()
-  const requirementNodes = new Map<string, CanvasNode[]>()
-  for (const node of props.nodes) {
-    if (!node.details || !node.reference) continue
-    const lists = node.reference.kind === 'task' ? taskNodes : node.reference.kind === 'requirement' ? requirementNodes : null
-    if (!lists) continue
-    const id = node.reference.id
-    if (!lists.has(id)) lists.set(id, [])
-    lists.get(id)?.push(node)
+  const groups = new Map<string, CanvasGraphRelation[]>()
+  for (const relation of props.relations) {
+    const key = pairKey(relation.sourceNodeId, relation.targetNodeId)
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)?.push(relation)
   }
-  const links = new Set<string>()
   const visible = (source: string, target: string) => props.visibleIds.has(source) || props.visibleIds.has(target)
-  const business = props.relations.flatMap(relation => (requirementNodes.get(relation.requirement_id) || [])
-    .flatMap(source => (taskNodes.get(relation.task_id) || []).filter(target => visible(source.id, target.id)).map(target => {
-      const id = `${source.id}:${target.id}`
-      links.add(id)
-      return { id, path: arrowPath(source, target), relation }
-    })))
+  const business = [...groups.values()].flatMap(list => list.flatMap((relation, index) => {
+    const source = nodesById.get(relation.sourceNodeId), target = nodesById.get(relation.targetNodeId)
+    if (!source || !target || !visible(source.id, target.id)) return []
+    return [{
+      relation, style: relationStyles[relation.relation_type],
+      ...arrowGeometry(source, target, (index - (list.length - 1) / 2) * 14, true),
+    }]
+  }))
   const arrows = props.edges.flatMap(edge => {
     const source = nodesById.get(edge.source), target = nodesById.get(edge.target)
     if (!source || !target || !visible(source.id, target.id)) return []
-    // Keep both relationships selectable when a business link and an arrow share two cards.
-    const shared = links.has(`${source.id}:${target.id}`) || links.has(`${target.id}:${source.id}`)
-    return [{ id: edge.id, path: arrowPath(source, target), shared }]
+    const shared = groups.get(pairKey(source.id, target.id))?.length ?? 0
+    return [{ id: edge.id, path: arrowGeometry(source, target, shared ? (shared + 1) * 8 : 0).path }]
   })
   return { business, arrows }
 })
@@ -54,23 +51,27 @@ const paths = computed(() => {
       <marker :id="markerId" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
         <path d="m 0 1 9 4 -9 4 z" class="arrow-marker" />
       </marker>
-      <marker :id="`${markerId}-relation`" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-        <path d="m 0 1 9 4 -9 4 z" class="relation-marker" />
+      <marker v-for="(style, type) in relationStyles" :id="`${markerId}-${type}`" :key="type"
+        viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="m 0 1 9 4 -9 4 z" :fill="style.color" />
       </marker>
     </defs>
-    <g v-for="line in paths.business" :key="line.id" class="business-connector">
-      <title>{{ t(line.relation.relation_type === 'COVERS' ? 'workspace_canvas.coverage_link' : 'workspace_canvas.requirement_link') }}</title>
-      <path class="line relation-line" :d="line.path"
-        :marker-end="`url(#${markerId}-relation)`" data-canvas-relation
-        :data-requirement-id="line.relation.requirement_id" :data-task-id="line.relation.task_id" :data-relation-type="line.relation.relation_type" />
-      <path v-if="canLink" class="arrow-hit relation-hit" :d="line.path" role="button" tabindex="0"
-        :aria-label="t('workspace_canvas.actions.edit_relation')" data-relation-editor
-        :data-requirement-id="line.relation.requirement_id" :data-task-id="line.relation.task_id"
-        @pointerdown.stop @click.stop="emit('editRelation', line.relation)"
-        @keydown.enter.prevent.stop="emit('editRelation', line.relation)" />
+    <g v-for="line in paths.business" :key="line.relation.id" class="business-connector" :data-canvas-relation="line.relation.id"
+      :data-relation-type="line.relation.relation_type" :data-source-kind="line.relation.source.kind"
+      :data-source-id="line.relation.source.id" :data-target-kind="line.relation.target.kind" :data-target-id="line.relation.target.id">
+      <title>{{ t(`workspace_canvas.relations.${line.relation.relation_type}`) }}</title>
+      <path class="relation-line" :d="line.path" :stroke="line.style.color" :stroke-width="line.style.width"
+        :stroke-dasharray="line.style.dash" :marker-end="`url(#${markerId}-${line.relation.relation_type})`" />
+      <path class="arrow-hit relation-hit" :d="line.path" role="button" tabindex="0"
+        :aria-label="t(`workspace_canvas.relations.${line.relation.relation_type}`)"
+        @pointerdown.stop @click.stop="emit('openRelation', line.relation.id)"
+        @keydown.enter.prevent.stop="emit('openRelation', line.relation.id)" />
+      <text class="relation-label" :x="line.label.x" :y="line.label.y - 6" :fill="line.style.color">
+        {{ t(`workspace_canvas.relations.${line.relation.relation_type}`) }}
+      </text>
     </g>
     <g v-for="line in paths.arrows" :key="line.id" class="manual-arrow" :class="{ chosen: line.id === selectedId }"
-      :transform="line.shared ? 'translate(0, 8)' : undefined" :data-canvas-edge="line.id">
+      :data-canvas-edge="line.id">
       <path class="line arrow-line" :d="line.path" :marker-end="`url(#${markerId})`" />
       <path class="arrow-hit" :d="line.path" role="button" tabindex="0" :aria-label="t('workspace_canvas.arrow')"
         @pointerdown.stop="emit('select', line.id)" @keydown.enter.prevent="emit('select', line.id)" />
@@ -85,9 +86,9 @@ const paths = computed(() => {
 .line { fill: none; stroke-width: 2.25; }
 .arrow-line, .dragging-line { stroke: var(--canvas-edge); }
 .arrow-marker { fill: var(--canvas-edge); }
-.relation-line { stroke: var(--canvas-relation); stroke-dasharray: 6 5; }
-.business-connector:is(:hover, :focus-within) .relation-line { stroke-width: 3.5; }
-.relation-marker { fill: var(--canvas-relation); }
+.relation-line { fill: none; }
+.relation-label { pointer-events: none; visibility: hidden; text-anchor: middle; font-size: 16px; font-weight: 750; paint-order: stroke; stroke: var(--canvas-paper); stroke-width: 5; }
+.business-connector:is(:hover, :focus-within) .relation-label { visibility: visible; }
 .dragging-line { stroke-dasharray: 5 4; }
 .arrow-hit { fill: none; stroke: transparent; stroke-width: 15; pointer-events: stroke; cursor: pointer; outline: none; }
 .relation-hit { stroke-width: 12; }

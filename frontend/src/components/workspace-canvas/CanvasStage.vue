@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, onScopeDispose, shallowRef, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronRight, FileText, Maximize2, Minus, PencilLine, Plus, Trash2, Workflow } from '@/components/icons'
+import { Maximize2, Minus, Plus, Workflow } from '@/components/icons'
 import { useAuthStore } from '@/stores/auth'
 import { getApiServerUrl } from '@/utils/api'
 import CanvasArrows from './CanvasArrows.vue'
 import CanvasItem from './CanvasItem.vue'
+import CanvasRelationLegend from './CanvasRelationLegend.vue'
 import CanvasToolbar from './CanvasToolbar.vue'
-import { isDocument, sourceIcons, type CanvasConnection, type CanvasGraph, type CanvasNode, type CanvasRelation, type CanvasSelection,
+import type { CanvasContextRequest, CanvasContextTarget } from './contextMenu'
+import { sourceIcons, type CanvasConnection, type CanvasGraph, type CanvasNode, type CanvasRelationType, type CanvasSelection,
   type CanvasTool, type NodePatch, type Point, type Size } from './model'
 import { useCanvasInteraction } from './useCanvasInteraction'
 
@@ -19,13 +21,14 @@ const emit = defineEmits<{
   connect: [source: string, target: string, mode: CanvasConnection]
   open: [id: string]
   remove: []
-  paragraphs: [id: string]
-  editRelation: [relation: CanvasRelation]
+  openRelation: [id: string]
+  context: [request: CanvasContextRequest]
 }>()
 const { t } = useI18n()
 const auth = useAuthStore()
 const surface = useTemplateRef<HTMLElement>('surface')
 const tool = shallowRef<CanvasTool>('select')
+const relationFilter = shallowRef<CanvasRelationType | null>(null)
 const size = shallowRef<Size>({ width: 0, height: 0 })
 let observer: ResizeObserver | undefined
 onMounted(() => {
@@ -61,11 +64,11 @@ const frames = computed(() => renderedNodes.value.filter(node => node.kind === '
 const items = computed(() => renderedNodes.value.filter(node => node.kind !== 'frame' && visibleIds.value.has(node.id)))
 const selectedNode = computed(() => props.selection?.type === 'node' ? props.data.nodes.find(node => node.id === props.selection?.id) : null)
 const selectedEdge = computed(() => props.selection?.type === 'edge' ? props.selection.id : undefined)
-const canOpen = computed(() => selectedNode.value && (selectedNode.value.kind !== 'card' || selectedNode.value.details))
 const canRemove = computed(() => selectedEdge.value || (selectedNode.value && !selectedNode.value.automatic))
-const canOpenParagraphs = computed(() => {
-  const node = selectedNode.value
-  return node?.details && node.reference && isDocument(node.reference) && !node.reference.block
+const shownRelations = computed(() => relationFilter.value
+  ? props.data.relations.filter(link => link.relation_type === relationFilter.value) : props.data.relations)
+watch(() => props.data.relations, links => {
+  if (!links.some(link => link.relation_type === relationFilter.value)) relationFilter.value = null
 })
 const sceneStyle = computed(() => ({ transform: `translate(${viewport.value.x}px, ${viewport.value.y}px) scale(${viewport.value.scale})` }))
 const gridStyle = computed(() => ({
@@ -92,8 +95,40 @@ function open(id: string) {
   if (!props.busy && tool.value === 'select') emit('open', id)
 }
 
+function openContext(target: Element, client: Point) {
+  const element = surface.value
+  if (!element) return
+  const nodeId = target.closest('[data-canvas-node]')?.getAttribute('data-canvas-node')
+  const relationId = target.closest('[data-canvas-relation]')?.getAttribute('data-canvas-relation')
+  const edgeId = target.closest('[data-canvas-edge]')?.getAttribute('data-canvas-edge')
+  const scope: CanvasContextTarget = nodeId ? { type: 'node', id: nodeId }
+    : relationId ? { type: 'relation', id: relationId }
+    : edgeId ? { type: 'edge', id: edgeId } : { type: 'surface' }
+  const rect = element.getBoundingClientRect()
+  const anchor = { x: client.x - rect.left, y: client.y - rect.top }
+  const { x, y, scale } = viewport.value
+  map.cancelConnection()
+  emit('context', {
+    target: scope,
+    anchor,
+    position: { x: (anchor.x - x) / scale, y: (anchor.y - y) / scale },
+    size: { width: rect.width, height: rect.height },
+    restoreFocus: target.closest<HTMLElement>('[tabindex]') || element,
+  })
+}
+
+function rightClick(event: MouseEvent) {
+  if (event.target instanceof Element) openContext(event.target, { x: event.clientX, y: event.clientY })
+}
+
 function onKeydown(event: KeyboardEvent) {
   const target = event.target as HTMLElement
+  if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+    const rect = target.getBoundingClientRect()
+    event.preventDefault()
+    openContext(target, { x: rect.left + Math.min(48, rect.width / 2), y: rect.top + Math.min(32, rect.height / 2) })
+    return
+  }
   if (target.closest('button, input, textarea, [contenteditable]')) return
   if (event.code === 'Space') { event.preventDefault(); space.value = true }
   if (event.key === 'Escape') { chooseTool('select'); emit('select', null) }
@@ -117,7 +152,7 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
     <div ref="surface" class="canvas-surface" data-testid="workspace-canvas-surface" tabindex="0" :style="gridStyle"
       :class="[`mode-${tool}`, { moving, 'panning-key': space }]"
       @pointerdown="map.pointerDown" @pointermove="map.pointerMove" @pointercancel="map.cancelGesture" @wheel.prevent="map.wheel"
-      @keydown="onKeydown">
+      @keydown="onKeydown" @contextmenu.prevent="rightClick">
       <div class="canvas-scene" :style="sceneStyle">
         <div v-for="group in data.groups" :key="group.kind" class="asset-lane" :style="{ left: `${group.position.x}px`, top: `${group.position.y}px` }">
           <component :is="sourceIcons[group.kind]" :size="17" />{{ t(`workspace_canvas.kind.${group.kind}`) }}
@@ -127,9 +162,9 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
             :linked="connectStart?.id === node.id || hoveredTarget === node.id" @press="(event, handle) => map.nodeDown(event, node, handle)"
             @focus="emit('select', { type: 'node', id: node.id })" @open="open(node.id)" />
         </div>
-        <CanvasArrows :nodes="renderedNodes" :visible-ids="visibleIds" :edges="data.edges" :relations="data.relations" :selected-id="selectedEdge"
-          :can-link="data.access.can_link_requirements" :preview="connectionPreview"
-          @select="id => emit('select', { type: 'edge', id })" @edit-relation="link => emit('editRelation', link)" />
+        <CanvasArrows :nodes="renderedNodes" :visible-ids="visibleIds" :edges="data.edges" :relations="shownRelations" :selected-id="selectedEdge"
+          :preview="connectionPreview"
+          @select="id => emit('select', { type: 'edge', id })" @open-relation="id => emit('openRelation', id)" />
         <div class="scene-layer card-layer">
           <CanvasItem v-for="node in items" :key="node.id" :node="node" :active="selected(node)"
             :linked="connectStart?.id === node.id || hoveredTarget === node.id" @press="(event, handle) => map.nodeDown(event, node, handle)"
@@ -139,17 +174,6 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
       </div>
 
       <CanvasToolbar :tool="tool" :can-link="data.access.can_link_requirements" @choose="chooseTool" />
-      <div v-if="selectedNode || selectedEdge" class="item-actions canvas-control" @pointerdown.stop>
-        <button v-if="canOpen && selectedNode" type="button" :disabled="busy" class="control-button action-label"
-          @click="emit('open', selectedNode.id)">
-          <component :is="selectedNode.kind === 'card' ? ChevronRight : PencilLine" :size="16" />
-          {{ t(selectedNode.kind === 'card' ? 'workspace_canvas.open_asset' : 'common.edit') }}
-        </button>
-        <button v-if="canOpenParagraphs && selectedNode" type="button" class="control-button action-label" :disabled="busy"
-          @click="emit('paragraphs', selectedNode.id)"><FileText :size="16" />{{ t('workspace_canvas.pin') }}</button>
-        <button v-if="canRemove" type="button" class="control-button remove-button" :disabled="busy" :aria-label="t('workspace_canvas.remove')"
-          :title="t('workspace_canvas.remove')" @click="emit('remove')"><Trash2 :size="17" /></button>
-      </div>
       <div v-if="!data.nodes.length && tool === 'select'" class="stage-empty">
         <div class="empty-symbol"><Workflow :size="30" /></div>
         <h2>{{ t('workspace_canvas.empty_title') }}</h2>
@@ -158,6 +182,8 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
         </div>
       </div>
       <div v-if="cursorHint" class="cursor-hint" aria-live="polite">{{ cursorHint }}</div>
+      <CanvasRelationLegend :relations="data.relations" :active="relationFilter"
+        @choose="type => relationFilter = relationFilter === type ? null : type" />
       <div class="viewport-controls canvas-control" @pointerdown.stop>
         <button class="control-button" type="button" :title="t('workspace_canvas.zoom_out')" :aria-label="t('workspace_canvas.zoom_out')"
           @click="map.adjustZoom(1 / 1.2)"><Minus :size="17" /></button>
@@ -218,11 +244,9 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
 .empty-primary { color: #fff; background: var(--canvas-accent); border-color: var(--canvas-accent); }
 .empty-primary:hover { filter: brightness(1.1); }
 .canvas-control { position: absolute; z-index: 3; display: flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--canvas-line); border-radius: 9px; background: var(--canvas-chrome); box-shadow: 0 4px 12px #263c5d12; }
-.item-actions { top: 18px; left: 50%; transform: translateX(-50%); }
 .viewport-controls { bottom: 16px; right: 16px; }
 .control-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 33px; min-width: 34px; border: none; border-radius: 6px; padding: 0 6px; background: transparent; color: var(--canvas-muted); font: inherit; font-size: 12px; cursor: pointer; }
 .control-button:is(:hover, :focus-visible) { background: var(--canvas-hover); color: var(--canvas-ink); }
-.remove-button:hover { color: #a3304a; }
 .zoom-value { min-width: 44px; text-align: center; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .fit-button { border-left: 1px solid var(--canvas-line); }
 .cursor-hint { position: absolute; bottom: 67px; left: 50%; max-width: calc(100% - 24px); transform: translateX(-50%); padding: 6px 10px; border-radius: 7px; background: #263b5b; color: #fff; text-align: center; font-size: 12px; pointer-events: none; }

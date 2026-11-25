@@ -76,7 +76,7 @@ from app.domains.websocket.ws.manager import manager
 from app.domains.websocket.ws.task_handler import TaskWebSocketHandler, TaskWebSocketUser
 from app.domains.workflow.routers import provision
 from app.domains.workspace.routers import invite_join, workspace
-from app.domains.workspace_asset.routers import workspace_asset
+from app.domains.workspace_asset.routers import requirement_documents, workspace_asset
 from app.domains.workspace_canvas.events import canvas_connections
 from app.domains.workspace_canvas.router import router as workspace_canvas_router
 from app.domains.workspace_collaboration.router import router as workspace_collaboration_router
@@ -239,6 +239,7 @@ app.include_router(provision.router, prefix="/api")
 app.include_router(queue.router, prefix="/api")
 app.include_router(workspace_asset.router, prefix="/api")
 app.include_router(workspace_asset.global_router, prefix="/api")
+app.include_router(requirement_documents.router, prefix="/api")
 app.include_router(workspace_canvas_router, prefix="/api")
 app.include_router(notification_router.router, prefix="/api")
 

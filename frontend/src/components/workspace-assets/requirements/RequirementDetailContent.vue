@@ -6,6 +6,7 @@ import RequirementChildrenSection from './RequirementChildrenSection.vue'
 import RequirementSpecificationBlock from './RequirementSpecificationBlock.vue'
 import RequirementTaskLinksSection from './RequirementTaskLinksSection.vue'
 import RequirementDeliveryContext from './RequirementDeliveryContext.vue'
+import RequirementDocumentsSection from './RequirementDocumentsSection.vue'
 import RequirementAcceptancePanel from './RequirementAcceptancePanel.vue'
 import { requirementCoverageKey, requirementStatusKey } from '@/utils/requirementStatus'
 import type { RequirementAcceptanceAction, RequirementDetail, RequirementLinkedTask, RequirementResultCheckAction, RequirementSummary, RequirementTaskLinkPayload, RequirementTaskRelation, TaskSummary } from '@/types/workspaceAssets'
@@ -171,6 +172,9 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
             @apply="(action, reason) => emit('acceptance', action, reason)"
             @result-check="(action, reason) => emit('resultCheck', action, reason)"
           />
+
+          <RequirementDocumentsSection :workspace-id="workspaceId" :requirement-id="activeRequirement.id"
+            :can-manage="Boolean(canManage)" />
 
           <!-- Linked Tasks (Scheme 1: Sidebar Traceability Card) -->
           <RequirementTaskLinksSection

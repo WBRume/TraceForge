@@ -1,23 +1,26 @@
 from collections.abc import Collection
 from hashlib import sha256
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, literal, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.domains.asset.models.asset import SddAsset, SddAssetVersion
 from app.domains.auth.models.user import Workspace
 from app.domains.case_center.models.case import SddCase
+from app.domains.diagnosis_playbook.models import PlaybookSpec
 from app.domains.task.models.task import SddTask
 from app.domains.task.services.task_workspace import documents as task_documents
-from app.domains.workspace_asset.models.workspace_asset import SddRequirement, SddTaskRequirement
+from app.domains.workspace_asset.models.requirement_document import SddRequirementDocument
+from app.domains.workspace_asset.models.workspace_asset import SddRequirement
+from app.domains.workspace_asset.services.requirements import documents as requirement_docs
 from app.domains.workspace_canvas import documents
 from app.domains.workspace_canvas.schemas import (
     CanvasAsset,
-    CanvasRelation,
     DocumentReference,
     ObjectReference,
     PlanDocumentReference,
     PlanFilesPage,
+    RequirementDocumentReference,
     SourceDetails,
     SourceItem,
     SourceKind,
@@ -34,16 +37,44 @@ PLAN_TASKS_PER_PAGE = 6
 
 def _object_query(db: Session, workspace_id: str, kind: SourceKind):
     model, title, description = OBJECT_MODELS[kind]
-    return db.query(model.id, title, model.status, func.substr(description, 1, 600)).filter(
+    task_type = SddTask.task_type if kind == "task" else literal(None)
+    return db.query(model.id, title, model.status, func.substr(description, 1, 600), task_type).filter(
         model.workspace_id == workspace_id
     )
 
 
 def _source_item(kind: SourceKind, row, *, previews: bool = True) -> SourceItem:
-    source_id, title, status, text = row
+    source_id, title, status, text, task_type = row
     return SourceItem(
         reference=ObjectReference(kind=kind, id=source_id),
-        details=SourceDetails(title=title, status=status, detail=documents.excerpt(text) if previews else None),
+        details=SourceDetails(
+            title=title,
+            status=status,
+            task_type=task_type,
+            detail=documents.excerpt(text) if previews else None,
+        ),
+    )
+
+
+def _playbook_query(db: Session, workspace_id: str):
+    spec = PlaybookSpec.spec_json["spec"]
+    return db.query(
+        PlaybookSpec.id,
+        PlaybookSpec.spec_key,
+        PlaybookSpec.version,
+        PlaybookSpec.validation_state,
+        spec["metadata"]["title"].as_string(),
+        func.substr(spec["context"]["summary"].as_string(), 1, 600),
+    ).filter(PlaybookSpec.workspace_id == workspace_id)
+
+
+def _playbook_item(row, *, previews: bool = True) -> SourceItem:
+    spec_id, key, version, status, title, summary = row
+    return SourceItem(
+        reference=ObjectReference(kind="playbook", id=spec_id),
+        details=SourceDetails(
+            title=title or key, context=version, status=status, detail=documents.excerpt(summary) if previews else None
+        ),
     )
 
 
@@ -61,6 +92,27 @@ def workspace_assets(db: Session, workspace_id: str, kinds: Collection[SourceKin
         if kind in kinds:
             rows = _object_query(db, workspace_id, kind).order_by(model.created_at, model.id).all()
             items.extend(_source_item(kind, row) for row in rows)
+    if "playbook" in kinds:
+        rows = _playbook_query(db, workspace_id).order_by(PlaybookSpec.created_at, PlaybookSpec.id).all()
+        items.extend(_playbook_item(row) for row in rows)
+    if "requirement_document" in kinds:
+        doc = SddRequirementDocument
+        rows = (
+            requirement_docs.workspace_documents(db, workspace_id)
+            .with_entities(doc.id, doc.filename, func.substr(doc.markdown, 1, 600))
+            .order_by(doc.created_at, doc.id)
+            .all()
+        )
+        items.extend(
+            SourceItem(
+                reference=RequirementDocumentReference(id=doc_id),
+                details=SourceDetails(
+                    title=filename,
+                    detail=documents.excerpt(preview),
+                ),
+            )
+            for doc_id, filename, preview in rows
+        )
     if "document" in kinds:
         rows = (
             documents.asset_query(db, workspace_id)
@@ -135,6 +187,19 @@ def resolve_sources(
             db, workspace_id, [ref for ref in references if isinstance(ref, PlanDocumentReference)], previews=previews
         )
     )
+    result.update(
+        documents.resolve_requirement_documents(
+            db,
+            workspace_id,
+            [ref for ref in references if isinstance(ref, RequirementDocumentReference)],
+            previews=previews,
+        )
+    )
+    playbook_ids = {ref.id for ref in references if ref.kind == "playbook"}
+    if playbook_ids:
+        for row in _playbook_query(db, workspace_id).filter(PlaybookSpec.id.in_(playbook_ids)).all():
+            item = _playbook_item(row, previews=previews)
+            result[item.reference.model_dump_json()] = item.details
     for kind in OBJECT_MODELS:
         ids = {ref.id for ref in references if ref.kind == kind}
         if ids:
@@ -143,18 +208,3 @@ def resolve_sources(
                 item = _source_item(kind, row, previews=previews)
                 result[item.reference.model_dump_json()] = item.details
     return result
-
-
-def load_relations(db: Session, workspace_id: str, references: Collection[SourceReference]) -> list[CanvasRelation]:
-    requirements = {ref.id for ref in references if ref.kind == "requirement"}
-    tasks = {ref.id for ref in references if ref.kind == "task"}
-    if not requirements or not tasks:
-        return []
-    link = SddTaskRequirement
-    return [
-        CanvasRelation(requirement_id=requirement_id, task_id=task_id, relation_type=relation_type.value)
-        for requirement_id, task_id, relation_type in db.query(link.requirement_id, link.task_id, link.relation_type)
-        .filter(link.workspace_id == workspace_id, link.requirement_id.in_(requirements), link.task_id.in_(tasks))
-        .order_by(link.requirement_id, link.task_id)
-        .all()
-    ]

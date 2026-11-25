@@ -84,7 +84,8 @@ function task(): TaskSummary {
 describe('Requirement panels', () => {
   it('shows the saved document location and prompt before linked tasks and edits both fields', async () => {
     const record = requirement({ source_uri:'docs/checkout.md', task_prompt:'Implement checkout validation', source_metadata:{ source_filename:'checkout.md', task_prompt:'Implement checkout validation' } })
-    const wrapper = mount(RequirementDetailContent, { props:{ workspaceId:'ws-1', requirement:record, detail:null, tasks:[] }, global:{ plugins:[i18nPlugin(), ElementPlus] } })
+    const wrapper = mount(RequirementDetailContent, { props:{ workspaceId:'ws-1', requirement:record, detail:null, tasks:[] },
+      global:{ plugins:[i18nPlugin(), ElementPlus], stubs:{ RequirementDocumentsSection:true } } })
     expect(wrapper.text()).toContain('docs/checkout.md')
     expect(wrapper.text()).toContain('Implement checkout validation')
     expect(wrapper.text().indexOf('Initialization prompt')).toBeLessThan(wrapper.text().indexOf('Related Tasks'))
@@ -336,6 +337,7 @@ describe('Requirement panels', () => {
         plugins: [i18nPlugin()],
         stubs: {
           RouterLink: RouterLinkStub,
+          RequirementDocumentsSection: true,
         },
       },
     })
@@ -395,6 +397,7 @@ describe('Requirement panels', () => {
         plugins: [i18nPlugin(), ElementPlus],
         stubs: {
           RouterLink: RouterLinkStub,
+          RequirementDocumentsSection: true,
         },
       },
     })

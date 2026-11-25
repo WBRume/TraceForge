@@ -34,6 +34,9 @@ class AssetType(str, PyEnum):
     DIAGNOSIS_DOC = "DIAGNOSIS_DOC"  # 问题定位任务上传的需求/日志等辅助文档
 
 
+DOCUMENT_ASSET_TYPES = (AssetType.PLAN, AssetType.DESIGN_DOC, AssetType.SPEC, AssetType.DIAGNOSIS_DOC)
+
+
 class AssetThreadStatus(str, PyEnum):
     OPEN = "open"
     RESOLVED = "resolved"

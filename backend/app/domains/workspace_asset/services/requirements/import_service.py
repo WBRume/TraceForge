@@ -33,6 +33,7 @@ from app.domains.workspace_asset.services.common.primitives import (
     enum_value,
     normalize_list,
 )
+from app.domains.workspace_asset.services.requirements.documents import store_document
 from app.domains.workspace_asset.services.requirements.presenters import (
     add_requirement_audit,
     import_batch_response,
@@ -96,6 +97,7 @@ def create_requirement_direct_import(
     )
     db.add(requirement)
     db.flush()
+    store_document(db, workspace_id, actor_id, [requirement.id], file_name, markdown, raw)
     add_requirement_audit(
         db,
         workspace_id=workspace_id,
@@ -227,6 +229,7 @@ def confirm_requirement_import(
             item.status = RequirementImportItemStatus.SKIPPED
 
     created_count = 0
+    document_requirements = []
     if len(selected_values) > 1:
         parent_title = direct_import_title(
             batch.source_filename or "Imported Requirement", batch.normalized_markdown or ""
@@ -253,6 +256,7 @@ def confirm_requirement_import(
         )
         db.add(parent)
         db.flush()
+        document_requirements.append(parent.id)
         add_requirement_audit(
             db,
             workspace_id=workspace_id,
@@ -277,6 +281,7 @@ def confirm_requirement_import(
                 change_reason=payload.change_reason,
             )
             item.requirement_id = child.id
+            document_requirements.append(child.id)
             item.status = RequirementImportItemStatus.CONFIRMED
             created_count += 1
     else:
@@ -293,9 +298,14 @@ def confirm_requirement_import(
                 change_reason=payload.change_reason,
             )
             item.requirement_id = requirement.id
+            document_requirements.append(requirement.id)
             item.status = RequirementImportItemStatus.CONFIRMED
             created_count += 1
 
+    if document_requirements and batch.source_filename and batch.normalized_markdown:
+        store_document(
+            db, workspace_id, actor_id, document_requirements, batch.source_filename, batch.normalized_markdown
+        )
     batch.status = RequirementImportBatchStatus.CONFIRMED
     batch.confirmed_count = created_count
     add_requirement_audit(

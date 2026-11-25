@@ -9,7 +9,19 @@ Coordinate = Annotated[float, Field(ge=-WORLD_LIMIT, le=WORLD_LIMIT, allow_inf_n
 Dimension = Annotated[float, Field(ge=48, le=20_000)]
 CanvasText = Annotated[str, Field(max_length=4_000)]
 CanvasColor = Literal["yellow", "mint", "blue", "lilac", "rose"]
-SourceKind = Literal["requirement", "task", "case", "document", "plan_document"]
+SourceKind = Literal["requirement", "task", "case", "playbook", "document", "requirement_document", "plan_document"]
+RelationType = Literal[
+    "COVERS",
+    "RELATES_TO",
+    "DOCUMENT_TASK",
+    "DOCUMENT_REQUIREMENT",
+    "CASE_TASK",
+    "CASE_PROMOTION",
+    "CASE_PLAYBOOK",
+    "TASK_PLAYBOOK",
+    "SUB_REQUIREMENT",
+    "PREREQUISITE",
+]
 
 
 class CanvasModel(BaseModel):
@@ -17,7 +29,7 @@ class CanvasModel(BaseModel):
 
 
 class ObjectReference(CanvasModel):
-    kind: Literal["requirement", "task", "case"]
+    kind: Literal["requirement", "task", "case", "playbook"]
     id: SourceId
 
 
@@ -50,11 +62,27 @@ class PlanDocumentReference(CanvasModel):
     block: CanvasId | None = None
 
 
-SourceReference = Annotated[ObjectReference | DocumentReference | PlanDocumentReference, Field(discriminator="kind")]
-StoredSourceReference = Annotated[
-    ObjectReference | DocumentReference | PlanDocumentReference | LegacyEndpointReference, Field(discriminator="kind")
+class RequirementDocumentReference(CanvasModel):
+    kind: Literal["requirement_document"] = "requirement_document"
+    id: SourceId
+    block: CanvasId | None = None
+
+
+SourceReference = Annotated[
+    ObjectReference | DocumentReference | PlanDocumentReference | RequirementDocumentReference,
+    Field(discriminator="kind"),
 ]
-DocumentSource = Annotated[DocumentReference | PlanDocumentReference, Field(discriminator="kind")]
+StoredSourceReference = Annotated[
+    ObjectReference
+    | DocumentReference
+    | PlanDocumentReference
+    | RequirementDocumentReference
+    | LegacyEndpointReference,
+    Field(discriminator="kind"),
+]
+DocumentSource = Annotated[
+    DocumentReference | PlanDocumentReference | RequirementDocumentReference, Field(discriminator="kind")
+]
 
 
 class SourceDetails(CanvasModel):
@@ -65,6 +93,7 @@ class SourceDetails(CanvasModel):
     version: int | None = None
     historical: bool = False
     task_id: str | None = None
+    task_type: str | None = None
 
 
 class SourceItem(CanvasModel):
@@ -145,9 +174,10 @@ class CanvasAccess(CanvasModel):
 
 
 class CanvasRelation(CanvasModel):
-    requirement_id: str
-    task_id: str
-    relation_type: str
+    source: SourceReference
+    target: SourceReference
+    relation_type: RelationType
+    link_id: SourceId | None = None
 
 
 class CanvasView(CanvasModel):
