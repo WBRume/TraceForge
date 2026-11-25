@@ -1,7 +1,8 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, nativeImage, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import appIconUrl from '../src-tauri/icons/icon.png?inline'
 import { registerDesktopCommands } from '../desktop/register'
 import { registerAttentionWindow } from '../desktop/attention'
 import { shutdownSpeech } from './ipc/speech'
@@ -18,6 +19,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
 const preloadPath = join(__dirname, 'preload.js')
 const appFile = join(__dirname, '../dist/index.html')
+const appIcon = nativeImage.createFromDataURL(appIconUrl)
+const windowIcon = process.platform === 'win32' && app.isPackaged ? undefined : appIcon
 
 // 沿用已有配置目录，避免应用改名后丢失登录和本地资源配置。
 const userDataPath = app.getPath('userData')
@@ -48,6 +51,7 @@ const createWindow = async (id = MAIN_WORKSPACE_WINDOW, placement?: WindowPlacem
       ...workspaceWindowBounds(placement, position),
     } : {}),
     title: app.getName(),
+    icon: windowIcon,
     backgroundColor: '#f8fafc',
     webPreferences: {
       preload: preloadPath,
@@ -123,6 +127,7 @@ const createWindow = async (id = MAIN_WORKSPACE_WINDOW, placement?: WindowPlacem
 }
 
 app.whenReady().then(async () => {
+  if (!app.isPackaged) app.dock?.setIcon(appIcon)
   registerDesktopCommands()
   if (process.platform === 'win32') workspaceWindows = registerWorkspaceWindows(app.getPath('userData'), createWindow, () => quitting)
   closeTaskFloats = registerTaskFloats(() => mainWindow, preloadPath, appFile, devServerUrl)

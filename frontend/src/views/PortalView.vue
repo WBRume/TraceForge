@@ -462,9 +462,7 @@ onBeforeUnmount(() => {
 .logo-icon {
   width: 32px;
   height: 32px;
-  background: linear-gradient(135deg, #0ea5e9, #3b82f6);
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.3);
+  background: url('/favicon.svg') center / contain no-repeat;
 }
 
 .logo-text {

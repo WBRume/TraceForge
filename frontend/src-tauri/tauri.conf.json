@@ -21,7 +21,7 @@
     "useLocalToolsDir": true,
     "active": true,
     "targets": ["nsis"],
-    "icon": ["icons/icon.ico"],
+    "icon": ["icons/icon.ico", "icons/icon.png"],
     "externalBin": ["binaries/traceforge-node"],
     "resources": { "../dist-desktop-host/": "desktop-host/" },
     "windows": {
