@@ -39,6 +39,7 @@ websockets==14.1
 
 # Utilities
 python-dateutil==2.9.0
+tzdata==2026.6
 python-docx==1.1.2
 Pillow==12.3.0
 PyYAML==6.0.3

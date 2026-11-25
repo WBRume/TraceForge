@@ -10,7 +10,7 @@ import { canvasId, canvasUrl, type CanvasAsset, type CanvasEdit, type CanvasNode
 
 interface Operation { id: string; edit: CanvasEdit; anchors: CanvasNodeInput[] }
 
-export function useWorkspaceCanvas(workspaceId: string) {
+export function useWorkspaceCanvas(workspaceId: string, getQuarter: () => string | undefined) {
   const { t } = useI18n()
   const auth = useAuthStore()
   const url = canvasUrl(workspaceId)
@@ -22,9 +22,11 @@ export function useWorkspaceCanvas(workspaceId: string) {
   const canRetry = shallowRef(false)
   const planFiles = shallowRef<CanvasAsset[]>([])
   const readingPlans = shallowRef(false)
-  const controller = new AbortController()
+  const planTaskIds = shallowRef<string[]>([])
   let failedOperation: Operation | null = null
   let reading: Promise<boolean> | null = null
+  let readingRequest: AbortController | null = null
+  let readingQuarter: string | undefined
   let socket: WebSocket | null = null
   let readTimer: ReturnType<typeof setTimeout> | undefined
   let connectTimer: ReturnType<typeof setTimeout> | undefined
@@ -33,29 +35,39 @@ export function useWorkspaceCanvas(workspaceId: string) {
   let disposed = false
 
   async function refresh(afterCurrent = false): Promise<boolean> {
-    if (reading) {
+    const quarter = getQuarter()
+    if (reading && readingQuarter === quarter) {
       if (!afterCurrent) return reading
       await reading
       return refresh()
     }
     if (disposed) return false
-    reading = api.get<CanvasSnapshot>(url, { signal: controller.signal }).then(({ data }) => {
-      if (disposed) return false
-      if (!snapshot.value || data.revision >= snapshot.value.revision) snapshot.value = data
+    readingRequest?.abort()
+    const request = new AbortController()
+    readingRequest = request
+    readingQuarter = quarter
+    reading = api.get<CanvasSnapshot>(url, { params: { quarter }, signal: request.signal, timeout: 5000 }).then(({ data }) => {
+      if (disposed || request.signal.aborted) return false
+      if (!snapshot.value || data.quarter?.id !== snapshot.value.quarter?.id || data.revision >= snapshot.value.revision) snapshot.value = data
       syncError.value = ''
       return true
     }).catch((error: unknown) => {
-      if (disposed) return false
-      const status = (error as { response?: { status?: number } }).response?.status
+      if (disposed || request.signal.aborted) return false
+      const response = (error as { response?: { status?: number; data?: { detail?: unknown } } }).response
+      const status = response?.status
       if (status === 401 || status === 403) {
         snapshot.value = null
         closeSocket()
       }
-      syncError.value = formatApiError(error, t('workspace_canvas.load_failed'), t)
+      syncError.value = response?.data?.detail === 'CANVAS_QUERY_BUSY' ? t('workspace_canvas.domains.query_busy')
+        : formatApiError(error, t('workspace_canvas.load_failed'), t)
       return false
     }).finally(() => {
-      reading = null
-      loading.value = false
+      if (readingRequest === request) {
+        reading = null
+        readingRequest = null
+        loading.value = false
+      }
     })
     return reading
   }
@@ -74,7 +86,9 @@ export function useWorkspaceCanvas(workspaceId: string) {
       if (disposed) return false
       const response = (error as { response?: { status?: number; data?: { detail?: unknown } } }).response
       const conflict = response?.data?.detail === 'CANVAS_TEXT_CHANGED'
-      saveError.value = conflict ? t('workspace_canvas.edit_conflict') : formatApiError(error, t('workspace_canvas.save_failed'), t)
+      const capacity = response?.data?.detail === 'CANVAS_ANNOTATION_LIMIT'
+      saveError.value = conflict ? t('workspace_canvas.edit_conflict') : capacity ? t('workspace_canvas.domains.annotation_limit')
+        : formatApiError(error, t('workspace_canvas.save_failed'), t)
       if (operation && (!response?.status || response.status >= 500)) {
         failedOperation = operation
         canRetry.value = true
@@ -123,7 +137,7 @@ export function useWorkspaceCanvas(workspaceId: string) {
   }
 
   function poll() {
-    const interval = socket?.readyState === WebSocket.OPEN ? 6000 : 3000
+    const interval = snapshot.value?.root_tree ? 25_000 : socket?.readyState === WebSocket.OPEN ? 6000 : 3000
     readTimer = setTimeout(async () => {
       if (!document.hidden && !saving.value) await refresh()
       if (!disposed) poll()
@@ -131,22 +145,26 @@ export function useWorkspaceCanvas(workspaceId: string) {
   }
 
   async function refreshPlanFiles() {
-    if (disposed || plansRequest) return
+    if (disposed || plansRequest || !planTaskIds.value.length) return
     const request = new AbortController()
     plansRequest = request
     readingPlans.value = true
+    const taskIds = planTaskIds.value
     const items: CanvasAsset[] = []
     let cursor: string | null = null
     try {
       do {
+        const params = new URLSearchParams(taskIds.map(id => ['task_id', id]))
+        if (cursor) params.set('cursor', cursor)
         const { data }: { data: PlanFilesPage } = await api.get(`${url}/plan-files`, {
-          params: { cursor }, signal: request.signal, timeout: 25_000,
+          params, signal: request.signal, timeout: 25_000,
         })
         if (request.signal.aborted) return
         items.push(...data.items)
         cursor = data.next_cursor
-      } while (cursor)
-      planFiles.value = items
+      } while (cursor && items.length < 72)
+      const refreshed = new Set(taskIds)
+      planFiles.value = [...planFiles.value.filter(file => !refreshed.has(file.reference.id)), ...items].slice(-96)
     } catch {
       // Plan storage can be offline while the database-backed assets remain available.
     } finally {
@@ -159,21 +177,23 @@ export function useWorkspaceCanvas(workspaceId: string) {
   }
 
   function pollPlanFiles() {
-    if (disposed || !snapshot.value?.access.source_kinds.includes('plan_document')) return
+    if (disposed || !planTaskIds.value.length || !snapshot.value?.access.source_kinds.includes('plan_document')) return
     if (document.hidden) planTimer = setTimeout(pollPlanFiles, 45_000)
     else void refreshPlanFiles()
   }
 
-  watch(() => snapshot.value?.access.source_kinds.includes('plan_document'), allowed => {
-    if (allowed) {
-      void refreshPlanFiles()
-    } else {
-      clearTimeout(planTimer)
-      plansRequest?.abort()
-      plansRequest = null
-      readingPlans.value = false
-      planFiles.value = []
-    }
+  function setPlanTasks(ids: string[]) {
+    const next = [...new Set(ids)].slice(0, 12).sort()
+    if (next.join(',') !== planTaskIds.value.join(',')) planTaskIds.value = next
+  }
+
+  watch([() => snapshot.value?.access.source_kinds.includes('plan_document'), planTaskIds], ([allowed, ids]) => {
+    clearTimeout(planTimer)
+    plansRequest?.abort()
+    plansRequest = null
+    readingPlans.value = false
+    if (!allowed) planFiles.value = []
+    if (allowed && ids.length) void refreshPlanFiles()
   })
 
   const refreshOnFocus = () => { if (!document.hidden) void refresh(true) }
@@ -186,10 +206,18 @@ export function useWorkspaceCanvas(workspaceId: string) {
     window.addEventListener('sdd-server-changed', connect)
     document.addEventListener('visibilitychange', refreshOnFocus)
   })
+  watch(getQuarter, quarter => {
+    if (quarter && quarter !== snapshot.value?.quarter?.id) {
+      loading.value = true
+      setPlanTasks([])
+      planFiles.value = []
+    }
+    void refresh()
+  })
   watch(() => auth.token, connect)
   onScopeDispose(() => {
     disposed = true
-    controller.abort()
+    readingRequest?.abort()
     plansRequest?.abort()
     plansRequest = null
     clearTimeout(readTimer)
@@ -200,5 +228,5 @@ export function useWorkspaceCanvas(workspaceId: string) {
     document.removeEventListener('visibilitychange', refreshOnFocus)
   })
 
-  return { snapshot, loading, saving, syncError, saveError, canRetry, planFiles, readingPlans, refresh, edit, retry, submit }
+  return { snapshot, loading, saving, syncError, saveError, canRetry, planFiles, readingPlans, setPlanTasks, refresh, edit, retry, submit }
 }

@@ -1,11 +1,12 @@
 import { computed, onMounted, onScopeDispose, shallowRef, watch, type ShallowRef } from 'vue'
 import { center, fittedViewport, frameMembers, zoomAround, type Viewport } from './geometry'
-import { nodeSizes, type CanvasConnection, type CanvasNode, type CanvasSelection, type CanvasTool, type NodePatch, type Point, type Size } from './model'
+import { nodeSizes, type CanvasConnection, type CanvasNode, type CanvasRegion, type CanvasSelection, type CanvasTool, type NodePatch, type Point, type Size } from './model'
 
 interface InteractionOptions {
   surface: Readonly<ShallowRef<HTMLElement | null>>
-  viewportKey: string
   nodes: () => CanvasNode[]
+  regions: () => CanvasRegion[]
+  featured?: () => boolean
   tool: () => CanvasTool
   busy: () => boolean
   select: (selection: CanvasSelection | null) => void
@@ -30,16 +31,8 @@ const bounds = (first: Point, second: Point) => ({
   size: { width: Math.abs(second.x - first.x), height: Math.abs(second.y - first.y) },
 })
 
-function restoreViewport(key: string): Viewport | null {
-  try {
-    const value = JSON.parse(sessionStorage.getItem(key) || 'null') as Viewport | null
-    if (value && [value.x, value.y, value.scale].every(Number.isFinite) && value.scale >= 0.1 && value.scale <= 2.5) return value
-  } catch { /* optional browser storage */ }
-  return null
-}
-
 export function useCanvasInteraction(options: InteractionOptions) {
-  const viewport = shallowRef<Viewport>(restoreViewport(options.viewportKey) || { x: 0, y: 0, scale: 1 })
+  const viewport = shallowRef<Viewport>({ x: 0, y: 0, scale: 1 })
   const gesture = shallowRef<Gesture | null>(null)
   const pointer = shallowRef<Point | null>(null)
   const moving = shallowRef(false)
@@ -224,9 +217,14 @@ export function useCanvasInteraction(options: InteractionOptions) {
     }
   }
 
-  function fit() {
-    viewport.value = fittedViewport(options.nodes(), size())
+  function fit(includeAnnotations = false) {
+    const regions = options.regions()
+    const nodes = options.nodes()
+    const featured = options.featured?.() && regions.length && !includeAnnotations
+    viewport.value = fittedViewport([...regions, ...(featured ? nodes.filter(node => node.automatic) : nodes)], size())
   }
+
+  function focusRegion(region: CanvasRegion) { viewport.value = fittedViewport([region], size()) }
 
   function focusNodes(ids: string[]) {
     const wanted = new Set(ids)
@@ -248,7 +246,7 @@ export function useCanvasInteraction(options: InteractionOptions) {
 
   const clearSpace = () => { space.value = false }
   onMounted(() => {
-    if (!restoreViewport(options.viewportKey)) fit()
+    fit()
     window.addEventListener('blur', clearSpace)
     window.addEventListener('keyup', clearSpaceOnKey)
     window.addEventListener('pointerup', pointerUp)
@@ -258,9 +256,8 @@ export function useCanvasInteraction(options: InteractionOptions) {
     window.removeEventListener('blur', clearSpace)
     window.removeEventListener('keyup', clearSpaceOnKey)
     window.removeEventListener('pointerup', pointerUp)
-    try { sessionStorage.setItem(options.viewportKey, JSON.stringify(viewport.value)) } catch { /* optional browser storage */ }
   })
 
   return { viewport, gesture, moving, space, connectStart, hoveredTarget, renderedNodes, framePreview, connectionPreview,
-    pointerDown, nodeDown, pointerMove, cancelGesture, cancelConnection, adjustZoom, wheel, fit, focusNodes, insertionPoint }
+    pointerDown, nodeDown, pointerMove, cancelGesture, cancelConnection, adjustZoom, wheel, fit, focusNodes, focusRegion, insertionPoint }
 }

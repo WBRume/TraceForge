@@ -5,7 +5,6 @@ import { taskStatusKey } from '@/utils/taskStatus'
 export const sourceKinds = ['requirement', 'document', 'requirement_document', 'plan_document', 'task', 'case', 'playbook'] as const
 export type SourceKind = typeof sourceKinds[number]
 export type CanvasCommand = 'requirement' | 'task' | 'case' | 'document' | 'playbooks'
-export type CanvasGroupKind = Exclude<SourceKind, 'requirement_document' | 'plan_document'>
 
 export type DocumentReference =
   | { kind: 'document'; id: string; version_id?: string | null; block?: string | null }
@@ -24,6 +23,9 @@ export interface SourceDetails {
   historical: boolean
   task_id: string | null
   task_type?: string | null
+  created_at?: string | null
+  has_children?: boolean
+  parent_requirement_id?: string | null
 }
 
 export interface SourceItem {
@@ -38,7 +40,33 @@ export interface CanvasDocumentOwner {
   taskType?: string | null
 }
 
-export interface CanvasAsset extends SourceItem { node_id: string }
+export interface AssetQuarter { id: string; label_year: number; number: number }
+export interface CanvasAsset extends SourceItem { node_id: string; quarter?: AssetQuarter | null; has_related?: boolean | null }
+
+export interface PeriodSlice { id: string; index: number; start: string; end: string }
+export interface FiscalQuarter extends AssetQuarter { year: number; start: string; end: string; months: PeriodSlice[] }
+export type CalendarFormat = 'months' | '4-4-5' | '4-5-4' | '5-4-4'
+export interface CanvasCalendarSettings {
+  format: CalendarFormat
+  start_month: number
+  timezone: string
+  year_label: 'start' | 'end'
+  week_end: number
+  week_end_rule: 'last' | 'nearest'
+  extra_week_quarter: number
+  overrides: { year: number; boundaries: string[] }[]
+}
+export interface CanvasCalendar { settings: CanvasCalendarSettings; can_edit: boolean; current: string; quarters: FiscalQuarter[] }
+
+export type CanvasRootKind = Exclude<SourceKind, 'plan_document'>
+export interface CanvasRootFilters {
+  kind?: CanvasRootKind
+  slice?: string
+  task_type?: string
+  status?: string
+  creator_id?: string
+  q?: string
+}
 
 export interface PlanFilesPage {
   items: CanvasAsset[]
@@ -66,11 +94,15 @@ export interface CanvasNodeInput {
   text: string
   color: NoteColor
   reference: SourceReference | null
+  scope_id?: string | null
 }
 
 export interface CanvasNode extends CanvasNodeInput {
   details: SourceDetails | null
   automatic?: boolean
+  domainId?: string
+  historicalQuarter?: AssetQuarter
+  expandable?: boolean
 }
 
 export interface CanvasEdge {
@@ -102,16 +134,36 @@ export interface CanvasSnapshot {
   edges: CanvasEdge[]
   relations: CanvasRelation[]
   access: { source_kinds: SourceKind[]; can_link_requirements: boolean }
+  quarter?: FiscalQuarter
+  root_tree?: boolean
+  root_cursor?: string | null
+  treeParents?: ReadonlyMap<string, string>
+  annotations_limited?: boolean
 }
 
-export interface CanvasGroup {
-  kind: CanvasGroupKind
-  position: Point
+export type CanvasDomainKind = 'delivery' | 'standalone' | 'diagnosis' | 'knowledge'
+
+export interface CanvasAssetWindow {
+  assets: CanvasAsset[]
+  relations: CanvasRelation[]
+  next_cursor: string | null
 }
 
 export interface CanvasGraph extends Omit<CanvasSnapshot, 'assets' | 'relations'> {
-  groups: CanvasGroup[]
   relations: CanvasGraphRelation[]
+  regions: CanvasRegion[]
+  scopeOffsets: ReadonlyMap<string, Point>
+  assetNodeIds: ReadonlyMap<string, string>
+}
+
+export interface CanvasRegion {
+  id: string
+  type: 'domain' | 'section'
+  kind: CanvasDomainKind | 'linked'
+  title?: string
+  assetCount: number
+  position: Point
+  size: Size
 }
 
 export type NodePatch = Partial<Pick<CanvasNodeInput, 'position' | 'size' | 'text' | 'color'>> & { expected_text?: string }
@@ -152,8 +204,12 @@ export function referenceKey(reference: SourceReference): string {
   }
 }
 
-export function nodeInput({ id, kind, position, size, text, color, reference }: CanvasNode): CanvasNodeInput {
-  return { id, kind, position, size, text, color, reference }
+export function scopedAssetId(assetId: string, scopeId: string) {
+  return `asset-${scopeId.slice(-26)}-${assetId.slice(-26)}`
+}
+
+export function nodeInput({ id, kind, position, size, text, color, reference, scope_id }: CanvasNode): CanvasNodeInput {
+  return { id, kind, position, size, text, color, reference, scope_id }
 }
 
 type Translate = (key: string, values?: Record<string, unknown>) => string
@@ -174,7 +230,7 @@ export function cardStatus(item: SourceItem, translate: Translate, hasTranslatio
   return key && hasTranslation(key) ? translate(key) : status
 }
 
-export function assetOperation(workspaceId: string, node: CanvasNode) {
+export function assetOperation(workspaceId: string, node: Pick<CanvasNode, 'reference' | 'details'>) {
   const { reference, details } = node
   if (!reference || !details) return null
   const params = { wsId: workspaceId }

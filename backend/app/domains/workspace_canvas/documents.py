@@ -1,6 +1,8 @@
 from collections import Counter
 from hashlib import sha256
+from pathlib import PurePosixPath
 
+from sqlalchemy import Text, case, cast, func
 from sqlalchemy.orm import Session, load_only
 
 from app.domains.asset.models.asset import DOCUMENT_ASSET_TYPES, SddAsset, SddAssetVersion
@@ -23,6 +25,7 @@ from app.domains.workspace_canvas.schemas import (
 
 PAGE_SIZE = 35
 LOCAL_DOCUMENT_TIMEOUT = 2.0
+ANCHOR_PREVIEW_MAX_CHARS = 128 * 1024
 
 
 def excerpt(value: str | None) -> str | None:
@@ -133,12 +136,12 @@ def resolve_requirement_documents(
 ) -> dict[str, SourceDetails]:
     if not refs:
         return {}
-    documents = {
-        doc.id: doc
-        for doc in requirement_docs.workspace_documents(db, workspace_id)
-        .filter(SddRequirementDocument.id.in_({ref.id for ref in refs}))
-        .all()
-    }
+    doc = SddRequirementDocument
+    body = case((func.length(doc.markdown) <= ANCHOR_PREVIEW_MAX_CHARS, doc.markdown)) if previews else doc.markdown
+    rows = requirement_docs.workspace_documents(db, workspace_id).with_entities(
+        doc.id, doc.filename, body.label("markdown")
+    )
+    documents = {row.id: row for row in rows.filter(doc.id.in_({ref.id for ref in refs}))}
     blocks_by_document: dict[str, dict[str, str]] = {}
     result = {}
     for ref in refs:
@@ -146,6 +149,9 @@ def resolve_requirement_documents(
         if document is None:
             continue
         if ref.block:
+            if document.markdown is None:
+                result[ref.model_dump_json()] = SourceDetails(title=document.filename)
+                continue
             if document.id not in blocks_by_document:
                 blocks_by_document[document.id] = plan_blocks(document.markdown)
             text = blocks_by_document[document.id].get(ref.block)
@@ -171,18 +177,13 @@ def resolve_assets(
     }
     version_ids = {ref.version_id or assets[ref.id][0].active_version_id for ref in refs if ref.id in assets} - {None}
     columns = [SddAssetVersion.id, SddAssetVersion.asset_id, SddAssetVersion.version_no]
-    if previews or any(ref.block for ref in refs):
-        columns.append(SddAssetVersion.blocks_json)
+    if any(ref.block for ref in refs):
+        blocks = SddAssetVersion.blocks_json
+        if previews:
+            blocks = case((func.length(cast(blocks, Text)) <= ANCHOR_PREVIEW_MAX_CHARS, blocks))
+        columns.append(blocks.label("blocks_json"))
     versions = (
-        {
-            row.id: row
-            for row in db.query(SddAssetVersion)
-            .options(load_only(*columns))
-            .filter(SddAssetVersion.id.in_(version_ids))
-            .all()
-        }
-        if version_ids
-        else {}
+        {row.id: row for row in db.query(*columns).filter(SddAssetVersion.id.in_(version_ids))} if version_ids else {}
     )
     indexed_blocks: dict[str, dict[str, str]] = {}
     result = {}
@@ -197,6 +198,9 @@ def resolve_assets(
             continue
         details = asset_details(asset, task_name, version)
         if ref.block:
+            if previews and version.blocks_json is None:
+                result[ref.model_dump_json()] = details
+                continue
             if version.id not in indexed_blocks:
                 indexed_blocks[version.id] = asset_blocks(version)
             text = indexed_blocks[version.id].get(ref.block)
@@ -212,6 +216,17 @@ def resolve_plan_files(
 ) -> dict[str, SourceDetails]:
     if not refs:
         return {}
+    if previews:
+        ids = {ref.id for ref in refs}
+        allowed = {
+            identifier
+            for (identifier,) in db.query(SddTask.id).filter(SddTask.workspace_id == workspace_id, SddTask.id.in_(ids))
+        }
+        return {
+            ref.model_dump_json(): SourceDetails(title=PurePosixPath(ref.path).name, context=ref.path, task_id=ref.id)
+            for ref in refs
+            if ref.id in allowed
+        }
     tasks = {
         task.id: task
         for task in db.query(SddTask)

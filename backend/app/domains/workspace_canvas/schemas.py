@@ -1,6 +1,9 @@
+from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.domains.workspace_canvas.quarter_calendar import FiscalQuarter, QuarterKey
 
 CanvasId = Annotated[str, Field(pattern=r"^[\w-]{1,64}$")]
 SourceId = Annotated[str, Field(pattern=r"^[\w-]{1,36}$")]
@@ -94,6 +97,9 @@ class SourceDetails(CanvasModel):
     historical: bool = False
     task_id: str | None = None
     task_type: str | None = None
+    created_at: datetime | None = None
+    has_children: bool = False
+    parent_requirement_id: SourceId | None = None
 
 
 class SourceItem(CanvasModel):
@@ -103,6 +109,14 @@ class SourceItem(CanvasModel):
 
 class CanvasAsset(SourceItem):
     node_id: CanvasId
+    quarter: "AssetQuarter | None" = None
+    has_related: bool | None = None
+
+
+class AssetQuarter(CanvasModel):
+    id: QuarterKey
+    label_year: int
+    number: int
 
 
 class PlanFilesPage(CanvasModel):
@@ -133,6 +147,7 @@ class CanvasNode(CanvasModel):
     text: CanvasText = ""
     color: CanvasColor = "yellow"
     reference: StoredSourceReference | None = None
+    scope_id: Annotated[str, Field(pattern=r"^(asset-[a-f0-9]{32}|quarter-[1-9]\d{3}-Q[1-4])$")] | None = None
 
     @model_validator(mode="after")
     def validate_kind(self):
@@ -180,6 +195,69 @@ class CanvasRelation(CanvasModel):
     link_id: SourceId | None = None
 
 
+class CanvasAssetWindow(CanvasModel):
+    assets: list[CanvasAsset]
+    relations: list[CanvasRelation]
+    next_cursor: str | None = None
+
+
+BranchKind = Literal["requirements", "requirement_tasks", "cross_quarter", "standalone", "knowledge"]
+RequirementLinkType = Literal["COVERS", "RELATES_TO"]
+SliceKey = Annotated[str, Field(pattern=r"^[MW][1-9][0-9]{0,2}$")]
+RootKind = Literal["requirement", "task", "case", "playbook", "document", "requirement_document"]
+
+
+class CanvasRootQuery(CanvasModel):
+    quarter: QuarterKey
+    kind: RootKind | None = None
+    slice: SliceKey | None = None
+    task_type: Literal["DEVELOPMENT", "DIAGNOSIS"] | None = None
+    status: str | None = Field(default=None, max_length=48)
+    creator_id: SourceId | None = None
+    q: str | None = Field(default=None, max_length=120)
+    cursor: str | None = Field(default=None, max_length=1024)
+
+
+class CanvasBranch(CanvasModel):
+    id: CanvasId
+    kind: BranchKind
+    count: int
+    exact: bool = True
+    requirement_id: SourceId | None = None
+    relation_type: RequirementLinkType | None = None
+    slice: SliceKey | None = None
+
+
+class CanvasBranchQuery(CanvasModel):
+    quarter: QuarterKey
+    kind: BranchKind
+    requirement_id: SourceId | None = None
+    relation_type: RequirementLinkType | None = None
+    slice: SliceKey | None = None
+    cursor: str | None = Field(default=None, max_length=128)
+    task_type: Literal["DEVELOPMENT", "DIAGNOSIS"] | None = None
+    status: str | None = Field(default=None, max_length=48)
+    creator_id: SourceId | None = None
+    q: str | None = Field(default=None, max_length=120)
+    source_kind: Literal["document", "requirement_document", "case", "playbook"] | None = None
+
+    @model_validator(mode="after")
+    def valid_anchor(self):
+        linked = self.requirement_id is not None and self.relation_type is not None
+        if (self.kind == "requirement_tasks") != linked:
+            raise ValueError("A requirement task branch needs a requirement and relationship type")
+        return self
+
+
+class CanvasBranchWindow(CanvasModel):
+    assets: list[CanvasAsset]
+    relations: list[CanvasRelation]
+    branches: list[CanvasBranch] = Field(default_factory=list)
+    next_cursor: str | None = None
+    loaded_count: int = 0
+    root_tree: bool = False
+
+
 class CanvasView(CanvasModel):
     revision: int
     assets: list[CanvasAsset]
@@ -187,6 +265,11 @@ class CanvasView(CanvasModel):
     edges: list[CanvasEdge]
     relations: list[CanvasRelation]
     access: CanvasAccess
+    quarter: FiscalQuarter
+    branches: list[CanvasBranch] = Field(default_factory=list)
+    root_tree: bool = False
+    root_cursor: str | None = None
+    annotations_limited: bool = False
 
 
 class CanvasNodePatch(CanvasModel):
@@ -229,7 +312,7 @@ CanvasEdit = Annotated[AddNode | UpdateNode | RemoveNode | AddEdge | RemoveEdge,
 class CanvasOperation(CanvasModel):
     id: CanvasId
     edit: CanvasEdit
-    anchors: list[CanvasNode] = Field(default_factory=list)
+    anchors: list[CanvasNode] = Field(default_factory=list, max_length=128)
 
 
 class CanvasReceipt(CanvasModel):

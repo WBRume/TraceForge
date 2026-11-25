@@ -1,14 +1,20 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronRight, Link, PencilLine } from '@/components/icons'
+import { ChevronDown, ChevronLeft, ChevronRight, Link, PencilLine } from '@/components/icons'
 import { cardStatus, isDocument, sourceIcons, type CanvasNode } from './model'
 
-const props = defineProps<{ node: CanvasNode; active: boolean; linked: boolean }>()
+const props = defineProps<{
+  node: CanvasNode; active: boolean; linked: boolean; entry?: boolean; compact?: boolean; quarterId?: string
+  tree?: boolean; expanded?: boolean; busy?: boolean; hasMore?: boolean; hasPrevious?: boolean
+}>()
 const emit = defineEmits<{
   press: [event: PointerEvent, handle?: 'resize' | 'connect']
   open: []
   focus: []
+  toggle: []
+  more: []
+  previous: []
 }>()
 const { t, te } = useI18n()
 const position = computed(() => ({
@@ -26,16 +32,26 @@ const status = computed(() => {
   return reference && details ? cardStatus({ reference, details }, t, te) : ''
 })
 const isParagraph = computed(() => !!props.node.reference && isDocument(props.node.reference) && Boolean(props.node.reference.block))
+const detail = computed(() => props.node.details?.detail || (isParagraph.value ? props.node.text : ''))
+const summaryQuarter = computed(() => props.node.historicalQuarter && t('workspace_canvas.quarter.name', {
+  year: props.node.historicalQuarter.label_year, number: props.node.historicalQuarter.number,
+}))
+const summaryType = computed(() => t(props.node.historicalQuarter && props.quarterId && props.node.historicalQuarter.id > props.quarterId
+  ? 'workspace_canvas.quarter.future_requirement' : 'workspace_canvas.quarter.historical_requirement'))
 </script>
 
 <template>
   <article
-    class="canvas-item" :class="[`kind-${node.kind}`, `type-${type}`, `color-${node.color}`, { active, linked }]"
+    class="canvas-item" :class="[`kind-${node.kind}`, `type-${type}`, `color-${node.color}`, { active, linked, entry, compact,
+      'historical-card': !!node.historicalQuarter, 'tree-card': tree,
+      tile: node.kind === 'card' && node.size.width < 200 }]"
     :style="position" :data-canvas-node="node.id" :data-node-kind="node.kind"
-    :data-source-kind="node.reference?.kind" :tabindex="node.kind === 'frame' ? undefined : 0"
-    :data-source-id="node.reference?.id" :data-automatic="node.automatic || undefined"
+    :data-source-kind="node.reference?.kind" :data-domain-id="node.domainId" :tabindex="node.kind === 'frame' ? undefined : 0"
+    :data-source-id="node.reference?.id" :data-automatic="node.automatic || undefined" :data-domain-entry="entry || undefined"
+    :data-historical-quarter="node.historicalQuarter?.id"
     :aria-label="name" @focus.self="emit('focus')" @keydown.enter.self.prevent="emit('open')"
-    @pointerdown.stop="node.kind !== 'frame' && emit('press', $event)" @dblclick.stop="node.kind !== 'frame' && emit('open')"
+    @pointerdown.stop="node.kind !== 'frame' && !node.historicalQuarter && emit('press', $event)"
+    @dblclick.stop="node.kind !== 'frame' && emit('open')"
   >
     <template v-if="node.kind === 'frame'">
       <button class="frame-label" type="button" @focus="emit('focus')" @pointerdown.stop="emit('press', $event)"
@@ -54,19 +70,35 @@ const isParagraph = computed(() => !!props.node.reference && isDocument(props.no
     <template v-else-if="node.reference">
       <header class="item-top">
         <component :is="sourceIcons[node.reference.kind]" class="source-icon" :size="16" />
-        <span class="item-type">{{ isParagraph ? t('workspace_canvas.paragraph') : label }}</span>
+        <span class="item-type">{{ summaryQuarter ? summaryType
+          : isParagraph ? t('workspace_canvas.paragraph') : label }}</span>
         <span v-if="status" class="status" :data-status="node.details?.status" :title="status">{{ status }}</span>
       </header>
       <h3 class="card-title" :title="name">{{ name }}</h3>
-      <p v-if="node.details?.detail" class="card-detail">{{ node.details.detail }}</p>
+      <p v-if="detail && (!compact || summaryQuarter)" class="card-detail">{{ detail }}</p>
       <div v-if="node.details" class="item-footer">
-        <span v-if="node.details.context" class="source-context" :title="node.details.context">{{ node.details.context }}</span>
-        <button class="open-source" type="button" :aria-label="t('workspace_canvas.open_asset')"
+        <span v-if="summaryQuarter" class="historical-quarter">{{ summaryQuarter }}</span>
+        <div v-else-if="node.expandable" class="tree-actions">
+          <button type="button" class="tree-action" :aria-expanded="!!expanded" :disabled="busy"
+            @pointerdown.stop @dblclick.stop @click.stop="emit('toggle')">
+            <component :is="expanded ? ChevronDown : ChevronRight" :size="15" />
+            {{ t(expanded ? 'workspace_canvas.tree.collapse' : 'workspace_canvas.tree.expand') }}
+          </button>
+          <button v-if="hasPrevious" type="button" class="tree-action" :disabled="busy"
+            :aria-label="t('workspace_canvas.tree.previous_links')" :title="t('workspace_canvas.tree.previous_links')"
+            @pointerdown.stop @dblclick.stop @click.stop="emit('previous')"><ChevronLeft :size="14" /></button>
+          <button v-if="hasMore" type="button" class="tree-action" :disabled="busy"
+            @pointerdown.stop @dblclick.stop @click.stop="emit('more')">{{ t('workspace_canvas.tree.more') }}<ChevronRight :size="14" /></button>
+        </div>
+        <span v-else-if="node.details.context && !compact" class="source-context" :title="node.details.context">{{ node.details.context }}</span>
+        <button v-if="summaryQuarter" class="open-source history-detail" type="button"
+          @pointerdown.stop @click.stop="emit('open')">{{ t('workspace_canvas.quarter.view_detail') }}<ChevronRight :size="14" /></button>
+        <button v-else class="open-source" type="button" :aria-label="t('workspace_canvas.open_asset')"
           :title="t('workspace_canvas.open_asset')" @pointerdown.stop @click.stop="emit('open')"><ChevronRight :size="16" /></button>
       </div>
     </template>
 
-    <button v-if="node.kind !== 'frame'" class="connect-handle" type="button" tabindex="-1"
+    <button v-if="node.kind !== 'frame' && !node.historicalQuarter" class="connect-handle" type="button" tabindex="-1"
       :aria-label="t('workspace_canvas.connect_from')" :title="t('workspace_canvas.connect_from')"
       @pointerdown.stop="emit('press', $event, 'connect')" @dblclick.stop><Link :size="13" /></button>
   </article>
@@ -108,6 +140,35 @@ const isParagraph = computed(() => !!props.node.reference && isDocument(props.no
   transition: box-shadow 120ms ease, border-color 120ms ease;
 }
 .kind-card:hover, .kind-note:hover { box-shadow: 0 6px 18px #253b6020; }
+.kind-card.entry { border-color: #7bb3da; background: #fafdff; }
+.history-detail { display: inline-flex; gap: 3px; align-items: center; color: #17577d;
+  background: #e9f4fe; border: 0; border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.historical-quarter { color: #576787; font-size: 12px; white-space: nowrap; }
+.historical-card .item-footer { justify-content: space-between; gap: 3px; }
+.kind-card.historical-card { border-color: #adc3de; background: #f8fbff; cursor: pointer; gap: 4px; padding: 10px 12px; }
+.historical-card.compact .history-detail,
+.historical-card.compact .historical-quarter { font-size: 18px; }
+.historical-card.compact .card-title { font-size: var(--canvas-compact-title, 24px); line-height: 1.12; }
+.historical-card .card-detail { flex: 0 0 auto; font-size: 15px; line-height: 1.26; }
+.historical-card.compact .card-detail { font-size: var(--canvas-compact-summary, 18px); line-height: 1.1; -webkit-line-clamp: 1; }
+.tree-card:not(.historical-card) .card-detail { display: none; }
+.tree-actions { display: flex; align-items: center; gap: 6px; margin-inline-end: auto; min-width: 0; }
+.tree-action { display: inline-flex; align-items: center; gap: 3px; padding: 4px 6px; border: 0; border-radius: 5px;
+  color: #1c5b80; background: #eaf4fb; font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.tree-action:hover { background: #dbeefb; }
+.tree-action:disabled { opacity: .55; cursor: default; }
+.historical-card .item-top { height: 19px; }
+.compact .card-title { font-size: var(--canvas-compact-title, 25px); }
+.compact .item-type, .compact .status { font-size: var(--canvas-compact-meta, 16px); }
+.compact .status { line-height: 1.25; }
+.compact .source-icon { width: var(--canvas-compact-meta, 16px); height: var(--canvas-compact-meta, 16px); }
+.kind-card.compact { gap: 10px; }
+.kind-card.tile { gap: 4px; padding: 8px 10px; }
+.tile .card-detail, .tile .source-context { display: none; }
+.tile .item-footer { position: absolute; right: 6px; bottom: 3px; }
+.tile .card-title { font-size: 14px; }
+.tile.compact .card-title { font-size: 21px; }
+.tile.compact .item-type, .tile.compact .status { font-size: 13px; }
 .canvas-item.active, .canvas-item.linked, .canvas-item:focus-visible {
   border-color: var(--canvas-accent);
   box-shadow: 0 0 0 2px var(--canvas-accent), 0 6px 18px #253b6020;
@@ -121,7 +182,7 @@ const isParagraph = computed(() => !!props.node.reference && isDocument(props.no
 .item-top { display: flex; align-items: center; gap: 7px; min-width: 0; height: 22px; flex: 0 0 auto; }
 .note-top { color: var(--note-ink); font-size: 11px; font-weight: 700; }
 .source-icon { color: var(--source-color); flex: 0 0 auto; }
-.item-type { color: var(--canvas-muted); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.item-type { color: var(--canvas-muted); font-size: 11px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status {
   margin-inline-start: auto;
   max-width: 65%;

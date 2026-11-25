@@ -16,7 +16,7 @@ const panelTitle = computed(() => typeof route.meta.canvasTitle === 'string' ? t
 const board = useTemplateRef<InstanceType<typeof WorkspaceAssetGraph>>('board')
 
 function closePanel() {
-  void router.replace({ name: WORKSPACE_ASSET_CANVAS, params: { wsId: workspaceId.value } })
+  void router.replace({ name: WORKSPACE_ASSET_CANVAS, params: { wsId: workspaceId.value }, query: { quarter: route.query.quarter } })
 }
 
 watch(() => route.fullPath, () => { void board.value?.refresh() })

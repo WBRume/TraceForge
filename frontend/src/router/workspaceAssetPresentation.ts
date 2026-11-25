@@ -126,11 +126,19 @@ export function workspaceAssetPresentation(
     if (operationsByName.has(fallback)) return { name: fallback, params: to.params, query: to.query, hash: to.hash }
     return { name: 'workspaceAssetsRequirements', params: { wsId } }
   }
-  if (mode !== 'canvas' || isCanvasRoute(to)) return
-  const operation = operationsByName.get(name)
   const fromCanvas = isCanvasRoute(from) && from.params.wsId === wsId
+  const retainedQuarter = fromCanvas && typeof from.query.quarter === 'string' ? from.query.quarter : undefined
+  if (mode !== 'canvas') return
+  if (isCanvasRoute(to)) {
+    if (retainedQuarter && to.meta.assetOperation && !to.query.quarter && to.name) {
+      return { name: to.name, params: to.params, query: { ...to.query, quarter: retainedQuarter }, hash: to.hash }
+    }
+    return
+  }
+  const operation = operationsByName.get(name)
   if (operation && (!operation.context || (fromCanvas && (name !== 'taskChat' || to.params.taskId)))) {
-    return { name: panelName(name), params: to.params, query: to.query, hash: to.hash }
+    return { name: panelName(name), params: to.params,
+      query: retainedQuarter ? { quarter: retainedQuarter, ...to.query } : to.query, hash: to.hash }
   }
   if (!indexRoutes.has(name)) return
   const { requirementId, case: caseId, ...query } = to.query

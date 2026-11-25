@@ -1,12 +1,16 @@
 from dataclasses import dataclass
+from json import dumps
 
 from fastapi import HTTPException
+from sqlalchemy import Text, case, cast, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.domains.auth.models.user import Workspace, WorkspacePermission
+from app.domains.auth.models.user import WorkspacePermission, WorkspaceRole
 from app.domains.workspace.services import workspace_service
-from app.domains.workspace_canvas import relations, sources
+from app.domains.workspace_canvas import quarters, sources
 from app.domains.workspace_canvas.models import WorkspaceCanvas
+from app.domains.workspace_canvas.quarter_calendar import FiscalCalendar, FiscalQuarter
 from app.domains.workspace_canvas.schemas import (
     WORLD_LIMIT,
     AddEdge,
@@ -27,10 +31,15 @@ from app.domains.workspace_canvas.schemas import (
     UpdateNode,
 )
 
+MAX_ANNOTATION_BYTES = 512 * 1024
+MAX_ANNOTATION_NODES = 256
+MAX_ANNOTATION_EDGES = 512
+
 
 @dataclass(frozen=True)
 class CanvasMember:
     access: CanvasAccess
+    can_edit_calendar: bool
 
     def can_view_node(self, node: CanvasNode) -> bool:
         return node.reference is None or node.reference.kind in self.access.source_kinds
@@ -50,6 +59,7 @@ def require_member(db: Session, workspace_id: str, user_id: str) -> CanvasMember
             source_kinds=kinds,
             can_link_requirements=can_view_assets and WorkspacePermission.MANAGE_REQUIREMENTS in permissions,
         ),
+        can_edit_calendar=member.role == WorkspaceRole.OWNER,
     )
 
 
@@ -57,20 +67,46 @@ def contents_of(row: WorkspaceCanvas | None) -> CanvasContents:
     return CanvasContents.model_validate(row.contents) if row else CanvasContents()
 
 
-def read_canvas(db: Session, workspace_id: str, member: CanvasMember) -> CanvasView:
-    canvas = db.get(WorkspaceCanvas, workspace_id)
-    contents = contents_of(canvas)
-    visible = {node.id: node for node in contents.nodes.values() if member.can_view_node(node)}
-    assets = sources.workspace_assets(db, workspace_id, member.access.source_kinds)
+def contents_size(db: Session):
+    value = cast(WorkspaceCanvas.contents, Text)
+    return func.octet_length(value) if db.get_bind().dialect.name == "postgresql" else func.length(value)
+
+
+def read_canvas(
+    db: Session, workspace_id: str, member: CanvasMember, calendar: FiscalCalendar, period: FiscalQuarter
+) -> CanvasView:
+    row = (
+        db.query(
+            WorkspaceCanvas.revision,
+            case((contents_size(db) <= MAX_ANNOTATION_BYTES, WorkspaceCanvas.contents), else_=None),
+        )
+        .filter_by(workspace_id=workspace_id)
+        .first()
+    )
+    contents = CanvasContents.model_validate(row[1]) if row and row[1] is not None else CanvasContents()
+    visible = {
+        node.id: node
+        for node in contents.nodes.values()
+        if member.can_view_node(node)
+        and (not (node.scope_id or "").startswith("quarter-") or node.scope_id == f"quarter-{period.id}")
+    }
+    content = quarters.read_quarter(db, workspace_id, member.access.source_kinds, calendar, period)
+    assets = content.assets
+    visible = dict(list(visible.items())[:MAX_ANNOTATION_NODES])
     resolved = {asset.reference.model_dump_json(): asset.details for asset in assets}
     refs = [
         node.reference
         for node in visible.values()
         if node.reference is not None and node.reference.model_dump_json() not in resolved
     ]
-    resolved.update(sources.resolve_sources(db, workspace_id, refs, previews=True))
+    if refs:
+        resolved.update(
+            sources.resolve_sources(
+                db, workspace_id, list({ref.model_dump_json(): ref for ref in refs}.values())[:16], previews=True
+            )
+        )
     return CanvasView(
-        revision=canvas.revision if canvas else 0,
+        revision=row[0] if row else 0,
         assets=assets,
         nodes=[
             CanvasNodeView(
@@ -78,22 +114,43 @@ def read_canvas(db: Session, workspace_id: str, member: CanvasMember) -> CanvasV
             )
             for node in visible.values()
         ],
-        edges=[edge for edge in contents.edges.values() if edge.source in visible and edge.target in visible],
-        relations=relations.load_relations(db, workspace_id, assets),
+        edges=[edge for edge in contents.edges.values() if edge.source in visible and edge.target in visible][
+            :MAX_ANNOTATION_EDGES
+        ],
+        relations=content.relations,
         access=member.access,
+        quarter=period,
+        branches=content.branches,
+        root_tree=content.root_tree,
+        root_cursor=content.next_cursor if content.root_tree else None,
+        annotations_limited=(
+            bool(row and row[1] is None)
+            or len(contents.nodes) > MAX_ANNOTATION_NODES
+            or len(contents.edges) > MAX_ANNOTATION_EDGES
+        ),
     )
 
 
 def _lock_canvas(db: Session, workspace_id: str) -> WorkspaceCanvas:
-    # Lock the workspace as well as its existing state so concurrent first edits
-    # use the same board. Refresh instances previously loaded by this session.
-    if not db.query(Workspace.id).filter_by(id=workspace_id).with_for_update().first():
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    row = db.get(WorkspaceCanvas, workspace_id, populate_existing=True)
-    if row is None:
-        row = WorkspaceCanvas(workspace_id=workspace_id, revision=0, contents={})
-        db.add(row)
-    return row
+    query = db.query(WorkspaceCanvas).filter(
+        WorkspaceCanvas.workspace_id == workspace_id, contents_size(db) <= MAX_ANNOTATION_BYTES
+    )
+    row = query.populate_existing().with_for_update().first()
+    if row is not None:
+        return row
+    if db.query(WorkspaceCanvas.revision).filter_by(workspace_id=workspace_id).first():
+        raise HTTPException(409, "CANVAS_ANNOTATION_LIMIT")
+    try:
+        with db.begin_nested():
+            created = WorkspaceCanvas(workspace_id=workspace_id, revision=0, contents={})
+            db.add(created)
+            db.flush()
+        return created
+    except IntegrityError:
+        current = query.populate_existing().with_for_update().first()
+        if current is None:
+            raise HTTPException(409, "CANVAS_ANNOTATION_LIMIT") from None
+        return current
 
 
 def _containing_frame(node: CanvasNode, frames: list[CanvasNode]) -> CanvasNode | None:
@@ -112,9 +169,9 @@ def _containing_frame(node: CanvasNode, frames: list[CanvasNode]) -> CanvasNode 
     )
 
 
-def _ordered_frames(contents: CanvasContents) -> list[CanvasNode]:
+def _ordered_frames(contents: CanvasContents, scope_id: str | None) -> list[CanvasNode]:
     return sorted(
-        (node for node in contents.nodes.values() if node.kind == "frame"),
+        (node for node in contents.nodes.values() if node.kind == "frame" and node.scope_id == scope_id),
         key=lambda node: (node.size.width * node.size.height, node.id),
     )
 
@@ -122,9 +179,14 @@ def _ordered_frames(contents: CanvasContents) -> list[CanvasNode]:
 def _move_frame(contents: CanvasContents, frame: CanvasNode, target: CanvasPosition, member: CanvasMember) -> None:
     dx = target.x - frame.position.x
     dy = target.y - frame.position.y
-    frames = _ordered_frames(contents)
+    frames = _ordered_frames(contents, frame.scope_id)
     for node in contents.nodes.values():
-        if node.kind != "frame" and member.can_view_node(node) and _containing_frame(node, frames) is frame:
+        if (
+            node.kind != "frame"
+            and node.scope_id == frame.scope_id
+            and member.can_view_node(node)
+            and _containing_frame(node, frames) is frame
+        ):
             node.position = CanvasPosition(
                 x=max(-WORLD_LIMIT, min(WORLD_LIMIT, node.position.x + dx)),
                 y=max(-WORLD_LIMIT, min(WORLD_LIMIT, node.position.y + dy)),
@@ -186,8 +248,15 @@ def _apply_operation(contents: CanvasContents, operation: CanvasOperation, membe
 
 
 def _store(row: WorkspaceCanvas, contents: CanvasContents) -> None:
+    value = contents.model_dump(mode="json")
+    if (
+        len(contents.nodes) > MAX_ANNOTATION_NODES
+        or len(contents.edges) > MAX_ANNOTATION_EDGES
+        or len(dumps(value).encode()) > MAX_ANNOTATION_BYTES
+    ):
+        raise HTTPException(409, "CANVAS_ANNOTATION_LIMIT")
     row.revision += 1
-    row.contents = contents.model_dump(mode="json")
+    row.contents = value
 
 
 def _validate_source_nodes(db: Session, workspace_id: str, member: CanvasMember, operation: CanvasOperation) -> None:
@@ -195,7 +264,7 @@ def _validate_source_nodes(db: Session, workspace_id: str, member: CanvasMember,
     if nodes and not isinstance(operation.edit, (AddEdge, UpdateNode)):
         raise HTTPException(status_code=422, detail="This operation does not accept asset anchors")
     for node in nodes:
-        if node.reference is None or node.id != sources.catalog_node_id(node.reference):
+        if node.reference is None or node.id != sources.catalog_node_id(node.reference, node.scope_id):
             raise HTTPException(status_code=422, detail="Invalid asset anchor")
     if isinstance(operation.edit, AddNode):
         nodes.append(operation.edit.node)
@@ -219,11 +288,12 @@ def _attach_anchors(contents: CanvasContents, operation: CanvasOperation) -> Non
         candidates = [node for node in operation.anchors if node.id in (edit.edge.source, edit.edge.target)]
     elif isinstance(edit, UpdateNode):
         frame = contents.nodes.get(edit.id)
-        frames = _ordered_frames(contents) if frame and frame.kind == "frame" else []
+        frames = _ordered_frames(contents, frame.scope_id) if frame and frame.kind == "frame" else []
         candidates = [
             node
             for node in operation.anchors
-            if node.id == edit.id or (frames and _containing_frame(node, frames) is frame)
+            if node.id == edit.id
+            or (frames and node.scope_id == frame.scope_id and _containing_frame(node, frames) is frame)
         ]
     else:
         return
@@ -234,7 +304,11 @@ def _attach_anchors(contents: CanvasContents, operation: CanvasOperation) -> Non
 def submit_operation(db: Session, workspace_id: str, actor_id: str, operation: CanvasOperation) -> CanvasReceipt:
     member = require_member(db, workspace_id, actor_id)
     operation_key = f"{actor_id}:{operation.id}"
-    latest = db.get(WorkspaceCanvas, workspace_id)
+    latest = (
+        db.query(WorkspaceCanvas)
+        .filter(WorkspaceCanvas.workspace_id == workspace_id, contents_size(db) <= MAX_ANNOTATION_BYTES)
+        .first()
+    )
     if latest and operation_key in contents_of(latest).recent_operations:
         return CanvasReceipt(revision=latest.revision)
 

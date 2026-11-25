@@ -2,18 +2,20 @@
 import { computed, onMounted, onScopeDispose, shallowRef, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Maximize2, Minus, Plus, Workflow } from '@/components/icons'
-import { useAuthStore } from '@/stores/auth'
-import { getApiServerUrl } from '@/utils/api'
 import CanvasArrows from './CanvasArrows.vue'
 import CanvasItem from './CanvasItem.vue'
+import CanvasOverviewLayer from './CanvasOverviewLayer.vue'
 import CanvasRelationLegend from './CanvasRelationLegend.vue'
 import CanvasToolbar from './CanvasToolbar.vue'
 import type { CanvasContextRequest, CanvasContextTarget } from './contextMenu'
-import { sourceIcons, type CanvasConnection, type CanvasGraph, type CanvasNode, type CanvasRelationType, type CanvasSelection,
+import { referenceKey, type CanvasConnection, type CanvasGraph, type CanvasNode, type CanvasRelationType, type CanvasSelection,
   type CanvasTool, type NodePatch, type Point, type Size } from './model'
 import { useCanvasInteraction } from './useCanvasInteraction'
 
-const props = defineProps<{ workspaceId: string; data: CanvasGraph; selection: CanvasSelection | null; busy: boolean }>()
+const props = defineProps<{
+  data: CanvasGraph; selection: CanvasSelection | null; busy: boolean; summary?: boolean;
+  expanded: ReadonlyMap<string, { cursor?: string | null; previous: boolean }>; expanding: string
+}>()
 const emit = defineEmits<{
   select: [selection: CanvasSelection | null]
   create: [kind: 'note' | 'frame', position: Point, size?: Size]
@@ -23,14 +25,20 @@ const emit = defineEmits<{
   remove: []
   openRelation: [id: string]
   context: [request: CanvasContextRequest]
+  visibleTasks: [ids: string[]]
+  expand: [id: string]
+  toggleBranch: [id: string]
+  moreBranch: [id: string]
+  previousBranch: [id: string]
 }>()
 const { t } = useI18n()
-const auth = useAuthStore()
+const branchKey = (node: CanvasNode) => node.reference ? referenceKey(node.reference) : ''
 const surface = useTemplateRef<HTMLElement>('surface')
 const tool = shallowRef<CanvasTool>('select')
 const relationFilter = shallowRef<CanvasRelationType | null>(null)
 const size = shallowRef<Size>({ width: 0, height: 0 })
 let observer: ResizeObserver | undefined
+let expansion: ReturnType<typeof setTimeout> | undefined
 onMounted(() => {
   if (!surface.value) return
   size.value = { width: surface.value.clientWidth, height: surface.value.clientHeight }
@@ -39,11 +47,12 @@ onMounted(() => {
   })
   observer.observe(surface.value)
 })
-onScopeDispose(() => observer?.disconnect())
+onScopeDispose(() => { observer?.disconnect(); clearTimeout(expansion) })
 const map = useCanvasInteraction({
   surface,
-  viewportKey: `workspace-asset-graph:${getApiServerUrl()}:${auth.user?.id}:${props.workspaceId}`,
   nodes: () => props.data.nodes,
+  regions: () => props.data.regions,
+  featured: () => Boolean(props.summary),
   tool: () => tool.value,
   busy: () => props.busy,
   select: selection => emit('select', selection),
@@ -52,6 +61,8 @@ const map = useCanvasInteraction({
   connect: (source, target, mode) => emit('connect', source, target, mode),
 })
 const { viewport, moving, space, connectStart, hoveredTarget, renderedNodes, framePreview, connectionPreview } = map
+const isOverview = computed(() => viewport.value.scale < (props.summary ? 0.26 : 0.34))
+const compact = computed(() => viewport.value.scale < 0.68)
 const visibleIds = computed(() => {
   const { x, y, scale } = viewport.value
   return new Set(renderedNodes.value.filter(node => {
@@ -62,6 +73,38 @@ const visibleIds = computed(() => {
 })
 const frames = computed(() => renderedNodes.value.filter(node => node.kind === 'frame' && visibleIds.value.has(node.id)))
 const items = computed(() => renderedNodes.value.filter(node => node.kind !== 'frame' && visibleIds.value.has(node.id)))
+const planTasks = computed(() => {
+  if (props.summary) return []
+  const tasks = props.data.nodes.flatMap(node => node.reference?.kind === 'task'
+    && (!props.data.root_tree || props.expanded.has(branchKey(node))) ? [node] : [])
+  if (tasks.length <= 12) return tasks.map(node => node.reference!.id)
+  if (isOverview.value) return []
+  const { x, y, scale } = viewport.value
+  const distance = (node: CanvasNode) => Math.hypot(node.position.x * scale + x - size.value.width / 2,
+    node.position.y * scale + y - size.value.height / 2)
+  return tasks.filter(node => visibleIds.value.has(node.id)).sort((a, b) => distance(a) - distance(b))
+    .slice(0, 12).map(node => node.reference!.id)
+})
+watch(() => [...planTasks.value].sort().join(','), (value, _, cleanup) => {
+  const timer = setTimeout(() => emit('visibleTasks', value ? value.split(',') : []), 220)
+  cleanup(() => clearTimeout(timer))
+}, { immediate: true })
+watch(() => props.data, (current, previous) => {
+  if (current.quarter?.id !== previous.quarter?.id || current.root_tree !== previous.root_tree) { fitEntries(); return }
+  const planCount = (data: CanvasGraph) => data.nodes.filter(node => node.reference?.kind === 'plan_document').length
+  if (moving.value || planCount(current) === planCount(previous)) return
+  const id = props.selection?.type === 'node' ? props.selection.id : undefined
+  if (!id && isOverview.value) { map.fit(); return }
+  const { x, y, scale } = viewport.value
+  const distance = (node: CanvasNode) => Math.hypot(node.position.x * scale + x - size.value.width / 2,
+    node.position.y * scale + y - size.value.height / 2)
+  const anchor = id ? previous.nodes.find(node => node.id === id)
+    : previous.nodes.reduce<CanvasNode | undefined>((closest, node) => !closest || distance(node) < distance(closest) ? node : closest, undefined)
+  const moved = anchor && current.nodes.find(node => node.id === anchor.id)
+  if (anchor && moved) viewport.value = {
+    scale, x: x + (anchor.position.x - moved.position.x) * scale, y: y + (anchor.position.y - moved.position.y) * scale,
+  }
+})
 const selectedNode = computed(() => props.selection?.type === 'node' ? props.data.nodes.find(node => node.id === props.selection?.id) : null)
 const selectedEdge = computed(() => props.selection?.type === 'edge' ? props.selection.id : undefined)
 const canRemove = computed(() => selectedEdge.value || (selectedNode.value && !selectedNode.value.automatic))
@@ -70,10 +113,15 @@ const shownRelations = computed(() => relationFilter.value
 watch(() => props.data.relations, links => {
   if (!links.some(link => link.relation_type === relationFilter.value)) relationFilter.value = null
 })
-const sceneStyle = computed(() => ({ transform: `translate(${viewport.value.x}px, ${viewport.value.y}px) scale(${viewport.value.scale})` }))
+const sceneStyle = computed(() => ({
+  transform: `translate(${viewport.value.x}px, ${viewport.value.y}px) scale(${viewport.value.scale})`,
+  '--canvas-compact-title': `${Math.min(32, Math.max(24, 12 / viewport.value.scale))}px`,
+  '--canvas-compact-meta': `${Math.min(24, Math.max(15, 9 / viewport.value.scale))}px`,
+  '--canvas-compact-summary': `${Math.min(26, Math.max(16, 9 / viewport.value.scale))}px`,
+}))
 const gridStyle = computed(() => ({
   backgroundPosition: `${viewport.value.x}px ${viewport.value.y}px`,
-  backgroundSize: `${Math.max(8, viewport.value.scale * 22)}px ${Math.max(8, viewport.value.scale * 22)}px`,
+  backgroundSize: `${Math.max(isOverview.value ? 18 : 10, viewport.value.scale * 22)}px ${Math.max(isOverview.value ? 18 : 10, viewport.value.scale * 22)}px`,
 }))
 const previewStyle = computed(() => {
   const preview = framePreview.value
@@ -121,6 +169,49 @@ function rightClick(event: MouseEvent) {
   if (event.target instanceof Element) openContext(event.target, { x: event.clientX, y: event.clientY })
 }
 
+function assetsAt(event: Pick<MouseEvent, 'clientX' | 'clientY'>) {
+  const rect = surface.value?.getBoundingClientRect()
+  if (!rect) return {}
+  const { x, y, scale } = viewport.value
+  const point = { x: (event.clientX - rect.left - x) / scale, y: (event.clientY - rect.top - y) / scale }
+  const contains = (item: Pick<CanvasNode, 'position' | 'size'>) => point.x >= item.position.x && point.y >= item.position.y
+    && point.x <= item.position.x + item.size.width && point.y <= item.position.y + item.size.height
+  const node = renderedNodes.value.find(node => node.kind !== 'frame' && contains(node))
+  const region = props.data.regions.find(region => region.type === 'domain' && contains(region))
+    ?? props.data.regions.find(contains)
+  return { node, region }
+}
+
+function zoomIntoMap(event: MouseEvent) {
+  if (!isOverview.value || tool.value !== 'select' || (event.target as Element).closest('button')) return
+  const { node, region } = assetsAt(event)
+  const id = node?.id ?? (region && props.data.assetNodeIds.get(region.id))
+  if (id) {
+    map.focusNodes([id]); emit('select', { type: 'node', id })
+    if (props.summary && !props.data.root_tree) emit('expand', id)
+    return
+  }
+  if (region) map.focusRegion(region)
+  else map.adjustZoom(1.6)
+}
+
+function wheel(event: WheelEvent) {
+  map.wheel(event)
+  clearTimeout(expansion)
+  if (!props.summary || props.data.root_tree || tool.value !== 'select'
+    || !(event.ctrlKey || event.metaKey) || event.deltaY >= 0 || viewport.value.scale < 0.86) return
+  const { node, region } = assetsAt(event)
+  const id = node?.automatic ? node.id : region && props.data.assetNodeIds.get(region.id)
+  if (id) expansion = setTimeout(() => { if (props.summary) emit('expand', id) }, 220)
+}
+
+function keepInView(position: Point, id: string) {
+  const node = props.data.nodes.find(item => item.id === id)
+  if (!node) return
+  const { x, y, scale } = viewport.value
+  viewport.value = { x: x + (position.x - node.position.x) * scale, y: y + (position.y - node.position.y) * scale, scale }
+}
+
 function onKeydown(event: KeyboardEvent) {
   const target = event.target as HTMLElement
   if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
@@ -144,31 +235,59 @@ function noteAtCenter() {
 }
 
 function selected(node: CanvasNode) { return props.selection?.type === 'node' && props.selection.id === node.id }
-defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, fit: map.fit })
+function isEntry(node: CanvasNode) { return !!node.domainId && props.data.assetNodeIds.get(node.domainId) === node.id }
+function fitEntries() {
+  const first = props.data.root_tree && props.data.nodes.find(isEntry)
+  if (!first) { map.fit(); return }
+  const { width } = size.value
+  const scale = width < 620 ? 0.82 : 0.96
+  viewport.value = { scale, x: Math.min(111, width * 0.18) - first.position.x * scale, y: 34 - first.position.y * scale }
+}
+
+function revealChild(parentId: string, childId: string) {
+  const parent = props.data.nodes.find(node => node.id === parentId)
+  const child = props.data.nodes.find(node => node.id === childId)
+  if (!child || !parent) return
+  const { x, y, scale } = viewport.value
+  const horizontal = x + (child.position.x + child.size.width) * scale > size.value.width - 30
+    || x + child.position.x * scale < 44
+  const vertical = y + (child.position.y + child.size.height) * scale > size.value.height - 65
+    || y + child.position.y * scale < 20
+  if (horizontal || vertical) map.focusNodes([parentId, childId])
+}
+onMounted(() => { if (props.data.root_tree) fitEntries() })
+defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, focusRegion: map.focusRegion,
+  fit: fitEntries, keepInView, revealChild })
 </script>
 
 <template>
   <section class="stage-shell" :aria-label="t('workspace_canvas.title')">
-    <div ref="surface" class="canvas-surface" data-testid="workspace-canvas-surface" tabindex="0" :style="gridStyle"
-      :class="[`mode-${tool}`, { moving, 'panning-key': space }]"
-      @pointerdown="map.pointerDown" @pointermove="map.pointerMove" @pointercancel="map.cancelGesture" @wheel.prevent="map.wheel"
-      @keydown="onKeydown" @contextmenu.prevent="rightClick">
-      <div class="canvas-scene" :style="sceneStyle">
-        <div v-for="group in data.groups" :key="group.kind" class="asset-lane" :style="{ left: `${group.position.x}px`, top: `${group.position.y}px` }">
-          <component :is="sourceIcons[group.kind]" :size="17" />{{ t(`workspace_canvas.kind.${group.kind}`) }}
-        </div>
+    <div ref="surface" class="canvas-surface" data-testid="workspace-canvas-surface" :data-quarter="data.quarter?.id"
+      :data-root-tree="data.root_tree || undefined" tabindex="0" :style="gridStyle"
+      :data-zoom-mode="isOverview ? 'overview' : compact ? 'compact' : 'detail'"
+      :class="[`mode-${tool}`, { moving, 'panning-key': space, 'map-scale': isOverview }]"
+      @pointerdown="map.pointerDown" @pointermove="map.pointerMove" @pointercancel="map.cancelGesture" @wheel.prevent="wheel"
+      @keydown="onKeydown" @contextmenu.prevent="rightClick" @dblclick="zoomIntoMap">
+      <CanvasOverviewLayer :nodes="renderedNodes" :regions="data.regions" :relations="shownRelations" :edges="data.edges"
+        :viewport="viewport" :size="size" :overview="isOverview" :featured="summary" :tree="data.root_tree" :selected-id="selectedNode?.id" />
+      <div v-if="!isOverview" class="canvas-scene" :style="sceneStyle">
         <div class="scene-layer frame-layer">
           <CanvasItem v-for="node in frames" :key="node.id" :node="node" :active="selected(node)"
             :linked="connectStart?.id === node.id || hoveredTarget === node.id" @press="(event, handle) => map.nodeDown(event, node, handle)"
             @focus="emit('select', { type: 'node', id: node.id })" @open="open(node.id)" />
         </div>
         <CanvasArrows :nodes="renderedNodes" :visible-ids="visibleIds" :edges="data.edges" :relations="shownRelations" :selected-id="selectedEdge"
-          :preview="connectionPreview"
+          :preview="connectionPreview" :regions="data.regions" :tree="data.root_tree"
           @select="id => emit('select', { type: 'edge', id })" @open-relation="id => emit('openRelation', id)" />
         <div class="scene-layer card-layer">
           <CanvasItem v-for="node in items" :key="node.id" :node="node" :active="selected(node)"
+            :entry="isEntry(node)" :compact="compact" :quarter-id="data.quarter?.id"
+            :tree="data.root_tree" :expanded="expanded.has(branchKey(node))"
+            :has-more="!!expanded.get(branchKey(node))?.cursor" :has-previous="!!expanded.get(branchKey(node))?.previous"
+            :busy="expanding === branchKey(node)"
             :linked="connectStart?.id === node.id || hoveredTarget === node.id" @press="(event, handle) => map.nodeDown(event, node, handle)"
-            @focus="emit('select', { type: 'node', id: node.id })" @open="open(node.id)" />
+            @focus="emit('select', { type: 'node', id: node.id })" @open="open(node.id)"
+            @toggle="emit('toggleBranch', node.id)" @more="emit('moreBranch', node.id)" @previous="emit('previousBranch', node.id)" />
         </div>
         <div v-if="framePreview" class="frame-preview" :style="previewStyle" />
       </div>
@@ -182,6 +301,7 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
         </div>
       </div>
       <div v-if="cursorHint" class="cursor-hint" aria-live="polite">{{ cursorHint }}</div>
+      <div v-else-if="isOverview" class="map-hint">{{ t('workspace_canvas.domains.map_zoom') }}</div>
       <CanvasRelationLegend :relations="data.relations" :active="relationFilter"
         @choose="type => relationFilter = relationFilter === type ? null : type" />
       <div class="viewport-controls canvas-control" @pointerdown.stop>
@@ -191,7 +311,7 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
         <button class="control-button" type="button" :title="t('workspace_canvas.zoom_in')" :aria-label="t('workspace_canvas.zoom_in')"
           @click="map.adjustZoom(1.2)"><Plus :size="17" /></button>
         <button class="control-button fit-button" type="button" :title="t('workspace_canvas.fit')" :aria-label="t('workspace_canvas.fit')"
-          @click="map.fit"><Maximize2 :size="15" /></button>
+          @click="map.fit(true)"><Maximize2 :size="15" /></button>
       </div>
     </div>
     <slot />
@@ -214,14 +334,14 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
   overscroll-behavior: contain;
 }
 .canvas-surface:focus-visible { box-shadow: inset 0 0 0 2px var(--canvas-accent); }
+.map-scale { background-image: radial-gradient(circle, #d4e1ed 0.8px, transparent 1px); }
+.map-hint { position: absolute; top: 16px; left: 67px; padding: 4px 7px; color: #516e88; font-size: 12px; pointer-events: none; }
 .mode-note, .mode-frame, .mode-arrow, .mode-relation,
 .mode-arrow :deep(.canvas-item:not(.kind-frame)), .mode-relation :deep(.canvas-item:not(.kind-frame)) { cursor: crosshair; }
 .mode-pan, .mode-pan :deep(.canvas-item), .panning-key, .panning-key :deep(.canvas-item) { cursor: grab; }
 .canvas-surface.moving, .canvas-surface.moving :deep(.canvas-item) { cursor: grabbing; }
 .canvas-scene, .scene-layer { position: absolute; inset: 0 auto auto 0; width: 0; height: 0; pointer-events: none; }
 .canvas-scene { transform-origin: 0 0; }
-.asset-lane { position: absolute; display: flex; align-items: center; gap: 6px; width: max-content;
-  color: #0369a1; font-size: 15px; font-weight: 750; padding: 4px 8px; border-radius: 6px; background: #e0f2fe; }
 .card-layer :deep(.canvas-item.active) { z-index: 2; }
 .frame-preview { position: absolute; border-radius: 10px; border: 1px dashed var(--canvas-accent); background: #587bda1a; }
 .stage-empty {

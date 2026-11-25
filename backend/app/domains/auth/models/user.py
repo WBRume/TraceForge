@@ -113,6 +113,7 @@ class Workspace(Base):
     # 工作区级 agent backend 覆盖（claude-code | opencode | dsh）；空则回退全局 .env
     agent_backend = Column(String(40), nullable=True)
     plan_doc_roots = Column(JSON, nullable=True)
+    canvas_calendar = Column(JSON, nullable=True)
     # 独立模式（未关联管理项目）下手动填写的项目/产品名称；不与项目管理/产品管理数据绑定
     custom_project_name = Column(String(200), nullable=True)
     custom_product_name = Column(String(200), nullable=True)
