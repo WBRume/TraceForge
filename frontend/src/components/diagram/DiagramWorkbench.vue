@@ -4,6 +4,8 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import type { DiagramWindowApi } from '@/types/diagramDesktop'
 import DiagramToolbar from './DiagramToolbar.vue'
+import DiagramTitleBar from './DiagramTitleBar.vue'
+import DiagramExportDialog from './DiagramExportDialog.vue'
 import DiagramPalette from './DiagramPalette.vue'
 import DiagramStage from './DiagramStage.vue'
 import DiagramInspector from './DiagramInspector.vue'
@@ -27,8 +29,10 @@ const tool = shallowRef<DiagramTool>('select')
 const pending = shallowRef<Shape | null>(null)
 const snap = shallowRef(true)
 const saving = shallowRef(false)
+const exportOpen = shallowRef(false)
 const templates = shallowRef(false)
 const replacement = shallowRef<{ doc: DiagramDocument; file: boolean }>()
+const dialogOpen = computed(() => templates.value || !!replacement.value || exportOpen.value)
 const mindMap = computed(() => doc.value.edges.some(edge => edge.relation === 'branch'))
 const organization = computed(() => doc.value.edges.some(edge => edge.relation === 'reporting'))
 
@@ -71,6 +75,14 @@ async function save(format: DiagramFormat): Promise<boolean> {
     saving.value = false
   }
   return false
+}
+
+function openExport() {
+  if (!saving.value) exportOpen.value = true
+}
+
+async function exportDrawing(format: DiagramFormat) {
+  if (await save(format)) exportOpen.value = false
 }
 
 async function replace(next: DiagramDocument, fromFile = false) {
@@ -124,7 +136,7 @@ function editable(target: EventTarget | null) {
 }
 
 function clipboardCopy(event: ClipboardEvent) {
-  if (editable(event.target) || templates.value || replacement.value) return
+  if (editable(event.target) || dialogOpen.value) return
   const doc = editor.extractedSelection()
   if (!doc.nodes.length || !event.clipboardData) return
   event.preventDefault()
@@ -132,7 +144,7 @@ function clipboardCopy(event: ClipboardEvent) {
 }
 
 function clipboardPaste(event: ClipboardEvent) {
-  if (editable(event.target) || templates.value || replacement.value) return
+  if (editable(event.target) || dialogOpen.value) return
   const payload = event.clipboardData?.getData('text/plain')
   if (!payload) return
   try {
@@ -142,11 +154,11 @@ function clipboardPaste(event: ClipboardEvent) {
 }
 
 function keyDown(event: KeyboardEvent) {
-  if (event.isComposing || templates.value || replacement.value) return
+  if (event.isComposing || dialogOpen.value) return
   const key = event.key.toLowerCase()
   if ((event.ctrlKey || event.metaKey) && key === 's') {
     event.preventDefault()
-    void save('tfdiagram')
+    openExport()
     return
   }
   if (editable(event.target) || (event.target instanceof Element && event.target.closest('[role="menu"], [role="combobox"]'))) return
@@ -198,44 +210,53 @@ onScopeDispose(() => {
 </script>
 
 <template>
-  <main class="diagram-workbench" data-testid="diagram-workbench">
-    <DiagramToolbar :title="doc.title" :tool="tool" :undo="canUndo" :redo="canRedo" :saving="saving"
-      :selected-count="selectedNodes.length" :selected-edge="!!selectedEdge" :count="doc.nodes.length" :snap="snap"
-      :mind-map="mindMap" :organization="organization"
-      @rename="editor.rename" @choose="choose" @create="replace(blankDiagram(untitled))" @open="fileInput?.click()"
-      @save="save" @undo="editor.undo" @redo="editor.redo" @arrange="arrange" @group="editor.groupSelection(t('diagram.shapes.frame'))"
-      @remove="editor.remove" @snap="snap = !snap" />
-    <div class="diagram-body">
-      <DiagramPalette :pending="pending" @choose="selectShape" @templates="templates = true" />
-      <DiagramStage ref="stage" :doc="doc" :tool="tool" :pending="pending" :snap="snap"
-        :selected="selection.nodes" :selected-edge="selection.edge" @place="place" @select="editor.selectNodes"
-        @edge="editor.selectEdge" @join="editor.addEdge" @update="editor.updateNodes" @open-file="readFile" />
-      <DiagramInspector ref="inspector" :nodes="selectedNodes" :edge="selectedEdge" @update-node="editor.updateNode" @update-edge="editor.updateEdge" />
-    </div>
-    <footer class="diagram-status">
-      <span>{{ t('diagram.stage.count', { nodes: doc.nodes.length, edges: doc.edges.length }) }}</span>
-      <span class="draft-status" :class="{ failed: !persisted }" role="status">{{ t(persisted ? 'diagram.local' : 'diagram.draftError') }}</span>
-    </footer>
-    <input ref="fileInput" type="file" accept=".tfdiagram,.json" data-testid="diagram-file-input" hidden @change="open">
-    <DiagramTemplateDialog v-if="templates" @close="templates = false" @select="fromTemplate" />
-    <el-dialog v-if="replacement" :model-value="true" :title="t('diagram.templates.replace')" width="min(510px, 95vw)"
-      :show-close="!saving" :close-on-click-modal="!saving" :close-on-press-escape="!saving" append-to-body @close="replacement = undefined">
-      <p>{{ t('diagram.templates.note') }}</p>
-      <template #footer>
-        <el-button :disabled="saving" @click="replacement = undefined">{{ t('diagram.tool.cancel') }}</el-button>
-        <el-button :disabled="saving" @click="confirmReplacement(false)">{{ t('diagram.templates.replace') }}</el-button>
-        <el-button type="primary" :loading="saving" @click="confirmReplacement(true)">{{ t('diagram.templates.saveFirst') }}</el-button>
-      </template>
-    </el-dialog>
-  </main>
+  <div class="diagram-window">
+    <DiagramTitleBar v-if="native.chrome" :chrome="native.chrome" />
+    <main class="diagram-workbench" data-testid="diagram-workbench">
+      <DiagramToolbar :title="doc.title" :tool="tool" :undo="canUndo" :redo="canRedo" :saving="saving"
+        :selected-count="selectedNodes.length" :selected-edge="!!selectedEdge" :count="doc.nodes.length" :snap="snap"
+        :mind-map="mindMap" :organization="organization"
+        @rename="editor.rename" @choose="choose" @create="replace(blankDiagram(untitled))" @open="fileInput?.click()"
+        @export="openExport" @undo="editor.undo" @redo="editor.redo" @arrange="arrange" @group="editor.groupSelection(t('diagram.shapes.frame'))"
+        @remove="editor.remove" @snap="snap = !snap" />
+      <div class="diagram-body">
+        <DiagramPalette :pending="pending" @choose="selectShape" @templates="templates = true" />
+        <DiagramStage ref="stage" :doc="doc" :tool="tool" :pending="pending" :snap="snap"
+          :selected="selection.nodes" :selected-edge="selection.edge" @place="place" @select="editor.selectNodes"
+          @edge="editor.selectEdge" @join="editor.addEdge" @update="editor.updateNodes" @open-file="readFile" />
+        <DiagramInspector ref="inspector" :nodes="selectedNodes" :edge="selectedEdge" @update-node="editor.updateNode" @update-edge="editor.updateEdge" />
+      </div>
+      <footer class="diagram-status">
+        <span>{{ t('diagram.stage.count', { nodes: doc.nodes.length, edges: doc.edges.length }) }}</span>
+        <span class="draft-status" :class="{ failed: !persisted }" role="status">{{ t(persisted ? 'diagram.local' : 'diagram.draftError') }}</span>
+      </footer>
+      <input ref="fileInput" type="file" accept=".tfdiagram,.json" data-testid="diagram-file-input" hidden @change="open">
+      <DiagramTemplateDialog v-if="templates" @close="templates = false" @select="fromTemplate" />
+      <DiagramExportDialog v-if="exportOpen" :saving="saving" :has-artwork="doc.nodes.length > 0"
+        @close="exportOpen = false" @submit="exportDrawing" />
+      <el-dialog v-if="replacement" :model-value="true" :title="t('diagram.templates.replace')" width="min(510px, 95vw)"
+        :show-close="!saving" :close-on-click-modal="!saving" :close-on-press-escape="!saving" append-to-body @close="replacement = undefined">
+        <p>{{ t('diagram.templates.note') }}</p>
+        <template #footer>
+          <el-button :disabled="saving" @click="replacement = undefined">{{ t('diagram.tool.cancel') }}</el-button>
+          <el-button :disabled="saving" @click="confirmReplacement(false)">{{ t('diagram.templates.replace') }}</el-button>
+          <el-button type="primary" :loading="saving" @click="confirmReplacement(true)">{{ t('diagram.templates.saveFirst') }}</el-button>
+        </template>
+      </el-dialog>
+    </main>
+  </div>
 </template>
 
 <style scoped>
-.diagram-workbench { display: grid; grid-template-rows: auto minmax(0, 1fr) 28px; height: 100dvh; overflow: hidden; background: #f8fafc; color: #172d45; }
-.diagram-body { display: grid; grid-template-columns: 194px minmax(0, 1fr) 226px; min-height: 0; min-width: 0; }
-.diagram-status { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 0 13px; border-top: 1px solid #dfe7f0; background: #fff; color: #5a7088; font-size: 11px; }
+.diagram-window { --diagram-border: #e2e8f0; display: flex; flex-direction: column; height: 100dvh; background: var(--color-bg-base); color: var(--color-text-body); }
+.diagram-workbench { flex: 1; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 12px; margin: 10px; padding: 14px; border: 1px solid var(--diagram-border); border-radius: var(--radius-lg); background: var(--color-surface-white); box-shadow: var(--shadow-sm); }
+.diagram-body { display: grid; grid-template-columns: 194px minmax(0, 1fr) 226px; gap: 10px; min-height: 0; min-width: 0; }
+.diagram-status { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--color-text-muted); font-size: 11px; }
 .draft-status { display: inline-flex; align-items: center; gap: 6px; }
-.draft-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #269676; }
-.draft-status.failed::before { background: #cf5754; }
-@media (max-width: 960px) { .diagram-body { grid-template-columns: 158px minmax(0, 1fr) 190px; } }
+.draft-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--color-accent-emerald); }
+.draft-status.failed::before { background: var(--color-accent-rose); }
+@media (max-width: 960px) {
+  .diagram-workbench { margin: 8px; padding: 10px; }
+  .diagram-body { grid-template-columns: 154px minmax(0, 1fr) 180px; }
+}
 </style>

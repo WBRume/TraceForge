@@ -12,6 +12,7 @@ window.addEventListener('traceforge:app-ready', () => {
 
 if (process.argv.includes('--traceforge-diagram')) {
   contextBridge.exposeInMainWorld('sddDiagram', {
+    chrome: process.platform === 'win32' ? 'overlay' : undefined,
     save: request => ipcRenderer.invoke('sdd:download:save', request),
   } satisfies DiagramWindowApi)
 } else if (process.argv.includes('--traceforge-task-float')) {

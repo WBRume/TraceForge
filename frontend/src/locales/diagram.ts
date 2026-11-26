@@ -10,14 +10,15 @@ const zh = {
     saved: '快捷键已更新。',
   },
   file: {
-    new: '新建', open: '打开', save: '保存绘图', export: '导出', saved: '文件已保存',
-    loadError: '无法打开此绘图文件。', saveError: '无法保存文件。', tooLarge: '绘图范围太大，请使用 SVG 导出。',
+    new: '新建', open: '打开', export: '导出', exportTitle: '导出绘图', format: '文件类型', saved: '文件已导出',
+    formats: { tfdiagram: '可编辑绘图（.tfdiagram）', png: 'PNG 图片', svg: 'SVG 矢量图' },
+    loadError: '无法打开此绘图文件。', saveError: '无法导出文件。', tooLarge: '绘图范围太大，请使用 SVG 导出。',
   },
   templates: {
     label: '模板', title: '绘图模板', flow: '审批流程图', lanes: '泳道流程图', classes: 'UML 类图',
     usecases: 'UML 用例图', sequence: 'UML 时序图', state: 'UML 状态图', entity: '实体关系图', insert: '使用模板',
     architecture: '应用架构图', network: '网络拓扑图', mindmap: '思维导图', organization: '组织架构图',
-    note: '此操作将替换当前绘图。', saveFirst: '保存当前绘图后替换', replace: '替换绘图',
+    note: '此操作将替换当前绘图。', saveFirst: '导出可编辑文件后替换', replace: '替换绘图',
   },
   library: { title: '图形库', flow: '流程', uml: 'UML', architecture: '架构', basic: '通用' },
   shapes: {
@@ -48,7 +49,8 @@ const zh = {
   },
   stage: {
     label: '绘图画布', empty: '从左侧拖入图形，或使用模板开始绘制', place: '点击画布放置图形',
-    connect: '选择连线起点和终点', connectTarget: '选择终点完成连线', select: '空格拖动画布 · 滚轮缩放',
+    connect: '选择连线起点和终点', connectTarget: '选择终点完成连线',
+    select: '拖动空白处平移 · Shift 框选', pan: '拖动画布 · 滚轮缩放',
     count: '{nodes} 个图形 · {edges} 条连线',
   },
 }
@@ -66,8 +68,9 @@ const en: typeof zh = {
     launchError: 'Could not open the drawing board.', saved: 'Shortcut updated.',
   },
   file: {
-    new: 'New', open: 'Open', save: 'Save drawing', export: 'Export', saved: 'File saved',
-    loadError: 'Could not open this drawing.', saveError: 'Could not save the file.',
+    new: 'New', open: 'Open', export: 'Export', exportTitle: 'Export drawing', format: 'File type', saved: 'File exported',
+    formats: { tfdiagram: 'Editable drawing (.tfdiagram)', png: 'PNG image', svg: 'SVG vector image' },
+    loadError: 'Could not open this drawing.', saveError: 'Could not export the file.',
     tooLarge: 'The drawing is too large for PNG. Export it as SVG.',
   },
   templates: {
@@ -75,7 +78,7 @@ const en: typeof zh = {
     classes: 'UML class diagram', usecases: 'UML use case diagram', sequence: 'UML sequence diagram',
     state: 'UML state diagram', entity: 'Entity relationship diagram', insert: 'Use template',
     architecture: 'Application architecture', network: 'Network topology', mindmap: 'Mind map', organization: 'Organization chart',
-    note: 'This will replace the current drawing.', saveFirst: 'Save and replace', replace: 'Replace drawing',
+    note: 'This will replace the current drawing.', saveFirst: 'Export editable drawing and replace', replace: 'Replace drawing',
   },
   library: { title: 'Shapes', flow: 'Flow', uml: 'UML', architecture: 'Infra', basic: 'General' },
   shapes: {
@@ -111,7 +114,8 @@ const en: typeof zh = {
   stage: {
     label: 'Drawing canvas', empty: 'Drag in a shape or start from a template', place: 'Click the canvas to place a shape',
     connect: 'Choose a source and a target', connectTarget: 'Choose a target to finish the connector',
-    select: 'Space + drag to pan · Scroll to zoom', count: '{nodes} shapes · {edges} connectors',
+    select: 'Drag empty space to pan · Shift + drag to select', pan: 'Drag to pan · Scroll to zoom',
+    count: '{nodes} shapes · {edges} connectors',
   },
 }
 

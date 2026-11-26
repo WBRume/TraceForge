@@ -35,18 +35,18 @@ function drag(event: DragEvent, shape: Shape) {
         :data-shape-option="shape" :aria-pressed="pending === shape" :title="t('diagram.shapes.' + shape)"
         draggable="true" @click="emit('choose', shape)" @dragstart="drag($event, shape)">
         <svg viewBox="0 0 50 35" aria-hidden="true">
-          <g transform="translate(4 3)" stroke="#4c6c91" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">
+          <g transform="translate(4 3)" stroke="var(--color-text-muted)" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">
             <path v-if="shape === 'text'" d="M13 4 H29 M21 4 V24 M16 24 H26" fill="none" />
             <template v-else-if="shape === 'actor'">
               <circle cx="21" cy="6.4" r="3.5" fill="none" />
               <path :d="shapeDecoration(shape, 42, 32)" fill="none" />
             </template>
             <template v-else-if="shape === 'initial' || shape === 'final'">
-              <circle cx="21" cy="14" r="8" :fill="shape === 'initial' ? '#4c6c91' : 'none'" />
-              <circle v-if="shape === 'final'" cx="21" cy="14" r="4.5" fill="#4c6c91" stroke="none" />
+              <circle cx="21" cy="14" r="8" :fill="shape === 'initial' ? 'var(--color-text-muted)' : 'none'" />
+              <circle v-if="shape === 'final'" cx="21" cy="14" r="4.5" fill="var(--color-text-muted)" stroke="none" />
             </template>
             <template v-else>
-              <path :d="shapeOutline(shape, 42, 28)" :fill="shape === 'note' ? '#fff2bc' : '#eff6fd'"
+              <path :d="shapeOutline(shape, 42, 28)" :fill="shape === 'note' ? '#fff2bc' : 'var(--color-primary-50)'"
                 :stroke-dasharray="shape === 'frame' ? '4 3' : undefined" />
               <path v-if="shapeDecoration(shape, 42, 28)" :d="shapeDecoration(shape, 42, 28)" fill="none" />
               <path v-if="shape === 'class' || shape === 'interface'" d="M 0 9 H 42 M 0 18 H 42" fill="none" />
@@ -62,17 +62,17 @@ function drag(event: DragEvent, shape: Shape) {
 </template>
 
 <style scoped>
-.diagram-library { min-width: 0; overflow: auto; border-right: 1px solid #dfe7f0; background: #fbfdff; padding: 14px 11px; }
+.diagram-library { min-width: 0; overflow: auto; border: 1px solid var(--diagram-border); border-radius: var(--radius-lg); background: var(--color-surface-white); padding: 14px 11px; }
 .library-title { display: flex; align-items: center; justify-content: space-between; gap: 5px; margin: 0 3px 13px; }
-.library-title strong { font-size: 13px; color: #243b56; }
-.template-control { display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 4px 6px; border: 0; border-radius: 5px; background: transparent; color: #126489; cursor: pointer; font-size: 12px; }
-.template-control:hover { background: #e9f5fc; }
-.library-tabs { display: flex; padding: 3px; border-radius: 7px; background: #edf2f7; gap: 2px; margin-bottom: 10px; }
-.library-tabs button { flex: 1; min-width: 0; padding: 6px 2px; border: 0; border-radius: 5px; background: transparent; color: #536b84; cursor: pointer; font-size: 12px; }
-.library-tabs button[aria-pressed="true"] { background: white; color: #096b99; box-shadow: 0 1px 3px #25466514; font-weight: 650; }
+.library-title strong { font-size: 14px; color: var(--color-text-title); }
+.template-control { display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 4px 6px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-primary-700); cursor: pointer; font-size: 12px; }
+.template-control:hover, .template-control:focus-visible { background: var(--color-primary-50); }
+.library-tabs { display: flex; padding: 3px; border: 1px solid var(--diagram-border); border-radius: var(--radius-md); background: var(--color-bg-base); gap: 2px; margin-bottom: 10px; }
+.library-tabs button { flex: 1; min-width: 0; padding: 6px 2px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: 12px; }
+.library-tabs button[aria-pressed="true"] { background: var(--color-surface-white); color: var(--color-primary-700); box-shadow: var(--shadow-sm); font-weight: 650; }
 .shape-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
-.shape-button { display: grid; place-items: center; width: 100%; min-height: 67px; padding: 7px 2px 6px; gap: 3px; border: 1px solid transparent; border-radius: 7px; color: #344a64; background: transparent; cursor: grab; font-size: 11px; }
+.shape-button { display: grid; place-items: center; width: 100%; min-height: 67px; padding: 7px 2px 6px; gap: 3px; border: 1px solid transparent; border-radius: var(--radius-md); color: var(--color-text-body); background: transparent; cursor: grab; font-size: 11px; }
 .shape-button svg { width: 46px; height: 32px; }
 .shape-button span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.shape-button:hover, .shape-button[aria-pressed="true"] { background: #edf7fd; border-color: #c7e6f9; color: #075985; }
+.shape-button:hover, .shape-button:focus-visible, .shape-button[aria-pressed="true"] { background: var(--color-primary-50); border-color: var(--color-primary-100); color: var(--color-primary-700); }
 </style>

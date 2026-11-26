@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { DesktopWorkspaceWindowsApi } from '@/types/workspaceWindows'
 
-const props = defineProps<{ api: DesktopWorkspaceWindowsApi }>()
+const props = defineProps<{ api: Pick<DesktopWorkspaceWindowsApi, 'control'> }>()
 const emit = defineEmits<{ error: [error: unknown] }>()
 const { t } = useI18n()
 const maximized = shallowRef(false)

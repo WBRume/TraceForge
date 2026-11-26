@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path'
 import { DEFAULT_DIAGRAM_SHORTCUT, normalizeDiagramShortcut } from '../src/desktop/diagramShortcut'
 import type { DiagramShortcutState } from '../src/types/diagramDesktop'
+import { WINDOWS_TITLE_BAR } from './workspaceWindows'
 
 export function registerDiagramWindow(preload: string, rendererDir: string, devServerUrl?: string, icon?: NativeImage) {
   const userData = app.getPath('userData')
@@ -27,6 +28,7 @@ export function registerDiagramWindow(preload: string, rendererDir: string, devS
       y: workArea.y + Math.round((workArea.height - height) / 2),
       width, height, minWidth: Math.min(760, width), minHeight: Math.min(520, height),
       title: 'TraceForge · 绘图板',
+      ...(process.platform === 'win32' ? { titleBarStyle: 'hidden' as const, titleBarOverlay: WINDOWS_TITLE_BAR } : {}),
       icon, show: false, backgroundColor: '#f8fafc', autoHideMenuBar: true,
       webPreferences: {
         preload, contextIsolation: true, nodeIntegration: false, sandbox: false,

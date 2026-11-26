@@ -127,11 +127,12 @@ defineExpose({ focusLabel })
 </template>
 
 <style scoped>
-.diagram-inspector { min-width: 0; border-left: 1px solid #dfe7f0; background: #fbfdff; overflow: auto; padding: 15px 13px; color: #243b56; }
-.inspector-heading { font-size: 13px; }
-.inspector-subheading { margin: 12px 0 0; color: #63788f; font-size: 12px; }
-.property { display: grid; gap: 5px; color: #304a65; font-size: 12px; margin-top: 13px; }
+.diagram-inspector { min-width: 0; border: 1px solid var(--diagram-border); border-radius: var(--radius-lg); background: var(--color-surface-white); overflow: auto; padding: 14px 13px; color: var(--color-text-body); }
+.inspector-heading { font-size: 14px; color: var(--color-text-title); }
+.inspector-subheading { margin: 12px 0 0; color: var(--color-text-muted); font-size: 12px; }
+.property { display: grid; gap: 5px; color: var(--color-text-body); font-size: 12px; margin-top: 13px; }
 .property-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.property input[type="number"] { width: 100%; min-width: 0; padding: 6px 4px 6px 8px; border: 1px solid #d9e3ee; border-radius: 6px; background: white; color: #243b56; font: inherit; }
-.color-property input { width: 100%; height: 32px; padding: 3px; border: 1px solid #d9e3ee; border-radius: 6px; background: white; cursor: pointer; }
+.property input[type="number"] { width: 100%; min-width: 0; padding: 6px 4px 6px 8px; border: 1px solid var(--diagram-border); border-radius: var(--radius-md); background: var(--color-surface-white); color: var(--color-text-body); font: inherit; }
+.color-property input { width: 100%; height: 32px; padding: 3px; border: 1px solid var(--diagram-border); border-radius: var(--radius-md); background: var(--color-surface-white); cursor: pointer; }
+.property input:focus-visible { outline: 1px solid var(--color-primary-500); outline-offset: -1px; }
 </style>

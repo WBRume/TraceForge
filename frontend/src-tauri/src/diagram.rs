@@ -60,7 +60,7 @@ async fn open(app: &AppHandle) -> Result<(), String> {
         window.show().map_err(|error| error.to_string())?;
         return window.set_focus().map_err(|error| error.to_string());
     }
-    WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App("diagram.html".into()))
+    let builder = WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App("diagram.html".into()))
         .title("TraceForge · 绘图板")
         .inner_size(1280.0, 820.0)
         .min_inner_size(720.0, 500.0)
@@ -68,7 +68,10 @@ async fn open(app: &AppHandle) -> Result<(), String> {
         .on_navigation(|url| {
             super::task_floats::local_navigation(url) && url.path().ends_with("/diagram.html")
         })
-        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
+    #[cfg(windows)]
+    let builder = builder.decorations(false);
+    builder
         .build()
         .map(|_| ())
         .map_err(|error| error.to_string())

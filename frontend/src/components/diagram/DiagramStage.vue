@@ -35,8 +35,8 @@ const space = shallowRef(false)
 const source = shallowRef<string>()
 const cursor = shallowRef<Point>()
 const marquee = shallowRef<(Point & { width: number; height: number })>()
-type Gesture = { id: number; anchor: Point; last: Point } & (
-  | { kind: 'pan'; view: Viewport }
+type Gesture = { id: number; anchor: Point } & (
+  | { kind: 'pan'; view: Viewport; clearOnClick: boolean; dragged: boolean }
   | { kind: 'move'; nodes: DiagramNode[] }
   | { kind: 'resize'; node: DiagramNode }
   | { kind: 'area'; previous: string[] }
@@ -64,7 +64,7 @@ const gridStyle = computed(() => {
   return { backgroundSize: `${step}px ${step}px`, backgroundPosition: `${viewport.value.x}px ${viewport.value.y}px` }
 })
 const transform = computed(() => `translate(${viewport.value.x} ${viewport.value.y}) scale(${viewport.value.scale})`)
-const hint = computed(() => props.pending ? 'place' : source.value ? 'connectTarget' : props.tool === 'connect' ? 'connect' : 'select')
+const hint = computed(() => props.pending ? 'place' : source.value ? 'connectTarget' : props.tool)
 const moving = computed(() => props.tool === 'pan' || space.value || gesture.value?.kind === 'pan')
 
 function focus() {
@@ -95,7 +95,7 @@ function begin(event: PointerEvent) {
   event.preventDefault()
   focus()
   const point = screenPoint(event)
-  const anchor = { id: event.pointerId, anchor: point, last: point }
+  const anchor = { id: event.pointerId, anchor: point }
   const target = event.target
   const id = kindAt(target, 'data-diagram-node')
   const node = id && index.value.get(id)
@@ -105,7 +105,7 @@ function begin(event: PointerEvent) {
   const edge = kindAt(target, 'data-diagram-edge')
 
   if (moving.value || event.button === 1) {
-    gesture.value = { ...anchor, kind: 'pan', view: viewport.value }
+    gesture.value = { ...anchor, kind: 'pan', view: viewport.value, clearOnClick: false, dragged: false }
   } else if (props.pending) {
     const { x, y } = world(point)
     emit('place', props.pending, { x: position(x), y: position(y) })
@@ -140,23 +140,27 @@ function begin(event: PointerEvent) {
     gesture.value = { ...anchor, kind: 'move', nodes: nodes.value.filter(item => ids.has(item.id)) }
   } else if (edge) {
     emit('edge', edge)
+  } else if (event.shiftKey) {
+    gesture.value = { ...anchor, kind: 'area', previous: [...props.selected] }
   } else {
-    gesture.value = { ...anchor, kind: 'area', previous: event.shiftKey ? [...props.selected] : [] }
-    if (!event.shiftKey) emit('select', [])
+    gesture.value = { ...anchor, kind: 'pan', view: viewport.value, clearOnClick: true, dragged: false }
   }
   if (gesture.value) svg.value.setPointerCapture(event.pointerId)
 }
 
 function move(event: PointerEvent) {
-  if (!svg.value) return
+  const active = gesture.value
+  if (!svg.value || (!active && !source.value)) return
   const point = screenPoint(event)
   if (source.value) cursor.value = world(point)
-  const active = gesture.value
   if (!active || active.id !== event.pointerId) return
   const x = point.x - active.anchor.x
   const y = point.y - active.anchor.y
-  gesture.value = { ...active, last: point }
   if (active.kind === 'pan') {
+    if (!active.dragged) {
+      if (Math.hypot(x, y) < 3) return
+      gesture.value = { ...active, dragged: true }
+    }
     viewport.value = { ...active.view, x: active.view.x + x, y: active.view.y + y }
   } else if (active.kind === 'move' || active.kind === 'resize') {
     if (Math.hypot(x, y) < 3 && !preview.value.size) return
@@ -184,7 +188,9 @@ function move(event: PointerEvent) {
 function finish(event: PointerEvent) {
   const active = gesture.value
   if (!active || active.id !== event.pointerId) return
-  if (active.kind === 'link' && source.value) {
+  if (active.kind === 'pan') {
+    if (active.clearOnClick && !active.dragged) emit('select', [])
+  } else if (active.kind === 'link' && source.value) {
     const point = screenPoint(event)
     if (Math.hypot(point.x - active.anchor.x, point.y - active.anchor.y) >= 5) {
       const id = kindAt(document.elementFromPoint(event.clientX, event.clientY), 'data-diagram-node')
@@ -272,26 +278,26 @@ defineExpose({ fit, exportSvg, focus, cancel, zoom })
       @wheel.prevent="wheel" @dragover.prevent @drop.prevent="drop" @keydown.space.prevent="space = true"
       @keyup.space.prevent="space = false" @blur="space = false">
       <g :transform="transform">
-        <path v-if="activeLine" :d="activeLine.geometry.path" fill="none" stroke="#94ddfc" stroke-width="8" pointer-events="none" />
+        <path v-if="activeLine" :d="activeLine.geometry.path" fill="none" stroke="var(--color-primary-100)" stroke-width="8" pointer-events="none" />
         <g ref="art" font-family="Inter, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">
           <DiagramNodeGraphic v-for="node in frames" :key="node.id" :node="node" />
           <DiagramEdgeGraphic v-for="item in drawings" :key="item.edge.id" :edge="item.edge" :geometry="item.geometry" />
           <DiagramNodeGraphic v-for="node in items" :key="node.id" :node="node" />
         </g>
         <rect v-for="node in selected" :key="node.id" :x="node.x - 4" :y="node.y - 4"
-          :width="node.width + 8" :height="node.height + 8" rx="5" fill="none" stroke="#0284c7" stroke-width="1.5"
+          :width="node.width + 8" :height="node.height + 8" rx="5" fill="none" stroke="var(--color-primary-600)" stroke-width="1.5"
           vector-effect="non-scaling-stroke" pointer-events="none" />
         <rect v-if="selected.length === 1 && tool === 'select' && !pending" :x="selected[0].x + selected[0].width - 4"
-          :y="selected[0].y + selected[0].height - 4" width="10" height="10" rx="2" fill="#ffffff" stroke="#0284c7"
+          :y="selected[0].y + selected[0].height - 4" width="10" height="10" rx="2" fill="var(--color-surface-white)" stroke="var(--color-primary-600)"
           class="resize-handle" :data-diagram-resize="selected[0].id" />
         <circle v-if="port && tool === 'select' && !pending && !source" :cx="port.x + port.width + 9"
-          :cy="port.y + port.height / 2" r="6" fill="#ffffff" stroke="#0284c7" stroke-width="1.5"
+          :cy="port.y + port.height / 2" r="6" fill="var(--color-surface-white)" stroke="var(--color-primary-600)" stroke-width="1.5"
           class="port-handle" :data-diagram-port="port.id">
           <title>{{ t('diagram.tool.connect') }}</title>
         </circle>
         <line v-if="sourcePoint && cursor" :x1="sourcePoint.x" :y1="sourcePoint.y" :x2="cursor.x" :y2="cursor.y"
-          stroke="#0284c7" stroke-width="1.5" stroke-dasharray="6 4" pointer-events="none" />
-        <rect v-if="marquee" v-bind="marquee" fill="#dbefff88" stroke="#0284c7" stroke-dasharray="5 4"
+          stroke="var(--color-primary-600)" stroke-width="1.5" stroke-dasharray="6 4" pointer-events="none" />
+        <rect v-if="marquee" v-bind="marquee" fill="var(--color-primary-100)" fill-opacity=".55" stroke="var(--color-primary-600)" stroke-dasharray="5 4"
           vector-effect="non-scaling-stroke" pointer-events="none" />
       </g>
     </svg>
@@ -309,22 +315,22 @@ defineExpose({ fit, exportSvg, focus, cancel, zoom })
 </template>
 
 <style scoped>
-.diagram-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; background-color: #f2f6fa; background-image: radial-gradient(#bdccdc 0.75px, transparent 0.95px); }
-.drawing-surface { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; outline: none; user-select: none; }
+.diagram-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--diagram-border); border-radius: var(--radius-lg); background-color: var(--color-bg-base); background-image: radial-gradient(circle, #cddde8 1px, transparent 1.1px); }
+.drawing-surface { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; outline: none; user-select: none; cursor: grab; }
 .drawing-surface :deep([data-diagram-node]) { cursor: move; }
 .drawing-surface :deep([data-diagram-edge]) { cursor: pointer; }
 .drawing-surface.moving, .drawing-surface.moving :deep([data-diagram-node]) { cursor: grab; }
-.drawing-surface.moving:active { cursor: grabbing; }
-.drawing-surface.linking, .drawing-surface.linking :deep([data-diagram-node]), .drawing-surface.placing { cursor: crosshair; }
+.drawing-surface.moving:active, .drawing-surface.moving:active :deep([data-diagram-node]) { cursor: grabbing; }
+.drawing-surface:not(.moving).linking, .drawing-surface:not(.moving).linking :deep([data-diagram-node]), .drawing-surface:not(.moving).placing { cursor: crosshair; }
 .resize-handle { cursor: nwse-resize; }
 .port-handle { cursor: crosshair; }
-.empty-canvas { position: absolute; left: 50%; top: 45%; transform: translate(-50%, -50%); padding: 12px 16px; border: 1px solid #dce5ef; border-radius: 8px; background: #f8fafc; color: #52677d; font-size: 13px; text-align: center; pointer-events: none; }
+.empty-canvas { position: absolute; left: 50%; top: 45%; transform: translate(-50%, -50%); padding: 12px 16px; border: 1px solid var(--diagram-border); border-radius: var(--radius-md); background: var(--color-surface-white); color: var(--color-text-muted); font-size: 13px; text-align: center; pointer-events: none; }
 .canvas-footer { position: absolute; inset: auto 14px 14px; display: flex; gap: 10px; align-items: flex-end; justify-content: space-between; pointer-events: none; }
-.canvas-tip, .zoom-controls { border: 1px solid #dce5ef; border-radius: 8px; background: #ffffffed; color: #52677d; font-size: 12px; }
+.canvas-tip, .zoom-controls { border: 1px solid var(--diagram-border); border-radius: var(--radius-md); background: var(--color-surface-white); color: var(--color-text-muted); font-size: 12px; }
 .canvas-tip { padding: 8px 10px; }
 .zoom-controls { display: flex; align-items: center; flex-shrink: 0; gap: 5px; padding: 3px; pointer-events: auto; }
 .zoom-controls output { min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
-.zoom-controls button { display: grid; place-items: center; width: 30px; height: 28px; border: 0; border-radius: 5px; color: #3b536d; background: transparent; cursor: pointer; }
-.zoom-controls button:hover { background: #ecf5fc; }
+.zoom-controls button { display: grid; place-items: center; width: 30px; height: 28px; border: 0; border-radius: var(--radius-sm); color: var(--color-text-body); background: transparent; cursor: pointer; }
+.zoom-controls button:hover, .zoom-controls button:focus-visible { background: var(--color-primary-50); color: var(--color-primary-700); }
 @media (max-width: 900px) { .canvas-tip { display: none; } .canvas-footer { justify-content: flex-end; } }
 </style>

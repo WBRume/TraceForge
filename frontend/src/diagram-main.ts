@@ -4,14 +4,25 @@ import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
 import './assets/main.css'
 import { diagramMessages } from './locales/diagram'
+import { common as commonZh, desktop_tabs as desktopTabsZh } from './locales/zh.json'
+import { common as commonEn, desktop_tabs as desktopTabsEn } from './locales/en.json'
 import type { DiagramWindowApi } from './types/diagramDesktop'
 
 async function diagramRuntime(): Promise<DiagramWindowApi | undefined> {
   if (window.sddDiagram) return window.sddDiagram
   if (!('__TAURI_INTERNALS__' in window)) return
   const [{ invoke }, { getCurrentWindow }] = await Promise.all([import('@tauri-apps/api/core'), import('@tauri-apps/api/window')])
-  if (getCurrentWindow().label !== 'diagram') return
+  const nativeWindow = getCurrentWindow()
+  if (nativeWindow.label !== 'diagram') return
+  const platform = await invoke<string>('desktop_platform')
   return {
+    chrome: platform === 'win32' ? {
+      control: action => {
+        if (action === 'minimize') return nativeWindow.minimize()
+        if (action === 'maximize') return nativeWindow.toggleMaximize()
+        return nativeWindow.close()
+      },
+    } : undefined,
     save: request => invoke('desktop_invoke', {
       channel: 'sdd:download:save',
       payload: { ...request, data: Array.from(request.data instanceof Uint8Array ? request.data : new Uint8Array(request.data)) },
@@ -33,7 +44,10 @@ async function mount() {
   const { default: DiagramWorkbench } = await import('./components/diagram/DiagramWorkbench.vue')
   const i18n = createI18n({
     legacy: false, locale, fallbackLocale: 'en',
-    messages: { zh: { diagram: diagramMessages.zh }, en: { diagram: diagramMessages.en } },
+    messages: {
+      zh: { diagram: diagramMessages.zh, desktop_tabs: desktopTabsZh, common: { restore: commonZh.restore } },
+      en: { diagram: diagramMessages.en, desktop_tabs: desktopTabsEn, common: { restore: commonEn.restore } },
+    },
   })
   createApp(DiagramWorkbench, { native }).use(i18n).use(ElementPlus).mount(root)
 }

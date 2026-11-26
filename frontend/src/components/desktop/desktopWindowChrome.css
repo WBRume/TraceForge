@@ -1,0 +1,38 @@
+.desktop-titlebar {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: var(--desktop-titlebar-height, max(46px, env(titlebar-area-height, 0px)));
+  padding-left: 8px;
+  gap: 6px;
+  background: var(--color-bg-base, #f8fafc);
+  color: var(--color-text-body, #334155);
+  font: 12px 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+  user-select: none;
+}
+.desktop-titlebar::after {
+  content: '';
+  position: absolute;
+  inset: 100% 0 auto;
+  height: 1px;
+  background: rgba(15, 23, 42, 0.06);
+  pointer-events: none;
+}
+.desktop-brand {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px;
+  flex: none;
+  font-weight: 650;
+  letter-spacing: -.01em;
+}
+.desktop-brand > img, .desktop-brand > span { pointer-events: none; }
+.desktop-brand img { width: 21px; height: 21px; }
+.desktop-drag-region { -webkit-app-region: drag; app-region: drag; }
+.empty-titlebar { flex: 1; align-self: stretch; }
+.caption-reserve { flex: 0 0 max(0px, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 138px)))); }
+.desktop-titlebar :deep(button:focus-visible) { outline: 2px solid var(--color-primary-600, #0284c7); outline-offset: -2px; }

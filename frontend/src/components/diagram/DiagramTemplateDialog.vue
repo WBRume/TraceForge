@@ -39,8 +39,8 @@ const examples = computed(() => templateNames.map(name => {
 
 <style scoped>
 .template-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; max-height: 68vh; overflow: auto; padding: 1px; }
-.template-button { display: grid; justify-items: stretch; padding: 0; min-width: 0; overflow: hidden; text-align: left; color: #25435f; background: white; border: 1px solid #dbe6f1; border-radius: 8px; cursor: pointer; }
-.template-button svg { width: 100%; height: 92px; padding: 8px; background: #f2f7fc; pointer-events: none; }
+.template-button { display: grid; justify-items: stretch; padding: 0; min-width: 0; overflow: hidden; text-align: left; color: var(--color-text-body); background: var(--color-surface-white); border: 1px solid #e2e8f0; border-radius: var(--radius-md); cursor: pointer; }
+.template-button svg { width: 100%; height: 92px; padding: 8px; background: var(--color-bg-base); pointer-events: none; }
 .template-button strong { padding: 9px 11px; font-size: 13px; }
-.template-button:hover { border-color: #4da3cb; background: #f5faff; }
+.template-button:hover, .template-button:focus-visible { border-color: var(--color-primary-500); background: var(--color-primary-50); }
 </style>
