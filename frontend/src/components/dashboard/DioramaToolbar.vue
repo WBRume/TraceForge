@@ -6,27 +6,34 @@ import {
   Layers,
   Maximize2,
   Minus,
+  OctagonPause,
+  Play,
   Plus,
   RefreshCw,
   RotateCcw,
   RotateCw,
   Search,
+  Sparkles,
   Tag,
   Users,
 } from '@/components/icons'
 import type {
-  DioramaIsoMode,
   DioramaMetric,
   DioramaRepoItem,
   DioramaSearchEntry,
+  DioramaStageMode,
 } from '@/types/dashboardDiorama'
 
 const props = defineProps<{
+  ready: boolean
+  workspaceName: string
+  hasRepos: boolean
   repos: DioramaRepoItem[]
   enabledRepoIds: Set<string>
   metric: DioramaMetric
   days: number
-  isoMode: DioramaIsoMode
+  stageMode: DioramaStageMode
+  theaterAutoplay: boolean
   zoomPct: number
   showAvatars: boolean
   showLabels: boolean
@@ -39,7 +46,8 @@ const emit = defineEmits<{
   'focus-repo': [repoId: string]
   'update:metric': [value: DioramaMetric]
   'update:days': [value: 14 | 30 | 60]
-  'update:iso-mode': [value: DioramaIsoMode]
+  'update:stage-mode': [value: DioramaStageMode]
+  'update:theater-autoplay': [value: boolean]
   'update:show-avatars': [value: boolean]
   'update:show-labels': [value: boolean]
   rotate: [dir: 1 | -1]
@@ -51,6 +59,8 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+const isTheaterView = computed(() => !props.hasRepos || props.stageMode === 'theater')
 
 const searchQuery = shallowRef('')
 const searchFocused = shallowRef(false)
@@ -112,7 +122,7 @@ function formatLoc(loc: number): string {
 <template>
   <div class="diorama-toolbar">
     <div class="toolbar-row toolbar-row-top">
-      <div class="repo-pills" :title="t('dashboard.diorama.repo_filter_hint')">
+      <div v-if="hasRepos" class="repo-pills" :title="t('dashboard.diorama.repo_filter_hint')">
         <button
           v-for="repo in repos"
           :key="repo.id"
@@ -134,58 +144,82 @@ function formatLoc(loc: number): string {
         </button>
       </div>
 
+      <div v-else-if="ready" class="repo-pills">
+        <span class="workspace-badge-pill">
+          <span class="repo-dot is-workspace" />
+          <span class="repo-name">{{ workspaceName || 'workspace' }}</span>
+          <span class="repo-state-tag">{{ t('dashboard.diorama.repo_less_badge') }}</span>
+        </span>
+        <span class="theater-subtitle">{{ t('dashboard.diorama.theater_subtitle') }}</span>
+      </div>
+      <div v-else class="repo-pills" />
+
       <div class="toolbar-right-actions">
-        <div class="search-box">
-          <el-input
-            v-model="searchQuery"
-            size="small"
-            clearable
-            :placeholder="t('dashboard.diorama.search_placeholder')"
-            @focus="searchFocused = true"
-            @blur="handleSearchBlur"
-            @keydown.enter.prevent="handleSearchEnter"
-          >
-            <template #prefix>
-              <Search class="input-icon" />
-            </template>
-          </el-input>
+        <template v-if="hasRepos && !isTheaterView">
+          <div class="search-box">
+            <el-input
+              v-model="searchQuery"
+              size="small"
+              clearable
+              :placeholder="t('dashboard.diorama.search_placeholder')"
+              @focus="searchFocused = true"
+              @blur="handleSearchBlur"
+              @keydown.enter.prevent="handleSearchEnter"
+            >
+              <template #prefix>
+                <Search class="input-icon" />
+              </template>
+            </el-input>
 
-          <div v-if="showDropdown" class="search-dropdown">
-            <template v-if="searchHits.length">
-              <button
-                v-for="hit in searchHits"
-                :key="`${hit.kind}:${hit.path}`"
-                type="button"
-                class="search-hit-item"
-                @mousedown.prevent="handleSelectHit(hit)"
-              >
-                <span class="hit-kind" :class="hit.kind === 'module' ? 'is-module' : 'is-file'">
-                  {{ hit.kind === 'module' ? t('dashboard.diorama.kind_module') : t('dashboard.diorama.kind_file') }}
-                </span>
-                <span class="hit-main">
-                  <span class="hit-name">{{ hit.name }}</span>
-                  <span class="hit-path">{{ hit.path }}</span>
-                </span>
-                <span class="hit-meta">{{ formatLoc(hit.loc) }}</span>
-              </button>
-            </template>
-            <div v-else class="search-empty">{{ t('dashboard.diorama.search_empty') }}</div>
+            <div v-if="showDropdown" class="search-dropdown">
+              <template v-if="searchHits.length">
+                <button
+                  v-for="hit in searchHits"
+                  :key="`${hit.kind}:${hit.path}`"
+                  type="button"
+                  class="search-hit-item"
+                  @mousedown.prevent="handleSelectHit(hit)"
+                >
+                  <span class="hit-kind" :class="hit.kind === 'module' ? 'is-module' : 'is-file'">
+                    {{ hit.kind === 'module' ? t('dashboard.diorama.kind_module') : t('dashboard.diorama.kind_file') }}
+                  </span>
+                  <span class="hit-main">
+                    <span class="hit-name">{{ hit.name }}</span>
+                    <span class="hit-path">{{ hit.path }}</span>
+                  </span>
+                  <span class="hit-meta">{{ formatLoc(hit.loc) }}</span>
+                </button>
+              </template>
+              <div v-else class="search-empty">{{ t('dashboard.diorama.search_empty') }}</div>
+            </div>
           </div>
-        </div>
 
-        <div class="segmented-group" role="group" :aria-label="t('dashboard.diorama.days_label')">
-          <button
-            v-for="d in dayOptions"
-            :key="d"
-            type="button"
-            class="seg-btn"
-            :class="{ 'is-active': days === d }"
-            :aria-pressed="days === d"
-            @click="emit('update:days', d)"
-          >
-            {{ t('dashboard.diorama.days_unit', { count: d }) }}
-          </button>
-        </div>
+          <div class="segmented-group" role="group" :aria-label="t('dashboard.diorama.days_label')">
+            <button
+              v-for="d in dayOptions"
+              :key="d"
+              type="button"
+              class="seg-btn"
+              :class="{ 'is-active': days === d }"
+              :aria-pressed="days === d"
+              @click="emit('update:days', d)"
+            >
+              {{ t('dashboard.diorama.days_unit', { count: d }) }}
+            </button>
+          </div>
+        </template>
+
+        <button
+          v-else-if="ready"
+          type="button"
+          class="toggle-chip"
+          :class="{ 'is-active': theaterAutoplay }"
+          @click="emit('update:theater-autoplay', !theaterAutoplay)"
+        >
+          <OctagonPause v-if="theaterAutoplay" class="chip-icon" />
+          <Play v-else class="chip-icon" />
+          <span>{{ theaterAutoplay ? t('dashboard.diorama.theater_autoplay_on') : t('dashboard.diorama.theater_autoplay_paused') }}</span>
+        </button>
 
         <el-button
           size="small"
@@ -199,8 +233,8 @@ function formatLoc(loc: number): string {
       </div>
     </div>
 
-    <div class="toolbar-row toolbar-row-bottom">
-      <div class="toolbar-group">
+    <div v-if="hasRepos" class="toolbar-row toolbar-row-bottom">
+      <div v-if="stageMode !== 'theater'" class="toolbar-group">
         <span class="group-label">{{ t('dashboard.diorama.height_metric') }}</span>
         <div class="segmented-group" role="group">
           <button
@@ -237,8 +271,12 @@ function formatLoc(loc: number): string {
         </button>
       </div>
 
+      <div v-else class="toolbar-group">
+        <span class="theater-subtitle">{{ t('dashboard.diorama.theater_subtitle') }}</span>
+      </div>
+
       <div class="toolbar-group camera-controls">
-        <div class="icon-btn-group">
+        <div v-if="stageMode !== 'theater'" class="icon-btn-group">
           <button
             type="button"
             class="icon-btn"
@@ -261,8 +299,8 @@ function formatLoc(loc: number): string {
           <button
             type="button"
             class="seg-btn"
-            :class="{ 'is-active': isoMode === '3d' }"
-            @click="emit('update:iso-mode', '3d')"
+            :class="{ 'is-active': stageMode === '3d' }"
+            @click="emit('update:stage-mode', '3d')"
           >
             <Box class="chip-icon" />
             <span>{{ t('dashboard.diorama.view_3d') }}</span>
@@ -270,15 +308,24 @@ function formatLoc(loc: number): string {
           <button
             type="button"
             class="seg-btn"
-            :class="{ 'is-active': isoMode === 'top' }"
-            @click="emit('update:iso-mode', 'top')"
+            :class="{ 'is-active': stageMode === 'top' }"
+            @click="emit('update:stage-mode', 'top')"
           >
             <Layers class="chip-icon" />
             <span>{{ t('dashboard.diorama.view_top') }}</span>
           </button>
+          <button
+            type="button"
+            class="seg-btn"
+            :class="{ 'is-active': stageMode === 'theater' }"
+            @click="emit('update:stage-mode', 'theater')"
+          >
+            <Sparkles class="chip-icon" />
+            <span>{{ t('dashboard.diorama.view_theater') }}</span>
+          </button>
         </div>
 
-        <div class="zoom-group">
+        <div v-if="stageMode !== 'theater'" class="zoom-group">
           <button type="button" class="icon-btn" :title="t('dashboard.diorama.zoom_out')" @click="emit('zoom', 1 / 1.2)">
             <Minus class="btn-icon" />
           </button>
@@ -391,6 +438,29 @@ function formatLoc(loc: number): string {
   background: #f1f5f9;
   color: #64748b;
   font-size: 10px;
+}
+
+.workspace-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid #bae6fd;
+  background: #f0f9ff;
+  color: var(--color-primary-900);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.repo-dot.is-workspace {
+  background: var(--color-primary-500);
+}
+
+.theater-subtitle {
+  font-size: 12px;
+  color: var(--color-text-muted);
 }
 
 .toolbar-right-actions {

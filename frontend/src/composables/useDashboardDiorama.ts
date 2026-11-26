@@ -14,6 +14,7 @@ import type {
   DioramaModuleItem,
   DioramaRepoItem,
   DioramaSearchEntry,
+  DioramaStageMode,
   DioramaWindowMode,
 } from '@/types/dashboardDiorama'
 
@@ -61,7 +62,9 @@ export function useDashboardDiorama(workspaceIdSource: MaybeRefOrGetter<string>)
   const days = shallowRef<DioramaDays>(30)
 
   const metric = shallowRef<DioramaMetric>('heat')
-  const isoMode = shallowRef<DioramaIsoMode>('3d')
+  const stageMode = shallowRef<DioramaStageMode>('3d')
+  const isoMode = computed<DioramaIsoMode>(() => (stageMode.value === 'top' ? 'top' : '3d'))
+  const theaterAutoplay = shallowRef(true)
   const windowMode = shallowRef<DioramaWindowMode>('cumulative')
   const dayIndex = shallowRef(0)
   const zoomPct = shallowRef(100)
@@ -337,6 +340,8 @@ export function useDashboardDiorama(workspaceIdSource: MaybeRefOrGetter<string>)
     activeRequest = undefined
     loading.value = false
     error.value = false
+    stageMode.value = '3d'
+    theaterAutoplay.value = true
     clearData()
     setCacheScope(currentServer, token)
     void load({ revalidate: true })
@@ -358,7 +363,9 @@ export function useDashboardDiorama(workspaceIdSource: MaybeRefOrGetter<string>)
     error,
     days,
     metric,
+    stageMode,
     isoMode,
+    theaterAutoplay,
     windowMode,
     dayIndex,
     zoomPct,

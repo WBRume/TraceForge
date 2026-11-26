@@ -454,3 +454,35 @@ def test_get_repo_diorama_missing_workspace_returns_empty(db: Session):
     assert result.workspace_id == "missing-ws-id"
     assert result.repos == []
     assert result.tasks == []
+    assert result.has_repositories is False
+
+
+def test_get_repo_diorama_repo_less_workspace_omits_empty_legacy_slab(db: Session, tmp_path: Path):
+    diorama_service.invalidate_diorama_cache()
+    ws_dir = tmp_path / "workspace"
+    _init_git_repo(ws_dir, {"docs/plan.md": "# Repo-less workspace plan\n"}, "feat(workspace): init")
+
+    user = User(id="u-rl", email="rl@example.com", hashed_password="x", display_name="yk")
+    ws = Workspace(id="ws-repoless-1", name="workspace", owner_id=user.id, project_path=str(ws_dir))
+    member = WorkspaceMember(workspace_id=ws.id, user_id=user.id, role=WorkspaceRole.OWNER)
+    task = SddTask(
+        id="task-rl-1",
+        workspace_id=ws.id,
+        creator_id=user.id,
+        name="OpenCode-资产同步验证",
+        description="验证无仓工作区任务展示",
+        status=TaskStatus.AWAITING_INPUT,
+    )
+    db.add_all([user, ws, member, task])
+    db.commit()
+
+    result = diorama_service.get_repo_diorama(db, ws.id, days=30, refresh=True)
+
+    assert result.has_repositories is False
+    assert result.repos == []
+    assert result.timeline == []
+    assert result.total_commits == 0
+    assert len(result.members) == 1
+    assert len(result.tasks) == 1
+    assert result.tasks[0].name == "OpenCode-资产同步验证"
+    assert result.tasks[0].description == "验证无仓工作区任务展示"

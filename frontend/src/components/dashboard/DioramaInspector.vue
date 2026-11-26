@@ -31,6 +31,8 @@ import type {
 
 const props = defineProps<{
   workspaceId: string
+  hasRepos: boolean
+  isTheaterMode: boolean
   repos: DioramaRepoItem[]
   members: DioramaMemberItem[]
   tasks: DioramaTaskItem[]
@@ -61,7 +63,11 @@ const router = useRouter()
 const activeTab = shallowRef<'collab' | 'detail'>('collab')
 
 watch(() => props.selectedHit, (hit) => {
-  if (hit) activeTab.value = 'detail'
+  if (hit && props.hasRepos && !props.isTheaterMode) activeTab.value = 'detail'
+})
+
+watch([() => props.hasRepos, () => props.isTheaterMode], ([hasRepos, isTheater]) => {
+  if (!hasRepos || isTheater) activeTab.value = 'collab'
 })
 
 const memberTaskCounts = computed(() => {
@@ -157,6 +163,18 @@ function formatLoc(loc: number): string {
   return loc >= 1000 ? `${(loc / 1000).toFixed(1)}k` : String(loc)
 }
 
+function formatTaskUpdatedAt(task: DioramaTaskItem): string {
+  const raw = task.updated_at || task.created_at
+  if (!raw) return ''
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return ''
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mm = String(date.getMinutes()).padStart(2, '0')
+  return `${m}-${d} ${hh}:${mm}`
+}
+
 function openTaskChat(taskId: string) {
   router.push({ name: 'taskChat', params: { wsId: props.workspaceId, taskId } })
 }
@@ -200,6 +218,7 @@ function openRequirement(reqId: string) {
           <span class="tab-count">{{ tasks.length }}</span>
         </button>
         <button
+          v-if="hasRepos && !isTheaterMode"
           type="button"
           role="tab"
           class="inspector-tab"
@@ -258,7 +277,9 @@ function openRequirement(reqId: string) {
 
           <section class="panel-section">
             <div class="section-head">
-              <h4 class="section-title">{{ t('dashboard.diorama.tasks_title') }}</h4>
+              <h4 class="section-title">
+                {{ hasRepos && !isTheaterMode ? t('dashboard.diorama.tasks_title') : t('dashboard.diorama.theater_title') }}
+              </h4>
               <span class="section-hint">{{ t('dashboard.diorama.tasks_hint') }}</span>
             </div>
 
@@ -288,8 +309,11 @@ function openRequirement(reqId: string) {
                     {{ t(taskStatusKey(taskDisplayStatus(task.status, task.interrupt_kind))) }}
                   </span>
                   <span v-if="task.creator_name" class="task-author">{{ task.creator_name }}</span>
-                  <span class="task-scope">
+                  <span v-if="hasRepos" class="task-scope">
                     {{ t('dashboard.diorama.task_scope', { repos: task.repos.length, modules: task.modules.length }) }}
+                  </span>
+                  <span v-else-if="formatTaskUpdatedAt(task)" class="task-scope task-date-mono">
+                    {{ formatTaskUpdatedAt(task) }}
                   </span>
                 </div>
 
@@ -306,10 +330,11 @@ function openRequirement(reqId: string) {
                 </div>
 
                 <div class="task-card-foot">
-                  <span class="churn-nums">
+                  <span v-if="hasRepos" class="churn-nums">
                     <span class="num-add">+{{ task.added }}</span>
                     <span class="num-del">-{{ task.deleted }}</span>
                   </span>
+                  <span v-else class="task-foot-spacer" />
                   <div class="task-actions">
                     <button
                       type="button"
@@ -855,6 +880,17 @@ function openRequirement(reqId: string) {
 .task-author,
 .task-scope {
   font-size: 11px;
+}
+
+.task-date-mono {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: #94a3b8;
+}
+
+.task-foot-spacer {
+  flex: 1;
 }
 
 .req-tags {

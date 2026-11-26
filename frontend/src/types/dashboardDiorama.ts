@@ -60,6 +60,7 @@ export interface DioramaMemberItem {
 export interface DioramaTaskItem {
   id: string
   name: string
+  description?: string | null
   status: string
   interrupt_kind?: string | null
   task_type: string
@@ -73,6 +74,7 @@ export interface DioramaTaskItem {
   files: string[]
   added: number
   deleted: number
+  created_at?: string | null
   updated_at?: string | null
 }
 
@@ -94,6 +96,7 @@ export interface DioramaTimelineDay {
 export interface DioramaPeriod {
   days: number
   date_range: string[]
+  has_repositories?: boolean
   total_loc: number
   total_files: number
   total_modules: number
@@ -117,6 +120,7 @@ export interface DashboardDioramaResponse extends DashboardDioramaPayload {
 export type DioramaDays = 14 | 30 | 60
 export type DioramaMetric = 'heat' | 'loc' | 'impact'
 export type DioramaIsoMode = '3d' | 'top'
+export type DioramaStageMode = DioramaIsoMode | 'theater'
 export type DioramaWindowMode = 'cumulative' | 'day'
 
 export interface DioramaHit {

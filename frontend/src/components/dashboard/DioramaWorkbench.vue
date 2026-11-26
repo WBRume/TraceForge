@@ -9,6 +9,7 @@ import type { DioramaHit, DioramaModuleItem, DioramaRepoItem } from '@/types/das
 import DioramaToolbar from './DioramaToolbar.vue'
 import DioramaTimelineBar from './DioramaTimelineBar.vue'
 import DioramaInspector from './DioramaInspector.vue'
+import DioramaSpatialTheater from './DioramaSpatialTheater.vue'
 
 const props = defineProps<{
   workspaceId: string
@@ -23,7 +24,9 @@ const {
   error,
   days,
   metric,
+  stageMode,
   isoMode,
+  theaterAutoplay,
   windowMode,
   dayIndex,
   zoomPct,
@@ -56,11 +59,19 @@ const {
 const canvasRef = shallowRef<HTMLCanvasElement | null>(null)
 const viewportRef = shallowRef<HTMLDivElement | null>(null)
 const engineRef = shallowRef<ArchitecturalDioramaEngine | null>(null)
+const theaterRef = shallowRef<InstanceType<typeof DioramaSpatialTheater> | null>(null)
 const inspectorCollapsed = shallowRef(false)
 
 const hoverState = shallowRef<{ hit: DioramaHit; x: number; y: number } | null>(null)
 
-const hasRepos = computed(() => (payload.value?.repos.length ?? 0) > 0)
+const hasRepos = computed(() => {
+  const data = payload.value
+  if (!data) return false
+  if (typeof data.has_repositories === 'boolean') return data.has_repositories
+  return data.repos.length > 0
+})
+const showTheater = computed(() => Boolean(payload.value && (!hasRepos.value || stageMode.value === 'theater')))
+const showDioramaCanvas = computed(() => Boolean(hasRepos.value && stageMode.value !== 'theater'))
 
 const pinnedTask = computed(() => {
   if (!pinnedTaskId.value || !payload.value) return null
@@ -104,7 +115,7 @@ function ensureEngine() {
   const data = payload.value
   const canvas = canvasRef.value
   const viewport = viewportRef.value
-  if (!data || !data.repos.length || !canvas || !viewport) {
+  if (!data || !showDioramaCanvas.value || !canvas || !viewport) {
     disposeEngine()
     return
   }
@@ -122,6 +133,9 @@ function ensureEngine() {
         if (inspectorCollapsed.value) inspectorCollapsed.value = false
       },
     })
+    if (enabledRepoIds.value.size !== data.repos.length) {
+      engineRef.value.setEnabledRepos(enabledRepoIds.value)
+    }
   } else {
     engineRef.value.setData(data, enabledRepoIds.value)
   }
@@ -134,8 +148,8 @@ function ensureEngine() {
   eng.setHighlight(activeTaskId.value, effectiveMemberId.value)
 }
 
-watch([payload, enabledRepoIds], ([data, ids], [previous]) => {
-  if (data !== previous) {
+watch([hasRepos, stageMode, payload, enabledRepoIds], ([isRepoBound, mode, data, ids], [, prevMode, previous]) => {
+  if (!isRepoBound || mode === 'theater' || prevMode === 'theater' || data !== previous) {
     hoverState.value = null
     ensureEngine()
   } else {
@@ -211,6 +225,19 @@ function handleKeydown(e: KeyboardEvent) {
   ) {
     return
   }
+  if (showTheater.value) {
+    if (e.key === ' ') {
+      e.preventDefault()
+      theaterAutoplay.value = !theaterAutoplay.value
+    } else if (e.key === 'ArrowLeft') {
+      theaterRef.value?.step(-1)
+    } else if (e.key === 'ArrowRight') {
+      theaterRef.value?.step(1)
+    } else if (e.key === 'Escape') {
+      clearFocus()
+    }
+    return
+  }
   if (!engineRef.value) return
 
   if (e.key === 'q' || e.key === 'Q') {
@@ -218,7 +245,7 @@ function handleKeydown(e: KeyboardEvent) {
   } else if (e.key === 'e' || e.key === 'E') {
     engineRef.value.rotateView(1)
   } else if (e.key === 'v' || e.key === 'V') {
-    isoMode.value = isoMode.value === '3d' ? 'top' : '3d'
+    stageMode.value = stageMode.value === '3d' ? 'top' : '3d'
   } else if (e.key === '0') {
     handleResetView()
   } else if (e.key === ' ' && (payload.value?.timeline.length ?? 0) > 1) {
@@ -251,11 +278,15 @@ onBeforeUnmount(() => {
 <template>
   <section class="diorama-workbench" :aria-busy="loading">
     <DioramaToolbar
+      :ready="Boolean(payload)"
+      :workspace-name="payload?.workspace_name ?? ''"
+      :has-repos="hasRepos"
       :repos="payload?.repos ?? []"
       :enabled-repo-ids="enabledRepoIds"
       :metric="metric"
       :days="payload?.days ?? days"
-      :iso-mode="isoMode"
+      :stage-mode="stageMode"
+      :theater-autoplay="theaterAutoplay"
       :zoom-pct="zoomPct"
       :show-avatars="showAvatars"
       :show-labels="showLabels"
@@ -265,7 +296,8 @@ onBeforeUnmount(() => {
       @focus-repo="handleFocusRepo"
       @update:metric="metric = $event"
       @update:days="handleDaysChange"
-      @update:iso-mode="isoMode = $event"
+      @update:stage-mode="stageMode = $event"
+      @update:theater-autoplay="theaterAutoplay = $event"
       @update:show-avatars="showAvatars = $event"
       @update:show-labels="showLabels = $event"
       @rotate="engineRef?.rotateView($event)"
@@ -283,23 +315,8 @@ onBeforeUnmount(() => {
 
     <div class="workbench-body">
       <div class="stage-column">
-        <div ref="viewportRef" v-loading="loading && !payload" class="diorama-stage">
-          <canvas v-if="hasRepos" ref="canvasRef" class="diorama-canvas" />
-
-          <!-- Error Banner -->
-          <div v-if="error && !payload" class="stage-overlay-state">
-            <el-empty :description="t('dashboard.diorama.load_failed')">
-              <el-button type="primary" @click="load({ refresh: true })">
-                <RefreshCw class="overlay-btn-icon" />
-                <span>{{ t('dashboard.retry') }}</span>
-              </el-button>
-            </el-empty>
-          </div>
-
-          <!-- Empty Repos State -->
-          <div v-else-if="!loading && payload && !hasRepos" class="stage-overlay-state">
-            <el-empty :description="t('dashboard.diorama.empty_repos')" />
-          </div>
+        <div v-if="showDioramaCanvas" ref="viewportRef" class="diorama-stage">
+          <canvas ref="canvasRef" class="diorama-canvas" />
 
           <!-- Top-left HUD: Drill breadcrumbs & Peak Module -->
           <div v-if="hasRepos" class="hud-top-left">
@@ -423,8 +440,35 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <DioramaSpatialTheater
+          v-else-if="showTheater"
+          ref="theaterRef"
+          :workspace-id="workspaceId"
+          :tasks="payload?.tasks ?? []"
+          :members="payload?.members ?? []"
+          :active-member-id="activeMemberId"
+          :pinned-task-id="pinnedTaskId"
+          :hovered-task-id="hoveredTaskId"
+          :autoplay="theaterAutoplay"
+          :has-repos="hasRepos"
+          :enabled-repo-ids="enabledRepoIds"
+          @toggle-pin-task="togglePinTask"
+          @update:autoplay="theaterAutoplay = $event"
+        />
+
+        <div v-else v-loading="loading && !payload" class="diorama-stage is-shell">
+          <div v-if="error && !payload" class="stage-overlay-state">
+            <el-empty :description="t('dashboard.diorama.load_failed')">
+              <el-button type="primary" @click="load({ refresh: true })">
+                <RefreshCw class="overlay-btn-icon" />
+                <span>{{ t('dashboard.retry') }}</span>
+              </el-button>
+            </el-empty>
+          </div>
+        </div>
+
         <DioramaTimelineBar
-          v-if="payload && payload.timeline.length"
+          v-if="showDioramaCanvas && payload && payload.timeline.length"
           :timeline="payload.timeline"
           :day-index="dayIndex"
           :window-mode="windowMode"
@@ -440,6 +484,8 @@ onBeforeUnmount(() => {
 
       <DioramaInspector
         :workspace-id="workspaceId"
+        :has-repos="hasRepos"
+        :is-theater-mode="showTheater"
         :repos="payload?.repos ?? []"
         :members="payload?.members ?? []"
         :tasks="payload?.tasks ?? []"
@@ -511,6 +557,10 @@ onBeforeUnmount(() => {
   overflow: hidden;
   cursor: grab;
   user-select: none;
+}
+
+.diorama-stage.is-shell {
+  cursor: default;
 }
 
 .diorama-stage.is-pointer {

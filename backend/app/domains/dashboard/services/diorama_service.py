@@ -185,7 +185,7 @@ def _pack_module_files(
     return items
 
 
-def _discover_workspace_repos(db: Session, workspace: Workspace) -> list[_RepoDescriptor]:
+def _discover_workspace_repos(db: Session, workspace: Workspace) -> tuple[list[_RepoDescriptor], bool]:
     rows = (
         db.query(SddWorkspaceRepository)
         .filter(SddWorkspaceRepository.workspace_id == workspace.id)
@@ -193,39 +193,46 @@ def _discover_workspace_repos(db: Session, workspace: Workspace) -> list[_RepoDe
         .all()
     )
     if rows:
-        return [
-            _RepoDescriptor(
-                id=row.id,
-                repository_id=row.repository_id,
-                name=row.repo_name or row.repo_slug,
-                slug=row.repo_slug,
-                branch=row.branch_name or "",
-                state=row.state.value if hasattr(row.state, "value") else str(row.state),
-                base_dir=row.base_dir,
-                repo_url=row.repo_url or "",
-                color=_REPO_COLORS[idx % len(_REPO_COLORS)],
-            )
-            for idx, row in enumerate(rows)
-        ]
+        return (
+            [
+                _RepoDescriptor(
+                    id=row.id,
+                    repository_id=row.repository_id,
+                    name=row.repo_name or row.repo_slug,
+                    slug=row.repo_slug,
+                    branch=row.branch_name or "",
+                    state=row.state.value if hasattr(row.state, "value") else str(row.state),
+                    base_dir=row.base_dir,
+                    repo_url=row.repo_url or "",
+                    color=_REPO_COLORS[idx % len(_REPO_COLORS)],
+                )
+                for idx, row in enumerate(rows)
+            ],
+            True,
+        )
 
     raw_path = str(workspace.project_path or "").strip()
+    git_url = str(workspace.git_repo_url or "").strip()
     if raw_path:
         p = Path(raw_path)
         name = p.name or workspace.name
-        return [
-            _RepoDescriptor(
-                id=f"ws-legacy-{workspace.id[:8]}",
-                repository_id=None,
-                name=name,
-                slug=name.lower().replace(" ", "-"),
-                branch="",
-                state="READY" if p.is_dir() else "PENDING",
-                base_dir=raw_path,
-                repo_url=workspace.git_repo_url or "",
-                color=_REPO_COLORS[0],
-            )
-        ]
-    return []
+        return (
+            [
+                _RepoDescriptor(
+                    id=f"ws-legacy-{workspace.id[:8]}",
+                    repository_id=None,
+                    name=name,
+                    slug=name.lower().replace(" ", "-"),
+                    branch="",
+                    state="READY" if p.is_dir() else "PENDING",
+                    base_dir=raw_path,
+                    repo_url=git_url,
+                    color=_REPO_COLORS[0],
+                )
+            ],
+            bool(git_url),
+        )
+    return ([], False)
 
 
 def _load_workspace_members(db: Session, workspace_id: str) -> list[DioramaMemberItem]:
@@ -288,6 +295,7 @@ def _load_workspace_tasks(
             load_only(
                 SddTask.id,
                 SddTask.name,
+                SddTask.description,
                 SddTask.status,
                 SddTask.interrupt_kind,
                 SddTask.task_type,
@@ -430,10 +438,13 @@ def _build_task_item(
     sorted_mods = sorted(mod_churn, key=lambda mid: (-mod_churn[mid], mid))
     reqs = [link.requirement for link in task.requirement_links if link.requirement is not None]
     status_val = task.status.value if hasattr(task.status, "value") else str(task.status)
+    raw_desc = str(task.description or "").strip()
+    short_desc = raw_desc[:240] if raw_desc else None
 
     return DioramaTaskItem(
         id=task.id,
         name=task.name,
+        description=short_desc,
         status=status_val,
         interrupt_kind=task.interrupt_kind,
         task_type=str(task.task_type or "DEVELOPMENT"),
@@ -447,6 +458,7 @@ def _build_task_item(
         files=sorted(file_set)[:40],
         added=added_sum,
         deleted=deleted_sum,
+        created_at=task.created_at,
         updated_at=task.updated_at or task.created_at,
     )
 
@@ -455,6 +467,7 @@ def _build_period(
     *,
     days: int,
     cutoff: int,
+    has_repositories: bool,
     descriptors: list[_RepoDescriptor],
     snapshots: dict[str, RepositorySnapshot],
     tasks: list[tuple[SddTask, SddTaskChangeProposal | None]],
@@ -528,6 +541,7 @@ def _build_period(
     return DioramaPeriod(
         days=days,
         date_range=[timeline[0].date, timeline[-1].date] if timeline else [],
+        has_repositories=has_repositories,
         total_loc=sum(r.loc for r in repo_items),
         total_files=sum(r.file_count for r in repo_items),
         total_modules=sum(r.module_count for r in repo_items),
@@ -552,7 +566,7 @@ def get_repo_diorama(
     if not workspace:
         return DashboardDioramaResponse(workspace_id=workspace_id, workspace_name="", days=days, generated_at=now)
 
-    descriptors = _discover_workspace_repos(db, workspace)
+    descriptors, has_bound_repos = _discover_workspace_repos(db, workspace)
     repo_paths = {desc.id: Path(desc.base_dir) for desc in descriptors if desc.base_dir}
     scans = read_repositories(
         workspace_id,
@@ -561,12 +575,20 @@ def get_repo_diorama(
         refresh_started_at=refresh_started_at,
     )
     snapshots = {repo_id: scans[path] for repo_id, path in repo_paths.items() if path in scans}
+    has_legacy_code = any(snapshot.files for snapshot in snapshots.values())
+    has_repositories = has_bound_repos or has_legacy_code
+    if not has_repositories:
+        # Repo-less workspaces initialize a local git directory for documents/snapshots;
+        # avoid surfacing that fallback directory as an empty white-box repository slab.
+        descriptors = []
+        snapshots = {}
     tasks = _load_workspace_tasks(db, workspace_id)
     members = _load_workspace_members(db, workspace_id)
     windows = {
         period: _build_period(
             days=period,
             cutoff=int((now - timedelta(days=period)).timestamp()),
+            has_repositories=has_repositories,
             descriptors=descriptors,
             snapshots=snapshots,
             tasks=tasks,
