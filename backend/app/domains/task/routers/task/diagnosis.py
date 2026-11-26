@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
@@ -190,6 +190,7 @@ def upsert_diagnosis_result(
 def create_case_draft_from_task(
     ws_id: str,
     task_id: str,
+    background_tasks: BackgroundTasks,
     data: CaseDraftCreateRequest = Body(default_factory=CaseDraftCreateRequest),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -217,6 +218,7 @@ def create_case_draft_from_task(
     payload = case_service.serialize_case(case)
     payload["my_can_manage"] = True
     payload["my_can_review"] = bool(member.is_expert) if member else False
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return payload
 
 

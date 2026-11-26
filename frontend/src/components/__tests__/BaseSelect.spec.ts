@@ -22,7 +22,7 @@ describe('BaseSelect keyboard access', () => {
     expect(trigger.attributes('aria-expanded')).toBe('true')
     expect(wrapper.get('[role="listbox"]').attributes('id')).toBe(trigger.attributes('aria-controls'))
     await trigger.trigger('keydown', { key: 'ArrowDown' })
-    expect(document.getElementById(trigger.attributes('aria-activedescendant')!)?.textContent).toBe('Input → Cloud')
+    expect(document.getElementById(trigger.attributes('aria-activedescendant')!)?.textContent?.trim()).toBe('Input → Cloud')
     expect(wrapper.emitted('update:modelValue')).toBeUndefined()
     await trigger.trigger('keydown', { key: ' ' })
     expect(wrapper.emitted('update:modelValue')).toEqual([['input']])

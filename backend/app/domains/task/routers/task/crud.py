@@ -354,6 +354,7 @@ async def delete_task(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if not success:
         raise HTTPException(status_code=404, detail="Task not found")
+    await notify_canvas_changed(ws_id)
     audit_log(
         action="delete_task",
         outcome="success",

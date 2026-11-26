@@ -85,7 +85,7 @@ async def update_canvas_calendar(
             return FiscalCalendar(settings).view(True)
 
     result = await run_db_txn_with_bind(bind, save)
-    await notify_canvas_changed(ws_id)
+    await notify_canvas_changed(ws_id, calendar=True)
     return result
 
 

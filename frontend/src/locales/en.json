@@ -2480,6 +2480,10 @@
     "query_failed": "Failed to query assets"
   },
   "workspace_canvas": {
+    "presence": {
+      "online": "{count} members online",
+      "more": "Show {count} more online members"
+    },
     "tree": {
       "root_filter": "Root asset type",
       "title_filter": "Filter by title prefix",
@@ -2678,8 +2682,6 @@
       "label": "Canvas actions",
       "new_requirement": "New requirement",
       "new_task": "New task",
-      "new_case": "New issue case",
-      "upload": "Upload document",
       "playbooks": "Diagnostic playbooks",
       "new_note": "New sticky note",
       "new_frame": "New frame",
@@ -2719,8 +2721,6 @@
       "playbooks": "Playbook library",
       "case_promotion": "Promote cases",
       "choose_cases": "Select approved cases",
-      "create_document": "Upload document",
-      "document_uploaded": "Document uploaded",
       "upload_failed": "Could not upload the document",
       "download": "Download",
       "document_owner": "Related asset",

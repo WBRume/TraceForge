@@ -55,12 +55,9 @@ function locate(asset?: CanvasAsset) {
 
 <template>
   <div class="asset-search" @keydown.esc.stop="search = ''">
-    <label class="search-box">
-      <Search :size="16" />
-      <input v-model="search" type="search" maxlength="120"
-        :placeholder="t(remote ? 'workspace_canvas.domains.search_by_title' : 'workspace_canvas.search')"
-        :aria-label="t('workspace_canvas.search')" @keydown.enter.prevent="locate(matches[0])" />
-    </label>
+    <el-input v-model="search" :prefix-icon="Search" clearable maxlength="120"
+      :placeholder="t(remote ? 'workspace_canvas.domains.search_by_title' : 'workspace_canvas.search')"
+      :aria-label="t('workspace_canvas.search')" @keydown.enter.prevent="locate(matches[0])" />
     <ul v-if="search.trim()" class="search-results">
       <li v-for="item in matches" :key="item.node_id">
         <button class="locate-asset" type="button" :title="item.details.context || undefined" @click="locate(item)">
@@ -75,10 +72,7 @@ function locate(asset?: CanvasAsset) {
 </template>
 
 <style scoped>
-.asset-search { position: relative; width: min(225px, 40vw); }
-.search-box { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 9px; border-radius: 8px; border: 1px solid #e2e8f0; background: #f8fafc; color: #64748b; }
-.search-box:focus-within { border-color: #0ea5e9; }
-.search-box input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font: inherit; font-size: 13px; color: #0f172a; }
+.asset-search { position: relative; flex: 1 1 210px; min-width: min(180px, 100%); max-width: 264px; }
 .search-results { position: absolute; z-index: 9; inset: calc(100% + 4px) 0 auto; margin: 0; padding: 4px; max-height: 270px; overflow: auto; list-style: none; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; box-shadow: 0 8px 24px #0f172a1a; }
 .search-results li { display: flex; align-items: stretch; }
 .search-results button { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 5px 7px; border: 0; border-radius: 5px; text-align: start; font: inherit; font-size: 12px; color: #0369a1; background: transparent; cursor: pointer; }

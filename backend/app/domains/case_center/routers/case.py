@@ -155,6 +155,7 @@ def update_case(
     ws_id: str,
     case_id: str,
     data: CaseUpdateRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -163,6 +164,7 @@ def update_case(
         case = case_service.update_case(db, case_id, ws_id, current_user, data)
     except case_service.CaseError as exc:
         _raise_case_error(exc)
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return _decorate(case_service.serialize_case(case), db=db, ws_id=ws_id, user=current_user, member=member)
 
 
@@ -170,6 +172,7 @@ def update_case(
 def delete_case(
     ws_id: str,
     case_id: str,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -178,6 +181,7 @@ def delete_case(
         case_service.delete_case(db, case_id, ws_id, current_user)
     except case_service.CaseError as exc:
         _raise_case_error(exc)
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return {"msg": "Case deleted successfully"}
 
 
@@ -185,6 +189,7 @@ def delete_case(
 def submit_case(
     ws_id: str,
     case_id: str,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -193,6 +198,7 @@ def submit_case(
         case = case_service.submit_case(db, case_id, ws_id, current_user)
     except case_service.CaseError as exc:
         _raise_case_error(exc)
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return _decorate(case_service.serialize_case(case), db=db, ws_id=ws_id, user=current_user, member=member)
 
 
@@ -200,6 +206,7 @@ def submit_case(
 def start_review(
     ws_id: str,
     case_id: str,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -208,6 +215,7 @@ def start_review(
         case = case_service.start_review(db, case_id, ws_id, current_user)
     except case_service.CaseError as exc:
         _raise_case_error(exc)
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return _decorate(case_service.serialize_case(case), db=db, ws_id=ws_id, user=current_user, member=member)
 
 
@@ -216,6 +224,7 @@ def review_case(
     ws_id: str,
     case_id: str,
     data: CaseReviewRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -231,6 +240,7 @@ def review_case(
         )
     except case_service.CaseError as exc:
         _raise_case_error(exc)
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return case_service.serialize_case(case)
 
 
@@ -238,6 +248,7 @@ def review_case(
 def resubmit_case(
     ws_id: str,
     case_id: str,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -246,4 +257,5 @@ def resubmit_case(
         case = case_service.resubmit_case(db, case_id, ws_id, current_user)
     except case_service.CaseError as exc:
         _raise_case_error(exc)
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return _decorate(case_service.serialize_case(case), db=db, ws_id=ws_id, user=current_user, member=member)

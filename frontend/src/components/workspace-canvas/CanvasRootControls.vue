@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import BaseSelect from '@/components/BaseSelect.vue'
 import { TASK_STATUSES, taskStatusKey } from '@/utils/taskStatus'
 import type { CanvasRootFilters, CanvasRootKind, FiscalQuarter } from './model'
 
@@ -42,6 +43,31 @@ const weeks = computed(() => {
   }))
 })
 
+const kindsOptions = computed(() => [
+  { label: t('workspace_canvas.tree.all_roots'), value: '' },
+  ...props.kinds.map(value => ({ label: t(`workspace_canvas.kind.${value}`), value })),
+])
+const timeOptions = computed(() => [
+  { label: t('workspace_canvas.quarter.whole_branch'), value: '' },
+  ...props.quarter.months.map(month => ({
+    label: t('workspace_canvas.quarter.relative_month', { number: month.index }), value: month.id,
+    detail: `${month.start.slice(5)} — ${month.end.slice(5)}`,
+  })),
+  ...weeks.value.map(week => ({
+    label: t('workspace_canvas.quarter.relative_week', { number: week.number }), value: week.id,
+    detail: `${week.start} — ${week.end}`,
+  })),
+])
+const taskTypes = computed(() => [
+  { label: t('workspace_canvas.quarter.all_task_types'), value: '' },
+  { label: t('workspace_canvas.kind.task'), value: 'DEVELOPMENT' },
+  { label: t('workspace_canvas.kind.diagnosis_task'), value: 'DIAGNOSIS' },
+])
+const taskStatuses = computed(() => [
+  { label: t('workspace_canvas.quarter.all_statuses'), value: '' },
+  ...TASK_STATUSES.map(value => ({ label: t(taskStatusKey(value)), value })),
+])
+
 function apply() {
   if (!kind.value) query.value = ''
   if (kind.value !== 'task') {
@@ -57,49 +83,28 @@ function apply() {
 </script>
 
 <template>
-  <nav class="root-controls" data-testid="canvas-root-controls" :aria-label="t('workspace_canvas.tree.root_filter')">
-    <select v-model="kind" :disabled="busy" :aria-label="t('workspace_canvas.tree.root_filter')" @change="apply">
-      <option value="">{{ t('workspace_canvas.tree.all_roots') }}</option>
-      <option v-for="item in kinds" :key="item" :value="item">{{ t(`workspace_canvas.kind.${item}`) }}</option>
-    </select>
-    <select v-model="slice" :disabled="busy" :aria-label="t('workspace_canvas.quarter.time_filter')" @change="apply">
-      <option value="">{{ t('workspace_canvas.quarter.whole_branch') }}</option>
-      <optgroup :label="t('workspace_canvas.quarter.months')">
-        <option v-for="month in quarter.months" :key="month.id" :value="month.id">
-          {{ t('workspace_canvas.quarter.relative_month', { number: month.index }) }} ({{ month.start.slice(5) }} — {{ month.end.slice(5) }})
-        </option>
-      </optgroup>
-      <optgroup :label="t('workspace_canvas.quarter.weeks')">
-        <option v-for="week in weeks" :key="week.id" :value="week.id">
-          {{ t('workspace_canvas.quarter.relative_week', { number: week.number }) }} ({{ week.start }} — {{ week.end }})
-        </option>
-      </optgroup>
-    </select>
+  <div class="root-controls" role="group" data-testid="canvas-root-controls" :aria-label="t('workspace_canvas.tree.root_filter')">
+    <BaseSelect v-model="kind" class="root-field" :options="kindsOptions" :disabled="busy"
+      :aria-label="t('workspace_canvas.tree.root_filter')" @update:model-value="apply" />
+    <BaseSelect v-model="slice" class="root-field" :options="timeOptions" :disabled="busy"
+      :aria-label="t('workspace_canvas.quarter.time_filter')" @update:model-value="apply" />
     <template v-if="kind === 'task'">
-      <select v-model="taskType" :disabled="busy" :aria-label="t('workspace_canvas.quarter.task_type')" @change="apply">
-        <option value="">{{ t('workspace_canvas.quarter.all_task_types') }}</option>
-        <option value="DEVELOPMENT">{{ t('workspace_canvas.kind.task') }}</option>
-        <option value="DIAGNOSIS">{{ t('workspace_canvas.kind.diagnosis_task') }}</option>
-      </select>
-      <select v-model="status" :disabled="busy" :aria-label="t('workspace_canvas.quarter.task_status')" @change="apply">
-        <option value="">{{ t('workspace_canvas.quarter.all_statuses') }}</option>
-        <option v-for="item in TASK_STATUSES" :key="item" :value="item">{{ t(taskStatusKey(item)) }}</option>
-      </select>
-      <label v-if="userId"><input v-model="mine" :disabled="busy" type="checkbox" @change="apply" />
-        {{ t('workspace_canvas.quarter.my_tasks') }}</label>
+      <BaseSelect v-model="taskType" class="root-field" :options="taskTypes" :disabled="busy"
+        :aria-label="t('workspace_canvas.quarter.task_type')" @update:model-value="apply" />
+      <BaseSelect v-model="status" class="root-field" :options="taskStatuses" :disabled="busy"
+        :aria-label="t('workspace_canvas.quarter.task_status')" @update:model-value="apply" />
+      <el-checkbox v-if="userId" v-model="mine" :disabled="busy" @change="apply">{{ t('workspace_canvas.quarter.my_tasks') }}</el-checkbox>
     </template>
-    <input v-if="kind" v-model="query" :disabled="busy" type="search" maxlength="120"
+    <el-input v-if="kind" v-model="query" class="root-query" :disabled="busy" clearable maxlength="120"
       :aria-label="t('workspace_canvas.tree.title_filter')" :placeholder="t('workspace_canvas.tree.title_filter')"
-      @change="apply" @keydown.enter.prevent="apply" />
+      @change="apply" @keyup.enter="apply" />
     <span v-if="empty && !busy" class="root-empty" role="status">{{ t(next ? 'workspace_canvas.tree.no_roots_yet' : 'workspace_canvas.tree.no_roots') }}</span>
-  </nav>
+  </div>
 </template>
 
 <style scoped>
-.root-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; color: #47627b; font-size: 12px; }
-.root-controls :is(select, input[type='search']) { min-height: 30px; border: 1px solid #dbe7f2; border-radius: 7px;
-  padding: 4px 7px; background: #f8fbfe; color: #355a77; font: inherit; }
-.root-controls label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-.root-controls input[type='search'] { width: 122px; }
-.root-empty { margin-inline-start: 4px; color: #596d81; }
+.root-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-width: 0; }
+.root-field { width: 144px; max-width: 100%; }
+.root-query { width: 184px; max-width: 100%; }
+.root-empty { color: #64748b; font-size: 12px; }
 </style>

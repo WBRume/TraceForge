@@ -188,6 +188,7 @@ class CanvasContents(CanvasModel):
 class CanvasAccess(CanvasModel):
     source_kinds: list[SourceKind]
     can_link_requirements: bool
+    can_edit_calendar: bool = False
 
 
 class CanvasRelation(CanvasModel):

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.task.routers.task.deps import get_task_or_404, verify_workspace_access, verify_workspace_permission
+from app.domains.workspace_canvas.events import notify_canvas_changed
 
 from . import service
 from .contracts import PlaybookError
@@ -223,6 +224,7 @@ def confirm_promotion(
         db, lambda: confirm_draft(db, owned_job(db, ws_id, job_id, user.id), body.draft_revision, body.draft, user.id)
     )
     background.add_task(publish_job_state, job_id)
+    background.add_task(notify_canvas_changed, ws_id)
     return result
 
 
@@ -373,26 +375,49 @@ def read_spec(ws_id: str, spec_id: str, db: Session = Depends(get_db), user: Use
 
 @router.put("/cases/playbooks/{spec_id}")
 def edit_spec(
-    ws_id: str, spec_id: str, body: SpecRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+    ws_id: str,
+    spec_id: str,
+    body: SpecRequest,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     access(db, ws_id, user, write=True)
     from .library import edit_spec as save
 
-    return commit(db, lambda: save(db, ws_id, spec_id, body.document))
+    result = commit(db, lambda: save(db, ws_id, spec_id, body.document))
+    background.add_task(notify_canvas_changed, ws_id)
+    return result
 
 
 @router.post("/cases/playbooks")
-def create_spec(ws_id: str, body: SpecRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def create_spec(
+    ws_id: str,
+    body: SpecRequest,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     access(db, ws_id, user, write=True)
-    return commit(db, lambda: service.serialize_spec(service.register_spec(db, ws_id, body.document)))
+    result = commit(db, lambda: service.serialize_spec(service.register_spec(db, ws_id, body.document)))
+    background.add_task(notify_canvas_changed, ws_id)
+    return result
 
 
 @router.delete("/cases/playbooks/{spec_id}")
-def delete_spec(ws_id: str, spec_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def delete_spec(
+    ws_id: str,
+    spec_id: str,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     access(db, ws_id, user, write=True)
     from .library import delete_spec as remove
 
-    return commit(db, lambda: remove(db, ws_id, spec_id))
+    result = commit(db, lambda: remove(db, ws_id, spec_id))
+    background.add_task(notify_canvas_changed, ws_id)
+    return result
 
 
 class GlobalSpecRequest(StrictRequest):
@@ -426,6 +451,7 @@ def list_global_specs(
 @global_router.post("/playbooks")
 def create_global_spec(
     body: GlobalSpecRequest,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -440,12 +466,15 @@ def create_global_spec(
     verify_workspace_permission(
         ws_id, user.id, db, WorkspacePermission.CREATE_TASK, "No permission to manage diagnosis playbooks"
     )
-    return commit(db, lambda: service.serialize_spec(service.register_spec(db, ws_id, body.document)))
+    result = commit(db, lambda: service.serialize_spec(service.register_spec(db, ws_id, body.document)))
+    background.add_task(notify_canvas_changed, ws_id)
+    return result
 
 
 @global_router.delete("/playbooks/{spec_id}")
 def delete_global_spec(
     spec_id: str,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -457,7 +486,10 @@ def delete_global_spec(
     )
     from .library import delete_spec as remove
 
-    return commit(db, lambda: remove(db, row.workspace_id, spec_id))
+    ws_id = row.workspace_id
+    result = commit(db, lambda: remove(db, ws_id, spec_id))
+    background.add_task(notify_canvas_changed, ws_id)
+    return result
 
 
 @router.post("/tasks/{task_id}/playbook-recommendations")
@@ -684,6 +716,7 @@ def save_extracted_spec(
     case_id: str,
     extraction_id: str,
     body: SpecRequest,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -707,7 +740,9 @@ def save_extracted_spec(
         link.spec_id = row.id
         return service.serialize_spec(row)
 
-    return commit(db, save)
+    result = commit(db, save)
+    background.add_task(notify_canvas_changed, ws_id)
+    return result
 
 
 @router.get("/tasks/{task_id}/playbook-runs/{run_id}/evidence/{execution_id}/artifacts/{name:path}")

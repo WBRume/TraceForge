@@ -3,12 +3,11 @@ import { computed, nextTick, onMounted, shallowRef, useTemplateRef, watch } from
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { RefreshCw, Workflow, X } from '@/components/icons'
+import { RefreshCw, X } from '@/components/icons'
 import { requirementDocumentsUrl } from '@/components/workspace-assets/requirements/requirementDocuments'
 import { useWorkspaceContext } from '@/composables/chat/tasklist/useWorkspaceContext'
 import { canvasOperationTarget, WORKSPACE_ASSET_CANVAS } from '@/router/workspaceAssetPresentation'
 import { useAuthStore } from '@/stores/auth'
-import { useProvisioningStore } from '@/stores/provisioning'
 import type { RequirementTaskRelation } from '@/types/workspaceAssets'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
@@ -17,6 +16,7 @@ import CanvasAssetSearch from './CanvasAssetSearch.vue'
 import CanvasContextMenu from './CanvasContextMenu.vue'
 import CanvasLinkDialog from './CanvasLinkDialog.vue'
 import CanvasParagraphPicker from './CanvasParagraphPicker.vue'
+import CanvasPresence from './CanvasPresence.vue'
 import CanvasQuarterPicker from './CanvasQuarterPicker.vue'
 import CanvasRootControls from './CanvasRootControls.vue'
 import CanvasRelationEditor from './CanvasRelationEditor.vue'
@@ -24,11 +24,11 @@ import CanvasRelationProperties from './CanvasRelationProperties.vue'
 import CanvasStage from './CanvasStage.vue'
 import CanvasTextEditor from './CanvasTextEditor.vue'
 import { buildCanvasCatalog } from './assetDomains'
-import { layoutWorkspace, paragraphPosition, translatePoint } from './assetLayout'
+import { layoutWorkspace, paragraphPosition, translatePoint, treeCardSize } from './assetLayout'
 import { menuIcons, type CanvasContextRequest, type CanvasMenuAction, type CanvasMenuItem } from './contextMenu'
 import { frameMembers } from './geometry'
 import { assetOperation, canvasId, isDocument, nodeInput, nodeSizes, referenceKey,
-  type CanvasAsset, type CanvasAssetWindow, type CanvasCommand, type CanvasConnection, type CanvasDocumentOwner,
+  type CanvasAsset, type CanvasAssetWindow, type CanvasCommand, type CanvasConnection, type CanvasPlacement,
   type CanvasNode, type CanvasRelation, type CanvasRootFilters, type CanvasRootKind, type CanvasSelection, type CanvasSnapshot,
   type NodePatch, type Point, type Size, type SourceItem, type SourceReference } from './model'
 import { planTreePreview } from './treePreview'
@@ -56,8 +56,8 @@ const contextRequest = shallowRef<CanvasContextRequest | null>(null)
 type LinkAction = 'link_task' | 'link_requirement' | 'share_document'
 const linkRequest = shallowRef<{ id: string; action: LinkAction } | null>(null)
 const context = useWorkspaceContext({ getWorkspaceId: () => props.workspaceId })
-const jobs = useProvisioningStore()
-const { snapshot, planFiles, readingPlans, setPlanTasks, loading, saving, syncError, saveError, canRetry, refresh, edit, retry, submit } =
+const { snapshot, planFiles, readingPlans, onlineViewers, setPlanTasks, loading, saving, syncError, saveError, canRetry,
+  calendarRevision, refresh, edit, retry, submit } =
   useWorkspaceCanvas(props.workspaceId, () => requestedQuarter.value)
 const quarter = computed(() => snapshot.value?.quarter)
 const roots = useCanvasRoots(props.workspaceId, () => {
@@ -68,11 +68,18 @@ const roots = useCanvasRoots(props.workspaceId, () => {
   } : null
 })
 const { pages: rootPages, filters: rootFilters, canContinue, canReturn, loading: loadingRoots } = roots
+const placedRequirements = computed(() => {
+  const data = snapshot.value
+  if (!data?.quarter) return []
+  const references = new Set(data.nodes.flatMap(node => node.scope_id === `quarter-${data.quarter!.id}`
+    && node.reference?.kind === 'requirement' ? [node.reference.id] : []))
+  return data.assets.filter(asset => asset.reference.kind === 'requirement' && references.has(asset.reference.id))
+})
 const streaming = computed(() => Boolean(snapshot.value?.root_tree || canContinue.value || canReturn.value || rootPages.value.length > 1))
 const rootKinds = computed(() => snapshot.value?.access.source_kinds.filter((kind): kind is CanvasRootKind =>
   kind !== 'plan_document') ?? [])
 const { windows, located, treeParents, expanded, loadingKey, openReferences, load, collapse, sync, search, clear: clearWindows } =
-  useCanvasAssetWindows(props.workspaceId, () => quarter.value?.id, () => preview.value.assets)
+  useCanvasAssetWindows(props.workspaceId, () => quarter.value?.id, () => [...preview.value.assets, ...placedRequirements.value])
 const preview = computed(() => planTreePreview(rootPages.value, quarter.value, canvasSize.value, collapsed.value,
   pinnedOpen.value, openReferences.value))
 const rootStream = computed(() => streaming.value ? {
@@ -81,7 +88,6 @@ const rootStream = computed(() => streaming.value ? {
 const loadingWindow = computed(() => Boolean(loadingKey.value))
 
 onMounted(() => { void context.loadWorkspace().catch(() => {}) })
-watch(() => jobs.taskListRefreshToken, () => { void refreshBoard() })
 watch(snapshot, async (value, previous) => {
   if (!value || value.quarter?.id !== previous?.quarter?.id) {
     clearWindows()
@@ -118,7 +124,11 @@ function mergePages(base: CanvasSnapshot | null, pages: CanvasAssetWindow[]) {
 const scene = computed(() => {
   const base = snapshot.value
   if (!base) return null
-  const scoped = { ...base, assets: preview.value.assets, relations: preview.value.relations, root_tree: streaming.value }
+  const placed = placedRequirements.value
+  const pinIds = new Set(placed.map(asset => asset.reference.id))
+  const attached = (ref: SourceReference) => ref.kind === 'requirement' && pinIds.has(ref.id)
+  const relations = [...preview.value.relations, ...base.relations.filter(link => attached(link.source) || attached(link.target))]
+  const scoped = { ...base, assets: [...preview.value.assets, ...placed], relations, root_tree: streaming.value }
   const focus = located.value ? [{ assets: [located.value], relations: [], next_cursor: null }] : []
   return mergePages(scoped, [...focus, ...windows.value])
 })
@@ -146,20 +156,18 @@ const parentRequirements = computed(() => new Set(scene.value?.relations.filter(
   .map(row => row.target.id)))
 const childRequirements = computed(() => new Set(scene.value?.relations.filter(row => row.relation_type === 'SUB_REQUIREMENT')
   .map(row => row.source.id)))
-const documentOwners = computed(() => scene.value?.assets.flatMap<CanvasDocumentOwner>(({ reference, details }) => {
-  if (reference.kind === 'requirement' && canManage.value) return [{ kind: 'requirement', id: reference.id, title: details.title }]
-  if (reference.kind === 'task' && context.workspacePermissions.value?.upload_task_spec) {
-    return [{ kind: 'task', id: reference.id, title: details.title, taskType: details.task_type }]
-  }
-  return []
-}) ?? [])
 const paragraphSource = computed(() => {
   const node = nodesById.value.get(paragraphId.value)
   return node?.details && node.reference && isDocument(node.reference) && !node.reference.block
     ? { title: node.details.title, reference: node.reference } : null
 })
-const syncLabel = computed(() => t(saving.value ? 'workspace_canvas.saving' : syncError.value
-  ? 'workspace_canvas.sync_paused' : readingPlans.value ? 'workspace_canvas.plan_loading' : 'workspace_canvas.synced'))
+const boardStatus = computed(() => {
+  if (saving.value) return t('workspace_canvas.saving')
+  if (catalog.value && syncError.value) return t('workspace_canvas.sync_paused')
+  if (readingPlans.value) return t('workspace_canvas.plan_loading')
+  if (loading.value || loadingWindow.value || loadingRoots.value) return t('common.loading')
+  return ''
+})
 const linkSubject = computed(() => nodesById.value.get(linkRequest.value?.id ?? ''))
 function availableLinkItems(assets: CanvasAsset[]) {
   const action = linkRequest.value?.action
@@ -390,9 +398,18 @@ function storedPosition(position: Point, scopeId?: string | null) {
   return offset ? translatePoint(position, offset, -1) : position
 }
 
-function command(action: CanvasCommand, owner?: CanvasDocumentOwner) {
+function command(action: CanvasCommand, placement?: CanvasPlacement) {
   selectedRelationId.value = ''
-  assetCreation.value?.open(action, owner)
+  assetCreation.value?.open(action, placement)
+}
+
+async function placeRequirement(requirementId: string, { position, quarter: period }: CanvasPlacement) {
+  const id = canvasId()
+  const scopeId = period ? `quarter-${period}` : null
+  if (await edit({ type: 'add_node', node: { id, kind: 'card', position, size: treeCardSize, text: '', color: 'blue',
+    reference: { kind: 'requirement', id: requirementId }, scope_id: scopeId } }) && quarter.value?.id === period) {
+    selection.value = { type: 'node', id }
+  }
 }
 
 async function create(kind: CanvasNode['kind'], position: Point, size = nodeSizes[kind], item?: SourceItem,
@@ -595,8 +612,6 @@ const contextItems = computed(() => {
   if (target?.type === 'surface') {
     add('new_requirement', canManage.value, write)
     add('new_task', context.canCreateTask.value, write)
-    add('new_case', context.canCreateTask.value && access.value.includes('case'), write)
-    add('upload', documentOwners.value.length > 0, write)
     add('playbooks', access.value.includes('playbook'))
     add('new_note', true, { ...write, divider: items.length > 0 })
     add('new_frame', true, write)
@@ -618,7 +633,6 @@ const contextItems = computed(() => {
     const assetId = ref && catalog.value?.byReference.get(referenceKey(ref))?.node_id
     add('start_branch', Boolean(snapshot.value?.root_tree && node.expandable && assetId && node.domainId !== assetId),
       { disabled: loadingWindow.value })
-    add('upload', documentOwners.value.some(owner => owner.kind === ref?.kind && owner.id === ref.id), write)
     if (ref?.kind === 'requirement') {
       const leaf = !node.details?.has_children && !parentRequirements.value.has(ref.id)
       add('edit_requirement', canManage.value, write)
@@ -698,11 +712,9 @@ function chooseContext(action: CanvasMenuAction) {
   const params = { wsId: props.workspaceId }
   closeContext()
   switch (action) {
-    case 'new_requirement': command('requirement'); break
+    case 'new_requirement': command('requirement', { position, quarter: quarter.value?.id }); break
     case 'new_task': command('task'); break
-    case 'new_case': command('case'); break
     case 'playbooks': command('playbooks'); break
-    case 'upload': command('document', documentOwners.value.find(owner => owner.kind === ref?.kind && owner.id === ref.id)); break
     case 'new_note': void create('note', position); break
     case 'new_frame': void create('frame', position); break
     case 'fit': void fitOverview(); break
@@ -739,29 +751,32 @@ async function saveLink(target: string, type: RequirementTaskRelation) {
 }
 
 const refreshBoard = () => refresh(true)
-
-defineExpose({ refresh: refreshBoard })
 </script>
 
 <template>
-  <section class="asset-graph glass-panel" data-testid="workspace-asset-graph">
-    <header class="graph-toolbar">
-      <div class="graph-title"><span><Workflow :size="21" /></span><h1>{{ t('workspace_canvas.title') }}</h1></div>
-      <span v-if="catalog" class="graph-sync" :class="{ interrupted: syncError, saving }" :title="syncError || undefined" role="status">
-        <i aria-hidden="true" />{{ syncLabel }}
-      </span>
+  <section class="asset-table-workbench asset-graph" data-testid="workspace-asset-graph">
+    <header class="table-toolbar">
+      <div class="graph-heading">
+        <h1>{{ t('workspace_canvas.title') }}</h1>
+        <span v-if="boardStatus" class="graph-status" :title="syncError || undefined" role="status">{{ boardStatus }}</span>
+      </div>
+      <CanvasPresence :viewers="onlineViewers" />
     </header>
 
-    <nav class="graph-navigation" :aria-label="t('workspace_canvas.title')">
-      <CanvasQuarterPicker v-if="quarter" :workspace-id="workspaceId" :quarter="quarter" :busy="loading || saving"
-        @select="selectQuarter" @calendar-saved="calendarSaved" />
-      <CanvasAssetSearch class="category-search" :assets="catalog?.assets ?? []" :remote="search" @locate="locateAsset" />
-      <span v-if="loading || loadingWindow || loadingRoots" class="graph-summary" role="status">{{ t('common.loading') }}</span>
-      <span v-if="snapshot?.annotations_limited" class="graph-summary" role="status">{{ t('workspace_canvas.domains.annotation_limit') }}</span>
+    <nav class="query-bar" :aria-label="t('workspace_canvas.title')">
+      <div class="query-grid canvas-filters">
+        <CanvasQuarterPicker v-if="quarter" :workspace-id="workspaceId" :quarter="quarter" :busy="loading || saving"
+          :can-edit="Boolean(snapshot?.access.can_edit_calendar)" :revision="calendarRevision"
+          @select="selectQuarter" @calendar-saved="calendarSaved" />
+        <CanvasAssetSearch :assets="catalog?.assets ?? []" :remote="search" @locate="locateAsset" />
+        <CanvasRootControls v-if="snapshot?.root_tree && quarter" :key="quarter.id" :quarter="quarter" :kinds="rootKinds"
+          :filters="rootFilters" :next="canContinue" :busy="loadingRoots || loading"
+          :empty="!preview.roots.size" :user-id="auth.user?.id" @filter="applyRootFilters" />
+      </div>
+      <p v-if="snapshot?.annotations_limited" class="graph-status graph-notice" role="status">
+        {{ t('workspace_canvas.domains.annotation_limit') }}
+      </p>
     </nav>
-    <CanvasRootControls v-if="snapshot?.root_tree && quarter" :key="quarter.id" :quarter="quarter" :kinds="rootKinds"
-      :filters="rootFilters" :next="canContinue" :busy="loadingRoots || loading"
-      :empty="!preview.roots.size" :user-id="auth.user?.id" @filter="applyRootFilters" />
 
     <div v-if="saveError && catalog" class="graph-error" role="alert">
       <span>{{ saveError }}</span>
@@ -796,7 +811,8 @@ defineExpose({ refresh: refreshBoard })
         :label="t('workspace_canvas.menu.label')" @choose="chooseContext" @close="closeContext" />
       <slot name="workspace" />
     </div>
-    <CanvasAssetCreation v-if="catalog" ref="assetCreation" :workspace-id="workspaceId" :document-owners="documentOwners" @changed="refreshBoard" />
+    <CanvasAssetCreation v-if="catalog" ref="assetCreation" :workspace-id="workspaceId"
+      @changed="refreshBoard" @place-requirement="placeRequirement" />
     <CanvasLinkDialog v-if="linkRequest && linkSubject?.details" :title="t(`workspace_canvas.menu.${linkRequest.action}`)"
       :label="linkSubject.details.title" :items="linkItems" :lookup="searchLinks"
       :document="linkRequest.action === 'share_document'" :saving="saving"
@@ -805,6 +821,8 @@ defineExpose({ refresh: refreshBoard })
 </template>
 
 <style scoped>
+@import '../workspace-assets/asset-table-workbench.css';
+
 .asset-graph {
   --canvas-ink: #0f172a;
   --canvas-muted: #64748b;
@@ -821,30 +839,21 @@ defineExpose({ refresh: refreshBoard })
   flex: 1;
   min-width: 0;
   min-height: 0;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 18px;
-  background: linear-gradient(149deg, #f4faff, #fff 33%);
 }
-.graph-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 9px; flex: 0 0 auto; padding: 1px 4px; }
-.graph-title { display: flex; align-items: center; gap: 9px; }
-.graph-title span { display: grid; place-items: center; padding: 8px; color: #0369a1; border-radius: 10px; background: #e0f2fe; }
-.graph-title h1 { margin: 0; color: #1e3a8a; font-size: 19px; font-weight: 750; }
-.graph-navigation { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 0 4px 1px; }
-.category-search { margin-inline-start: 6px; }
-.graph-navigation > button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border-radius: 7px; border: 1px solid #cce1f2; background: #f1f8fe; color: #285978; font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
-.graph-navigation > button:hover { background: #e0f2fe; color: #0369a1; border-color: #bae6fd; }
-.graph-summary { color: #526781; margin-inline-start: 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
-.graph-navigation + .root-controls { padding: 0 4px 2px; }
-.graph-sync { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--canvas-muted); white-space: nowrap; }
-.graph-sync i { width: 6px; height: 6px; border-radius: 50%; background: #319466; }
-.graph-sync.interrupted i { background: #bc721f; }
-.graph-sync.saving i { background: var(--canvas-accent); }
+.table-toolbar { flex-wrap: wrap; min-height: 32px; }
+.graph-heading { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; }
+.graph-heading h1 { flex: 0 0 auto; }
+.graph-status { min-width: 0; overflow: hidden; color: var(--canvas-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.graph-notice { margin: 8px 0 0; white-space: normal; }
+.canvas-filters { align-items: center; gap: 12px; }
+.canvas-filters :deep(.el-input__wrapper) { height: 42px; border-radius: 8px; }
 .graph-layout { position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; border: 1px solid #e2e8f0; border-radius: 12px; }
 .graph-state { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; color: #64748b; font-size: 13px; }
 .graph-error { display: flex; align-items: center; gap: 8px; padding: 5px 9px; border: 1px solid #f7d9df; border-radius: 7px; background: #fff1f3; color: #8f3143; font-size: 12px; }
 .graph-error span { flex: 1; }
 .graph-error button { display: inline-flex; align-items: center; gap: 5px; border: 0; padding: 4px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
-@media (max-width: 850px) { .asset-graph { padding: 12px; } .graph-sync { display: none; } }
+@media (max-width: 850px) {
+  .asset-graph { padding: 12px; gap: 12px; }
+  .asset-graph .query-bar { padding: 12px; }
+}
 </style>

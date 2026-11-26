@@ -133,9 +133,11 @@ async def publish_once() -> int:
     from app.domains.websocket.ws.public_share_manager import (
         notify_task_shares_history_changed,
     )
+    from app.domains.workspace_canvas.events import notify_canvas_changed
 
     published = 0
     notified_tasks: set[str] = set()
+    canvas_tasks: dict[str, set[str]] = {}
     for _row_id, event_id, task_id, payload, attempts in await run_db_txn(
         lambda db: _pending_sync(db, datetime.utcnow())
     ):
@@ -170,6 +172,9 @@ async def publish_once() -> int:
                 ),
             )
             published += 1
+            workspace_id = payload.get("workspace_id")
+            if event_type == "task_status_changed" and isinstance(workspace_id, str):
+                canvas_tasks.setdefault(workspace_id, set()).add(task_id)
             # 公开 READ 分享页的实时 nudge：正式消息事件（payload 含 message）
             # 意味着会话历史变化。每批每任务至多通知一次。
             if (
@@ -192,6 +197,9 @@ async def publish_once() -> int:
                 db, event_id, error_code=error_code, attempts=attempts
             )
         )
+    for workspace_id, task_ids in canvas_tasks.items():
+        for task_id in task_ids:
+            await notify_canvas_changed(workspace_id, plan_task_id=task_id)
     return published
 
 

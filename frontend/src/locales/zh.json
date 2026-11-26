@@ -2482,6 +2482,10 @@
     "query_failed": "资产查询失败"
   },
   "workspace_canvas": {
+    "presence": {
+      "online": "{count} 位成员在线",
+      "more": "查看其余 {count} 位在线成员"
+    },
     "tree": {
       "root_filter": "根节点类型",
       "title_filter": "按标题开头筛选",
@@ -2680,8 +2684,6 @@
       "label": "白板操作",
       "new_requirement": "新建需求",
       "new_task": "新建任务",
-      "new_case": "新建问题案例",
-      "upload": "上传文档",
       "playbooks": "诊断规程",
       "new_note": "新建便签",
       "new_frame": "新建分组框",
@@ -2721,8 +2723,6 @@
       "playbooks": "规程库",
       "case_promotion": "案例晋升",
       "choose_cases": "选择已入库的案例",
-      "create_document": "上传文档",
-      "document_uploaded": "文档已上传",
       "upload_failed": "文档上传失败",
       "download": "下载",
       "document_owner": "所属资产",

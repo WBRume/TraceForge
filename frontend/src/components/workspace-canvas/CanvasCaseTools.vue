@@ -2,7 +2,7 @@
 import { computed, shallowRef, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { BookMarked, Workflow } from '@/components/icons'
+import BaseSelect from '@/components/BaseSelect.vue'
 import CasePromotionAction from '@/components/case-center/CasePromotionAction.vue'
 import PlaybookLibrary from '@/components/case-center/PlaybookLibrary.vue'
 import { useWorkspaceContext } from '@/composables/chat/tasklist/useWorkspaceContext'
@@ -18,11 +18,21 @@ const active = shallowRef<'playbooks' | 'promotion'>(requestedJob.value || reque
 const { canCreateTask, loadWorkspace } = useWorkspaceContext({ getWorkspaceId: () => workspaceId.value })
 const cases = shallowRef<{ id: string; title: string }[]>([])
 const picked = shallowRef<string[]>([])
+const query = shallowRef('')
 const loading = shallowRef(false)
 const error = shallowRef('')
-let searchSequence = 0
+const options = computed(() => cases.value.map(item => ({
+  value: item.id, label: item.title, disabled: picked.value.length >= 20 && !picked.value.includes(item.id),
+})))
 
-watch(workspaceId, () => { void loadWorkspace().catch(() => {}) }, { immediate: true })
+watch(workspaceId, () => {
+  cases.value = []
+  picked.value = []
+  query.value = ''
+  loading.value = false
+  error.value = ''
+  void loadWorkspace().catch(() => {})
+}, { immediate: true })
 watch(requestedJob, id => { if (id) active.value = 'promotion' })
 watch([requestedCase, canCreateTask, workspaceId], async ([id, allowed, workspace], _, onCleanup) => {
   if (!id || !allowed) return
@@ -39,69 +49,56 @@ watch([requestedCase, canCreateTask, workspaceId], async ([id, allowed, workspac
     if (current) error.value = formatApiError(cause, t('workspace_canvas.load_failed'), t)
   }
 }, { immediate: true })
-watch(active, type => { if (type === 'promotion' && canCreateTask.value) void lookup('') })
-watch(canCreateTask, allowed => { if (allowed && active.value === 'promotion') void lookup('') })
+watch([active, canCreateTask, workspaceId, query], ([type, allowed, workspace, keyword], _, cleanup) => {
+  if (type !== 'promotion' || !allowed) return
+  const request = new AbortController()
+  const timer = setTimeout(() => void lookup(workspace, keyword, request.signal), keyword ? 180 : 0)
+  cleanup(() => { clearTimeout(timer); request.abort() })
+}, { immediate: true })
 
-async function lookup(q: string) {
-  const request = ++searchSequence
+async function lookup(workspace: string, keyword: string, signal: AbortSignal) {
   loading.value = true
   error.value = ''
   try {
-    const { data } = await api.get<{ items: { id: string; title: string }[] }>(`/workspaces/${workspaceId.value}/cases`, {
-      params: { q, status: 'APPROVED', page_size: 50 },
+    const { data } = await api.get<{ items: { id: string; title: string }[] }>(`/workspaces/${workspace}/cases`, {
+      params: { keyword: keyword.trim(), status: 'APPROVED', page_size: 50 }, signal,
     })
-    if (request !== searchSequence) return
+    if (signal.aborted) return
     const selected = new Set(picked.value)
     const known = new Map(cases.value.filter(item => selected.has(item.id)).map(item => [item.id, item]))
     for (const item of data.items) known.set(item.id, item)
     cases.value = [...known.values()]
   } catch (cause) {
-    if (request === searchSequence) error.value = formatApiError(cause, t('workspace_canvas.load_failed'), t)
+    if (!signal.aborted) error.value = formatApiError(cause, t('workspace_canvas.load_failed'), t)
   } finally {
-    if (request === searchSequence) loading.value = false
+    if (!signal.aborted) loading.value = false
   }
 }
 </script>
 
 <template>
   <section class="case-tools">
-    <nav class="case-tool-tabs" :aria-label="t('workspace_canvas.actions.case_tools')">
-      <button type="button" :aria-pressed="active === 'playbooks'" @click="active = 'playbooks'">
-        <Workflow :size="16" />{{ t('workspace_canvas.actions.playbooks') }}
-      </button>
-      <button v-if="canCreateTask || requestedJob" type="button" :aria-pressed="active === 'promotion'" @click="active = 'promotion'">
-        <BookMarked :size="16" />{{ t('workspace_canvas.actions.case_promotion') }}
-      </button>
-    </nav>
-    <PlaybookLibrary v-if="active === 'playbooks'" :workspace-id="workspaceId" />
-    <section v-else class="promotion-tools">
-      <el-select v-if="canCreateTask" v-model="picked" remote filterable multiple :remote-method="lookup" :loading="loading"
-        :multiple-limit="20" :placeholder="t('workspace_canvas.actions.choose_cases')" :aria-label="t('workspace_canvas.actions.choose_cases')">
-        <el-option v-for="item in cases" :key="item.id" :value="item.id" :label="item.title" />
-      </el-select>
-      <CasePromotionAction :workspace-id="workspaceId" :case-ids="picked" :requested-job-id="requestedJob" />
-      <p v-if="error" role="alert">{{ error }}</p>
-    </section>
+    <el-tabs v-model="active">
+      <el-tab-pane name="playbooks" :label="t('workspace_canvas.actions.playbooks')">
+        <PlaybookLibrary v-if="active === 'playbooks'" :workspace-id="workspaceId" />
+      </el-tab-pane>
+      <el-tab-pane v-if="canCreateTask || requestedJob" name="promotion" :label="t('workspace_canvas.actions.case_promotion')">
+        <div v-if="active === 'promotion'" class="promotion-tools">
+          <BaseSelect v-if="canCreateTask" v-model="picked" :options="options" searchable remote-search multiple
+            :placeholder="t('workspace_canvas.actions.choose_cases')" :aria-label="t('workspace_canvas.actions.choose_cases')"
+            :search-placeholder="t('workspace_canvas.domains.search_by_title')" @open="query = ''" @search="query = $event" />
+          <span v-if="loading" role="status">{{ t('common.loading') }}</span>
+          <CasePromotionAction :workspace-id="workspaceId" :case-ids="picked" :requested-job-id="requestedJob" />
+          <p v-if="error" role="alert">{{ error }}</p>
+        </div>
+      </el-tab-pane>
+    </el-tabs>
   </section>
 </template>
 
 <style scoped>
 .case-tools { padding: 16px; }
-.case-tool-tabs { display: flex; gap: 6px; margin-bottom: 16px; }
-.case-tool-tabs button {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 8px 11px;
-  font: inherit;
-  font-size: 13px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-  color: #475569;
-  cursor: pointer;
-}
-.case-tool-tabs button[aria-pressed='true'] { color: #0369a1; border-color: #7dd3fc; background: #f0f9ff; }
 .promotion-tools { display: grid; gap: 12px; }
+.case-tools :deep(.el-tabs__content) { overflow: visible; }
 .promotion-tools .btn-primary { justify-self: start; }
 </style>

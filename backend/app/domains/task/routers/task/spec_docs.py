@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
@@ -245,6 +245,7 @@ def save_task_plan_doc_content(
     ws_id: str,
     task_id: str,
     body: PlanDocSaveRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -273,4 +274,5 @@ def save_task_plan_doc_content(
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save document: {exc}") from exc
 
+    background_tasks.add_task(notify_canvas_changed, ws_id, plan_task_id=task_id, assets=False)
     return PlanDocContentResponse(**payload)

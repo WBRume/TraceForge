@@ -114,7 +114,7 @@ watch(() => [...planTasks.value].sort().join(','), (value, _, cleanup) => {
   cleanup(() => clearTimeout(timer))
 }, { immediate: true })
 watch(() => props.data, (current, previous) => {
-  if (current.quarter?.id !== previous.quarter?.id || current.root_tree !== previous.root_tree) {
+  if (current.quarter?.id !== previous.quarter?.id || (current.root_tree !== previous.root_tree && !movedViewport)) {
     movedViewport = false
     activeBranch.value = ''
     fitEntries()
@@ -214,20 +214,35 @@ function openContext(target: Element, client: Point) {
   const nodeId = target.closest('[data-canvas-node]')?.getAttribute('data-canvas-node')
   const relationId = target.closest('[data-canvas-relation]')?.getAttribute('data-canvas-relation')
   const edgeId = target.closest('[data-canvas-edge]')?.getAttribute('data-canvas-edge')
-  const scope: CanvasContextTarget = nodeId ? { type: 'node', id: nodeId }
-    : relationId ? { type: 'relation', id: relationId }
-    : edgeId ? { type: 'edge', id: edgeId } : { type: 'surface' }
   const rect = element.getBoundingClientRect()
   const anchor = { x: client.x - rect.left, y: client.y - rect.top }
   const { x, y, scale } = viewport.value
+  const position = { x: (anchor.x - x) / scale, y: (anchor.y - y) / scale }
+  const frameId = !nodeId && !relationId && !edgeId ? frameAtBorder(position, 6 / scale) : undefined
+  const scope: CanvasContextTarget = nodeId || frameId ? { type: 'node', id: (nodeId || frameId)! }
+    : relationId ? { type: 'relation', id: relationId }
+    : edgeId ? { type: 'edge', id: edgeId } : { type: 'surface' }
   map.cancelConnection()
+  movedViewport = true
   emit('context', {
     target: scope,
     anchor,
-    position: { x: (anchor.x - x) / scale, y: (anchor.y - y) / scale },
+    position,
     size: { width: rect.width, height: rect.height },
     restoreFocus: target.closest<HTMLElement>('[tabindex]') || element,
   })
+}
+
+function frameAtBorder(point: Point, tolerance: number) {
+  const nodes = renderedNodes.value
+  for (let index = nodes.length - 1; index >= 0; index--) {
+    const node = nodes[index]
+    if (node.kind !== 'frame') continue
+    const x = point.x - node.position.x, y = point.y - node.position.y
+    const { width, height } = node.size
+    if (x >= -tolerance && y >= -tolerance && x <= width + tolerance && y <= height + tolerance
+      && Math.min(Math.abs(x), Math.abs(y), Math.abs(x - width), Math.abs(y - height)) <= tolerance) return node.id
+  }
 }
 
 function rightClick(event: MouseEvent) {
@@ -385,8 +400,8 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
       :class="[`mode-${tool}`, { moving, 'panning-key': space, 'map-scale': isOverview }]"
       @pointerdown="map.pointerDown" @pointermove="pointerMove" @pointercancel="map.cancelGesture" @wheel.prevent="wheel"
       @keydown="onKeydown" @contextmenu.prevent="rightClick" @dblclick="zoomIntoMap">
-      <CanvasOverviewLayer :nodes="renderedNodes" :regions="data.regions" :relations="shownRelations" :edges="data.edges"
-        :viewport="viewport" :size="size" :overview="isOverview" :featured="summary" :tree="!!data.quarter" :selected-id="selectedNode?.id" />
+      <CanvasOverviewLayer v-if="isOverview" :nodes="renderedNodes" :relations="shownRelations" :edges="data.edges"
+        :viewport="viewport" :size="size" :selected-id="selectedNode?.id" />
       <div v-if="!isOverview" class="canvas-scene" :style="sceneStyle">
         <div class="scene-layer frame-layer">
           <CanvasItem v-for="node in frames" :key="node.id" :node="node" :active="selected(node)"

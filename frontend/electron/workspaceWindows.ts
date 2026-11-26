@@ -4,7 +4,8 @@ import { createWorkspaceWindows } from '../desktop/workspaceWindows'
 import { MAIN_WORKSPACE_WINDOW } from '../src/types/workspaceWindows'
 import type { WindowPlacement, WindowPoint } from '../src/types/workspaceWindows'
 
-export const WINDOWS_TITLE_BAR = { color: '#f8fafc', symbolColor: '#334155', height: 46 }
+// Let the renderer paint the title bar behind the native buttons and its modal backdrops.
+export const WINDOWS_TITLE_BAR = { color: '#00000000', symbolColor: '#334155', height: 46 }
 export const MIN_WORKSPACE_SIZE = { width: 720, height: 520 }
 export const DETACHED_WINDOW_SIZE = { width: 1320, height: 820 }
 

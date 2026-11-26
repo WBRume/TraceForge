@@ -28,7 +28,7 @@
   gap: 12px;
 }
 
-.table-toolbar h3 {
+.table-toolbar :is(h1, h3) {
   margin: 4px 0;
   color: #0f172a;
   font-size: 20px;

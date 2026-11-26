@@ -5,7 +5,7 @@ import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { sendResyncComplete } from '@/utils/wsCursor'
-import { canvasId, canvasUrl, type CanvasAsset, type CanvasEdit, type CanvasNodeInput, type CanvasSnapshot,
+import { canvasId, canvasUrl, type CanvasAsset, type CanvasEdit, type CanvasNodeInput, type CanvasSnapshot, type CanvasViewer,
   type PlanFilesPage } from './model'
 
 interface Operation { id: string; edit: CanvasEdit; anchors: CanvasNodeInput[] }
@@ -23,15 +23,19 @@ export function useWorkspaceCanvas(workspaceId: string, getQuarter: () => string
   const planFiles = shallowRef<CanvasAsset[]>([])
   const readingPlans = shallowRef(false)
   const planTaskIds = shallowRef<string[]>([])
+  const onlineViewers = shallowRef<CanvasViewer[]>([])
+  const calendarRevision = shallowRef(0)
   let failedOperation: Operation | null = null
   let reading: Promise<boolean> | null = null
   let readingRequest: AbortController | null = null
   let readingQuarter: string | undefined
   let socket: WebSocket | null = null
-  let readTimer: ReturnType<typeof setTimeout> | undefined
+  let initialLoadTimer: ReturnType<typeof setTimeout> | undefined
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined
   let connectTimer: ReturnType<typeof setTimeout> | undefined
-  let planTimer: ReturnType<typeof setTimeout> | undefined
   let plansRequest: AbortController | null = null
+  let plansPending = false
+  let snapshotPending = false
   let disposed = false
 
   async function refresh(afterCurrent = false): Promise<boolean> {
@@ -80,6 +84,7 @@ export function useWorkspaceCanvas(workspaceId: string, getQuarter: () => string
     canRetry.value = false
     try {
       await request()
+      snapshotPending = false
       await refresh(true)
       return true
     } catch (error) {
@@ -93,10 +98,12 @@ export function useWorkspaceCanvas(workspaceId: string, getQuarter: () => string
         failedOperation = operation
         canRetry.value = true
       }
+      snapshotPending = false
       await refresh(true)
       return false
     } finally {
       saving.value = false
+      if (snapshotPending) scheduleRefresh()
     }
   }
 
@@ -104,10 +111,21 @@ export function useWorkspaceCanvas(workspaceId: string, getQuarter: () => string
   const edit = (change: CanvasEdit, anchors: CanvasNodeInput[] = []) => send({ id: canvasId(), edit: change, anchors })
   const retry = () => failedOperation ? send(failedOperation) : refresh(true)
 
+  function scheduleRefresh() {
+    snapshotPending = true
+    clearTimeout(refreshTimer)
+    refreshTimer = setTimeout(() => {
+      if (disposed || saving.value || !snapshotPending) return
+      snapshotPending = false
+      void refresh(true)
+    }, 60)
+  }
+
   function closeSocket() {
     clearTimeout(connectTimer)
     const previous = socket
     socket = null
+    onlineViewers.value = []
     previous?.close()
   }
 
@@ -122,30 +140,36 @@ export function useWorkspaceCanvas(workspaceId: string, getQuarter: () => string
       try {
         const frame = JSON.parse(event.data)
         if (frame?.type === 'resync_required') {
-          await refresh(true)
+          clearTimeout(initialLoadTimer)
+          const loaded = await refresh(true)
           if (socket === activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+            if (!loaded) { activeSocket.close(); return }
             sendResyncComplete(activeSocket, frame, `workspace-canvas:${workspaceId}`)
+            calendarRevision.value++
+            void refreshPlanFiles()
           }
-        } else if (frame?.type === 'canvas_changed' && !saving.value) void refresh(true)
+        } else if (frame?.type === 'presence' && Array.isArray(frame.online_users)) {
+          onlineViewers.value = frame.online_users
+        } else if (frame?.type === 'canvas_changed') {
+          if (frame.calendar) calendarRevision.value++
+          if (typeof frame.plan_task_id === 'string' && planTaskIds.value.includes(frame.plan_task_id)) void refreshPlanFiles()
+          if (frame.assets !== false) scheduleRefresh()
+        }
       } catch { /* snapshot refresh remains available */ }
     }
     activeSocket.onclose = () => {
       if (socket !== activeSocket || disposed) return
       socket = null
+      onlineViewers.value = []
+      if (loading.value && !reading) void refresh()
       connectTimer = setTimeout(connect, 6000)
     }
   }
 
-  function poll() {
-    const interval = snapshot.value?.root_tree ? 25_000 : socket?.readyState === WebSocket.OPEN ? 6000 : 3000
-    readTimer = setTimeout(async () => {
-      if (!document.hidden && !saving.value) await refresh()
-      if (!disposed) poll()
-    }, interval)
-  }
-
   async function refreshPlanFiles() {
-    if (disposed || plansRequest || !planTaskIds.value.length) return
+    if (disposed || !planTaskIds.value.length || !snapshot.value?.access.source_kinds.includes('plan_document')) return
+    if (plansRequest) { plansPending = true; return }
+    plansPending = false
     const request = new AbortController()
     plansRequest = request
     readingPlans.value = true
@@ -171,15 +195,9 @@ export function useWorkspaceCanvas(workspaceId: string, getQuarter: () => string
       if (plansRequest === request) {
         plansRequest = null
         readingPlans.value = false
-        planTimer = setTimeout(pollPlanFiles, 45_000)
+        if (plansPending) void refreshPlanFiles()
       }
     }
-  }
-
-  function pollPlanFiles() {
-    if (disposed || !planTaskIds.value.length || !snapshot.value?.access.source_kinds.includes('plan_document')) return
-    if (document.hidden) planTimer = setTimeout(pollPlanFiles, 45_000)
-    else void refreshPlanFiles()
   }
 
   function setPlanTasks(ids: string[]) {
@@ -188,7 +206,7 @@ export function useWorkspaceCanvas(workspaceId: string, getQuarter: () => string
   }
 
   watch([() => snapshot.value?.access.source_kinds.includes('plan_document'), planTaskIds], ([allowed, ids]) => {
-    clearTimeout(planTimer)
+    plansPending = false
     plansRequest?.abort()
     plansRequest = null
     readingPlans.value = false
@@ -196,15 +214,10 @@ export function useWorkspaceCanvas(workspaceId: string, getQuarter: () => string
     if (allowed && ids.length) void refreshPlanFiles()
   })
 
-  const refreshOnFocus = () => { if (!document.hidden) void refresh(true) }
-
   onMounted(() => {
-    void refresh()
     connect()
-    poll()
-    window.addEventListener('focus', refreshOnFocus)
+    initialLoadTimer = setTimeout(() => { if (!snapshot.value && !reading) void refresh() }, 2000)
     window.addEventListener('sdd-server-changed', connect)
-    document.addEventListener('visibilitychange', refreshOnFocus)
   })
   watch(getQuarter, quarter => {
     if (quarter && quarter !== snapshot.value?.quarter?.id) {
@@ -220,13 +233,12 @@ export function useWorkspaceCanvas(workspaceId: string, getQuarter: () => string
     readingRequest?.abort()
     plansRequest?.abort()
     plansRequest = null
-    clearTimeout(readTimer)
-    clearTimeout(planTimer)
+    clearTimeout(initialLoadTimer)
+    clearTimeout(refreshTimer)
     closeSocket()
-    window.removeEventListener('focus', refreshOnFocus)
     window.removeEventListener('sdd-server-changed', connect)
-    document.removeEventListener('visibilitychange', refreshOnFocus)
   })
 
-  return { snapshot, loading, saving, syncError, saveError, canRetry, planFiles, readingPlans, setPlanTasks, refresh, edit, retry, submit }
+  return { snapshot, loading, saving, syncError, saveError, canRetry, planFiles, readingPlans, onlineViewers,
+    calendarRevision, setPlanTasks, refresh, edit, retry, submit }
 }

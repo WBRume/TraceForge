@@ -299,27 +299,34 @@ export function layoutWorkspace(snapshot: CanvasSnapshot, catalog: CanvasCatalog
   const continuations: CanvasBranchContinuation[] = []
   const branchRoutes = new Map<string, CanvasBranchRoute>()
   const absoluteSaved = new Map<string, CanvasNode>()
-  if (snapshot.quarter) scopeOffsets.set(`quarter-${snapshot.quarter.id}`, { x: 0, y: 0 })
+  const quarterScope = snapshot.quarter ? `quarter-${snapshot.quarter.id}` : null
+  if (quarterScope) scopeOffsets.set(quarterScope, { x: 0, y: 0 })
   for (const node of snapshot.nodes) {
     const asset = assetFor(node)
-    if (asset && !node.scope_id && !absoluteSaved.has(asset.node_id)) absoluteSaved.set(asset.node_id, node)
+    if (asset && (!node.scope_id || node.scope_id === quarterScope) && !absoluteSaved.has(asset.node_id)) {
+      absoluteSaved.set(asset.node_id, node)
+    }
   }
 
   for (const { item, position } of placements.domains) {
-    const region = { ...item.region, position }
-    const offset = translatePoint(position, localOrigin, -1)
+    const root = item.nodes[0]?.node
+    const fixed = root && !saved.has(root.id) ? absoluteSaved.get(item.region.id) : undefined
+    const offset = fixed && root ? translatePoint(fixed.position, root.position, -1) : translatePoint(position, localOrigin, -1)
+    const region = { ...item.region, position: translatePoint(localOrigin, offset) }
     regions.push(region)
     scopeOffsets.set(region.id, offset)
+    const markerOffsets = new Map<string, Point>()
     for (const { node, assetId } of item.nodes) {
       const absolute = saved.has(node.id) ? undefined : absoluteSaved.get(assetId)
-      const placed = absolute ? { ...node, ...absolute, automatic: true }
+      const placed = absolute ? { ...node, ...absolute, details: node.details, domainId: node.domainId, automatic: true }
         : { ...node, position: translatePoint(node.position, offset) }
       nodes.push(placed)
+      if (absolute) markerOffsets.set(assetId, translatePoint(absolute.position, node.position, -1))
       assetNodeIds.set(assetId, placed.id)
       originByAsset.set(assetId, translatePoint(placed.position, cardOrigin, -1))
     }
     for (const { assetId, position, stemHeight } of item.continuations) {
-      continuations.push({ parentId: assetNodeIds.get(assetId)!, position: translatePoint(position, offset), stemHeight })
+      continuations.push({ parentId: assetNodeIds.get(assetId)!, position: translatePoint(position, markerOffsets.get(assetId) ?? offset), stemHeight })
     }
     for (const [id, route] of item.routes) {
       branchRoutes.set(assetNodeIds.get(id)!, { ...route, parentId: assetNodeIds.get(route.parentId)! })

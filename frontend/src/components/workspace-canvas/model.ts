@@ -4,7 +4,7 @@ import { taskStatusKey } from '@/utils/taskStatus'
 
 export const sourceKinds = ['requirement', 'document', 'requirement_document', 'plan_document', 'task', 'case', 'playbook'] as const
 export type SourceKind = typeof sourceKinds[number]
-export type CanvasCommand = 'requirement' | 'task' | 'case' | 'document' | 'playbooks'
+export type CanvasCommand = 'requirement' | 'task' | 'playbooks'
 
 export type DocumentReference =
   | { kind: 'document'; id: string; version_id?: string | null; block?: string | null }
@@ -33,12 +33,7 @@ export interface SourceItem {
   details: SourceDetails
 }
 
-export interface CanvasDocumentOwner {
-  kind: 'requirement' | 'task'
-  id: string
-  title: string
-  taskType?: string | null
-}
+export interface CanvasPlacement { position: Point; quarter?: string }
 
 export interface AssetQuarter { id: string; label_year: number; number: number }
 export interface CanvasAsset extends SourceItem {
@@ -92,6 +87,13 @@ export type CanvasTool = 'select' | 'pan' | 'note' | 'frame' | 'arrow' | 'relati
 export type CanvasConnection = 'arrow' | 'relation' | 'auto'
 export type CanvasSelection = { type: 'node' | 'edge'; id: string }
 
+export interface CanvasViewer {
+  id: string
+  display_name: string
+  avatar_url: string | null
+  avatar_svg: string | null
+}
+
 export interface CanvasNodeInput {
   id: string
   kind: 'card' | 'note' | 'frame'
@@ -141,7 +143,7 @@ export interface CanvasSnapshot {
   nodes: CanvasNode[]
   edges: CanvasEdge[]
   relations: CanvasRelation[]
-  access: { source_kinds: SourceKind[]; can_link_requirements: boolean }
+  access: { source_kinds: SourceKind[]; can_link_requirements: boolean; can_edit_calendar?: boolean }
   quarter?: FiscalQuarter
   root_tree?: boolean
   root_cursor?: string | null

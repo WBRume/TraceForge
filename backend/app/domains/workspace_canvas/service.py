@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.domains.auth.models.user import WorkspacePermission, WorkspaceRole
 from app.domains.workspace.services import workspace_service
-from app.domains.workspace_canvas import quarters, sources
+from app.domains.workspace_canvas import quarters, relations, sources, tree_children
 from app.domains.workspace_canvas.models import WorkspaceCanvas
 from app.domains.workspace_canvas.quarter_calendar import FiscalCalendar, FiscalQuarter
 from app.domains.workspace_canvas.schemas import (
@@ -58,6 +58,7 @@ def require_member(db: Session, workspace_id: str, user_id: str) -> CanvasMember
         access=CanvasAccess(
             source_kinds=kinds,
             can_link_requirements=can_view_assets and WorkspacePermission.MANAGE_REQUIREMENTS in permissions,
+            can_edit_calendar=member.role == WorkspaceRole.OWNER,
         ),
         can_edit_calendar=member.role == WorkspaceRole.OWNER,
     )
@@ -91,8 +92,36 @@ def read_canvas(
         and (not (node.scope_id or "").startswith("quarter-") or node.scope_id == f"quarter-{period.id}")
     }
     content = quarters.read_quarter(db, workspace_id, member.access.source_kinds, calendar, period)
-    assets = content.assets
     visible = dict(list(visible.items())[:MAX_ANNOTATION_NODES])
+    assets = list(content.assets)
+    known = {asset.reference.model_dump_json() for asset in assets}
+    placements = {
+        node.reference.model_dump_json(): node.reference
+        for node in visible.values()
+        if node.scope_id == f"quarter-{period.id}" and node.reference and node.reference.kind == "requirement"
+    }
+    pinned = (
+        sources.assign_quarters(
+            sources.assets_for_references(
+                db, workspace_id, [ref for key, ref in placements.items() if key not in known]
+            ),
+            calendar,
+        )
+        if placements.keys() - known
+        else []
+    )
+    links = list(content.relations)
+    if pinned:
+        tree_children.mark_children(
+            db,
+            workspace_id,
+            member.access.source_kinds,
+            calendar.dates(period),
+            pinned,
+            known=(asset.reference for asset in assets),
+        )
+        assets.extend(pinned)
+        links.extend(relations.load_relations(db, workspace_id, assets, MAX_ANNOTATION_EDGES, focus=pinned))
     resolved = {asset.reference.model_dump_json(): asset.details for asset in assets}
     refs = [
         node.reference
@@ -117,7 +146,7 @@ def read_canvas(
         edges=[edge for edge in contents.edges.values() if edge.source in visible and edge.target in visible][
             :MAX_ANNOTATION_EDGES
         ],
-        relations=content.relations,
+        relations=links,
         access=member.access,
         quarter=period,
         root_tree=content.next_cursor is not None,

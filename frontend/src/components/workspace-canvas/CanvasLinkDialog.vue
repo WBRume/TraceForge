@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onScopeDispose, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
+import BaseSelect from '@/components/BaseSelect.vue'
 import type { RequirementTaskRelation } from '@/types/workspaceAssets'
 import type { SourceItem } from './model'
 
@@ -15,11 +16,23 @@ const chosen = shallowRef<SourceItem>()
 const searching = shallowRef(false)
 const searchFailed = shallowRef(false)
 let request: AbortController | undefined
+let searchTimer: ReturnType<typeof setTimeout> | undefined
 const options = computed(() => {
   const items = found.value ?? props.items
   const selected = chosen.value
   return selected && !items.some(item => item.reference.id === selected.reference.id) ? [selected, ...items] : items
 })
+const targetOptions = computed(() => options.value.map(item => ({ value: item.reference.id, label: item.details.title })))
+const relationOptions = computed(() => [
+  { value: 'COVERS', label: t('workspace_assets.requirements.relation_types.covers_short') },
+  { value: 'RELATES_TO', label: t('workspace_assets.requirements.relation_types.relates_to_short') },
+])
+
+function search(query: string) {
+  clearTimeout(searchTimer)
+  request?.abort()
+  searchTimer = setTimeout(() => void lookup(query), query ? 180 : 0)
+}
 
 async function lookup(input: string) {
   request?.abort()
@@ -49,33 +62,30 @@ function save() {
   if (target.value && options.value.some(item => item.reference.id === target.value)) emit('save', target.value, type.value)
 }
 
-onScopeDispose(() => request?.abort())
+onScopeDispose(() => { clearTimeout(searchTimer); request?.abort() })
 </script>
 
 <template>
-  <el-dialog :model-value="true" :title="title" width="min(530px, 95vw)" :close-on-click-modal="false"
+  <el-dialog :model-value="true" class="canvas-dialog" :title="title" width="min(530px, 95vw)" :close-on-click-modal="false"
     :show-close="!saving" :close-on-press-escape="!saving" append-to-body @close="emit('close')">
-    <form class="link-form" @submit.prevent="save">
+    <div class="link-form">
       <strong>{{ label }}</strong>
-      <el-select v-model="target" filterable :remote="Boolean(props.lookup)" :remote-method="lookup" :loading="searching"
-        :disabled="saving" :aria-label="t('workspace_canvas.menu.link_target')" @change="choose"
-        :placeholder="t(props.lookup ? 'workspace_canvas.domains.search_by_title' : 'workspace_canvas.menu.link_target')">
-        <el-option v-for="item in options" :key="item.reference.id" :value="item.reference.id" :label="item.details.title" />
-      </el-select>
+      <BaseSelect v-model="target" :options="targetOptions" searchable :remote-search="Boolean(props.lookup)"
+        :disabled="saving" :aria-label="t('workspace_canvas.menu.link_target')" @update:model-value="choose"
+        :placeholder="t('workspace_canvas.menu.link_target')" :search-placeholder="t('workspace_canvas.domains.search_by_title')"
+        @open="search('')" @search="search" />
+      <span v-if="searching" role="status">{{ t('common.loading') }}</span>
       <span v-if="searchFailed" role="status">{{ t('workspace_canvas.domains.lookup_failed') }}</span>
-      <el-select v-if="!document" v-model="type" :disabled="saving" :aria-label="t('workspace_canvas.actions.relation_type')">
-        <el-option value="COVERS" :label="t('workspace_assets.requirements.relation_types.covers_short')" />
-        <el-option value="RELATES_TO" :label="t('workspace_assets.requirements.relation_types.relates_to_short')" />
-      </el-select>
-      <footer>
-        <el-button :disabled="saving" @click="emit('close')">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" native-type="submit" :disabled="!target" :loading="saving">{{ t('common.confirm') }}</el-button>
-      </footer>
-    </form>
+      <BaseSelect v-if="!document" v-model="type" :options="relationOptions" :disabled="saving"
+        :aria-label="t('workspace_canvas.actions.relation_type')" />
+    </div>
+    <template #footer>
+      <el-button :disabled="saving" @click="emit('close')">{{ t('common.cancel') }}</el-button>
+      <el-button type="primary" :disabled="!target" :loading="saving" @click="save">{{ t('common.confirm') }}</el-button>
+    </template>
   </el-dialog>
 </template>
 
 <style scoped>
 .link-form { display: grid; gap: 12px; }
-footer { display: flex; justify-content: flex-end; }
 </style>

@@ -77,7 +77,7 @@ from app.domains.websocket.ws.task_handler import TaskWebSocketHandler, TaskWebS
 from app.domains.workflow.routers import provision
 from app.domains.workspace.routers import invite_join, workspace
 from app.domains.workspace_asset.routers import requirement_documents, workspace_asset, workspace_asset_workload
-from app.domains.workspace_canvas.events import canvas_connections
+from app.domains.workspace_canvas.events import canvas_connections, publish_canvas_presence
 from app.domains.workspace_canvas.router import router as workspace_canvas_router
 from app.domains.workspace_collaboration.router import router as workspace_collaboration_router
 from app.engine.session import shutdown_active_engines
@@ -325,10 +325,19 @@ async def _authenticate_user_ws(websocket: WebSocket) -> dict | None:
     def _load() -> dict | None:
         db = SessionLocal()
         try:
-            user = db.query(User).filter(User.id == user_id).first()
+            user = (
+                db.query(User.id, User.display_name, User.avatar_url, User.avatar_svg)
+                .filter(User.id == user_id)
+                .first()
+            )
             if not user:
                 return None
-            return {"user_id": user.id, "display_name": user.display_name}
+            return {
+                "user_id": user.id,
+                "display_name": user.display_name,
+                "avatar_url": user.avatar_url,
+                "avatar_svg": user.avatar_svg,
+            }
         finally:
             db.close()
 
@@ -482,8 +491,17 @@ async def workspace_canvas_websocket(websocket: WebSocket, workspace_id: str) ->
         await websocket.close(code=1008)
         return
     await websocket.accept()
-    connection = await canvas_connections.connect(workspace_id, websocket, message_kind="json")
+    connection = await canvas_connections.connect(workspace_id, websocket, user_id=str(user_id), message_kind="json")
     try:
+        publish_canvas_presence(
+            workspace_id,
+            {
+                "id": str(user_id),
+                "display_name": context["display_name"],
+                "avatar_url": context["avatar_url"],
+                "avatar_svg": context["avatar_svg"],
+            },
+        )
         while True:
             raw = await receive_text_until_evicted(websocket, connection)
             try:
@@ -501,6 +519,7 @@ async def workspace_canvas_websocket(websocket: WebSocket, workspace_id: str) ->
         pass
     finally:
         canvas_connections.disconnect(workspace_id, websocket)
+        publish_canvas_presence(workspace_id)
 
 
 @app.websocket("/ws/notifications")

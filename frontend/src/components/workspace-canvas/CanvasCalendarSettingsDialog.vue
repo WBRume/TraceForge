@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, reactive, shallowRef } from 'vue'
+import { computed, reactive, shallowRef, useId, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import BaseSelect from '@/components/BaseSelect.vue'
 import { Plus, X } from '@/components/icons'
 import api from '@/utils/api'
 import { canvasUrl, type CanvasCalendar, type CanvasCalendarSettings } from './model'
@@ -8,15 +9,41 @@ import { canvasUrl, type CanvasCalendar, type CanvasCalendarSettings } from './m
 const props = defineProps<{ workspaceId: string; calendar: CanvasCalendar }>()
 const emit = defineEmits<{ close: []; saved: [calendar: CanvasCalendar] }>()
 const { t } = useI18n()
+const formId = useId()
 const draft = reactive<CanvasCalendarSettings>(structuredClone(props.calendar.settings))
 const saving = shallowRef(false)
 const error = shallowRef('')
 const overrideYear = shallowRef(props.calendar.quarters[0]?.year ?? Number(props.calendar.current.slice(0, 4)))
+const timezoneSearch = shallowRef('')
 const formats = ['months', '4-4-5', '4-5-4', '5-4-4'] as const
 const weekdays = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+const timezones = ['UTC', 'Asia/Shanghai', 'Asia/Hong_Kong', 'America/New_York', 'Europe/London']
+const formatOptions = computed(() => formats.map(value => ({ value, label: t(`workspace_canvas.quarter.formats.${value}`) })))
+const monthOptions = computed(() => Array.from({ length: 12 }, (_, index) => ({
+  value: index + 1, label: t('workspace_canvas.quarter.month_number', { month: index + 1 }),
+})))
+const yearLabelOptions = computed(() => [
+  { value: 'start', label: t('workspace_canvas.quarter.label_start') },
+  { value: 'end', label: t('workspace_canvas.quarter.label_end') },
+])
+const weekdayOptions = computed(() => weekdays.map((day, value) => ({ value, label: t(`workspace_canvas.quarter.weekdays.${day}`) })))
+const weekEndRuleOptions = computed(() => [
+  { value: 'nearest', label: t('workspace_canvas.quarter.nearest') },
+  { value: 'last', label: t('workspace_canvas.quarter.last') },
+])
+const extraQuarterOptions = [1, 2, 3, 4].map(value => ({ value, label: `Q${value}` }))
+const timezoneOptions = computed(() => {
+  const search = timezoneSearch.value.trim().slice(0, 100)
+  const keyword = search.toLowerCase()
+  const options = [...new Set([...timezones, draft.timezone])].filter(zone => zone.toLowerCase().includes(keyword))
+  if (search && !options.some(zone => zone.toLowerCase() === keyword)) options.unshift(search)
+  return options.map(value => ({ value, label: value }))
+})
 const canAdd = computed(() => Number.isInteger(overrideYear.value) && overrideYear.value >= 1000
   && overrideYear.value <= 9997 && !draft.overrides.some(item => item.year === overrideYear.value))
 const dayAfter = (value: string) => new Date(Date.parse(`${value}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10)
+
+watch(draft, () => { error.value = '' })
 
 function addOverride() {
   if (!canAdd.value) return
@@ -46,41 +73,48 @@ async function save() {
 </script>
 
 <template>
-  <el-dialog :model-value="true" :title="t('workspace_canvas.quarter.settings')" width="min(710px, 95vw)"
+  <el-dialog :model-value="true" class="canvas-dialog" :title="t('workspace_canvas.quarter.settings')" width="min(710px, 95vw)"
     :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving" append-to-body @close="emit('close')">
-    <form class="calendar-form" data-testid="canvas-calendar-settings" @input="error = ''" @submit.prevent="save">
+    <form :id="formId" class="calendar-form" data-testid="canvas-calendar-settings" @submit.prevent="save">
       <div class="calendar-fields">
-        <label><span>{{ t('workspace_canvas.quarter.format') }}</span>
-          <select v-model="draft.format">
-            <option v-for="format in formats" :key="format" :value="format">{{ t(`workspace_canvas.quarter.formats.${format}`) }}</option>
-          </select>
-        </label>
-        <label><span>{{ t('workspace_canvas.quarter.start_month') }}</span>
-          <select v-model.number="draft.start_month">
-            <option v-for="month in 12" :key="month" :value="month">{{ t('workspace_canvas.quarter.month_number', { month }) }}</option>
-          </select>
-        </label>
-        <label><span>{{ t('workspace_canvas.quarter.timezone') }}</span>
-          <input v-model.trim="draft.timezone" type="text" required maxlength="100" list="canvas-timezones" />
-          <datalist id="canvas-timezones"><option value="UTC" /><option value="Asia/Shanghai" /><option value="Asia/Hong_Kong" />
-            <option value="America/New_York" /><option value="Europe/London" /></datalist>
-        </label>
-        <label><span>{{ t('workspace_canvas.quarter.year_label') }}</span>
-          <select v-model="draft.year_label"><option value="start">{{ t('workspace_canvas.quarter.label_start') }}</option>
-            <option value="end">{{ t('workspace_canvas.quarter.label_end') }}</option></select>
-        </label>
+        <div class="calendar-field">
+          <span>{{ t('workspace_canvas.quarter.format') }}</span>
+          <BaseSelect v-model="draft.format" :options="formatOptions" :disabled="saving"
+            :aria-label="t('workspace_canvas.quarter.format')" />
+        </div>
+        <div class="calendar-field">
+          <span>{{ t('workspace_canvas.quarter.start_month') }}</span>
+          <BaseSelect v-model="draft.start_month" :options="monthOptions" :disabled="saving"
+            :aria-label="t('workspace_canvas.quarter.start_month')" />
+        </div>
+        <div class="calendar-field">
+          <span>{{ t('workspace_canvas.quarter.timezone') }}</span>
+          <BaseSelect v-model="draft.timezone" :options="timezoneOptions" :disabled="saving" searchable remote-search
+            :aria-label="t('workspace_canvas.quarter.timezone')" :placeholder="draft.timezone"
+            :search-placeholder="t('workspace_canvas.quarter.timezone')"
+            @open="timezoneSearch = ''" @search="timezoneSearch = $event" />
+        </div>
+        <div class="calendar-field">
+          <span>{{ t('workspace_canvas.quarter.year_label') }}</span>
+          <BaseSelect v-model="draft.year_label" :options="yearLabelOptions" :disabled="saving"
+            :aria-label="t('workspace_canvas.quarter.year_label')" />
+        </div>
         <template v-if="draft.format !== 'months'">
-          <label><span>{{ t('workspace_canvas.quarter.week_end') }}</span>
-            <select v-model.number="draft.week_end"><option v-for="(day, index) in weekdays" :key="day" :value="index">
-              {{ t(`workspace_canvas.quarter.weekdays.${day}`) }}</option></select>
-          </label>
-          <label><span>{{ t('workspace_canvas.quarter.week_end_rule') }}</span>
-            <select v-model="draft.week_end_rule"><option value="nearest">{{ t('workspace_canvas.quarter.nearest') }}</option>
-              <option value="last">{{ t('workspace_canvas.quarter.last') }}</option></select>
-          </label>
-          <label><span>{{ t('workspace_canvas.quarter.extra_week') }}</span>
-            <select v-model.number="draft.extra_week_quarter"><option v-for="number in 4" :key="number" :value="number">Q{{ number }}</option></select>
-          </label>
+          <div class="calendar-field">
+            <span>{{ t('workspace_canvas.quarter.week_end') }}</span>
+            <BaseSelect v-model="draft.week_end" :options="weekdayOptions" :disabled="saving"
+              :aria-label="t('workspace_canvas.quarter.week_end')" />
+          </div>
+          <div class="calendar-field">
+            <span>{{ t('workspace_canvas.quarter.week_end_rule') }}</span>
+            <BaseSelect v-model="draft.week_end_rule" :options="weekEndRuleOptions" :disabled="saving"
+              :aria-label="t('workspace_canvas.quarter.week_end_rule')" />
+          </div>
+          <div class="calendar-field">
+            <span>{{ t('workspace_canvas.quarter.extra_week') }}</span>
+            <BaseSelect v-model="draft.extra_week_quarter" :options="extraQuarterOptions" :disabled="saving"
+              :aria-label="t('workspace_canvas.quarter.extra_week')" />
+          </div>
         </template>
       </div>
       <section class="calendar-overrides">
@@ -104,19 +138,19 @@ async function save() {
         </div>
       </section>
       <p v-if="error" role="alert" class="calendar-error">{{ error }}</p>
-      <footer>
-        <el-button :disabled="saving" @click="emit('close')">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" native-type="submit" :loading="saving">{{ t('common.save') }}</el-button>
-      </footer>
     </form>
+    <template #footer>
+      <el-button :disabled="saving" @click="emit('close')">{{ t('common.cancel') }}</el-button>
+      <el-button type="primary" native-type="submit" :form="formId" :loading="saving">{{ t('common.save') }}</el-button>
+    </template>
   </el-dialog>
 </template>
 
 <style scoped>
 .calendar-form, .calendar-overrides { display: grid; gap: 14px; }
 .calendar-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 12px; }
-.calendar-form label { display: grid; gap: 5px; min-width: 0; color: #475569; font-size: 12px; }
-.calendar-form :is(input, select) { box-sizing: border-box; min-height: 34px; min-width: 0; width: 100%;
+.calendar-field, .calendar-form label { display: grid; gap: 5px; min-width: 0; color: #475569; font-size: 12px; }
+.calendar-form label > input { box-sizing: border-box; min-height: 34px; min-width: 0; width: 100%;
   padding: 4px 8px; border: 1px solid #d9e4f0; border-radius: 7px; color: #183955; background: #fff; font: inherit; }
 .override-heading, .override-card header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .override-heading .override-add { display: flex; align-items: center; }
@@ -126,5 +160,4 @@ async function save() {
 .override-card header button { display: inline-flex; border: 0; background: transparent; color: #64748b; cursor: pointer; }
 .boundary-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; }
 .calendar-error { margin: 0; color: #a23a42; }
-.calendar-form footer { display: flex; justify-content: flex-end; }
 </style>

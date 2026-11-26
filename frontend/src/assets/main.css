@@ -355,6 +355,10 @@ button {
   background: #f8fafc !important;
 }
 
+.el-dialog.canvas-dialog { overflow: visible; }
+.canvas-dialog .el-dialog__header { border-radius: 19px 19px 0 0; }
+.canvas-dialog .el-dialog__footer { border-radius: 0 0 19px 19px; }
+
 .el-drawer {
   border-top-left-radius: 24px !important;
   border-bottom-left-radius: 24px !important;

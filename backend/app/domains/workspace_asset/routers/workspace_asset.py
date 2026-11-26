@@ -309,6 +309,7 @@ async def create_workspace_asset_requirement_import_preview(
 )
 async def create_workspace_asset_requirement_direct_import(
     ws_id: str,
+    background_tasks: BackgroundTasks,
     file: UploadFile | None = File(default=None),
     text: str | None = Form(default=None),
     source_kind: str | None = Form(default="document"),
@@ -329,7 +330,7 @@ async def create_workspace_asset_requirement_direct_import(
     if not raw:
         raise HTTPException(status_code=422, detail="Requirement import content is required")
     try:
-        return import_service.create_requirement_direct_import(
+        result = import_service.create_requirement_direct_import(
             db,
             ws_id,
             current_user.id,
@@ -343,6 +344,8 @@ async def create_workspace_asset_requirement_direct_import(
         )
     except WorkspaceAssetError as exc:
         _raise_write_error(exc)
+    background_tasks.add_task(notify_canvas_changed, ws_id)
+    return result
 
 
 @router.get("/requirements/preview-jobs/{job_id}", response_model=RequirementPreviewJobResponse)
@@ -437,6 +440,7 @@ def link_workspace_asset_requirement_task(
 def claim_workspace_asset_requirement(
     ws_id: str,
     requirement_id: str,
+    background_tasks: BackgroundTasks,
     clarify: bool = False,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -450,6 +454,7 @@ def claim_workspace_asset_requirement(
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return result
 
 
@@ -481,6 +486,7 @@ def apply_workspace_asset_requirement_acceptance(
     ws_id: str,
     requirement_id: str,
     payload: RequirementAcceptanceRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -494,6 +500,7 @@ def apply_workspace_asset_requirement_acceptance(
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return result
 
 
@@ -501,6 +508,7 @@ def apply_workspace_asset_requirement_acceptance(
 def apply_workspace_asset_result_check(
     ws_id: str,
     requirement_id: str,
+    background_tasks: BackgroundTasks,
     payload: RequirementResultCheckRequest | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -522,6 +530,7 @@ def apply_workspace_asset_result_check(
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return result
 
 
@@ -587,6 +596,7 @@ def confirm_workspace_asset_requirement_split(
     ws_id: str,
     requirement_id: str,
     payload: RequirementSplitRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -597,6 +607,7 @@ def confirm_workspace_asset_requirement_split(
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
+    background_tasks.add_task(notify_canvas_changed, ws_id)
     return result
 
 
