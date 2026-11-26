@@ -2,6 +2,8 @@
 import { useI18n } from 'vue-i18n'
 import { HandRaisedIcon } from '@heroicons/vue/24/outline'
 import { ChevronDown, Download, FilePlus, FolderOpen, Layers, Link, MousePointer2, PencilLine, Square, Trash2, Undo2 } from '@/components/icons'
+import DiagramActionHint from './DiagramActionHint.vue'
+import { diagramCommandKeys, diagramDeleteKeys, diagramToolKeys } from './diagramKeyBindings'
 import type { Arrangement, DiagramTool } from './diagramModel'
 
 const props = defineProps<{
@@ -28,15 +30,25 @@ const emit = defineEmits<{
   arrange: [arrangement: Arrangement]
   group: []
   remove: []
+  clearCanvas: []
   snap: []
 }>()
 const { t } = useI18n()
-const modes = [
-  { id: 'select', icon: MousePointer2, key: 'V' },
-  { id: 'pan', icon: HandRaisedIcon, key: 'H' },
-  { id: 'connect', icon: Link, key: 'C' },
-  { id: 'sketch', icon: PencilLine, key: 'P' },
-] as const
+const modifier = /mac/i.test(navigator.platform) ? 'Meta' : 'Control'
+const commandKey = (key: string, shift = false) => `${modifier}+${shift ? 'Shift+' : ''}${key.toUpperCase()}`
+const shortcuts = {
+  open: [commandKey(diagramCommandKeys.open)],
+  export: [commandKey(diagramCommandKeys.export)],
+  undo: [commandKey(diagramCommandKeys.undo)],
+  redo: [commandKey(diagramCommandKeys.redo), commandKey(diagramCommandKeys.undo, true)],
+  remove: diagramDeleteKeys,
+}
+const modes = ([
+  { id: 'select', icon: MousePointer2 },
+  { id: 'pan', icon: HandRaisedIcon },
+  { id: 'connect', icon: Link },
+  { id: 'sketch', icon: PencilLine },
+] as const).map(mode => ({ ...mode, key: diagramToolKeys[mode.id].toUpperCase() }))
 const arrangements = ['horizontal', 'vertical', 'mindmap', 'organization', 'alignLeft', 'alignTop', 'distributeX', 'distributeY'] as const
 
 function canArrange(item: Arrangement) {
@@ -59,46 +71,75 @@ function arrange(value: unknown) {
           @change="emit('rename', ($event.target as HTMLInputElement).value)" @keydown.enter="($event.target as HTMLInputElement).blur()">
       </div>
       <div class="file-actions">
-        <el-button :aria-label="t('diagram.file.new')" @click="emit('create')"><FilePlus :size="16" /><span>{{ t('diagram.file.new') }}</span></el-button>
-        <el-button :aria-label="t('diagram.file.open')" @click="emit('open')"><FolderOpen :size="16" /><span>{{ t('diagram.file.open') }}</span></el-button>
-        <el-button type="primary" :loading="saving" :aria-label="t('diagram.file.export')" @click="emit('export')">
-          <Download :size="16" /><span>{{ t('diagram.file.export') }}</span>
-        </el-button>
+        <DiagramActionHint :label="t('diagram.file.new')">
+          <el-button :aria-label="t('diagram.file.new')" @click="emit('create')">
+            <FilePlus :size="16" /><span>{{ t('diagram.file.new') }}</span>
+          </el-button>
+        </DiagramActionHint>
+        <DiagramActionHint :label="t('diagram.file.open')" :shortcuts="shortcuts.open">
+          <el-button :aria-label="t('diagram.file.open')" :aria-keyshortcuts="shortcuts.open.join(' ')" @click="emit('open')">
+            <FolderOpen :size="16" /><span>{{ t('diagram.file.open') }}</span>
+          </el-button>
+        </DiagramActionHint>
+        <DiagramActionHint :label="t('diagram.file.export')" :shortcuts="shortcuts.export">
+          <el-button type="primary" :loading="saving" :aria-label="t('diagram.file.export')"
+            :aria-keyshortcuts="shortcuts.export.join(' ')" @click="emit('export')">
+            <Download :size="16" /><span>{{ t('diagram.file.export') }}</span>
+          </el-button>
+        </DiagramActionHint>
       </div>
     </div>
     <div class="edit-bar">
       <div class="edit-group" :aria-label="t('diagram.stage.label')">
-        <button v-for="mode in modes" :key="mode.id" type="button" class="edit-button"
-          :title="`${t('diagram.tool.' + mode.id)} (${mode.key})`" :aria-label="t('diagram.tool.' + mode.id)"
-          :aria-pressed="tool === mode.id" @click="emit('choose', mode.id)"><component :is="mode.icon" class="edit-icon" /></button>
+        <DiagramActionHint v-for="mode in modes" :key="mode.id" :label="t('diagram.tool.' + mode.id)" :shortcuts="[mode.key]">
+          <button type="button" class="edit-button" :aria-label="t('diagram.tool.' + mode.id)" :aria-keyshortcuts="mode.key"
+            :aria-pressed="tool === mode.id" @click="emit('choose', mode.id)"><component :is="mode.icon" class="edit-icon" /></button>
+        </DiagramActionHint>
       </div>
       <div class="edit-group">
-        <button type="button" class="edit-button" :title="t('diagram.tool.undo')" :aria-label="t('diagram.tool.undo')"
-          :disabled="!undo" @click="emit('undo')"><Undo2 class="edit-icon" /></button>
-        <button type="button" class="edit-button redo" :title="t('diagram.tool.redo')" :aria-label="t('diagram.tool.redo')"
-          :disabled="!redo" @click="emit('redo')"><Undo2 class="edit-icon" /></button>
+        <DiagramActionHint :label="t('diagram.tool.undo')" :shortcuts="shortcuts.undo">
+          <button type="button" class="edit-button" :aria-label="t('diagram.tool.undo')" :aria-keyshortcuts="shortcuts.undo.join(' ')"
+            :disabled="!undo" @click="emit('undo')"><Undo2 class="edit-icon" /></button>
+        </DiagramActionHint>
+        <DiagramActionHint :label="t('diagram.tool.redo')" :shortcuts="shortcuts.redo">
+          <button type="button" class="edit-button redo" :aria-label="t('diagram.tool.redo')" :aria-keyshortcuts="shortcuts.redo.join(' ')"
+            :disabled="!redo" @click="emit('redo')"><Undo2 class="edit-icon" /></button>
+        </DiagramActionHint>
       </div>
       <div class="edit-group">
-        <button type="button" class="edit-button" :title="t('diagram.tool.group')" :aria-label="t('diagram.tool.group')"
-          :disabled="!selectedCount" @click="emit('group')"><Square class="edit-icon" /></button>
-        <button type="button" class="edit-button" :title="t('diagram.tool.delete')" :aria-label="t('diagram.tool.delete')"
-          :disabled="!selectedCount && !selectedEdge" @click="emit('remove')"><Trash2 class="edit-icon" /></button>
-        <el-dropdown trigger="click" :disabled="count < 2" @command="arrange">
-          <button type="button" class="edit-button arrange-button" :disabled="count < 2">
-            <Layers class="edit-icon" />{{ t('diagram.tool.layout') }}<ChevronDown :size="12" />
+        <DiagramActionHint :label="t('diagram.tool.group')">
+          <button type="button" class="edit-button" :aria-label="t('diagram.tool.group')"
+            :disabled="!selectedCount" @click="emit('group')"><Square class="edit-icon" /></button>
+        </DiagramActionHint>
+        <DiagramActionHint :label="t('diagram.tool.delete')" :shortcuts="shortcuts.remove">
+          <button type="button" class="edit-button" :aria-label="t('diagram.tool.delete')" :aria-keyshortcuts="shortcuts.remove.join(' ')"
+            :disabled="!selectedCount && !selectedEdge" @click="emit('remove')"><Trash2 class="edit-icon" /></button>
+        </DiagramActionHint>
+        <DiagramActionHint :label="t('diagram.tool.clearCanvas')">
+          <button type="button" class="edit-button" :disabled="!count || saving" @click="emit('clearCanvas')">
+            {{ t('diagram.tool.clearCanvas') }}
           </button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item v-for="item in arrangements" :key="item" :command="item" :divided="item === 'alignLeft'"
-                :disabled="!canArrange(item)">{{ t('diagram.tool.' + item) }}</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
+        </DiagramActionHint>
+        <DiagramActionHint :label="t('diagram.tool.layout')">
+          <el-dropdown trigger="click" :disabled="count < 2" @command="arrange">
+            <button type="button" class="edit-button arrange-button" :disabled="count < 2">
+              <Layers class="edit-icon" />{{ t('diagram.tool.layout') }}<ChevronDown :size="12" />
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item v-for="item in arrangements" :key="item" :command="item" :divided="item === 'alignLeft'"
+                  :disabled="!canArrange(item)">{{ t('diagram.tool.' + item) }}</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </DiagramActionHint>
       </div>
-      <label class="snap-toggle">
-        <el-switch :model-value="snap" size="small" :aria-label="t('diagram.tool.snap')" @change="emit('snap')" />
-        <span>{{ t('diagram.tool.snap') }}</span>
-      </label>
+      <DiagramActionHint :label="t('diagram.tool.snap')">
+        <label class="snap-toggle">
+          <el-switch :model-value="snap" size="small" :aria-label="t('diagram.tool.snap')" @change="emit('snap')" />
+          <span>{{ t('diagram.tool.snap') }}</span>
+        </label>
+      </DiagramActionHint>
     </div>
   </header>
 </template>

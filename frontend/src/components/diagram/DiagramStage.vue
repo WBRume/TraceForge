@@ -3,6 +3,7 @@ import { computed, onMounted, onScopeDispose, shallowRef, useTemplateRef, watch 
 import { useI18n } from 'vue-i18n'
 import { Maximize2, Minus, Plus } from '@/components/icons'
 import { fittedViewport, zoomAround, type Point, type Viewport } from '@/utils/canvasViewport'
+import DiagramActionHint from './DiagramActionHint.vue'
 import DiagramEdgeGraphic from './DiagramEdgeGraphic.vue'
 import DiagramNodeGraphic from './DiagramNodeGraphic.vue'
 import DiagramStrokeGraphic from './DiagramStrokeGraphic.vue'
@@ -347,10 +348,16 @@ defineExpose({ fit, exportSvg, focus, cancel, zoom })
     <div class="canvas-footer">
       <span class="canvas-tip">{{ t('diagram.stage.' + hint) }}</span>
       <div class="zoom-controls">
-        <button type="button" :title="t('diagram.tool.zoomOut')" :aria-label="t('diagram.tool.zoomOut')" @click="zoom(1 / 1.2)"><Minus :size="16" /></button>
+        <DiagramActionHint :label="t('diagram.tool.zoomOut')" placement="top">
+          <button type="button" :aria-label="t('diagram.tool.zoomOut')" @click="zoom(1 / 1.2)"><Minus :size="16" /></button>
+        </DiagramActionHint>
         <output>{{ Math.round(viewport.scale * 100) }}%</output>
-        <button type="button" :title="t('diagram.tool.zoomIn')" :aria-label="t('diagram.tool.zoomIn')" @click="zoom(1.2)"><Plus :size="16" /></button>
-        <button type="button" :title="t('diagram.tool.fit')" :aria-label="t('diagram.tool.fit')" @click="fit"><Maximize2 :size="16" /></button>
+        <DiagramActionHint :label="t('diagram.tool.zoomIn')" placement="top">
+          <button type="button" :aria-label="t('diagram.tool.zoomIn')" @click="zoom(1.2)"><Plus :size="16" /></button>
+        </DiagramActionHint>
+        <DiagramActionHint :label="t('diagram.tool.fit')" placement="top">
+          <button type="button" :aria-label="t('diagram.tool.fit')" @click="fit"><Maximize2 :size="16" /></button>
+        </DiagramActionHint>
       </div>
     </div>
   </section>

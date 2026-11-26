@@ -31,7 +31,7 @@ const zh = {
   },
   tool: {
     select: '选择', pan: '平移', connect: '连接', sketch: '手绘格式化', undo: '撤销', redo: '重做', delete: '删除',
-    duplicate: '复制所选', group: '框住所选', layout: '排列', horizontal: '横向自动布局', vertical: '纵向自动布局',
+    duplicate: '复制所选', group: '框住所选', clearCanvas: '清屏', layout: '排列', horizontal: '横向自动布局', vertical: '纵向自动布局',
     alignLeft: '左对齐', alignTop: '顶端对齐', distributeX: '横向等距', distributeY: '纵向等距',
     mindmap: '思维导图布局', organization: '组织树布局',
     fit: '适应画布', zoomIn: '放大', zoomOut: '缩小', snap: '吸附网格', close: '关闭', cancel: '取消',
@@ -94,7 +94,7 @@ const en: typeof zh = {
   },
   tool: {
     select: 'Select', pan: 'Pan', connect: 'Connect', sketch: 'Freehand cleanup', undo: 'Undo', redo: 'Redo', delete: 'Delete',
-    duplicate: 'Duplicate selection', group: 'Frame selection', layout: 'Arrange', horizontal: 'Lay out horizontally',
+    duplicate: 'Duplicate selection', group: 'Frame selection', clearCanvas: 'Clear canvas', layout: 'Arrange', horizontal: 'Lay out horizontally',
     vertical: 'Lay out vertically', alignLeft: 'Align left', alignTop: 'Align top', distributeX: 'Distribute horizontally',
     distributeY: 'Distribute vertically', fit: 'Fit drawing', zoomIn: 'Zoom in', zoomOut: 'Zoom out', snap: 'Snap to grid',
     mindmap: 'Lay out mind map', organization: 'Lay out organization chart',

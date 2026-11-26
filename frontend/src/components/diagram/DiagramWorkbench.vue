@@ -14,6 +14,7 @@ import { diagramFile } from './diagramExport'
 import { blankDiagram, decodeDiagram, GRID, MAX_FILE_BYTES,
   type Arrangement, type DiagramDocument, type DiagramFormat, type DiagramTool, type Shape } from './diagramModel'
 import { createTemplate, type DiagramTemplate } from './diagramTemplates'
+import { diagramCommandKeys, diagramDeleteKeys, diagramToolKeys } from './diagramKeyBindings'
 import { useDiagramDocument } from './useDiagramDocument'
 import type { Point } from '@/utils/canvasViewport'
 
@@ -54,6 +55,13 @@ function selectShape(shape: Shape) {
   editor.endSketchSession()
   tool.value = 'select'
   pending.value = shape
+  stage.value?.focus()
+}
+
+function clearCanvas() {
+  pending.value = null
+  stage.value?.cancel()
+  editor.clearCanvas()
   stage.value?.focus()
 }
 
@@ -159,18 +167,18 @@ function clipboardPaste(event: ClipboardEvent) {
 function keyDown(event: KeyboardEvent) {
   if (event.isComposing || dialogOpen.value) return
   const key = event.key.toLowerCase()
-  if ((event.ctrlKey || event.metaKey) && key === 's') {
+  const command = event.ctrlKey || event.metaKey
+  if (command && key === diagramCommandKeys.export) {
     event.preventDefault()
     openExport()
     return
   }
   if (editable(event.target) || (event.target instanceof Element && event.target.closest('[role="menu"], [role="combobox"]'))) return
-  const command = event.ctrlKey || event.metaKey
-  if (command && key === 'z') {
+  if (command && key === diagramCommandKeys.undo) {
     event.preventDefault()
     if (event.shiftKey) editor.redo()
     else editor.undo()
-  } else if (command && key === 'y') {
+  } else if (command && key === diagramCommandKeys.redo) {
     event.preventDefault()
     editor.redo()
   } else if (command && key === 'a') {
@@ -179,19 +187,19 @@ function keyDown(event: KeyboardEvent) {
   } else if (command && key === 'd') {
     event.preventDefault()
     editor.paste(editor.extractedSelection())
-  } else if (command && key === 'o') {
+  } else if (command && key === diagramCommandKeys.open) {
     event.preventDefault()
     fileInput.value?.click()
-  } else if (event.key === 'Delete' || event.key === 'Backspace') {
+  } else if (diagramDeleteKeys.includes(event.key)) {
     event.preventDefault()
     editor.remove()
   } else if (event.key === 'Escape') {
     choose('select')
     editor.selectNodes([])
-  } else if (!command && !event.altKey && key === 'v') choose('select')
-  else if (!command && !event.altKey && key === 'h') choose('pan')
-  else if (!command && !event.altKey && key === 'c') choose('connect')
-  else if (!command && !event.altKey && key === 'p') choose('sketch')
+  } else if (!command && !event.altKey && key === diagramToolKeys.select) choose('select')
+  else if (!command && !event.altKey && key === diagramToolKeys.pan) choose('pan')
+  else if (!command && !event.altKey && key === diagramToolKeys.connect) choose('connect')
+  else if (!command && !event.altKey && key === diagramToolKeys.sketch) choose('sketch')
   else if (event.key === 'Enter' && event.target instanceof SVGSVGElement) inspector.value?.focusLabel()
   else if (event.key.startsWith('Arrow') && selectedNodes.value.length && event.target instanceof SVGSVGElement) {
     event.preventDefault()
@@ -222,7 +230,7 @@ onScopeDispose(() => {
         :mind-map="mindMap" :organization="organization"
         @rename="editor.rename" @choose="choose" @create="replace(blankDiagram(untitled))" @open="fileInput?.click()"
         @export="openExport" @undo="editor.undo" @redo="editor.redo" @arrange="arrange" @group="editor.groupSelection(t('diagram.shapes.frame'))"
-        @remove="editor.remove" @snap="snap = !snap" />
+        @remove="editor.remove" @clear-canvas="clearCanvas" @snap="snap = !snap" />
       <div class="diagram-body">
         <DiagramPalette :pending="pending" @choose="selectShape" @templates="templates = true" />
         <DiagramStage ref="stage" :doc="doc" :tool="tool" :pending="pending" :snap="snap"

@@ -30,7 +30,8 @@ export function useDiagramDocument(untitled: string) {
   const persisted = shallowRef(true)
   const canUndo = computed(() => past.value.length > 0)
   const canRedo = computed(() => future.value.length > 0)
-  const dirty = computed(() => doc.value !== savedFile.value && (doc.value.nodes.length > 0 || doc.value.title !== untitled))
+  const dirty = computed(() => doc.value !== savedFile.value
+    && (savedFile.value !== undefined || doc.value.nodes.length > 0 || doc.value.title !== untitled))
   const selectedNodes = computed(() => doc.value.nodes.filter(node => selection.value.nodes.has(node.id)))
   const selectedEdge = computed(() => doc.value.edges.find(edge => edge.id === selection.value.edge) ?? null)
 
@@ -203,6 +204,12 @@ export function useDiagramDocument(untitled: string) {
     selection.value = emptySelection()
   }
 
+  function clearCanvas() {
+    if (!doc.value.nodes.length) return
+    commit({ ...doc.value, nodes: [], edges: [] })
+    selection.value = emptySelection()
+  }
+
   function extractedSelection() {
     const ids = movingIds()
     return { ...doc.value, nodes: doc.value.nodes.filter(node => ids.has(node.id)),
@@ -226,6 +233,6 @@ export function useDiagramDocument(untitled: string) {
   return {
     doc, selection, selectedNodes, selectedEdge, canUndo, canRedo, dirty, persisted, replace, undo, redo,
     selectNodes, selectEdge, rename, addNode, addSketch, endSketchSession, addEdge, groupSelection, updateNodes, updateNode, updateEdge,
-    nudge, arrange, remove, extractedSelection, paste, markSaved,
+    nudge, arrange, remove, clearCanvas, extractedSelection, paste, markSaved,
   }
 }
