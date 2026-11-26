@@ -1,6 +1,7 @@
 import { center, type Point } from '@/utils/canvasViewport'
-import { isContainer, type Arrangement, type DiagramDocument, type DiagramEdge, type DiagramNode, type Shape } from './diagramModel'
+import { isContainer, triangleCorners, type Arrangement, type DiagramDocument, type DiagramEdge, type DiagramNode, type Shape, type TriangleDirection } from './diagramModel'
 import { layoutHierarchy } from './diagramHierarchy'
+import { anchoredPoints } from './diagramAnchors'
 
 function rounded(width: number, height: number, radius: number) {
   const r = Math.min(radius, width / 2, height / 2)
@@ -13,13 +14,14 @@ function ellipse(width: number, height: number) {
     A ${width / 2} ${height / 2} 0 1 1 0 ${height / 2} Z`
 }
 
-export function shapeOutline(shape: Shape, w: number, h: number) {
+export function shapeOutline(shape: Shape, w: number, h: number, direction?: TriangleDirection) {
   switch (shape) {
     case 'terminal': return rounded(w, h, h / 2)
     case 'state': return rounded(w, h, 16)
     case 'topic': case 'topicRoot': return rounded(w, h, 14)
     case 'client': return rounded(w, h * .85, 5)
-    case 'decision': return `M ${w / 2} 0 L ${w} ${h / 2} L ${w / 2} ${h} L 0 ${h / 2} Z`
+    case 'diamond': case 'decision': return `M ${w / 2} 0 L ${w} ${h / 2} L ${w / 2} ${h} L 0 ${h / 2} Z`
+    case 'triangle': return pathThrough(triangleCorners(w, h, direction)) + ' Z'
     case 'data': return `M ${w * .13} 0 H ${w} L ${w * .87} ${h} H 0 Z`
     case 'document': return `M 0 0 H ${w} V ${h * .83} Q ${w * .78} ${h * .72} ${w / 2} ${h * .89}
       T 0 ${h * .95} Z`
@@ -27,7 +29,7 @@ export function shapeOutline(shape: Shape, w: number, h: number) {
       const fold = Math.min(w, h) * .2
       return `M 0 0 H ${w} V ${h - fold} L ${w - fold} ${h} H 0 Z`
     }
-    case 'usecase': case 'initial': case 'final': return ellipse(w, h)
+    case 'oval': case 'usecase': case 'initial': case 'final': return ellipse(w, h)
     case 'lifeline': return rounded(w, Math.min(h * .35, 50), 5)
     case 'database': return `M 0 ${h * .14} C 0 ${-h * .045} ${w} ${-h * .045} ${w} ${h * .14}
       V ${h * .86} C ${w} ${h * 1.045} 0 ${h * 1.045} 0 ${h * .86} Z`
@@ -72,10 +74,33 @@ export interface EdgeDrawing {
   label: Point
 }
 
-const pathThrough = (points: Point[]) => points.map(({ x, y }, index) => `${index ? 'L' : 'M'} ${x} ${y}`).join(' ')
+export const pathThrough = (points: readonly Point[]) => points.map(({ x, y }, index) => `${index ? 'L' : 'M'} ${x} ${y}`).join(' ')
 const midpoint = (a: Point, b: Point) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })
 
+export function markerTransform(tip: Point, direction: Point) {
+  const angle = Math.atan2(tip.y - direction.y, tip.x - direction.x) * 180 / Math.PI
+  return `translate(${tip.x} ${tip.y}) rotate(${angle})`
+}
+
 export function edgeDrawing(edge: DiagramEdge, source: DiagramNode, target: DiagramNode, offset = 0): EdgeDrawing {
+  if (edge.anchors) {
+    const points = anchoredPoints(source, target, edge.anchors, edge.routing === 'straight')
+    const index = Math.floor((points.length - 1) / 2)
+    const label = midpoint(points[index], points[index + 1])
+    if (edge.routing === 'curve') {
+      const from = points[0], to = points[points.length - 1]
+      const a = points[1], b = points[points.length - 2]
+      const handle = Math.max(20, Math.hypot(from.x - to.x, from.y - to.y) * .35)
+      const control = (start: Point, along: Point) => {
+        const factor = handle / Math.max(1, Math.hypot(along.x - start.x, along.y - start.y))
+        return { x: start.x + (along.x - start.x) * factor, y: start.y + (along.y - start.y) * factor }
+      }
+      const c = control(from, a), d = control(to, b)
+      return { points: [from, c, d, to], label: midpoint(from, to),
+        path: `M ${from.x} ${from.y} C ${c.x} ${c.y} ${d.x} ${d.y} ${to.x} ${to.y}` }
+    }
+    return { points, path: pathThrough(points), label }
+  }
   const from = center(source, source)
   const to = center(target, target)
   if (source.shape === 'lifeline' && target.shape === 'lifeline') {

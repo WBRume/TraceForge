@@ -2,7 +2,7 @@
 import { computed, shallowRef, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseSelect from '@/components/BaseSelect.vue'
-import { hasCompartments, hasSubtitle, minNodeSize, relations, routings, CAPTION_LIMIT, CONTENT_LIMIT,
+import { hasCompartments, hasSubtitle, isStroke, minNodeSize, relations, routings, CAPTION_LIMIT, CONTENT_LIMIT,
   type DiagramEdge, type DiagramNode, type EdgeEdit, type NodeEdit } from './diagramModel'
 import type { InputInstance } from 'element-plus'
 
@@ -15,7 +15,7 @@ const edgeLabel = useTemplateRef<InputInstance>('edgeLabel')
 const relationOptions = computed(() => relations.map(value => ({ value, label: t('diagram.edges.' + value) })))
 const routeOptions = computed(() => routings.map(value => ({ value, label: t('diagram.routing.' + value) })))
 const fields = ['width', 'height'] as const
-const colors = ['fill', 'stroke'] as const
+const colors = computed(() => node.value && isStroke(node.value.shape) ? ['stroke'] as const : ['fill', 'stroke'] as const)
 const min = computed(() => node.value ? minNodeSize(node.value.shape) : { width: 0, height: 0 })
 const labelDraft = shallowRef('')
 const detailDraft = shallowRef('')
@@ -61,7 +61,7 @@ defineExpose({ focusLabel })
     <strong class="inspector-heading">{{ t('diagram.fields.title') }}</strong>
     <template v-if="node">
       <p class="inspector-subheading">{{ t('diagram.shapes.' + node.shape) }}</p>
-      <label v-if="node.shape !== 'initial' && node.shape !== 'final'" class="property">
+      <label v-if="node.shape !== 'initial' && node.shape !== 'final' && !isStroke(node.shape)" class="property">
         <span>{{ t('diagram.fields.label') }}</span>
         <el-input :key="node.id" ref="nodeLabel" v-model="labelDraft" :maxlength="CAPTION_LIMIT"
           :type="node.shape === 'note' || node.shape === 'text' ? 'textarea' : 'text'" :rows="3"

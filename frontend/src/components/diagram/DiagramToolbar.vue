@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { HandRaisedIcon } from '@heroicons/vue/24/outline'
-import { ChevronDown, Download, FilePlus, FolderOpen, Layers, Link, MousePointer2, Square, Trash2, Undo2 } from '@/components/icons'
+import { ChevronDown, Download, FilePlus, FolderOpen, Layers, Link, MousePointer2, PencilLine, Square, Trash2, Undo2 } from '@/components/icons'
 import type { Arrangement, DiagramTool } from './diagramModel'
 
 const props = defineProps<{
@@ -35,6 +35,7 @@ const modes = [
   { id: 'select', icon: MousePointer2, key: 'V' },
   { id: 'pan', icon: HandRaisedIcon, key: 'H' },
   { id: 'connect', icon: Link, key: 'C' },
+  { id: 'sketch', icon: PencilLine, key: 'P' },
 ] as const
 const arrangements = ['horizontal', 'vertical', 'mindmap', 'organization', 'alignLeft', 'alignTop', 'distributeX', 'distributeY'] as const
 

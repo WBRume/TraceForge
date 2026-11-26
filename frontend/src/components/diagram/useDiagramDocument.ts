@@ -1,5 +1,7 @@
 import { computed, shallowRef, watch } from 'vue'
 import { arrangedNodes, inside } from './diagramGeometry'
+import { applySketch, type SketchSession } from './diagramSketchDocument'
+import type { SketchStrokes, SketchTiming } from './diagramSketchGeometry'
 import {
   blankDiagram, decodeDiagram, freshId, isContainer, makeEdge, makeNode, MAX_EDGES, MAX_NODES, minNodeSize,
   type Arrangement, type DiagramDocument, type DiagramNode, type EdgeEdit, type NodeEdit, type Shape,
@@ -24,6 +26,7 @@ export function useDiagramDocument(untitled: string) {
   const selection = shallowRef<Selection>(emptySelection())
   const past = shallowRef<DiagramDocument[]>([])
   const future = shallowRef<DiagramDocument[]>([])
+  let sketchSession: SketchSession | undefined
   const persisted = shallowRef(true)
   const canUndo = computed(() => past.value.length > 0)
   const canRedo = computed(() => future.value.length > 0)
@@ -38,13 +41,20 @@ export function useDiagramDocument(untitled: string) {
     } catch { persisted.value = false }
   }, { flush: 'sync' })
 
-  function commit(next: DiagramDocument) {
-    past.value = [...past.value.slice(1 - historyLimit), doc.value]
+  function endSketchSession() {
+    sketchSession = undefined
+  }
+
+  function commit(next: DiagramDocument, beforeFormatting?: DiagramDocument) {
+    const entries = beforeFormatting ? [doc.value, beforeFormatting] : [doc.value]
+    past.value = [...past.value.slice(entries.length - historyLimit), ...entries]
     future.value = []
+    endSketchSession()
     doc.value = next
   }
 
   function replace(next: DiagramDocument, openedFile = false) {
+    endSketchSession()
     selection.value = emptySelection()
     past.value = []
     future.value = []
@@ -55,6 +65,7 @@ export function useDiagramDocument(untitled: string) {
   function undo() {
     const next = past.value.at(-1)
     if (!next) return
+    endSketchSession()
     future.value = [...future.value, doc.value]
     past.value = past.value.slice(0, -1)
     selection.value = emptySelection()
@@ -64,6 +75,7 @@ export function useDiagramDocument(untitled: string) {
   function redo() {
     const next = future.value.at(-1)
     if (!next) return
+    endSketchSession()
     past.value = [...past.value, doc.value]
     future.value = future.value.slice(0, -1)
     selection.value = emptySelection()
@@ -90,6 +102,14 @@ export function useDiagramDocument(untitled: string) {
     selectNodes([node.id])
   }
 
+  function addSketch(strokes: SketchStrokes, unit: number, timing: SketchTiming) {
+    const result = applySketch(doc.value, strokes, unit, timing, sketchSession)
+    if (!result) return
+    commit(result.next, result.original)
+    sketchSession = result.session
+    selection.value = emptySelection()
+  }
+
   function groupSelection(label: string) {
     const group = selectedNodes.value
     if (!group.length || doc.value.nodes.length >= MAX_NODES) return
@@ -106,7 +126,7 @@ export function useDiagramDocument(untitled: string) {
     if (doc.value.edges.length >= MAX_EDGES) return
     const source = doc.value.nodes.find(node => node.id === sourceId)
     const target = doc.value.nodes.find(node => node.id === targetId)
-    if (!source || !target) return
+    if (!source || !target || (source === target && isContainer(source.shape))) return
     const sequence = source.shape === 'lifeline' && target.shape === 'lifeline'
     const latestMessage = Math.max(46, ...doc.value.edges.filter(edge => sequence && (edge.source === sourceId || edge.target === sourceId
       || edge.source === targetId || edge.target === targetId)).map(edge => edge.offset ?? 0))
@@ -205,7 +225,7 @@ export function useDiagramDocument(untitled: string) {
 
   return {
     doc, selection, selectedNodes, selectedEdge, canUndo, canRedo, dirty, persisted, replace, undo, redo,
-    selectNodes, selectEdge, rename, addNode, addEdge, groupSelection, updateNodes, updateNode, updateEdge,
+    selectNodes, selectEdge, rename, addNode, addSketch, endSketchSession, addEdge, groupSelection, updateNodes, updateNode, updateEdge,
     nudge, arrange, remove, extractedSelection, paste, markSaved,
   }
 }

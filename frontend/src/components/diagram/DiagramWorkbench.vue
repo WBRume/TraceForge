@@ -37,9 +37,11 @@ const mindMap = computed(() => doc.value.edges.some(edge => edge.relation === 'b
 const organization = computed(() => doc.value.edges.some(edge => edge.relation === 'reporting'))
 
 function choose(value: DiagramTool) {
+  if (tool.value === 'sketch' && value !== 'sketch') editor.endSketchSession()
   pending.value = null
   tool.value = value
   stage.value?.cancel()
+  if (value === 'sketch') editor.selectNodes([])
   stage.value?.focus()
 }
 
@@ -49,6 +51,7 @@ function place(shape: Shape, point: Point) {
 }
 
 function selectShape(shape: Shape) {
+  editor.endSketchSession()
   tool.value = 'select'
   pending.value = shape
   stage.value?.focus()
@@ -188,6 +191,7 @@ function keyDown(event: KeyboardEvent) {
   } else if (!command && !event.altKey && key === 'v') choose('select')
   else if (!command && !event.altKey && key === 'h') choose('pan')
   else if (!command && !event.altKey && key === 'c') choose('connect')
+  else if (!command && !event.altKey && key === 'p') choose('sketch')
   else if (event.key === 'Enter' && event.target instanceof SVGSVGElement) inspector.value?.focusLabel()
   else if (event.key.startsWith('Arrow') && selectedNodes.value.length && event.target instanceof SVGSVGElement) {
     event.preventDefault()
@@ -223,7 +227,7 @@ onScopeDispose(() => {
         <DiagramPalette :pending="pending" @choose="selectShape" @templates="templates = true" />
         <DiagramStage ref="stage" :doc="doc" :tool="tool" :pending="pending" :snap="snap"
           :selected="selection.nodes" :selected-edge="selection.edge" @place="place" @select="editor.selectNodes"
-          @edge="editor.selectEdge" @join="editor.addEdge" @update="editor.updateNodes" @open-file="readFile" />
+          @edge="editor.selectEdge" @join="editor.addEdge" @sketch="editor.addSketch" @update="editor.updateNodes" @open-file="readFile" />
         <DiagramInspector ref="inspector" :nodes="selectedNodes" :edge="selectedEdge" @update-node="editor.updateNode" @update-edge="editor.updateEdge" />
       </div>
       <footer class="diagram-status">

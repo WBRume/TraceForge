@@ -27,16 +27,17 @@ const zh = {
     initial: '初始状态', final: '终止状态', entity: '实体', note: '便签', text: '文字', frame: '分组框', lane: '泳道',
     client: '客户端', service: '应用服务', database: '数据库', queue: '消息队列', cloud: '云网络',
     server: '服务器', router: '路由器', firewall: '防火墙', topicRoot: '中心主题', topic: '主题', person: '成员',
+    rectangle: '矩形', oval: '椭圆', diamond: '菱形', triangle: '三角形', line: '线条', ink: '手绘笔迹',
   },
   tool: {
-    select: '选择', pan: '平移', connect: '连接', undo: '撤销', redo: '重做', delete: '删除',
+    select: '选择', pan: '平移', connect: '连接', sketch: '手绘格式化', undo: '撤销', redo: '重做', delete: '删除',
     duplicate: '复制所选', group: '框住所选', layout: '排列', horizontal: '横向自动布局', vertical: '纵向自动布局',
     alignLeft: '左对齐', alignTop: '顶端对齐', distributeX: '横向等距', distributeY: '纵向等距',
     mindmap: '思维导图布局', organization: '组织树布局',
     fit: '适应画布', zoomIn: '放大', zoomOut: '缩小', snap: '吸附网格', close: '关闭', cancel: '取消',
   },
   edges: {
-    flow: '流程箭头', association: '关联', dependency: '依赖', inheritance: '继承', realization: '实现',
+    flow: '流程箭头', bidirectional: '双向箭头', association: '关联', dependency: '依赖', inheritance: '继承', realization: '实现',
     aggregation: '聚合', composition: '组合', call: '调用消息', reply: '返回消息', many: '一对多',
     dataflow: '数据流', network: '网络链路', branch: '主题分支', reporting: '汇报关系',
   },
@@ -51,6 +52,7 @@ const zh = {
     label: '绘图画布', empty: '从左侧拖入图形，或使用模板开始绘制', place: '点击画布放置图形',
     connect: '选择连线起点和终点', connectTarget: '选择终点完成连线',
     select: '拖动空白处平移 · Shift 框选', pan: '拖动画布 · 滚轮缩放',
+    sketch: '直接画方框或连线 · 按住空格平移',
     count: '{nodes} 个图形 · {edges} 条连线',
   },
 }
@@ -88,9 +90,10 @@ const en: typeof zh = {
     frame: 'Group frame', lane: 'Swimlane',
     client: 'Client', service: 'Service', database: 'Database', queue: 'Queue', cloud: 'Cloud',
     server: 'Server', router: 'Router', firewall: 'Firewall', topicRoot: 'Central topic', topic: 'Topic', person: 'Member',
+    rectangle: 'Rectangle', oval: 'Ellipse', diamond: 'Diamond', triangle: 'Triangle', line: 'Line', ink: 'Freehand ink',
   },
   tool: {
-    select: 'Select', pan: 'Pan', connect: 'Connect', undo: 'Undo', redo: 'Redo', delete: 'Delete',
+    select: 'Select', pan: 'Pan', connect: 'Connect', sketch: 'Freehand cleanup', undo: 'Undo', redo: 'Redo', delete: 'Delete',
     duplicate: 'Duplicate selection', group: 'Frame selection', layout: 'Arrange', horizontal: 'Lay out horizontally',
     vertical: 'Lay out vertically', alignLeft: 'Align left', alignTop: 'Align top', distributeX: 'Distribute horizontally',
     distributeY: 'Distribute vertically', fit: 'Fit drawing', zoomIn: 'Zoom in', zoomOut: 'Zoom out', snap: 'Snap to grid',
@@ -98,7 +101,7 @@ const en: typeof zh = {
     close: 'Close', cancel: 'Cancel',
   },
   edges: {
-    flow: 'Flow arrow', association: 'Association', dependency: 'Dependency', inheritance: 'Inheritance',
+    flow: 'Flow arrow', bidirectional: 'Bidirectional arrow', association: 'Association', dependency: 'Dependency', inheritance: 'Inheritance',
     realization: 'Realization', aggregation: 'Aggregation', composition: 'Composition', call: 'Call',
     reply: 'Reply', many: 'One to many',
     dataflow: 'Data flow', network: 'Network link', branch: 'Topic branch', reporting: 'Reporting line',
@@ -115,6 +118,7 @@ const en: typeof zh = {
     label: 'Drawing canvas', empty: 'Drag in a shape or start from a template', place: 'Click the canvas to place a shape',
     connect: 'Choose a source and a target', connectTarget: 'Choose a target to finish the connector',
     select: 'Drag empty space to pan · Shift + drag to select', pan: 'Drag to pan · Scroll to zoom',
+    sketch: 'Draw shapes or connectors · Hold Space to pan',
     count: '{nodes} shapes · {edges} connectors',
   },
 }

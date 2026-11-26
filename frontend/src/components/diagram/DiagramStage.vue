@@ -5,10 +5,14 @@ import { Maximize2, Minus, Plus } from '@/components/icons'
 import { fittedViewport, zoomAround, type Point, type Viewport } from '@/utils/canvasViewport'
 import DiagramEdgeGraphic from './DiagramEdgeGraphic.vue'
 import DiagramNodeGraphic from './DiagramNodeGraphic.vue'
-import { diagramBounds, diagramDrawings, inside } from './diagramGeometry'
+import DiagramStrokeGraphic from './DiagramStrokeGraphic.vue'
+import { diagramBounds, diagramDrawings, inside, pathThrough } from './diagramGeometry'
+import { containsDiagramPoint } from './diagramAnchors'
 import { drawingSvg } from './diagramExport'
-import { GRID, isContainer, minNodeSize, shapeNames, snapToGrid, type DiagramDocument,
+import { GRID, isContainer, isStroke, minNodeSize, shapeNames, snapToGrid, type DiagramDocument,
   type DiagramNode, type DiagramTool, type NodeEdit, type Shape } from './diagramModel'
+import { useDiagramSketch } from './useDiagramSketch'
+import type { SketchStrokes, SketchTiming } from './diagramSketchGeometry'
 
 const props = defineProps<{
   doc: DiagramDocument
@@ -23,6 +27,7 @@ const emit = defineEmits<{
   select: [ids: string[]]
   edge: [id: string]
   join: [source: string, target: string, y: number]
+  sketch: [strokes: SketchStrokes, unit: number, timing: SketchTiming]
   update: [nodes: ReadonlyMap<string, NodeEdit>]
   openFile: [file: File]
 }>()
@@ -41,8 +46,11 @@ type Gesture = { id: number; anchor: Point } & (
   | { kind: 'resize'; node: DiagramNode }
   | { kind: 'area'; previous: string[] }
   | { kind: 'link' }
+  | { kind: 'sketch' }
 )
 const gesture = shallowRef<Gesture>()
+const sketch = useDiagramSketch((strokes, unit, timing) => emit('sketch', strokes, unit, timing))
+const inkPreview = computed(() => pathThrough(sketch.ink.value))
 
 const nodes = computed(() => props.doc.nodes.map(node => {
   const update = preview.value.get(node.id)
@@ -50,11 +58,13 @@ const nodes = computed(() => props.doc.nodes.map(node => {
 }))
 const selected = computed(() => nodes.value.filter(node => props.selected.has(node.id)))
 const index = computed(() => new Map(nodes.value.map(node => [node.id, node])))
-const frames = computed(() => nodes.value.filter(node => isContainer(node.shape)))
+const frames = computed(() => nodes.value.filter(node => isContainer(node.shape))
+  .sort((a, b) => b.width * b.height - a.width * a.height))
 const items = computed(() => nodes.value.filter(node => !isContainer(node.shape)))
 const drawings = computed(() => diagramDrawings(nodes.value, props.doc.edges))
 const activeLine = computed(() => drawings.value.find(drawing => drawing.edge.id === props.selectedEdge))
-const port = computed(() => selected.value.length === 1 && !isContainer(selected.value[0].shape) ? selected.value[0] : null)
+const canLink = (node: DiagramNode) => !isStroke(node.shape)
+const port = computed(() => selected.value.length === 1 && canLink(selected.value[0]) ? selected.value[0] : null)
 const sourcePoint = computed(() => {
   const node = source.value && index.value.get(source.value)
   return node ? { x: node.x + node.width, y: node.y + node.height / 2 } : null
@@ -81,6 +91,11 @@ function world(point: Point): Point {
   return { x: (point.x - x) / scale, y: (point.y - y) / scale }
 }
 
+function sketchPoint(point: Point): Point {
+  const { x, y } = world(point)
+  return { x: Math.min(100000, Math.max(-100000, x)), y: Math.min(100000, Math.max(-100000, y)) }
+}
+
 function position(value: number) {
   const bounded = Math.min(100000, Math.max(-100000, value))
   return props.snap ? snapToGrid(bounded) : Math.round(bounded)
@@ -88,6 +103,15 @@ function position(value: number) {
 
 function kindAt(target: EventTarget | null, key: string) {
   return target instanceof Element ? target.closest(`[${key}]`)?.getAttribute(key) : undefined
+}
+
+function connectableAt(target: EventTarget | null, point: Point) {
+  const id = kindAt(target, 'data-diagram-node')
+  const node = id && index.value.get(id)
+  if (node && canLink(node)) return node
+  for (let i = frames.value.length - 1; i >= 0; i--) {
+    if (containsDiagramPoint(frames.value[i], point)) return frames.value[i]
+  }
 }
 
 function begin(event: PointerEvent) {
@@ -106,6 +130,9 @@ function begin(event: PointerEvent) {
 
   if (moving.value || event.button === 1) {
     gesture.value = { ...anchor, kind: 'pan', view: viewport.value, clearOnClick: false, dragged: false }
+  } else if (props.tool === 'sketch') {
+    sketch.begin(sketchPoint(point), 1 / viewport.value.scale)
+    gesture.value = { ...anchor, kind: 'sketch' }
   } else if (props.pending) {
     const { x, y } = world(point)
     emit('place', props.pending, { x: position(x), y: position(y) })
@@ -114,13 +141,16 @@ function begin(event: PointerEvent) {
     cursor.value = world(point)
     gesture.value = { ...anchor, kind: 'link' }
   } else if (props.tool === 'connect' || source.value) {
-    if (node && !isContainer(node.shape)) {
+    const canvasPoint = world(point)
+    const target = connectableAt(event.target, canvasPoint)
+    if (target) {
       if (source.value) {
-        emit('join', source.value, node.id, world(point).y)
+        emit('join', source.value, target.id, canvasPoint.y)
         source.value = undefined
       } else {
-        source.value = node.id
-        cursor.value = world(point)
+        source.value = target.id
+        cursor.value = canvasPoint
+        gesture.value = { ...anchor, kind: 'link' }
       }
     } else source.value = undefined
   } else if (nodeToResize) {
@@ -156,7 +186,9 @@ function move(event: PointerEvent) {
   if (!active || active.id !== event.pointerId) return
   const x = point.x - active.anchor.x
   const y = point.y - active.anchor.y
-  if (active.kind === 'pan') {
+  if (active.kind === 'sketch') {
+    sketch.add(sketchPoint(point))
+  } else if (active.kind === 'pan') {
     if (!active.dragged) {
       if (Math.hypot(x, y) < 3) return
       gesture.value = { ...active, dragged: true }
@@ -188,13 +220,16 @@ function move(event: PointerEvent) {
 function finish(event: PointerEvent) {
   const active = gesture.value
   if (!active || active.id !== event.pointerId) return
-  if (active.kind === 'pan') {
+  if (active.kind === 'sketch') {
+    sketch.finish(sketchPoint(screenPoint(event)))
+  } else if (active.kind === 'pan') {
     if (active.clearOnClick && !active.dragged) emit('select', [])
   } else if (active.kind === 'link' && source.value) {
     const point = screenPoint(event)
     if (Math.hypot(point.x - active.anchor.x, point.y - active.anchor.y) >= 5) {
-      const id = kindAt(document.elementFromPoint(event.clientX, event.clientY), 'data-diagram-node')
-      if (id && index.value.has(id) && !isContainer(index.value.get(id)!.shape)) emit('join', source.value, id, world(point).y)
+      const destination = world(point)
+      const target = connectableAt(document.elementFromPoint(event.clientX, event.clientY), destination)
+      if (target) emit('join', source.value, target.id, destination.y)
       source.value = undefined
     }
   } else if (active.kind === 'area' && marquee.value) {
@@ -208,6 +243,7 @@ function finish(event: PointerEvent) {
 }
 
 function clearGesture() {
+  if (gesture.value?.kind === 'sketch') sketch.cancelActive()
   gesture.value = undefined
   marquee.value = undefined
   preview.value = new Map()
@@ -222,7 +258,7 @@ function drop(event: DragEvent) {
   const file = event.dataTransfer?.files[0]
   if (file) { emit('openFile', file); return }
   const shape = event.dataTransfer?.getData('application/x-traceforge-shape') as Shape
-  if (!shapeNames.includes(shape)) return
+  if (!shapeNames.includes(shape) || isStroke(shape)) return
   const { x, y } = world(screenPoint(event))
   emit('place', shape, { x: position(x), y: position(y) })
   focus()
@@ -272,7 +308,7 @@ defineExpose({ fit, exportSvg, focus, cancel, zoom })
 
 <template>
   <section class="diagram-stage" :style="gridStyle">
-    <svg ref="svg" class="drawing-surface" :class="{ moving, linking: tool === 'connect' || source, placing: pending }"
+    <svg ref="svg" class="drawing-surface" :class="{ moving, linking: tool === 'connect' || source, sketching: tool === 'sketch', placing: pending }"
       data-testid="diagram-canvas" tabindex="0" :aria-label="t('diagram.stage.label')"
       @pointerdown="begin" @pointermove="move" @pointerup="finish" @pointercancel="cancel" @lostpointercapture="clearGesture"
       @wheel.prevent="wheel" @dragover.prevent @drop.prevent="drop" @keydown.space.prevent="space = true"
@@ -282,8 +318,14 @@ defineExpose({ fit, exportSvg, focus, cancel, zoom })
         <g ref="art" font-family="Inter, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">
           <DiagramNodeGraphic v-for="node in frames" :key="node.id" :node="node" />
           <DiagramEdgeGraphic v-for="item in drawings" :key="item.edge.id" :edge="item.edge" :geometry="item.geometry" />
-          <DiagramNodeGraphic v-for="node in items" :key="node.id" :node="node" />
+          <template v-for="node in items" :key="node.id">
+            <DiagramStrokeGraphic v-if="isStroke(node.shape)" :node="node" />
+            <DiagramNodeGraphic v-else :node="node" />
+          </template>
         </g>
+        <path v-if="inkPreview" :d="inkPreview" data-diagram-ink-preview pointer-events="none"
+          fill="none" stroke="var(--color-primary-700)" stroke-width="2" stroke-linecap="round"
+          stroke-linejoin="round" vector-effect="non-scaling-stroke" />
         <rect v-for="node in selected" :key="node.id" :x="node.x - 4" :y="node.y - 4"
           :width="node.width + 8" :height="node.height + 8" rx="5" fill="none" stroke="var(--color-primary-600)" stroke-width="1.5"
           vector-effect="non-scaling-stroke" pointer-events="none" />
@@ -301,7 +343,7 @@ defineExpose({ fit, exportSvg, focus, cancel, zoom })
           vector-effect="non-scaling-stroke" pointer-events="none" />
       </g>
     </svg>
-    <p v-if="!doc.nodes.length && !pending" class="empty-canvas">{{ t('diagram.stage.empty') }}</p>
+    <p v-if="!doc.nodes.length && !pending && tool !== 'sketch'" class="empty-canvas">{{ t('diagram.stage.empty') }}</p>
     <div class="canvas-footer">
       <span class="canvas-tip">{{ t('diagram.stage.' + hint) }}</span>
       <div class="zoom-controls">
@@ -322,6 +364,8 @@ defineExpose({ fit, exportSvg, focus, cancel, zoom })
 .drawing-surface.moving, .drawing-surface.moving :deep([data-diagram-node]) { cursor: grab; }
 .drawing-surface.moving:active, .drawing-surface.moving:active :deep([data-diagram-node]) { cursor: grabbing; }
 .drawing-surface:not(.moving).linking, .drawing-surface:not(.moving).linking :deep([data-diagram-node]), .drawing-surface:not(.moving).placing { cursor: crosshair; }
+.drawing-surface:not(.moving).sketching, .drawing-surface:not(.moving).sketching :deep([data-diagram-node]),
+.drawing-surface:not(.moving).sketching :deep([data-diagram-edge]) { cursor: crosshair; }
 .resize-handle { cursor: nwse-resize; }
 .port-handle { cursor: crosshair; }
 .empty-canvas { position: absolute; left: 50%; top: 45%; transform: translate(-50%, -50%); padding: 12px 16px; border: 1px solid var(--diagram-border); border-radius: var(--radius-md); background: var(--color-surface-white); color: var(--color-text-muted); font-size: 13px; text-align: center; pointer-events: none; }

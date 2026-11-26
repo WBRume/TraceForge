@@ -7,18 +7,21 @@ export const shapeLibraries = {
   basic: ['topicRoot', 'topic', 'person', 'entity', 'note', 'text', 'frame'],
 } as const
 export type Library = keyof typeof shapeLibraries
-export type Shape = (typeof shapeLibraries)[Library][number]
+const sketchShapes = ['rectangle', 'oval', 'diamond', 'triangle', 'line', 'ink'] as const
+export type Shape = (typeof shapeLibraries)[Library][number] | typeof sketchShapes[number]
+const triangleDirections = ['up', 'right', 'down', 'left'] as const
+export type TriangleDirection = typeof triangleDirections[number]
 export const relations = [
-  'flow', 'association', 'dependency', 'inheritance', 'realization', 'aggregation', 'composition', 'call', 'reply', 'many',
+  'flow', 'bidirectional', 'association', 'dependency', 'inheritance', 'realization', 'aggregation', 'composition', 'call', 'reply', 'many',
   'dataflow', 'network', 'branch', 'reporting',
 ] as const
 export type Relation = (typeof relations)[number]
 export const routings = ['orthogonal', 'straight', 'curve'] as const
 export type Routing = (typeof routings)[number]
-export type DiagramTool = 'select' | 'pan' | 'connect'
+export type DiagramTool = 'select' | 'pan' | 'connect' | 'sketch'
 export type DiagramFormat = 'tfdiagram' | 'svg' | 'png'
 export type Arrangement = 'horizontal' | 'vertical' | 'mindmap' | 'organization' | 'alignLeft' | 'alignTop' | 'distributeX' | 'distributeY'
-export type NodeEdit = Partial<Omit<DiagramNode, 'id' | 'shape'>>
+export type NodeEdit = Partial<Omit<DiagramNode, 'id' | 'shape' | 'paths' | 'arrow' | 'startArrow' | 'direction'>>
 export type EdgeEdit = Partial<Pick<DiagramEdge, 'label' | 'relation' | 'routing' | 'stroke' | 'offset'>>
 
 export interface DiagramNode extends Point, Size {
@@ -29,6 +32,16 @@ export interface DiagramNode extends Point, Size {
   operations: string
   fill: string
   stroke: string
+  paths?: [number, number][][]
+  arrow?: boolean
+  startArrow?: boolean
+  direction?: TriangleDirection
+}
+
+export const anchorSides = ['left', 'right', 'top', 'bottom'] as const
+export interface DiagramAnchor {
+  side: typeof anchorSides[number]
+  position: number
 }
 
 export interface DiagramEdge {
@@ -40,6 +53,7 @@ export interface DiagramEdge {
   routing: Routing
   stroke: string
   offset?: number
+  anchors?: [DiagramAnchor, DiagramAnchor]
 }
 
 export interface DiagramDocument {
@@ -54,8 +68,9 @@ export const GRID = 16
 export const MAX_NODES = 1000
 export const MAX_EDGES = 2400
 export const MAX_FILE_BYTES = 5 * 1024 * 1024
-export const shapeNames = Object.values(shapeLibraries).flat()
+export const shapeNames: Shape[] = [...Object.values(shapeLibraries).flat(), ...sketchShapes]
 export const isContainer = (shape: Shape) => shape === 'frame' || shape === 'lane'
+export const isStroke = (shape: Shape) => shape === 'ink' || shape === 'line'
 export const hasCompartments = (shape: Shape) => shape === 'class' || shape === 'interface' || shape === 'entity'
 export const isTopic = (shape: Shape) => shape === 'topic' || shape === 'topicRoot'
 export const isInfrastructure = (shape: Shape) => (shapeLibraries.architecture as readonly Shape[]).includes(shape)
@@ -63,6 +78,8 @@ export const hasSubtitle = (shape: Shape) => shape === 'person' || isInfrastruct
 export const CAPTION_LIMIT = 240
 export const CONTENT_LIMIT = 1200
 export const lineColor = '#47627f'
+export const MAX_SKETCH_STROKES = 6
+export const MAX_SKETCH_POINTS = 160
 
 const sizes: Partial<Record<Shape, [width: number, height: number]>> = {
   decision: [150, 108], class: [224, 156], interface: [224, 156], entity: [216, 156],
@@ -86,6 +103,8 @@ export const blankDiagram = (title: string): DiagramDocument => ({ format: 'trac
 export const freshId = () => crypto.randomUUID()
 export const snapToGrid = (coordinate: number) => Math.round(coordinate / GRID) * GRID
 export const minNodeSize = (shape: Shape): Size => {
+  if (isStroke(shape)) return { width: 1, height: 1 }
+  if (shape === 'rectangle' || shape === 'oval' || shape === 'diamond' || shape === 'triangle' || shape === 'frame') return { width: 6, height: 6 }
   if (shape === 'initial' || shape === 'final') return { width: 20, height: 20 }
   if (hasCompartments(shape)) return { width: 116, height: 110 }
   if (shape === 'lifeline') return { width: 80, height: 116 }
@@ -98,6 +117,15 @@ export function makeNode(shape: Shape, point: Point, label: string): DiagramNode
   return {
     id: freshId(), shape, ...point, width, height, label, detail: '', operations: '',
     fill: fills[shape] ?? '#ffffff', stroke: defaultStroke,
+  }
+}
+
+export function triangleCorners(width: number, height: number, direction: TriangleDirection = 'up'): Point[] {
+  switch (direction) {
+    case 'right': return [{ x: width, y: height / 2 }, { x: 0, y: height }, { x: 0, y: 0 }]
+    case 'down': return [{ x: width / 2, y: height }, { x: 0, y: 0 }, { x: width, y: 0 }]
+    case 'left': return [{ x: 0, y: height / 2 }, { x: width, y: 0 }, { x: width, y: height }]
+    case 'up': return [{ x: width / 2, y: 0 }, { x: width, y: height }, { x: 0, y: height }]
   }
 }
 
@@ -126,6 +154,33 @@ const numeric = (value: unknown, min: number, max: number) =>
   typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : null
 const validId = (value: unknown): value is string => typeof value === 'string' && /^[a-z0-9_-]{1,64}$/i.test(value)
 
+function decodePaths(value: unknown): DiagramNode['paths'] {
+  if (!Array.isArray(value) || !value.length || value.length > MAX_SKETCH_STROKES) return
+  const paths: NonNullable<DiagramNode['paths']> = []
+  for (const path of value) {
+    if (!Array.isArray(path) || path.length < 2 || path.length > MAX_SKETCH_POINTS) return
+    const points: [number, number][] = []
+    for (const point of path) {
+      if (!Array.isArray(point) || point.length !== 2 || point.some(coordinate =>
+        typeof coordinate !== 'number' || !Number.isFinite(coordinate) || coordinate < 0 || coordinate > 1)) return
+      points.push([point[0], point[1]])
+    }
+    paths.push(points)
+  }
+  return paths
+}
+
+function decodeAnchors(value: unknown): DiagramEdge['anchors'] {
+  if (!Array.isArray(value) || value.length !== 2) return
+  const anchors = value.map((item: unknown): DiagramAnchor | null => {
+    const anchor = record(item)
+    const side = anchor?.side as DiagramAnchor['side']
+    const position = numeric(anchor?.position, 0, 1)
+    return anchorSides.includes(side) && position !== null ? { side, position } : null
+  })
+  if (anchors[0] && anchors[1]) return [anchors[0], anchors[1]]
+}
+
 export function decodeDiagram(raw: string): DiagramDocument {
   const invalid = () => new Error('Invalid drawing document')
   if (raw.length > MAX_FILE_BYTES) throw invalid()
@@ -145,11 +200,17 @@ export function decodeDiagram(raw: string): DiagramDocument {
     const width = numeric(node.width, size.width, 100000)
     const height = numeric(node.height, size.height, 100000)
     if (x === null || y === null || width === null || height === null) throw invalid()
+    const paths = isStroke(shape) ? decodePaths(node.paths) : undefined
+    if (isStroke(shape) && !paths) throw invalid()
+    const direction = node.direction as TriangleDirection
     nodeIds.add(node.id)
     return {
       id: node.id, shape, x, y, width, height, label: text(node.label, CAPTION_LIMIT),
       detail: text(node.detail, CONTENT_LIMIT), operations: text(node.operations, CONTENT_LIMIT),
       fill: color(node.fill, fills[shape] ?? '#ffffff'), stroke: color(node.stroke, defaultStroke),
+      ...(paths ? { paths } : {}),
+      ...(shape === 'line' && node.arrow === true ? { arrow: true, ...(node.startArrow === true ? { startArrow: true } : {}) } : {}),
+      ...(shape === 'triangle' && triangleDirections.includes(direction) ? { direction } : {}),
     }
   })
   const edgeIds = new Set<string>()
@@ -159,10 +220,13 @@ export function decodeDiagram(raw: string): DiagramDocument {
       || !validId(edge.target) || !nodeIds.has(edge.target)
       || !relations.includes(edge.relation as Relation) || !routings.includes(edge.routing as Routing)) throw invalid()
     edgeIds.add(edge.id)
+    const anchors = decodeAnchors(edge.anchors)
+    if (edge.anchors !== undefined && !anchors) throw invalid()
     return {
       id: edge.id, source: edge.source, target: edge.target, label: text(edge.label, CAPTION_LIMIT),
       relation: edge.relation as Relation, routing: edge.routing as Routing,
       stroke: color(edge.stroke, lineColor), offset: numeric(edge.offset, 60, 100000) ?? undefined,
+      ...(anchors ? { anchors } : {}),
     }
   })
   return { ...blankDiagram(data.title.slice(0, 120)), nodes, edges }

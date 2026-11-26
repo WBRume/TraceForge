@@ -7,7 +7,7 @@ import { hasCompartments, hasSubtitle, isContainer, type DiagramNode } from './d
 const { node } = defineProps<{ node: DiagramNode }>()
 const container = computed(() => isContainer(node.shape))
 const compartments = computed(() => hasCompartments(node.shape))
-const outline = computed(() => shapeOutline(node.shape, node.width, node.height))
+const outline = computed(() => shapeOutline(node.shape, node.width, node.height, node.direction))
 const decoration = computed(() => shapeDecoration(node.shape, node.width, node.height))
 const clipId = computed(() => 'shape-label-' + node.id)
 const divider = computed(() => Math.max(64, Math.round(node.height * .61)))
@@ -17,7 +17,7 @@ const subtitle = computed(() => hasSubtitle(node.shape) && node.detail
   ? diagramLines(node.detail, node.width * .72 - 10, 11, 1)[0] : '')
 const label = computed(() => {
   const leftIcon = ['service', 'server', 'queue', 'router', 'firewall', 'person'].includes(node.shape)
-  const width = node.shape === 'decision' ? node.width * .57 : leftIcon ? node.width * .69 - 10 : node.width - 23
+  const width = node.shape === 'decision' || node.shape === 'diamond' ? node.width * .57 : leftIcon ? node.width * .69 - 10 : node.width - 23
   const size = node.shape === 'text' ? 17 : 14
   const height = node.shape === 'lifeline' ? 40 : node.shape === 'actor' ? 18 : node.height - 9
   const lines = diagramLines(node.label, width, size, Math.floor((height - (subtitle.value ? 18 : 0)) / 18))
@@ -41,7 +41,7 @@ const operations = computed(() => diagramLines(node.operations, node.width - 22,
       :stroke="node.shape === 'text' ? 'none' : node.stroke" stroke-width="1.5"
       :stroke-dasharray="node.shape === 'frame' ? '7 4' : undefined" :pointer-events="container ? 'stroke' : 'all'" />
     <rect v-if="container || node.shape === 'actor'" :width="node.shape === 'lane' ? Math.min(92, node.width * .2) : node.width"
-      :height="node.shape === 'frame' ? 32 : node.height" fill="transparent" />
+      :height="node.shape === 'frame' ? Math.min(32, node.height) : node.height" fill="transparent" />
     <path v-if="decoration" :d="decoration" fill="none" :stroke="node.stroke" stroke-width="1.5" pointer-events="none" />
     <circle v-if="node.shape === 'actor'" :cx="node.width / 2" :cy="node.height * .23" :r="Math.min(node.width, node.height) * .11"
       :fill="node.fill" :stroke="node.stroke" stroke-width="1.5" pointer-events="none" />
