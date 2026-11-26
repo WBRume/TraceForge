@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -14,11 +14,12 @@ import { useAuthStore } from '@/stores/auth'
 import { useLocalAgentStore } from '@/stores/localAgent'
 import type { AgentTask } from '@/types/agent'
 import { formatApiError } from '@/utils/error'
-import LocalCollaborationPanel from '@/components/collaboration/LocalCollaborationPanel.vue'
 import CollaborationHeader from '@/components/collaboration/CollaborationHeader.vue'
 import CollaborationActions from '@/components/collaboration/CollaborationActions.vue'
 import type { LocalCollaboration } from '@/composables/collaboration/useLocalCollaboration'
 import type { CollaborationReview } from '@/composables/collaboration/useCollaborationReview'
+
+const LocalCollaborationPanel = defineAsyncComponent(() => import('@/components/collaboration/LocalCollaborationPanel.vue'))
 
 const props = defineProps<{
   show: boolean

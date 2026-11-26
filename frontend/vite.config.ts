@@ -53,7 +53,7 @@ export default defineConfig(({ mode }) => {
       },
       // Prepare the application modules while the Electron main process builds.
       warmup: desktopMode ? {
-        clientFiles: ['./src/main.ts', './src/views/PortalView.vue'],
+        clientFiles: ['./src/main.ts', './src/views/PortalView.vue', './src/views/ChatView.vue'],
       } : undefined,
       proxy: {
         '/api': {

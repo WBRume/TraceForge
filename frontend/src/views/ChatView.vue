@@ -1,20 +1,15 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { proxyRefs, provide } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, provide, proxyRefs, ref, watch } from 'vue'
 import AnnotationPopover from '@/components/chat/annotations/AnnotationPopover.vue'
 import { contextAnnotationsKey } from '@/composables/chat/annotations/useContextAnnotations'
 import { formatAnnotationMessage } from '@/composables/chat/annotations/contextAnnotations'
 import { ChevronDown, Loader2, MessageSquare } from '@/components/icons'
-import NewTaskModal from '@/components/task-create/NewTaskModal.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import ChatExecutionInput from '@/components/chat/ChatExecutionInput.vue'
 import PreInputPanel from '@/components/chat/PreInputPanel.vue'
-import ChatCliWorkbench from '@/components/chat/terminal/ChatCliWorkbench.vue'
 import ApplyPatchDrawer from '@/components/local-agent/ApplyPatchDrawer.vue'
 import CollaborationInputStatus from '@/components/collaboration/CollaborationInputStatus.vue'
 import CollaborationLeaveDialog from '@/components/collaboration/CollaborationLeaveDialog.vue'
-import TaskCloseoutPanel from '@/components/chat/task-closeout/TaskCloseoutPanel.vue'
-import TaskRequirementLinkDrawer from '@/components/chat/task-rail/TaskRequirementLinkDrawer.vue'
 import TaskSessionShareDialog from '@/components/chat/TaskSessionShareDialog.vue'
 import TaskDetailDialog from '@/components/task-detail/TaskDetailDialog.vue'
 import ShareSuggestionPanel from '@/components/chat/ShareSuggestionPanel.vue'
@@ -40,6 +35,11 @@ import { useGuideSession } from '@/composables/chat/diagnosis/useGuideSession'
 import { consumeCollaborationIntent } from '@/components/task-create/lib/localCollaborationIntent'
 import { useWorkspaceTabTitle } from '@/desktop/workspaceTabs'
 import { isCanvasRoute } from '@/router/workspaceAssetPresentation'
+
+const NewTaskModal = defineAsyncComponent(() => import('@/components/task-create/NewTaskModal.vue'))
+const ChatCliWorkbench = defineAsyncComponent(() => import('@/components/chat/terminal/ChatCliWorkbench.vue'))
+const TaskCloseoutPanel = defineAsyncComponent(() => import('@/components/chat/task-closeout/TaskCloseoutPanel.vue'))
+const TaskRequirementLinkDrawer = defineAsyncComponent(() => import('@/components/chat/task-rail/TaskRequirementLinkDrawer.vue'))
 
 /**
  * 任务会话工作台（路由级组合面）：三栏布局装配 + 弹窗宿主。
@@ -409,6 +409,7 @@ watch(
     <!-- 任务准备进度由全局浮窗 ProvisionFloatingWidget（App.vue 挂载）负责 -->
 
     <NewTaskModal
+      v-if="vm.showTaskModal"
       :show="vm.showTaskModal"
       :initial-requirement="vm.newTaskRequirement"
       :wsId="(vm.route.params.wsId as string)"

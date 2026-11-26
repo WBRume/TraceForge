@@ -162,6 +162,7 @@ export const useChatWorkbenchScroll = ({
 
   const setTerminalContainer = (container: HTMLElement | null) => {
     terminalContainer.value = container
+    if (container) void restoreScrollPosition('cli')
   }
 
   return {

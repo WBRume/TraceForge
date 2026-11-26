@@ -93,6 +93,25 @@ describe('useChatWorkbenchScroll', () => {
     expect(platform.scrollTop).toBe(315)
   })
 
+  it('restores the CLI scroll position when its container mounts after switching views', async () => {
+    const activeMode = shallowRef<ChatWorkbenchMode>('platform')
+    const state = useScroll({ activeMode, getTaskId: () => 'task' })
+    await state.switchMode('cli')
+    const first = scrollContainer(1800)
+    state.setTerminalContainer(first)
+    await nextTick()
+    expect(first.scrollTop).toBe(1800)
+
+    first.scrollTop = 260
+    await state.switchMode('platform')
+    state.setTerminalContainer(null)
+    await state.switchMode('cli')
+    const reopened = scrollContainer(2200)
+    state.setTerminalContainer(reopened)
+    await nextTick()
+    expect(reopened.scrollTop).toBe(260)
+  })
+
   it('retains the saved reading position while a task remounts with an empty history', async () => {
     const taskId = shallowRef('task-1')
     const state = useScroll({ activeMode: shallowRef('platform'), getTaskId: () => taskId.value })

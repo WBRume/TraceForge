@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, shallowRef } from 'vue'
+import { computed, defineAsyncComponent, h, shallowRef } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Activity, File, Folder, FolderTree, RefreshCw, Save, X } from '@/components/icons'
-import { VueMonacoEditor } from '@guolao/vue-monaco-editor'
 import AppSideDrawer from '@/components/AppSideDrawer.vue'
 import SkillRuntimeTracePanel from '@/components/chat/SkillRuntimeTracePanel.vue'
-import { ensureMonacoViteSetup } from '@/utils/monaco'
 import { resolveSkillFileLanguage } from '@/utils/skillLanguage'
 import type { SkillRuntimeEvent } from '@/types/runtimeSkillTrace'
 
@@ -79,7 +78,19 @@ const showTraceInspector = shallowRef(false)
 const drawerLevel = shallowRef(2)
 const traceEventCount = computed(() => props.traceEvents.length)
 
-ensureMonacoViteSetup()
+const { t } = useI18n()
+const VueMonacoEditor = defineAsyncComponent({
+  async loader() {
+    const [{ VueMonacoEditor }, { ensureMonacoViteSetup }] = await Promise.all([
+      import('@guolao/vue-monaco-editor'),
+      import('@/utils/monaco'),
+    ])
+    ensureMonacoViteSetup()
+    return VueMonacoEditor
+  },
+  loadingComponent: () => h('p', { class: 'editor-state', role: 'status' }, t('common.loading')),
+  errorComponent: () => h('p', { class: 'editor-state', role: 'alert' }, t('chat.task_skills_file_load_failed')),
+})
 
 const activeFileLanguage = computed(() => resolveSkillFileLanguage(props.activeFilePath))
 

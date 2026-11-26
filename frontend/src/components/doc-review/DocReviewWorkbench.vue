@@ -8,7 +8,6 @@ import { formatApiError } from "@/utils/error";
 import { useAssetDiscussion, type AssetSummary } from "@/composables/useAssetDiscussion";
 import DocumentCanvas from "./DocumentCanvas.vue";
 import InlineSelectionPopover from "./InlineSelectionPopover.vue";
-import PdfCanvas from "./PdfCanvas.vue";
 import ProposalDraftModal from "./ProposalDraftModal.vue";
 import ReviewAnnotationPopover from "./ReviewAnnotationPopover.vue";
 import ResolutionDiffModal from "./ResolutionDiffModal.vue";
@@ -105,6 +104,7 @@ const isMarkdown = computed(() =>
   [".md", ".markdown"].includes(String(documentData.value?.active_version?.original_ext || "").toLowerCase()),
 );
 const DocxReviewCanvas = defineAsyncComponent(() => import("./DocxReviewCanvas.vue"));
+const PdfCanvas = defineAsyncComponent(() => import("./PdfCanvas.vue"));
 const docxSource = computed(() => {
   const version = documentData.value?.active_version;
   const ext = version?.original_ext || selectedAsset.value?.source_ext;

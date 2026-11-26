@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import TaskSkillsDrawer from '@/components/chat/TaskSkillsDrawer.vue'
+import { ensureMonacoViteSetup } from '@/utils/monaco'
+
+vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 
 vi.mock('@/utils/monaco', () => ({
   ensureMonacoViteSetup: vi.fn(),
@@ -13,7 +16,7 @@ vi.mock('@guolao/vue-monaco-editor', () => ({
   },
 }))
 
-const mountDrawer = () => mount(TaskSkillsDrawer, {
+const mountDrawer = (activeFilePath = 'SKILL.md') => mount(TaskSkillsDrawer, {
   props: {
     show: true,
     loading: false,
@@ -37,7 +40,7 @@ const mountDrawer = () => mount(TaskSkillsDrawer, {
       },
     ],
     fileTreeLoading: false,
-    activeFilePath: 'SKILL.md',
+    activeFilePath,
     activeFileContent: '# Skill',
     activeFileLoading: false,
     activeFileSaving: false,
@@ -57,14 +60,21 @@ const mountDrawer = () => mount(TaskSkillsDrawer, {
 
 describe('TaskSkillsDrawer', () => {
   it('keeps runtime skill file tree visible and opens trace only on demand', async () => {
-    const wrapper = mountDrawer()
+    const wrapper = mountDrawer('')
     const fileBrowserPanel = wrapper.find('.file-browser-panel')
 
     expect(wrapper.text()).toContain('chat.task_skills_file_tree')
     expect(fileBrowserPanel.exists()).toBe(true)
     expect(fileBrowserPanel.text()).toContain('SKILL.md')
     expect(wrapper.text()).toContain('common.save')
+    expect(wrapper.find('[data-test="monaco-editor"]').exists()).toBe(false)
+    expect(ensureMonacoViteSetup).not.toHaveBeenCalled()
+
+    await wrapper.setProps({ activeFilePath: 'SKILL.md' })
+    await vi.dynamicImportSettled()
+
     expect(wrapper.find('[data-test="monaco-editor"]').exists()).toBe(true)
+    expect(ensureMonacoViteSetup).toHaveBeenCalledOnce()
     expect(wrapper.find('.trace-panel').exists()).toBe(false)
     expect(wrapper.text()).toContain('used 1')
 

@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { proxyRefs, watch } from 'vue'
+import { defineAsyncComponent, h, proxyRefs, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ChevronLeft, ChevronRight, Brain, FileText, GitFork } from '@/components/icons'
-import DocReviewWorkbench from '@/components/doc-review/DocReviewWorkbench.vue'
 import PlanDocsPanel from '@/components/chat/PlanDocsPanel.vue'
 import { useDiagnosisDocs } from '@/composables/useDiagnosisDocs'
 import DiagnosisDocsPanel from './DiagnosisDocsPanel.vue'
@@ -19,6 +18,21 @@ const props = defineProps<{
 }>()
 
 const { t } = useI18n()
+const DocReviewWorkbench = defineAsyncComponent({
+  loader: () => import('@/components/doc-review/DocReviewWorkbench.vue'),
+  loadingComponent: () => h('p', { class: 'spec-empty', role: 'status' }, t('common.loading')),
+  errorComponent: () => h('p', { class: 'spec-empty', role: 'alert' }, t('doc_review.document_load_failed')),
+})
+
+// 折叠抽屉或切换标签时保留当前任务的文档状态。
+const openedSpecTaskId = shallowRef<string>()
+watch(
+  () => [props.vm.currentTask?.id, props.vm.isSpecPanelOpen && props.vm.specDrawerTab === 'spec_doc'] as const,
+  ([taskId, visible], previous) => {
+    if (visible || taskId !== previous?.[0]) openedSpecTaskId.value = visible ? taskId : undefined
+  },
+  { immediate: true },
+)
 
 const diagDocs = proxyRefs(useDiagnosisDocs({
   wsId: () => String(props.vm.route.params.wsId || ''),
@@ -134,11 +148,12 @@ watch(
 
         <!-- 研发态：需求文档 -->
         <div
-          v-if="!props.vm.isDiagnosisTask && props.vm.currentTaskHasSpec"
+          v-if="!props.vm.isDiagnosisTask && props.vm.currentTaskHasSpec && openedSpecTaskId === props.vm.currentTask.id"
           class="spec-tab-panel"
           v-show="props.vm.specDrawerTab === 'spec_doc'"
         >
           <DocReviewWorkbench
+            :key="props.vm.currentTask.id"
             :ws-id="String(props.vm.route.params.wsId || '')"
             :task-id="props.vm.currentTask.id"
             :initial-asset-id="props.vm.activeInitialSpecAssetId || undefined"

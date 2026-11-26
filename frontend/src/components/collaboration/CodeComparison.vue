@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, onScopeDispose, shallowRef, watch } from 'vue'
+import { computed, defineAsyncComponent, h, onScopeDispose, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import IdeOpenButton from './IdeOpenButton.vue'
-import MonacoDiffViewer from '@/components/diff/MonacoDiffViewer.vue'
 import { Laptop, UploadCloud } from '@/components/icons'
 
 const props = withDefaults(defineProps<{
@@ -13,6 +12,11 @@ const props = withDefaults(defineProps<{
 }>(), { leftExists:undefined, rightExists:undefined })
 const emit = defineEmits<{ 'open-in-ide': [position: { line: number; column: number }]; 'ide-error': [message: string]; 'update:rightText': [text: string] }>()
 const { t } = useI18n()
+const MonacoDiffViewer = defineAsyncComponent({
+  loader: () => import('@/components/diff/MonacoDiffViewer.vue'),
+  loadingComponent: () => h('p', { class: 'state-message loading', role: 'status' }, t('common.loading')),
+  errorComponent: () => h('p', { class: 'state-message error', role: 'alert' }, t('task_deliverables.review_failed')),
+})
 const media = window.matchMedia('(max-width: 720px)')
 const compact = shallowRef(media.matches), preferredLayout = shallowRef<'split' | 'unified' | null>(null)
 const onResize = () => { compact.value = media.matches }
