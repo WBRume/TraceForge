@@ -1,20 +1,18 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronDown, ChevronLeft, ChevronRight, Link, PencilLine } from '@/components/icons'
+import { ChevronDown, ChevronRight, ExternalLink, Link, PencilLine } from '@/components/icons'
 import { cardStatus, isDocument, sourceIcons, type CanvasNode } from './model'
 
 const props = defineProps<{
   node: CanvasNode; active: boolean; linked: boolean; entry?: boolean; compact?: boolean; quarterId?: string
-  tree?: boolean; expanded?: boolean; busy?: boolean; hasMore?: boolean; hasPrevious?: boolean
+  tree?: boolean; expanded?: boolean; busy?: boolean
 }>()
 const emit = defineEmits<{
   press: [event: PointerEvent, handle?: 'resize' | 'connect']
   open: []
   focus: []
   toggle: []
-  more: []
-  previous: []
 }>()
 const { t, te } = useI18n()
 const position = computed(() => ({
@@ -38,6 +36,7 @@ const summaryQuarter = computed(() => props.node.historicalQuarter && t('workspa
 }))
 const summaryType = computed(() => t(props.node.historicalQuarter && props.quarterId && props.node.historicalQuarter.id > props.quarterId
   ? 'workspace_canvas.quarter.future_requirement' : 'workspace_canvas.quarter.historical_requirement'))
+const branchAction = computed(() => t(props.expanded ? 'workspace_canvas.tree.collapse' : 'workspace_canvas.tree.expand'))
 </script>
 
 <template>
@@ -73,29 +72,23 @@ const summaryType = computed(() => t(props.node.historicalQuarter && props.quart
         <span class="item-type">{{ summaryQuarter ? summaryType
           : isParagraph ? t('workspace_canvas.paragraph') : label }}</span>
         <span v-if="status" class="status" :data-status="node.details?.status" :title="status">{{ status }}</span>
+        <button v-if="!summaryQuarter && node.details" class="open-source" type="button"
+          :aria-label="t('workspace_canvas.open_asset')" :title="t('workspace_canvas.open_asset')"
+          @pointerdown.stop @dblclick.stop @click.stop="emit('open')"><ExternalLink :size="15" /></button>
       </header>
       <h3 class="card-title" :title="name">{{ name }}</h3>
       <p v-if="detail && (!compact || summaryQuarter)" class="card-detail">{{ detail }}</p>
-      <div v-if="node.details" class="item-footer">
+      <div v-if="summaryQuarter || (node.details?.context && !compact)" class="item-footer">
         <span v-if="summaryQuarter" class="historical-quarter">{{ summaryQuarter }}</span>
-        <div v-else-if="node.expandable" class="tree-actions">
-          <button type="button" class="tree-action" :aria-expanded="!!expanded" :disabled="busy"
-            @pointerdown.stop @dblclick.stop @click.stop="emit('toggle')">
-            <component :is="expanded ? ChevronDown : ChevronRight" :size="15" />
-            {{ t(expanded ? 'workspace_canvas.tree.collapse' : 'workspace_canvas.tree.expand') }}
-          </button>
-          <button v-if="hasPrevious" type="button" class="tree-action" :disabled="busy"
-            :aria-label="t('workspace_canvas.tree.previous_links')" :title="t('workspace_canvas.tree.previous_links')"
-            @pointerdown.stop @dblclick.stop @click.stop="emit('previous')"><ChevronLeft :size="14" /></button>
-          <button v-if="hasMore" type="button" class="tree-action" :disabled="busy"
-            @pointerdown.stop @dblclick.stop @click.stop="emit('more')">{{ t('workspace_canvas.tree.more') }}<ChevronRight :size="14" /></button>
-        </div>
-        <span v-else-if="node.details.context && !compact" class="source-context" :title="node.details.context">{{ node.details.context }}</span>
-        <button v-if="summaryQuarter" class="open-source history-detail" type="button"
-          @pointerdown.stop @click.stop="emit('open')">{{ t('workspace_canvas.quarter.view_detail') }}<ChevronRight :size="14" /></button>
-        <button v-else class="open-source" type="button" :aria-label="t('workspace_canvas.open_asset')"
-          :title="t('workspace_canvas.open_asset')" @pointerdown.stop @click.stop="emit('open')"><ChevronRight :size="16" /></button>
+        <span v-else class="source-context" :title="node.details?.context ?? undefined">{{ node.details?.context }}</span>
+        <button v-if="summaryQuarter" class="history-detail" type="button"
+          @pointerdown.stop @dblclick.stop @click.stop="emit('open')">{{ t('workspace_canvas.quarter.view_detail') }}<ChevronRight :size="14" /></button>
       </div>
+      <button v-if="node.expandable" type="button" class="tree-disclosure" :aria-expanded="!!expanded"
+        :aria-label="branchAction" :title="branchAction" :disabled="busy"
+        @pointerdown.stop @dblclick.stop @click.stop="emit('toggle')">
+        <component :is="expanded ? ChevronDown : ChevronRight" :size="17" />
+      </button>
     </template>
 
     <button v-if="node.kind !== 'frame' && !node.historicalQuarter" class="connect-handle" type="button" tabindex="-1"
@@ -152,11 +145,24 @@ const summaryType = computed(() => t(props.node.historicalQuarter && props.quart
 .historical-card .card-detail { flex: 0 0 auto; font-size: 15px; line-height: 1.26; }
 .historical-card.compact .card-detail { font-size: var(--canvas-compact-summary, 18px); line-height: 1.1; -webkit-line-clamp: 1; }
 .tree-card:not(.historical-card) .card-detail { display: none; }
-.tree-actions { display: flex; align-items: center; gap: 6px; margin-inline-end: auto; min-width: 0; }
-.tree-action { display: inline-flex; align-items: center; gap: 3px; padding: 4px 6px; border: 0; border-radius: 5px;
-  color: #1c5b80; background: #eaf4fb; font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
-.tree-action:hover { background: #dbeefb; }
-.tree-action:disabled { opacity: .55; cursor: default; }
+.tree-disclosure {
+  position: absolute;
+  z-index: 1;
+  inset: auto -14px -11px auto;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--canvas-line);
+  border-radius: 50%;
+  color: var(--canvas-accent);
+  background: var(--canvas-chrome);
+  box-shadow: 0 2px 5px #20355816;
+  cursor: pointer;
+}
+.tree-disclosure:not(:disabled):hover { background: var(--canvas-hover); border-color: var(--canvas-accent); }
+.tree-disclosure:disabled { opacity: .55; cursor: wait; }
 .historical-card .item-top { height: 19px; }
 .compact .card-title { font-size: var(--canvas-compact-title, 25px); }
 .compact .item-type, .compact .status { font-size: var(--canvas-compact-meta, 16px); }
@@ -216,7 +222,13 @@ const summaryType = computed(() => t(props.node.historicalQuarter && props.quart
   color: var(--canvas-muted);
   cursor: pointer;
 }
+.open-source { flex: 0 0 26px; width: 26px; height: 26px; }
+.item-type + .open-source { margin-inline-start: auto; }
 .open-source:is(:hover, :focus-visible) { background: var(--canvas-hover); color: var(--canvas-accent); }
+.open-source:focus-visible, .tree-disclosure:focus-visible {
+  outline: 2px solid var(--canvas-accent);
+  outline-offset: 2px;
+}
 .connect-handle {
   position: absolute;
   z-index: 2;

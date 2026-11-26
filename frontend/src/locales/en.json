@@ -2490,7 +2490,6 @@
       "expand": "Expand links",
       "collapse": "Collapse branch",
       "more": "More links",
-      "previous_links": "Previous links",
       "no_neighbors": "This card has no links to expand.",
       "expansion_limit": "The canvas has reached its expansion limit. Collapse a branch or use Start from this asset in the context menu."
     },

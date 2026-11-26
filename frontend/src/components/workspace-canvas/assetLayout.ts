@@ -1,8 +1,11 @@
 import { domainKinds, domainMembers, type CanvasCatalog, type CanvasDomain } from './assetDomains'
-import { nodeSizes, referenceKey, scopedAssetId, type CanvasGraph, type CanvasNode, type CanvasRegion,
+import { nodeSizes, referenceKey, scopedAssetId, type CanvasBranchContinuation, type CanvasGraph, type CanvasNode, type CanvasRegion,
   type CanvasSnapshot, type Point, type Size } from './model'
 
-const columnStride = nodeSizes.card.width + 90
+export const treeColumnStride = nodeSizes.card.width + 90
+export const treeSiblingGap = 22
+export const treeCardSize = { width: 248, height: 122 }
+export const historicalCardHeight = 174
 const rowStride = nodeSizes.card.height + 26
 const rowsPerColumn = 5
 const localOrigin = { x: 80, y: 20 }
@@ -27,14 +30,16 @@ export function paragraphPosition(document: CanvasNode, nodes: CanvasNode[]): Po
 interface DomainLayout {
   region: CanvasRegion
   nodes: { node: CanvasNode; assetId: string }[]
+  continuations: { assetId: string; position: Point; stemHeight: number }[]
 }
 
-const treeCardSize = { width: 248, height: 122 }
+type ExpandedBranches = ReadonlyMap<string, { cursor?: string | null }>
 
 function createDomain(catalog: CanvasCatalog, domain: CanvasDomain, saved: ReadonlyMap<string, CanvasNode>, tile: boolean,
-  quarter?: string, tree = false, collapsed?: ReadonlySet<string>): DomainLayout {
+  quarter?: string, tree = false, collapsed?: ReadonlySet<string>, expanded?: ExpandedBranches): DomainLayout {
   const { node_id: root, details } = domain.asset
   const nodes: DomainLayout['nodes'] = []
+  const continuations: DomainLayout['continuations'] = []
   const start = tree ? { x: cardOrigin.x, y: localOrigin.y + 14 }
     : tile ? { x: localOrigin.x + 10, y: localOrigin.y + 10 } : cardOrigin
   const defaultSize = tree ? treeCardSize : tile ? { width: 166, height: 100 } : nodeSizes.card
@@ -45,7 +50,7 @@ function createDomain(catalog: CanvasCatalog, domain: CanvasDomain, saved: Reado
   let right = start.x, bottom = start.y
 
   function availablePosition(proposed: Point, size: Size, old?: CanvasNode) {
-    if (!tree) return old?.position ?? proposed
+    if (!tree || !reserved.length) return old?.position ?? proposed
     const point = { ...(old?.position ?? proposed) }
     // Preserve placed cards and leave room for saved positions when flowing in new siblings.
     const occupied = [...(old ? [] : reserved), ...nodes.map(item => item.node)]
@@ -65,12 +70,12 @@ function createDomain(catalog: CanvasCatalog, domain: CanvasDomain, saved: Reado
       ? asset.quarter ?? undefined : undefined
     const id = scopedAssetId(assetId, root)
     const old = saved.get(id)
-    const size = historicalQuarter ? { width: nodeSizes.card.width, height: 174 } : old?.size ?? defaultSize
+    const size = historicalQuarter ? { width: nodeSizes.card.width, height: historicalCardHeight } : old?.size ?? defaultSize
     const position = availablePosition(proposed, size, old)
     right = Math.max(right, position.x + size.width)
     bottom = Math.max(bottom, position.y + size.height)
     const children = catalog.childLinks.get(assetId)
-    const expandedChildren = (catalog.children.get(assetId) ?? []).some(child => children?.has(child))
+    const expandedChildren = Boolean(catalog.children.get(assetId)?.length)
     const unseenChildren = Boolean(asset.has_unseen_children)
     const foldedChildren = Boolean(collapsed?.has(assetId) && (asset.has_tree_children || children?.size))
     nodes.push({ assetId, node: { id, kind: 'card', automatic: true, domainId: root,
@@ -83,12 +88,26 @@ function createDomain(catalog: CanvasCatalog, domain: CanvasDomain, saved: Reado
     const visited = new Set<string>()
     function placeSubtree(id: string, depth: number, y: number): number {
       visited.add(id)
-      let end = place(id, { x: start.x + depth * columnStride, y })
+      const x = start.x + depth * treeColumnStride
+      let end = place(id, { x, y })
+      const parent = nodes.at(-1)!.node
       let next = y
+      let lastChild: CanvasNode | undefined
       for (const child of catalog.children.get(id) ?? []) {
         if (visited.has(child) || catalog.rootByAsset.get(child) !== root) continue
+        const childIndex = nodes.length
         end = Math.max(end, placeSubtree(child, depth + 1, next))
-        next = end + 22
+        lastChild = nodes[childIndex].node
+        next = end + treeSiblingGap
+      }
+      const branch = parent.reference && expanded?.get(referenceKey(parent.reference))
+      const hasMore = branch ? Boolean(branch.cursor) : lastChild && parent.unseenChildren
+      if (hasMore && !parent.historicalQuarter && !collapsed?.has(id)) {
+        const tail = lastChild ?? parent
+        const position = { x: x + treeColumnStride - 48, y: end + treeSiblingGap }
+        continuations.push({ assetId: id, position, stemHeight: position.y - tail.position.y - tail.size.height / 2 })
+        end = position.y + 14
+        bottom = Math.max(bottom, end)
       }
       return end
     }
@@ -103,27 +122,28 @@ function createDomain(catalog: CanvasCatalog, domain: CanvasDomain, saved: Reado
     let column = 0
     for (const tier of levels.values()) {
       for (const [index, id] of tier.entries()) {
-        place(id, { x: start.x + (column + Math.floor(index / rowsPerColumn)) * columnStride,
+        place(id, { x: start.x + (column + Math.floor(index / rowsPerColumn)) * treeColumnStride,
           y: start.y + (index % rowsPerColumn) * rowStride })
       }
       column += Math.ceil(tier.length / rowsPerColumn)
     }
   }
-  return { nodes, region: { id: root, type: 'domain', title: details.title, kind: domain.kind, assetCount: nodes.length,
+  return { nodes, continuations, region: { id: root, type: 'domain', title: details.title, kind: domain.kind, assetCount: nodes.length,
     position: localOrigin, size: { width: right - localOrigin.x + (tile || tree ? 14 : 24),
       height: bottom - localOrigin.y + (tile || tree ? 14 : 24) } } }
 }
 
-function arrangeTree(domains: DomainLayout[]) {
+function arrangeTree(domains: DomainLayout[], locate: (item: DomainLayout, origin: Point) => Point) {
   let y = 0
   return { sections: [], domains: domains.map(item => {
-    const position = { x: 0, y }
-    y += item.region.size.height + 14
+    const position = locate(item, { x: 0, y })
+    y = position.y + item.region.size.height + 14
     return { item, position }
   }) }
 }
 
-function pack<T>(items: T[], sizeOf: (item: T) => Size, minWidth: number, gap: number, widthHint?: number) {
+function pack<T>(items: T[], sizeOf: (item: T) => Size, minWidth: number, gap: number, widthHint?: number,
+  locate?: (item: T, origin: Point) => Point) {
   let maxWidth = minWidth, area = 0
   for (const item of items) {
     const size = sizeOf(item)
@@ -135,8 +155,8 @@ function pack<T>(items: T[], sizeOf: (item: T) => Size, minWidth: number, gap: n
   const positions = items.map(item => {
     const size = sizeOf(item)
     if (x > 0 && x + size.width > target) { x = 0; y += rowHeight + gap; rowHeight = 0 }
-    const position = { x, y }
-    rowHeight = Math.max(rowHeight, size.height)
+    const position = locate?.(item, { x, y }) ?? { x, y }
+    rowHeight = Math.max(rowHeight, position.y - y + size.height)
     width = Math.max(width, x + size.width)
     x += size.width + gap
     return { item, position }
@@ -210,7 +230,8 @@ function arrangeDomains(catalog: CanvasCatalog, domains: DomainLayout[], feature
   }
 }
 
-export function layoutWorkspace(snapshot: CanvasSnapshot, catalog: CanvasCatalog, featured = false): CanvasGraph {
+export function layoutWorkspace(snapshot: CanvasSnapshot, catalog: CanvasCatalog, featured = false, availableWidth = 1450,
+  expanded?: ExpandedBranches): CanvasGraph {
   const saved = new Map(snapshot.nodes.map(node => [node.id, node]))
   const assetFor = (node: CanvasNode) => node.reference ? catalog.byReference.get(referenceKey(node.reference)) : undefined
   const connectedAssets = new Set(catalog.relations.flatMap(link => [link.sourceId, link.targetId]))
@@ -220,16 +241,32 @@ export function layoutWorkspace(snapshot: CanvasSnapshot, catalog: CanvasCatalog
     (first.asset.details.created_at ?? '').localeCompare(second.asset.details.created_at ?? '')
     || first.asset.node_id.localeCompare(second.asset.node_id))
   const domains = roots.map(root => createDomain(catalog, root, saved,
-    !tree && !featured && roots.length > 16 && !connectedAssets.has(root.asset.node_id), snapshot.quarter?.id, tree, snapshot.collapsedAssets))
-  const placements = streaming ? arrangeTree(domains) : tree ? {
+    !tree && !featured && roots.length > 16 && !connectedAssets.has(root.asset.node_id),
+    snapshot.quarter?.id, tree, snapshot.collapsedAssets, expanded))
+  const notes = snapshot.nodes.filter(node => node.kind === 'note' && (!node.scope_id || node.scope_id === `quarter-${snapshot.quarter?.id}`))
+    .sort((a, b) => a.position.y - b.position.y)
+  const locate = (item: DomainLayout, origin: Point) => {
+    let y = origin.y
+    const cards = item.nodes.filter(({ node }) => !saved.has(node.id))
+    for (const note of notes) {
+      if (cards.some(({ node }) => {
+        const left = origin.x + node.position.x - localOrigin.x, top = y + node.position.y - localOrigin.y
+        return left < note.position.x + note.size.width + 12 && left + node.size.width + 12 > note.position.x
+          && top < note.position.y + note.size.height + 12 && top + node.size.height + 12 > note.position.y
+      })) y = note.position.y + note.size.height + 12
+    }
+    return { x: origin.x, y }
+  }
+  const placements = streaming ? arrangeTree(domains, locate) : tree ? {
     sections: [] as CanvasRegion[],
-    domains: pack(domains, item => item.region.size, 1450, 45, 1450).positions,
+    domains: pack(domains, item => item.region.size, availableWidth, 45, availableWidth, locate).positions,
   } : arrangeDomains(catalog, domains, featured)
   const regions = placements.sections.slice()
   const scopeOffsets = new Map<string, Point>()
   const assetNodeIds = new Map<string, string>()
   const originByAsset = new Map<string, Point>()
   const nodes: CanvasNode[] = []
+  const continuations: CanvasBranchContinuation[] = []
   const absoluteSaved = new Map<string, CanvasNode>()
   if (snapshot.quarter) scopeOffsets.set(`quarter-${snapshot.quarter.id}`, { x: 0, y: 0 })
   for (const node of snapshot.nodes) {
@@ -249,6 +286,9 @@ export function layoutWorkspace(snapshot: CanvasSnapshot, catalog: CanvasCatalog
       nodes.push(placed)
       assetNodeIds.set(assetId, placed.id)
       originByAsset.set(assetId, translatePoint(placed.position, cardOrigin, -1))
+    }
+    for (const { assetId, position, stemHeight } of item.continuations) {
+      continuations.push({ parentId: assetNodeIds.get(assetId)!, position: translatePoint(position, offset), stemHeight })
     }
   }
 
@@ -277,5 +317,5 @@ export function layoutWorkspace(snapshot: CanvasSnapshot, catalog: CanvasCatalog
     return source && target && source !== target ? [{ ...edge, source, target }] : []
   })
   return { revision: snapshot.revision, quarter: snapshot.quarter, root_tree: snapshot.root_tree, nodes, relations, edges, access: snapshot.access,
-    regions, scopeOffsets, assetNodeIds }
+    regions, continuations, scopeOffsets, assetNodeIds }
 }

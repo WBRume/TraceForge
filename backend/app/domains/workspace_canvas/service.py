@@ -120,9 +120,10 @@ def read_canvas(
         relations=content.relations,
         access=member.access,
         quarter=period,
-        branches=content.branches,
-        root_tree=content.root_tree,
-        root_cursor=content.next_cursor if content.root_tree else None,
+        root_tree=content.next_cursor is not None,
+        root_cursor=content.next_cursor,
+        root_ids=content.root_ids,
+        preview_children=content.preview_children,
         annotations_limited=(
             bool(row and row[1] is None)
             or len(contents.nodes) > MAX_ANNOTATION_NODES

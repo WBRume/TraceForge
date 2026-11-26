@@ -14,9 +14,9 @@ from app.domains.workspace_asset.models.requirement_document import (
     SddRequirementDocumentLink,
 )
 from app.domains.workspace_asset.models.workspace_asset import SddRequirement, SddTaskRequirement
-from app.domains.workspace_canvas import relations, sources, tree_children
+from app.domains.workspace_canvas import relations, sources, tree_children, tree_preview
 from app.domains.workspace_canvas.quarter_calendar import FiscalCalendar
-from app.domains.workspace_canvas.schemas import CanvasAssetWindow, CanvasRootQuery
+from app.domains.workspace_canvas.schemas import CanvasRootQuery, CanvasRootWindow
 
 # Priority only reorders a bounded window of IDs. Its cursor exhausts both
 # ranks before scanning another window, including quarters with sparse roots.
@@ -186,9 +186,7 @@ def _type_page(db, workspace_id, kinds, base, dates, kind, model, limit, positio
     return [(sources.reference_for(kind, identifier), bool(rank)) for rank, _, identifier in page], following
 
 
-def read_roots(
-    db: Session, workspace_id, kinds, calendar: FiscalCalendar, params: CanvasRootQuery
-) -> CanvasAssetWindow:
+def read_roots(db: Session, workspace_id, kinds, calendar: FiscalCalendar, params: CanvasRootQuery) -> CanvasRootWindow:
     quarter = calendar.period(params.quarter)
     quarter_dates = calendar.dates(quarter)
     try:
@@ -239,11 +237,21 @@ def read_roots(
         if asset is not None:
             asset.has_related = related
             assets.append(asset)
+    root_ids = [asset.node_id for asset in assets]
+    children = {}
+    if params.preview and assets:
+        assets, children = tree_preview.read_preview(db, workspace_id, kinds, calendar, quarter_dates, assets)
     known = sources.visible_references(params.visible, kinds)
     tree_children.mark_children(db, workspace_id, kinds, quarter_dates, assets, known=known)
     shown = sources.assets_for_references(db, workspace_id, known) if assets and known else []
-    return CanvasAssetWindow(
+    return CanvasRootWindow(
         assets=assets,
-        relations=relations.load_relations(db, workspace_id, [*assets, *shown], 128, focus=assets) if assets else [],
+        relations=relations.load_relations(
+            db, workspace_id, [*assets, *shown], 384 if params.preview else 128, focus=assets
+        )
+        if assets
+        else [],
         next_cursor=json.dumps(following, separators=(",", ":")) if any(following.values()) else None,
+        root_ids=root_ids,
+        preview_children=children,
     )

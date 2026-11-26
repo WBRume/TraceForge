@@ -13,13 +13,29 @@ from app.domains.workspace_asset.models.workspace_asset import SddRequirement, S
 PARENT_MODELS = {"requirement": SddRequirement, "task": SddTask, "case": SddCase}
 
 
-def _requirement_queries(db, workspace_id, identifier):
+def _requirement_queries(db, workspace_id, identifier, dates):
     child = aliased(SddRequirement)
     yield (
         "requirement",
         child.id,
         db.query(child).filter(child.workspace_id == workspace_id, child.parent_requirement_id == identifier),
     )
+    if dates:
+        source, previous = aliased(SddRequirement), aliased(SddRequirement)
+        start, end = dates.utc_bounds
+        yield (
+            "requirement",
+            previous.id,
+            db.query(previous.id)
+            .select_from(source)
+            .join(previous, or_(previous.id == source.parent_requirement_id, previous.id == source.predecessor_id))
+            .filter(
+                source.id == identifier,
+                source.workspace_id == workspace_id,
+                previous.workspace_id == workspace_id,
+                or_(previous.created_at < start, previous.created_at >= end),
+            ),
+        )
     link = SddTaskRequirement
     yield (
         "task",
@@ -92,7 +108,7 @@ def _task_queries(db, workspace_id, identifier, dates, diagnosis):
 
 def child_queries(db, workspace_id, kinds, kind, identifier, dates, *, diagnosis=False):
     if kind == "requirement":
-        queries = _requirement_queries(db, workspace_id, identifier)
+        queries = _requirement_queries(db, workspace_id, identifier, dates)
     elif kind == "task":
         queries = _task_queries(db, workspace_id, identifier, dates, diagnosis)
     elif kind == "case":

@@ -41,7 +41,13 @@ function domainKind(asset: CanvasAsset): CanvasDomainKind {
   return 'knowledge'
 }
 
-export function buildCanvasCatalog(snapshot: CanvasSnapshot, planFiles: CanvasAsset[] = []): CanvasCatalog {
+type CatalogSnapshot = Pick<CanvasSnapshot, 'assets' | 'relations' | 'quarter' | 'treeParents' | 'collapsedAssets'>
+interface PreviewPlacement {
+  roots: ReadonlySet<string>
+  children: ReadonlyMap<string, ReadonlySet<string>>
+}
+
+export function buildCanvasCatalog(snapshot: CatalogSnapshot, planFiles: CanvasAsset[] = [], preview?: PreviewPlacement): CanvasCatalog {
   const byReference = new Map([...snapshot.assets, ...planFiles].map(asset => [referenceKey(asset.reference), asset]))
   const assets = [...byReference.values()]
   const byId = new Map(assets.map(asset => [asset.node_id, asset]))
@@ -57,19 +63,21 @@ export function buildCanvasCatalog(snapshot: CanvasSnapshot, planFiles: CanvasAs
     const targetId = target?.node_id
     if (!sourceId || !targetId || sourceId === targetId) return
     relations.push({ ...relation, sourceId, targetId })
-    const rule = ownership[relation.relation_type]
-    if (!rule) return
     const quarter = snapshot.quarter?.id
     const historical = quarter && relation.target.kind === 'requirement' && target?.quarter
       && target.quarter.id !== quarter && source?.quarter?.id === quarter
-    const [parent, child] = historical || rule.parent === 'source' ? [sourceId, targetId] : [targetId, sourceId]
+    const rule = ownership[relation.relation_type]
+    if (!rule && !(historical && relation.relation_type === 'PREREQUISITE')) return
+    const [parent, child] = historical || rule?.parent === 'source' ? [sourceId, targetId] : [targetId, sourceId]
     const structural = childLinks.get(parent) ?? new Set<string>()
     structural.add(child)
     childLinks.set(parent, structural)
     if (snapshot.treeParents && relation.source.kind !== 'plan_document') return
+    if (preview && (preview.roots.has(child) || !preview.children.get(parent)?.has(child))) return
     const existing = parents.get(child)
-    if (!existing || rule.priority < existing.priority || (rule.priority === existing.priority && parent < existing.id)) {
-      parents.set(child, { id: parent, priority: rule.priority })
+    const priority = rule?.priority ?? 0
+    if (!existing || priority < existing.priority || (priority === existing.priority && parent < existing.id)) {
+      parents.set(child, { id: parent, priority })
     }
   }
 

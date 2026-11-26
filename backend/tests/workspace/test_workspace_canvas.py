@@ -18,7 +18,7 @@ from app.domains.workspace_asset.models.workspace_asset import (
 )
 from app.domains.workspace_asset.routers.requirement_documents import router as requirement_documents_router
 from app.domains.workspace_asset.routers.workspace_asset import router as workspace_asset_router
-from app.domains.workspace_canvas import map_queries, quarters, read_budget, root_tree
+from app.domains.workspace_canvas import map_queries, quarters, read_budget, root_tree, tree_preview
 from app.domains.workspace_canvas.models import WorkspaceCanvas
 from app.domains.workspace_canvas.router import router
 from app.domains.workspace_canvas.schemas import ObjectReference
@@ -238,16 +238,23 @@ def test_canvas_projects_catalog_and_canonical_links_without_saved_cards(db):
     assert client.get(".", headers=owner).json()["relations"] == []
 
 
-def test_large_canvas_bounds_roots_and_reads_real_neighbors_by_cursor(db, monkeypatch):
+def test_independent_tasks_do_not_collapse_small_trees_next_to_wide_branches(db, monkeypatch):
     client = _canvas_client(db)
     owner = {"x-actor": "owner"}
-    monkeypatch.setattr(quarters, "OVERVIEW_DETAIL_LIMIT", 5)
+    monkeypatch.setattr(tree_preview, "CHILD_LIMIT", 4)
     monkeypatch.setattr(map_queries, "WINDOW_LIMIT", 2)
     task_ids = [f"task-{index}" for index in range(8)]
     db.add(SddRequirement(id="delivery", workspace_id="workspace", title="Delivery"))
+    db.add(SddRequirement(id="small", workspace_id="workspace", title="Small release"))
     db.add_all(
         SddTask(id=identifier, workspace_id="workspace", creator_id="owner", name=f"Rollout {identifier}")
         for identifier in task_ids
+    )
+    db.add_all(
+        SddTask(
+            id=f"independent-{index:03}", workspace_id="workspace", creator_id="owner", name=f"Consultation {index}"
+        )
+        for index in range(120)
     )
     db.flush()
     db.add_all(
@@ -259,12 +266,43 @@ def test_large_canvas_bounds_roots_and_reads_real_neighbors_by_cursor(db, monkey
         )
         for identifier in task_ids[:5]
     )
+    db.add(SddRequirement(id="check", workspace_id="workspace", title="Check release", parent_requirement_id="small"))
+    db.flush()
+    db.add(
+        SddTaskRequirement(
+            workspace_id="workspace",
+            requirement_id="check",
+            task_id="task",
+            relation_type=TaskRequirementRelationType.COVERS,
+        )
+    )
+    db.add(
+        SddAsset(
+            id="spec",
+            workspace_id="workspace",
+            task_id="task",
+            creator_id="owner",
+            name="Release spec",
+            asset_type=AssetType.SPEC,
+        )
+    )
     db.commit()
 
     summary = client.get(".", headers=owner).json()
     assert summary["root_tree"] and summary["branches"] == []
-    assert [asset["reference"]["id"] for asset in summary["assets"]] == ["delivery", "task-7", "task-6"]
-    assert summary["assets"][0]["has_related"]
+    cards = {asset["reference"]["id"]: asset for asset in summary["assets"]}
+    assert {"delivery", "small", "check", "task", "spec"} <= cards.keys()
+    assert not set(task_ids[:5]) & cards.keys()
+    assert cards["delivery"]["has_unseen_children"]
+    assert cards["delivery"]["node_id"] not in summary["preview_children"]
+    for parent, child in (("small", "check"), ("check", "task"), ("task", "spec")):
+        assert summary["preview_children"][cards[parent]["node_id"]] == [cards[child]["node_id"]]
+    links = {(edge["source"]["id"], edge["target"]["id"], edge["relation_type"]) for edge in summary["relations"]}
+    assert {
+        ("check", "small", "SUB_REQUIREMENT"),
+        ("task", "check", "COVERS"),
+        ("spec", "task", "DOCUMENT_TASK"),
+    } <= links
 
     result = client.get("search", params={"q": "Rollout task-7", "kind": "task"}, headers=owner).json()
     assert [item["reference"]["id"] for item in result] == ["task-7"]
@@ -351,7 +389,6 @@ def test_quarter_history_keeps_only_the_summary_and_real_cross_period_edges(db):
 def test_dense_root_pages_follow_real_links_and_keep_unlinked_roots_reachable(db, monkeypatch):
     client = _canvas_client(db)
     owner = {"x-actor": "owner"}
-    monkeypatch.setattr(quarters, "OVERVIEW_DETAIL_LIMIT", 4)
     monkeypatch.setattr(root_tree, "SCAN_LIMIT", 4)
     monkeypatch.setattr(root_tree, "TYPE_PAGE", 2)
     when = datetime(2026, 11, 3)
@@ -369,13 +406,18 @@ def test_dense_root_pages_follow_real_links_and_keep_unlinked_roots_reachable(db
 
     initial = client.get(".", params={"quarter": "2026-Q4"}, headers=owner).json()
     assert initial["root_tree"] and initial["branches"] == []
-    assert [asset["reference"]["id"] for asset in initial["assets"] if asset["reference"]["kind"] == "requirement"] == [
+    assert [
+        asset["reference"]["id"]
+        for asset in initial["assets"]
+        if asset["node_id"] in initial["root_ids"] and asset["reference"]["kind"] == "requirement"
+    ] == [
         "three",
         "root",
     ]
-    assert [(edge["source"]["id"], edge["target"]["id"], edge["relation_type"]) for edge in initial["relations"]] == [
+    assert {(edge["source"]["id"], edge["target"]["id"], edge["relation_type"]) for edge in initial["relations"]} == {
         ("root", "three", "PREREQUISITE"),
-    ]
+        ("sub", "root", "SUB_REQUIREMENT"),
+    }
     assert (
         client.get("window", params={"quarter": "2026-Q4", "kind": "requirement", "id": "root"}, headers=owner).json()[
             "assets"

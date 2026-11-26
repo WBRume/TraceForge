@@ -1,17 +1,17 @@
 import { computed, onScopeDispose, shallowRef } from 'vue'
 import api from '@/utils/api'
-import { canvasUrl, type CanvasAssetWindow, type CanvasRootFilters } from './model'
+import { canvasUrl, type CanvasRootWindow, type CanvasRootFilters } from './model'
 
 export type RootDirection = 'next' | 'previous'
 interface RootPage {
   index: number
   cursor?: string
-  data?: CanvasAssetWindow
+  data?: CanvasRootWindow
 }
 
 const MAX_PAGES = 3
 
-export function useCanvasRoots(workspaceId: string, first: () => CanvasAssetWindow | null) {
+export function useCanvasRoots(workspaceId: string, first: () => CanvasRootWindow | null) {
   const active = shallowRef<RootPage[]>([{ index: 0 }])
   const filters = shallowRef<CanvasRootFilters>({})
   const loading = shallowRef(false)
@@ -23,15 +23,17 @@ export function useCanvasRoots(workspaceId: string, first: () => CanvasAssetWind
   const canReturn = computed(() => active.value[0]!.index > 0)
 
   async function read(quarter: string, scope: CanvasRootFilters, signal: AbortSignal, cursor?: string, visible: string[] = []) {
-    const { data } = await api.get<CanvasAssetWindow>(`${canvasUrl(workspaceId)}/roots`, {
-      params: { quarter, ...scope, cursor, visible }, paramsSerializer: { indexes: null }, signal, timeout: 5000,
+    const { data } = await api.get<CanvasRootWindow>(`${canvasUrl(workspaceId)}/roots`, {
+      params: { quarter, ...scope, cursor, visible, preview: true }, paramsSerializer: { indexes: null }, signal, timeout: 5000,
     })
     return data
   }
 
   function visibleRoots() {
-    return [...new Set(pages.value.flatMap(page => page.assets.map(asset =>
-      `${asset.reference.kind}:${asset.reference.id}`)))].slice(0, 32)
+    return [...new Set(pages.value.flatMap(page => {
+      const roots = new Set(page.root_ids)
+      return page.assets.flatMap(asset => roots.has(asset.node_id) ? [`${asset.reference.kind}:${asset.reference.id}`] : [])
+    }))].slice(0, 32)
   }
 
   async function request(action: (signal: AbortSignal) => Promise<boolean>, background = false) {

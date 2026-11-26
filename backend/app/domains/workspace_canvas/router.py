@@ -25,6 +25,7 @@ from app.domains.workspace_canvas.schemas import (
     CanvasOperation,
     CanvasReceipt,
     CanvasRootQuery,
+    CanvasRootWindow,
     CanvasView,
     DocumentSource,
     PlanFilesPage,
@@ -134,14 +135,14 @@ def read_canvas_window(
         return window
 
 
-@router.get("/roots", response_model=CanvasAssetWindow)
+@router.get("/roots", response_model=CanvasRootWindow)
 def read_canvas_roots(
     ws_id: str,
     params: Annotated[CanvasRootQuery, Query()],
     response: Response,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> CanvasAssetWindow:
+) -> CanvasRootWindow:
     member = service.require_member(db, ws_id, current_user.id)
     response.headers["Cache-Control"] = "no-store"
     with budgeted_read(db):

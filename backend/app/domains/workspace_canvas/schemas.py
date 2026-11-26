@@ -203,6 +203,11 @@ class CanvasAssetWindow(CanvasModel):
     next_cursor: str | None = None
 
 
+class CanvasRootWindow(CanvasAssetWindow):
+    root_ids: list[CanvasId] = Field(default_factory=list)
+    preview_children: dict[CanvasId, list[CanvasId]] = Field(default_factory=dict)
+
+
 BranchKind = Literal["requirements", "requirement_tasks", "cross_quarter", "standalone", "knowledge"]
 RequirementLinkType = Literal["COVERS", "RELATES_TO"]
 SliceKey = Annotated[str, Field(pattern=r"^[MW][1-9][0-9]{0,2}$")]
@@ -222,6 +227,7 @@ class CanvasRootQuery(CanvasModel):
     q: str | None = Field(default=None, max_length=120)
     cursor: str | None = Field(default=None, max_length=1024)
     visible: list[VisibleAsset] = Field(default_factory=list, max_length=32)
+    preview: bool = False
 
 
 class CanvasBranch(CanvasModel):
@@ -275,6 +281,8 @@ class CanvasView(CanvasModel):
     branches: list[CanvasBranch] = Field(default_factory=list)
     root_tree: bool = False
     root_cursor: str | None = None
+    root_ids: list[CanvasId] = Field(default_factory=list)
+    preview_children: dict[CanvasId, list[CanvasId]] = Field(default_factory=dict)
     annotations_limited: bool = False
 
 

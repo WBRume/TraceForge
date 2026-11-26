@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, onScopeDispose, shallowRef, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, onMounted, onScopeDispose, shallowRef, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Maximize2, Minus, Plus, Workflow } from '@/components/icons'
 import CanvasArrows from './CanvasArrows.vue'
+import CanvasBranchContinuation from './CanvasBranchContinuation.vue'
 import CanvasItem from './CanvasItem.vue'
 import CanvasOverviewLayer from './CanvasOverviewLayer.vue'
 import CanvasRelationLegend from './CanvasRelationLegend.vue'
@@ -12,10 +13,11 @@ import { referenceKey, type CanvasConnection, type CanvasGraph, type CanvasNode,
   type CanvasTool, type NodePatch, type Point, type Size } from './model'
 import { useCanvasInteraction } from './useCanvasInteraction'
 import type { RootDirection } from './useCanvasRoots'
+import { canvasEntryScale } from './treePreview'
 
 const props = defineProps<{
   data: CanvasGraph; selection: CanvasSelection | null; busy: boolean; summary?: boolean;
-  expanded: ReadonlyMap<string, { cursor?: string | null; previous: boolean }>; expanding: string
+  expanded: ReadonlyMap<string, unknown>; expanding: string
   rootStream?: { next: boolean; previous: boolean; loading: boolean; ids: ReadonlySet<string> }
 }>()
 const emit = defineEmits<{
@@ -29,9 +31,9 @@ const emit = defineEmits<{
   context: [request: CanvasContextRequest]
   visibleTasks: [ids: string[]]
   stream: [direction: RootDirection]
+  viewportSize: [size: Size]
   toggleBranch: [id: string]
   moreBranch: [id: string]
-  previousBranch: [id: string]
 }>()
 const { t } = useI18n()
 const branchKey = (node: CanvasNode) => node.reference ? referenceKey(node.reference) : ''
@@ -41,11 +43,17 @@ const relationFilter = shallowRef<CanvasRelationType | null>(null)
 const size = shallowRef<Size>({ width: 0, height: 0 })
 let movedViewport = false
 let observer: ResizeObserver | undefined
+function measure(width: number, height: number) {
+  if (size.value.width === width && size.value.height === height) return
+  size.value = { width, height }
+  emit('viewportSize', size.value)
+  void nextTick(() => { if (!movedViewport) fitEntries() })
+}
 onMounted(() => {
   if (!surface.value) return
-  size.value = { width: surface.value.clientWidth, height: surface.value.clientHeight }
+  measure(surface.value.clientWidth, surface.value.clientHeight)
   observer = new ResizeObserver(([entry]) => {
-    if (entry) size.value = { width: entry.contentRect.width, height: entry.contentRect.height }
+    if (entry) measure(entry.contentRect.width, entry.contentRect.height)
   })
   observer.observe(surface.value)
 })
@@ -75,6 +83,15 @@ const visibleIds = computed(() => {
 })
 const frames = computed(() => renderedNodes.value.filter(node => node.kind === 'frame' && visibleIds.value.has(node.id)))
 const items = computed(() => renderedNodes.value.filter(node => node.kind !== 'frame' && visibleIds.value.has(node.id)))
+const expandingNodeId = computed(() => props.expanding
+  ? props.data.nodes.find(node => branchKey(node) === props.expanding)?.id : undefined)
+const visibleContinuations = computed(() => {
+  const { x, y, scale } = viewport.value
+  return props.data.continuations.filter(({ position }) => {
+    const left = position.x * scale + x, top = position.y * scale + y
+    return left > -100 && left < size.value.width + 100 && top > -100 && top < size.value.height + 100
+  })
+})
 const planTasks = computed(() => {
   if (props.summary) return []
   const tasks = props.data.nodes.flatMap(node => node.reference?.kind === 'task'
@@ -276,7 +293,7 @@ function fitEntries() {
   }
   if (!first) { map.fit(); return }
   const { width } = size.value
-  const scale = props.data.root_tree ? width < 620 ? 0.82 : 0.96 : 0.72
+  const scale = props.data.root_tree ? canvasEntryScale(width) : 0.72
   viewport.value = { scale, x: Math.min(111, width * 0.18) - first.position.x * scale, y: 34 - first.position.y * scale }
 }
 
@@ -286,16 +303,18 @@ function streamAnchor(direction: RootDirection) {
   return node ? { id: node.id, position: node.position } : undefined
 }
 
-function revealChild(parentId: string, childId: string) {
-  const parent = props.data.nodes.find(node => node.id === parentId)
+function revealChild(parentId: string, childId: string, preserveScale = false) {
   const child = props.data.nodes.find(node => node.id === childId)
-  if (!child || !parent) return
+  if (!child) return
   const { x, y, scale } = viewport.value
-  const horizontal = x + (child.position.x + child.size.width) * scale > size.value.width - 30
-    || x + child.position.x * scale < 44
-  const vertical = y + (child.position.y + child.size.height) * scale > size.value.height - 65
-    || y + child.position.y * scale < 20
-  if (horizontal || vertical) map.focusNodes([parentId, childId])
+  const left = x + child.position.x * scale, top = y + child.position.y * scale
+  const right = left + child.size.width * scale, bottom = top + child.size.height * scale
+  const dx = Math.max(44 - left, Math.min(0, size.value.width - 30 - right))
+  const dy = Math.max(20 - top, Math.min(0, size.value.height - 65 - bottom))
+  if (!dx && !dy) return
+  movedViewport = true
+  if (preserveScale) viewport.value = { x: x + dx, y: y + dy, scale }
+  else map.focusNodes([parentId, childId])
 }
 onMounted(fitEntries)
 defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, focusRegion: map.focusRegion,
@@ -325,12 +344,12 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
           <CanvasItem v-for="node in items" :key="node.id" :node="node" :active="selected(node)"
             :entry="isEntry(node)" :compact="compact" :quarter-id="data.quarter?.id"
             :tree="!!data.quarter" :expanded="!!node.expandedChildren"
-            :has-more="!!expanded.get(branchKey(node))?.cursor || (!!node.expandedChildren && !!node.unseenChildren && !expanded.has(branchKey(node)))"
-            :has-previous="!!expanded.get(branchKey(node))?.previous"
-            :busy="expanding === branchKey(node)"
+            :busy="expandingNodeId === node.id"
             :linked="connectStart?.id === node.id || hoveredTarget === node.id" @press="(event, handle) => map.nodeDown(event, node, handle)"
             @focus="emit('select', { type: 'node', id: node.id })" @open="open(node.id)"
-            @toggle="emit('toggleBranch', node.id)" @more="emit('moreBranch', node.id)" @previous="emit('previousBranch', node.id)" />
+            @toggle="emit('toggleBranch', node.id)" />
+          <CanvasBranchContinuation v-for="marker in visibleContinuations" :key="marker.parentId"
+            :marker="marker" :busy="expandingNodeId === marker.parentId" @continue="emit('moreBranch', marker.parentId)" />
         </div>
         <div v-if="framePreview" class="frame-preview" :style="previewStyle" />
       </div>

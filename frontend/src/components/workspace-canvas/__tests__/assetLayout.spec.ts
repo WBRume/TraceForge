@@ -3,6 +3,7 @@ import { buildCanvasCatalog } from '../assetDomains'
 import { layoutWorkspace, translatePoint } from '../assetLayout'
 import { fittedViewport, frameMembers } from '../geometry'
 import { nodeSizes, scopedAssetId, type CanvasAsset, type CanvasNode, type CanvasSnapshot, type SourceReference } from '../model'
+import { planTreePreview } from '../treePreview'
 
 function asset(id: string, reference: SourceReference, taskType?: string): CanvasAsset {
   return { node_id: id, reference, details: { title: reference.id, status: null, detail: null, context: null,
@@ -14,6 +15,43 @@ function snapshot(assets: CanvasAsset[], nodes: CanvasNode[] = []): CanvasSnapsh
 }
 
 describe('workspace canvas', () => {
+  it('opens compact branches independently, reduces depth in a narrow viewport and retains a manual expansion', () => {
+    const requirement = asset('small', { kind: 'requirement', id: 'small' })
+    const otherRoot = asset('unrelated', { kind: 'task', id: 'unrelated' })
+    const broad = asset('broad', { kind: 'task', id: 'broad' })
+    const short = asset('short', { kind: 'task', id: 'short' })
+    const doc = asset('spec', { kind: 'document', id: 'spec' })
+    const many = Array.from({ length: 6 }, (_, i) => asset(`doc-${i}`, { kind: 'document', id: `doc-${i}` }))
+    const page = {
+      assets: [requirement, otherRoot, broad, short, doc, ...many],
+      root_ids: [requirement.node_id, otherRoot.node_id],
+      next_cursor: 'more roots',
+      preview_children: {
+        small: [broad.node_id, short.node_id],
+        broad: many.map(item => item.node_id),
+        short: [doc.node_id],
+      },
+      relations: [
+        { source: broad.reference, target: requirement.reference, relation_type: 'COVERS' as const },
+        { source: short.reference, target: requirement.reference, relation_type: 'COVERS' as const },
+        { source: doc.reference, target: short.reference, relation_type: 'DOCUMENT_TASK' as const },
+        ...many.map(item => ({ source: item.reference, target: broad.reference, relation_type: 'DOCUMENT_TASK' as const })),
+      ],
+    }
+    const plan = (width: number, pinned = new Set<string>()) =>
+      planTreePreview([page], undefined, { width, height: 610 }, new Set(), pinned, new Set())
+    const wide = plan(1460)
+    expect(wide.parents.get(doc.node_id)).toBe(short.node_id)
+    expect(wide.parents.has(many[0]!.node_id)).toBe(false)
+    expect(wide.assets.map(item => item.node_id)).toContain(otherRoot.node_id)
+    const narrow = plan(650)
+    expect(narrow.parents.get(short.node_id)).toBe(requirement.node_id)
+    expect(narrow.parents.has(doc.node_id)).toBe(false)
+    expect(plan(650, new Set([short.node_id])).parents.get(doc.node_id)).toBe(short.node_id)
+    const tall = planTreePreview([page], undefined, { width: 1460, height: 1230 }, new Set(), new Set(), new Set())
+    expect(tall.parents.get(many[0]!.node_id)).toBe(broad.node_id)
+  })
+
   it('gives each asset one placement and keeps actual relationships across workstreams', () => {
     const first = asset('req-one', { kind: 'requirement', id: 'first' })
     const second = asset('req-two', { kind: 'requirement', id: 'second' })
@@ -134,6 +172,13 @@ describe('workspace canvas', () => {
     expect(placement(implementation.node_id).expandedChildren).toBe(true)
     expect(placement(document.node_id).expandable).toBe(false)
     expect(placement(observation.node_id).expandable).toBe(false)
+    const note: CanvasNode = { id: 'note', kind: 'note', position: placement(document.node_id).position,
+      size: nodeSizes.note, text: 'Existing note', color: 'yellow', reference: null, details: null }
+    const annotated = { ...state, nodes: [note] }
+    const adjusted = layoutWorkspace(annotated, buildCanvasCatalog(annotated))
+    const movedDocument = adjusted.nodes.find(node => node.reference?.id === document.reference.id)!
+    expect(movedDocument.position.y).toBeGreaterThanOrEqual(note.position.y + note.size.height)
+    expect(adjusted.nodes).toContain(note)
     state.collapsedAssets = new Set([implementation.node_id])
     const folded = layoutWorkspace(state, buildCanvasCatalog(state))
     expect(folded.assetNodeIds.has(document.node_id)).toBe(false)

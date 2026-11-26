@@ -145,6 +145,8 @@ export interface CanvasSnapshot {
   quarter?: FiscalQuarter
   root_tree?: boolean
   root_cursor?: string | null
+  root_ids?: string[]
+  preview_children?: Record<string, string[]>
   treeParents?: ReadonlyMap<string, string>
   collapsedAssets?: ReadonlySet<string>
   annotations_limited?: boolean
@@ -158,11 +160,23 @@ export interface CanvasAssetWindow {
   next_cursor: string | null
 }
 
+export interface CanvasRootWindow extends CanvasAssetWindow {
+  root_ids: string[]
+  preview_children: Record<string, string[]>
+}
+
 export interface CanvasGraph extends Omit<CanvasSnapshot, 'assets' | 'relations'> {
   relations: CanvasGraphRelation[]
   regions: CanvasRegion[]
+  continuations: CanvasBranchContinuation[]
   scopeOffsets: ReadonlyMap<string, Point>
   assetNodeIds: ReadonlyMap<string, string>
+}
+
+export interface CanvasBranchContinuation {
+  parentId: string
+  position: Point
+  stemHeight: number
 }
 
 export interface CanvasRegion {
