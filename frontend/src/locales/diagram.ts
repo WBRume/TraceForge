@@ -1,0 +1,118 @@
+const zh = {
+  title: '绘图板', untitled: '未命名绘图', name: '绘图名称', local: '本地草稿已保存', draftError: '本地草稿保存失败',
+  desktopOnly: '绘图板可在 TraceForge 客户端中打开。',
+  shortcuts: {
+    title: '快捷键', description: '客户端运行时，可从其他窗口呼出绘图板。',
+    diagram: '打开绘图板', change: '修改快捷键', capture: '请按下组合键', reset: '恢复默认',
+    conflict: '该快捷键已被占用，请尝试其他组合。', invalid: '请同时按 Ctrl、Alt 或系统键及一个字母、数字或功能键。',
+    inactive: '快捷键当前未注册，可以重新设定。', unavailable: '当前桌面环境无法注册全局快捷键。',
+    failed: '无法保存快捷键。', launchError: '无法打开绘图板。',
+    saved: '快捷键已更新。',
+  },
+  file: {
+    new: '新建', open: '打开', save: '保存绘图', export: '导出', saved: '文件已保存',
+    loadError: '无法打开此绘图文件。', saveError: '无法保存文件。', tooLarge: '绘图范围太大，请使用 SVG 导出。',
+  },
+  templates: {
+    label: '模板', title: '绘图模板', flow: '审批流程图', lanes: '泳道流程图', classes: 'UML 类图',
+    usecases: 'UML 用例图', sequence: 'UML 时序图', state: 'UML 状态图', entity: '实体关系图', insert: '使用模板',
+    architecture: '应用架构图', network: '网络拓扑图', mindmap: '思维导图', organization: '组织架构图',
+    note: '此操作将替换当前绘图。', saveFirst: '保存当前绘图后替换', replace: '替换绘图',
+  },
+  library: { title: '图形库', flow: '流程', uml: 'UML', architecture: '架构', basic: '通用' },
+  shapes: {
+    process: '处理', terminal: '开始 / 结束', decision: '判断', data: '输入 / 输出', document: '文档', subflow: '子流程',
+    class: '类', interface: '接口', actor: '参与者', usecase: '用例', lifeline: '生命线', state: '状态',
+    initial: '初始状态', final: '终止状态', entity: '实体', note: '便签', text: '文字', frame: '分组框', lane: '泳道',
+    client: '客户端', service: '应用服务', database: '数据库', queue: '消息队列', cloud: '云网络',
+    server: '服务器', router: '路由器', firewall: '防火墙', topicRoot: '中心主题', topic: '主题', person: '成员',
+  },
+  tool: {
+    select: '选择', pan: '平移', connect: '连接', undo: '撤销', redo: '重做', delete: '删除',
+    duplicate: '复制所选', group: '框住所选', layout: '排列', horizontal: '横向自动布局', vertical: '纵向自动布局',
+    alignLeft: '左对齐', alignTop: '顶端对齐', distributeX: '横向等距', distributeY: '纵向等距',
+    mindmap: '思维导图布局', organization: '组织树布局',
+    fit: '适应画布', zoomIn: '放大', zoomOut: '缩小', snap: '吸附网格', close: '关闭', cancel: '取消',
+  },
+  edges: {
+    flow: '流程箭头', association: '关联', dependency: '依赖', inheritance: '继承', realization: '实现',
+    aggregation: '聚合', composition: '组合', call: '调用消息', reply: '返回消息', many: '一对多',
+    dataflow: '数据流', network: '网络链路', branch: '主题分支', reporting: '汇报关系',
+  },
+  routing: { orthogonal: '直角', straight: '直线', curve: '曲线' },
+  fields: {
+    title: '属性', noSelection: '选中图形或连线后编辑', selected: '已选 {count} 项', label: '文字',
+    attributes: '属性（每行一项）', operations: '操作（每行一项）', columns: '字段（每行一项）',
+    fill: '填充', stroke: '描边', relation: '关系', routing: '线型', width: '宽度', height: '高度', offset: '消息纵向位置',
+    subtitle: '说明 / 地址', role: '职务',
+  },
+  stage: {
+    label: '绘图画布', empty: '从左侧拖入图形，或使用模板开始绘制', place: '点击画布放置图形',
+    connect: '选择连线起点和终点', connectTarget: '选择终点完成连线', select: '空格拖动画布 · 滚轮缩放',
+    count: '{nodes} 个图形 · {edges} 条连线',
+  },
+}
+
+const en: typeof zh = {
+  title: 'Drawing board', untitled: 'Untitled drawing', name: 'Drawing name', local: 'Draft saved locally',
+  draftError: 'Could not save the local draft', desktopOnly: 'Open the drawing board in the TraceForge desktop app.',
+  shortcuts: {
+    title: 'Keyboard shortcuts', description: 'Open the drawing board from another window while the desktop app is running.',
+    diagram: 'Open drawing board', change: 'Change shortcut', capture: 'Press a key combination', reset: 'Restore default',
+    conflict: 'This shortcut is already in use. Try another combination.',
+    invalid: 'Hold Ctrl, Alt, or the system key and press a letter, number, or function key.',
+    inactive: 'This shortcut is unavailable. Choose another combination.',
+    unavailable: 'This desktop session cannot register a global shortcut.', failed: 'Could not save the shortcut.',
+    launchError: 'Could not open the drawing board.', saved: 'Shortcut updated.',
+  },
+  file: {
+    new: 'New', open: 'Open', save: 'Save drawing', export: 'Export', saved: 'File saved',
+    loadError: 'Could not open this drawing.', saveError: 'Could not save the file.',
+    tooLarge: 'The drawing is too large for PNG. Export it as SVG.',
+  },
+  templates: {
+    label: 'Templates', title: 'Drawing templates', flow: 'Approval flowchart', lanes: 'Swimlane flowchart',
+    classes: 'UML class diagram', usecases: 'UML use case diagram', sequence: 'UML sequence diagram',
+    state: 'UML state diagram', entity: 'Entity relationship diagram', insert: 'Use template',
+    architecture: 'Application architecture', network: 'Network topology', mindmap: 'Mind map', organization: 'Organization chart',
+    note: 'This will replace the current drawing.', saveFirst: 'Save and replace', replace: 'Replace drawing',
+  },
+  library: { title: 'Shapes', flow: 'Flow', uml: 'UML', architecture: 'Infra', basic: 'General' },
+  shapes: {
+    process: 'Process', terminal: 'Start / End', decision: 'Decision', data: 'Input / Output', document: 'Document',
+    subflow: 'Subprocess', class: 'Class', interface: 'Interface', actor: 'Actor', usecase: 'Use case', lifeline: 'Lifeline',
+    state: 'State', initial: 'Initial state', final: 'Final state', entity: 'Entity', note: 'Note', text: 'Text',
+    frame: 'Group frame', lane: 'Swimlane',
+    client: 'Client', service: 'Service', database: 'Database', queue: 'Queue', cloud: 'Cloud',
+    server: 'Server', router: 'Router', firewall: 'Firewall', topicRoot: 'Central topic', topic: 'Topic', person: 'Member',
+  },
+  tool: {
+    select: 'Select', pan: 'Pan', connect: 'Connect', undo: 'Undo', redo: 'Redo', delete: 'Delete',
+    duplicate: 'Duplicate selection', group: 'Frame selection', layout: 'Arrange', horizontal: 'Lay out horizontally',
+    vertical: 'Lay out vertically', alignLeft: 'Align left', alignTop: 'Align top', distributeX: 'Distribute horizontally',
+    distributeY: 'Distribute vertically', fit: 'Fit drawing', zoomIn: 'Zoom in', zoomOut: 'Zoom out', snap: 'Snap to grid',
+    mindmap: 'Lay out mind map', organization: 'Lay out organization chart',
+    close: 'Close', cancel: 'Cancel',
+  },
+  edges: {
+    flow: 'Flow arrow', association: 'Association', dependency: 'Dependency', inheritance: 'Inheritance',
+    realization: 'Realization', aggregation: 'Aggregation', composition: 'Composition', call: 'Call',
+    reply: 'Reply', many: 'One to many',
+    dataflow: 'Data flow', network: 'Network link', branch: 'Topic branch', reporting: 'Reporting line',
+  },
+  routing: { orthogonal: 'Orthogonal', straight: 'Straight', curve: 'Curve' },
+  fields: {
+    title: 'Properties', noSelection: 'Select a shape or connector to edit it', selected: '{count} selected',
+    label: 'Text', attributes: 'Attributes (one per line)', operations: 'Operations (one per line)',
+    columns: 'Fields (one per line)', fill: 'Fill', stroke: 'Stroke', relation: 'Relationship',
+    routing: 'Routing', width: 'Width', height: 'Height', offset: 'Message offset',
+    subtitle: 'Description or address', role: 'Role',
+  },
+  stage: {
+    label: 'Drawing canvas', empty: 'Drag in a shape or start from a template', place: 'Click the canvas to place a shape',
+    connect: 'Choose a source and a target', connectTarget: 'Choose a target to finish the connector',
+    select: 'Space + drag to pan · Scroll to zoom', count: '{nodes} shapes · {edges} connectors',
+  },
+}
+
+export const diagramMessages = { zh, en }

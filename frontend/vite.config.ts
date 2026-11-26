@@ -18,8 +18,16 @@ export default defineConfig(({ mode }) => {
     // Only the application entry is executable source. Rust/installer output also
     // contains HTML, including bundled pages that are expensive to scan again.
     optimizeDeps: {
-      entries: ['index.html'],
+      entries: desktopMode ? ['index.html', 'diagram.html'] : ['index.html'],
     },
+    build: desktopMode ? {
+      rollupOptions: {
+        input: {
+          app: fileURLToPath(new URL('./index.html', import.meta.url)),
+          diagram: fileURLToPath(new URL('./diagram.html', import.meta.url)),
+        },
+      },
+    } : undefined,
     plugins: [
       {
         name: 'desktop-offline-fonts',

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "diagram",
+  "description": "Save drawings from the standalone diagram window",
+  "windows": ["diagram"],
+  "permissions": ["allow-desktop-bridge"]
+}

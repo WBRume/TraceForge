@@ -19,6 +19,12 @@ const SAFE_NAME = /[\\/:*?"<>|]+/g
 
 const downloadFilters = (suggestedName: string) => {
   const ext = extname(suggestedName || '').toLowerCase()
+  const diagramFormats: Record<string, string> = {
+    '.tfdiagram': 'TraceForge 绘图',
+    '.svg': 'SVG 矢量图',
+    '.png': 'PNG 图片',
+  }
+  if (diagramFormats[ext]) return [{ name: diagramFormats[ext], extensions: [ext.slice(1)] }]
   if (ext === '.zip') {
     return [
       { name: 'ZIP 压缩包', extensions: ['zip'] },

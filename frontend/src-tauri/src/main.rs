@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod diagram;
 mod task_floats;
 #[cfg(windows)]
 mod workspace_windows;
@@ -73,13 +74,18 @@ async fn desktop_invoke(
     let allowed_window = workspace_windows::is_workspace(label);
     #[cfg(not(windows))]
     let allowed_window = label == "main";
-    if !allowed_window || !channel.starts_with("sdd:") {
+    if !(allowed_window && channel.starts_with("sdd:")
+        || label == diagram::WINDOW && channel == "sdd:download:save")
+    {
         return Err("Desktop command is not allowed".into());
     }
     if label != "main" && channel.starts_with("sdd:task-float:") {
         return Err("The task float command requires the main window".into());
     }
     match channel.as_str() {
+        channel if channel.starts_with("sdd:diagram:") => {
+            return diagram::command(window.app_handle(), channel, &payload).await;
+        }
         "sdd:task-float:prepare" => return task_floats::prepare(window.app_handle(), &payload),
         "sdd:task-float:place" => return task_floats::place(&window, &payload),
         "sdd:task-float:close" => return task_floats::close(window.app_handle(), &payload),
@@ -380,6 +386,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .manage(Bridge::default())
+        .manage(diagram::Diagram::default())
         .manage(task_floats::DetachedFloats::default())
         .invoke_handler(tauri::generate_handler![
             desktop_platform,
@@ -410,6 +417,7 @@ fn main() {
         })
         .setup(|app| {
             start_bridge(app.handle())?;
+            diagram::initialize(app.handle());
             let opener = app.handle().clone();
             let builder = tauri::WebviewWindowBuilder::from_config(
                 app.handle(),

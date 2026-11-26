@@ -9,6 +9,7 @@ import { shutdownSpeech } from './ipc/speech'
 import { shutdownLocalServices } from './ipc/localResources'
 import { guardClosedOutputPipes } from '../desktop/stdio'
 import { registerTaskFloats } from './taskFloats'
+import { registerDiagramWindow } from './diagramWindow'
 import { DETACHED_WINDOW_SIZE, MIN_WORKSPACE_SIZE, registerWorkspaceWindows, WINDOWS_TITLE_BAR, workspaceWindowBounds } from './workspaceWindows'
 import { MAIN_WORKSPACE_WINDOW } from '../src/types/workspaceWindows'
 import type { WindowPlacement, WindowPoint } from '../src/types/workspaceWindows'
@@ -129,6 +130,7 @@ const createWindow = async (id = MAIN_WORKSPACE_WINDOW, placement?: WindowPlacem
 app.whenReady().then(async () => {
   if (!app.isPackaged) app.dock?.setIcon(appIcon)
   registerDesktopCommands()
+  registerDiagramWindow(preloadPath, dirname(appFile), devServerUrl, windowIcon)
   if (process.platform === 'win32') workspaceWindows = registerWorkspaceWindows(app.getPath('userData'), createWindow, () => quitting)
   closeTaskFloats = registerTaskFloats(() => mainWindow, preloadPath, appFile, devServerUrl)
   await createWindow()

@@ -15,6 +15,11 @@ export function createDesktopApi(bridge: DesktopBridge): SddDesktopApi {
   return {
     runtime: bridge.runtime,
     platform: bridge.platform,
+    diagram: {
+      open: () => invoke('diagram:open'),
+      shortcut: () => invoke('diagram:shortcut'),
+      setShortcut: accelerator => invoke('diagram:set-shortcut', accelerator),
+    },
     workspaceWindows: bridge.platform === 'win32' ? {
       isPrimary: !bridge.secondaryWorkspaceWindow,
       command: command => invoke('workspace-window:command', command),

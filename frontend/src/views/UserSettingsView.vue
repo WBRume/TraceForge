@@ -7,11 +7,12 @@ import SettingsAppearanceSection from '@/components/settings/SettingsAppearanceS
 import SettingsConnectedAccountsSection from '@/components/settings/SettingsConnectedAccountsSection.vue'
 import SettingsGeneralSection from '@/components/settings/SettingsGeneralSection.vue'
 import SettingsSidebarNav from '@/components/settings/SettingsSidebarNav.vue'
+import SettingsShortcutSection from '@/components/settings/SettingsShortcutSection.vue'
 import WebhookSettingsSection from '@/components/settings/WebhookSettingsSection.vue'
 import { useAvatarPreference } from '@/composables/useAvatarPreference'
 import { useSettingsViewModel } from '@/composables/useSettingsViewModel'
 
-const USER_SECTION_IDS = ['general', 'connected_accounts', 'appearance', 'webhook_personal']
+const USER_SECTION_IDS = ['general', 'connected_accounts', 'appearance', 'shortcuts', 'webhook_personal']
 
 const rawVm = useSettingsViewModel({
   sectionIds: USER_SECTION_IDS,
@@ -61,6 +62,7 @@ const goBack = () => {
               <SettingsGeneralSection v-if="vm.activeSection === 'general'" key="general" :vm="rawVm" />
               <SettingsConnectedAccountsSection v-else-if="vm.activeSection === 'connected_accounts'" key="connected_accounts" />
               <SettingsAppearanceSection v-else-if="vm.activeSection === 'appearance'" key="appearance" :preference="avatarPreference" />
+              <SettingsShortcutSection v-else-if="vm.activeSection === 'shortcuts'" key="shortcuts" />
               <WebhookSettingsSection v-else-if="vm.activeSection === 'webhook_personal'" key="webhook_personal" scope="personal" />
             </transition>
           </main>

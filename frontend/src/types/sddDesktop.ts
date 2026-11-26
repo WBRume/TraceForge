@@ -103,6 +103,7 @@ export type DesktopOAuthTicketListener = (payload: DesktopOAuthStartResult) => v
 import type { OAuthClientType, OAuthIntent } from './oauth'
 
 export type SddDesktopApi = {
+  diagram?: import('./diagramDesktop').DiagramLauncher
   workspaceWindows?: import('./workspaceWindows').DesktopWorkspaceWindowsApi
   taskFloats?: import('./taskFloat').DesktopTaskFloatsApi
   collaboration?: {

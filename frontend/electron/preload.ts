@@ -3,13 +3,18 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { createDesktopApi } from '../desktop/api'
 import type { TaskFloatWindowApi } from '../src/types/taskFloat'
+import type { DiagramWindowApi } from '../src/types/diagramDesktop'
 
 // DOM events cross the isolated preload boundary without exposing window controls.
 window.addEventListener('traceforge:app-ready', () => {
   ipcRenderer.send('traceforge:app-ready')
 }, { once: true })
 
-if (process.argv.includes('--traceforge-task-float')) {
+if (process.argv.includes('--traceforge-diagram')) {
+  contextBridge.exposeInMainWorld('sddDiagram', {
+    save: request => ipcRenderer.invoke('sdd:download:save', request),
+  } satisfies DiagramWindowApi)
+} else if (process.argv.includes('--traceforge-task-float')) {
   contextBridge.exposeInMainWorld('sddTaskFloat', {
     close: () => ipcRenderer.invoke('sdd:task-float:finish', false),
     returnToClient: () => ipcRenderer.invoke('sdd:task-float:finish', true),
