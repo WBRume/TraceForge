@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { buildCanvasCatalog } from '../assetDomains'
 import { layoutWorkspace, translatePoint } from '../assetLayout'
-import { fittedViewport, frameMembers } from '../geometry'
-import { nodeSizes, scopedAssetId, type CanvasAsset, type CanvasNode, type CanvasSnapshot, type SourceReference } from '../model'
+import { buildCanvasPaths } from '../canvasPaths'
+import { arrowInBounds, fittedViewport, frameMembers } from '../geometry'
+import { nodeSizes, referenceKey, scopedAssetId, type CanvasAsset, type CanvasNode, type CanvasSnapshot, type SourceReference } from '../model'
 import { planTreePreview } from '../treePreview'
 
 function asset(id: string, reference: SourceReference, taskType?: string): CanvasAsset {
@@ -15,6 +16,50 @@ function snapshot(assets: CanvasAsset[], nodes: CanvasNode[] = []): CanvasSnapsh
 }
 
 describe('workspace canvas', () => {
+  it('uses available width for wide branches while retaining subtrees and their canonical arrows', () => {
+    const root = asset('requirement', { kind: 'requirement', id: 'requirement' })
+    const tasks = Array.from({ length: 20 }, (_, i) => asset(`task-${i}`, { kind: 'task', id: `task-${i}` }))
+    const doc = asset('document', { kind: 'document', id: 'document' })
+    const placement = (count: number, width: number, nodes: CanvasNode[] = []) => {
+      const selected = tasks.slice(0, count)
+      const state = snapshot([root, ...selected, doc], nodes)
+      state.root_tree = true
+      state.relations = [
+        ...selected.map(task => ({ source: task.reference, target: root.reference, relation_type: 'COVERS' as const })),
+        { source: doc.reference, target: tasks[0]!.reference, relation_type: 'DOCUMENT_TASK' },
+      ]
+      return layoutWorkspace(state, buildCanvasCatalog(state), false, { width, height: 690 },
+        new Map([[referenceKey(root.reference), { cursor: 'more' }]]))
+    }
+    const wide = placement(12, 1320)
+    const narrow = placement(12, 720)
+    const extended = placement(20, 1320)
+    const node = (graph: typeof wide, id: string) => graph.nodes.find(item => item.id === graph.assetNodeIds.get(id))!
+    const columns = (graph: typeof wide) => new Set(tasks.slice(0, 12).map(task => node(graph, task.node_id).position.x)).size
+    expect(columns(wide)).toBe(4)
+    expect(columns(narrow)).toBe(2)
+    expect(node(wide, 'task-3').position.y).toBe(node(wide, 'task-0').position.y)
+    expect(node(wide, 'task-4').position.y).toBeGreaterThan(node(wide, 'document').position.y)
+    expect(node(wide, 'task-7').position).toEqual(node(extended, 'task-7').position)
+    expect(wide.continuations[0]?.position).toEqual(extended.continuations[0]?.position)
+    const note: CanvasNode = { id: 'branch-note', kind: 'note', scope_id: root.node_id, color: 'yellow',
+      position: translatePoint(node(wide, 'task-3').position, wide.scopeOffsets.get(root.node_id)!, -1),
+      size: nodeSizes.note, text: 'Review', reference: null, details: null }
+    const withNote = placement(12, 1320, [note])
+    expect(node(withNote, 'task-3').position.y).toBeGreaterThanOrEqual(node(wide, 'task-3').position.y + note.size.height)
+    expect(node(withNote, 'task-1').position).toEqual(node(wide, 'task-1').position)
+    const { business } = buildCanvasPaths({ ...extended, tree: true })
+    const connection = business.find(path => path.relation.source.id === 'document')!
+    expect(connection.branchParentId).toBe(node(extended, 'task-0').id)
+    expect(connection.relation.relation_type).toBe('DOCUMENT_TASK')
+    const long = business.find(path => path.relation.source.id === 'task-19')!
+    const stem = long.stem!
+    expect(long.vertices?.[0]?.y).toBeGreaterThan(node(extended, 'task-19').position.y)
+    expect(long.vertices?.at(-1)?.y).toBe(node(extended, root.node_id).position.y + node(extended, root.node_id).size.height + 8)
+    expect(arrowInBounds(long, { left: stem.x - 2, right: stem.x + 2, top: stem.top + 80, bottom: stem.top + 160 })).toBe(true)
+    expect(arrowInBounds(long, { left: stem.x - 50, right: stem.x - 20, top: stem.top + 80, bottom: stem.top + 160 })).toBe(false)
+  })
+
   it('opens compact branches independently, reduces depth in a narrow viewport and retains a manual expansion', () => {
     const requirement = asset('small', { kind: 'requirement', id: 'small' })
     const otherRoot = asset('unrelated', { kind: 'task', id: 'unrelated' })

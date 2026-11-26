@@ -3,12 +3,15 @@ import { computed, nextTick, onMounted, onScopeDispose, shallowRef, useTemplateR
 import { useI18n } from 'vue-i18n'
 import { Maximize2, Minus, Plus, Workflow } from '@/components/icons'
 import CanvasArrows from './CanvasArrows.vue'
+import CanvasBranchContext from './CanvasBranchContext.vue'
 import CanvasBranchContinuation from './CanvasBranchContinuation.vue'
 import CanvasItem from './CanvasItem.vue'
 import CanvasOverviewLayer from './CanvasOverviewLayer.vue'
 import CanvasRelationLegend from './CanvasRelationLegend.vue'
 import CanvasToolbar from './CanvasToolbar.vue'
+import { buildCanvasPaths } from './canvasPaths'
 import type { CanvasContextRequest, CanvasContextTarget } from './contextMenu'
+import { arrowInBounds, viewportBounds } from './geometry'
 import { referenceKey, type CanvasConnection, type CanvasGraph, type CanvasNode, type CanvasRelationType, type CanvasSelection,
   type CanvasTool, type NodePatch, type Point, type Size } from './model'
 import { useCanvasInteraction } from './useCanvasInteraction'
@@ -40,6 +43,7 @@ const branchKey = (node: CanvasNode) => node.reference ? referenceKey(node.refer
 const surface = useTemplateRef<HTMLElement>('surface')
 const tool = shallowRef<CanvasTool>('select')
 const relationFilter = shallowRef<CanvasRelationType | null>(null)
+const activeBranch = shallowRef('')
 const size = shallowRef<Size>({ width: 0, height: 0 })
 let movedViewport = false
 let observer: ResizeObserver | undefined
@@ -71,6 +75,7 @@ const map = useCanvasInteraction({
   connect: (source, target, mode) => emit('connect', source, target, mode),
 })
 const { viewport, moving, space, connectStart, hoveredTarget, renderedNodes, framePreview, connectionPreview } = map
+const renderedById = computed(() => new Map(renderedNodes.value.map(node => [node.id, node])))
 const isOverview = computed(() => viewport.value.scale < (props.summary ? 0.26 : 0.34))
 const compact = computed(() => viewport.value.scale < 0.68)
 const visibleIds = computed(() => {
@@ -111,6 +116,7 @@ watch(() => [...planTasks.value].sort().join(','), (value, _, cleanup) => {
 watch(() => props.data, (current, previous) => {
   if (current.quarter?.id !== previous.quarter?.id || current.root_tree !== previous.root_tree) {
     movedViewport = false
+    activeBranch.value = ''
     fitEntries()
     return
   }
@@ -135,6 +141,40 @@ const selectedEdge = computed(() => props.selection?.type === 'edge' ? props.sel
 const canRemove = computed(() => selectedEdge.value || (selectedNode.value && !selectedNode.value.automatic))
 const shownRelations = computed(() => relationFilter.value
   ? props.data.relations.filter(link => link.relation_type === relationFilter.value) : props.data.relations)
+const arrows = computed(() => buildCanvasPaths({ nodes: renderedNodes.value, edges: props.data.edges,
+  relations: props.data.relations, regions: props.data.regions, branchRoutes: props.data.branchRoutes, tree: !!props.data.quarter }))
+const visiblePaths = computed(() => {
+  const view = viewportBounds(viewport.value, size.value, 95)
+  return {
+    business: arrows.value.business.filter(line => (!relationFilter.value || line.relation.relation_type === relationFilter.value)
+      && arrowInBounds(line, view)),
+    arrows: arrows.value.arrows.filter(line => arrowInBounds(line, view)),
+  }
+})
+const branchContext = computed(() => {
+  if (isOverview.value || size.value.width < 230) return null
+  const { x, y, scale } = viewport.value
+  const { width, height } = size.value
+  const maxWidth = Math.min(268, width - 84)
+  let leftmostLane = Infinity
+  let context: { parent: CanvasNode; position: Point; maxWidth: number; more: boolean } | null = null
+  for (const { branchParentId, stem } of visiblePaths.value.business) {
+    if (!branchParentId || !stem) continue
+    const parent = renderedById.value.get(branchParentId)
+    if (!parent?.details) continue
+    const left = x + parent.position.x * scale, titleY = y + (parent.position.y + 42) * scale
+    if (left + parent.size.width * scale > 36 && left < width - 36 && titleY > 13 && titleY < height - 20) continue
+    const lane = x + stem.x * scale
+    const top = Math.max(12, y + stem.top * scale - 9)
+    if (lane < 66 || lane > width - 14 || top >= height - 76 || y + stem.bottom * scale < top + 23) continue
+    if (parent.id !== activeBranch.value && lane >= leftmostLane) continue
+    leftmostLane = lane
+    context = { parent, position: { x: Math.max(65, Math.min(lane - 13, width - maxWidth - 12)), y: top }, maxWidth,
+      more: props.data.continuations.some(marker => marker.parentId === parent.id) }
+    if (parent.id === activeBranch.value) break
+  }
+  return context
+})
 watch(() => props.data.relations, links => {
   if (!links.some(link => link.relation_type === relationFilter.value)) relationFilter.value = null
 })
@@ -316,6 +356,22 @@ function revealChild(parentId: string, childId: string, preserveScale = false) {
   if (preserveScale) viewport.value = { x: x + dx, y: y + dy, scale }
   else map.focusNodes([parentId, childId])
 }
+
+function toggleBranch(id: string) {
+  activeBranch.value = id
+  emit('toggleBranch', id)
+}
+
+function continueBranch(id: string) {
+  activeBranch.value = id
+  emit('moreBranch', id)
+}
+
+function locateParent(id: string) {
+  movedViewport = true
+  map.focusNodes([id])
+  emit('select', { type: 'node', id })
+}
 onMounted(fitEntries)
 defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, focusRegion: map.focusRegion,
   fit: fitEntries, keepInView, revealChild, streamAnchor })
@@ -337,8 +393,7 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
             :linked="connectStart?.id === node.id || hoveredTarget === node.id" @press="(event, handle) => map.nodeDown(event, node, handle)"
             @focus="emit('select', { type: 'node', id: node.id })" @open="open(node.id)" />
         </div>
-        <CanvasArrows :nodes="renderedNodes" :visible-ids="visibleIds" :edges="data.edges" :relations="shownRelations" :selected-id="selectedEdge"
-          :preview="connectionPreview" :regions="data.regions" :tree="!!data.quarter"
+        <CanvasArrows :paths="visiblePaths" :selected-id="selectedEdge" :preview="connectionPreview"
           @select="id => emit('select', { type: 'edge', id })" @open-relation="id => emit('openRelation', id)" />
         <div class="scene-layer card-layer">
           <CanvasItem v-for="node in items" :key="node.id" :node="node" :active="selected(node)"
@@ -347,14 +402,16 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
             :busy="expandingNodeId === node.id"
             :linked="connectStart?.id === node.id || hoveredTarget === node.id" @press="(event, handle) => map.nodeDown(event, node, handle)"
             @focus="emit('select', { type: 'node', id: node.id })" @open="open(node.id)"
-            @toggle="emit('toggleBranch', node.id)" />
+            @toggle="toggleBranch(node.id)" />
           <CanvasBranchContinuation v-for="marker in visibleContinuations" :key="marker.parentId"
-            :marker="marker" :busy="expandingNodeId === marker.parentId" @continue="emit('moreBranch', marker.parentId)" />
+            :marker="marker" :busy="expandingNodeId === marker.parentId" @continue="continueBranch(marker.parentId)" />
         </div>
         <div v-if="framePreview" class="frame-preview" :style="previewStyle" />
       </div>
 
       <CanvasToolbar :tool="tool" :can-link="data.access.can_link_requirements" @choose="chooseTool" />
+      <CanvasBranchContext v-if="branchContext" v-bind="branchContext" :busy="expandingNodeId === branchContext.parent.id"
+        @locate="locateParent(branchContext.parent.id)" @continue="continueBranch(branchContext.parent.id)" />
       <div v-if="!data.nodes.length && tool === 'select'" class="stage-empty">
         <div class="empty-symbol"><Workflow :size="30" /></div>
         <h2>{{ t('workspace_canvas.empty_title') }}</h2>
@@ -364,7 +421,7 @@ defineExpose({ insertionPoint: map.insertionPoint, focusNodes: map.focusNodes, f
       </div>
       <div v-if="cursorHint" class="cursor-hint" aria-live="polite">{{ cursorHint }}</div>
       <div v-else-if="isOverview" class="map-hint">{{ t('workspace_canvas.domains.map_zoom') }}</div>
-      <div v-else-if="rootStream?.next || rootStream?.loading" class="map-hint root-guidance">
+      <div v-else-if="!branchContext && (rootStream?.next || rootStream?.loading)" class="map-hint root-guidance">
         {{ t(rootStream.loading ? 'common.loading' : 'workspace_canvas.tree.pan_more') }}
       </div>
       <CanvasRelationLegend :relations="data.relations" :active="relationFilter"

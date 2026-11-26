@@ -1,89 +1,18 @@
 <script setup lang="ts">
-import { computed, useId } from 'vue'
+import { useId } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { arrowGeometry, branchArrowGeometry, crossDomainGeometry } from './geometry'
+import type { CanvasPaths } from './canvasPaths'
 import { relationStyles } from './relationStyles'
-import type { CanvasEdge, CanvasGraphRelation, CanvasNode, CanvasRegion, CanvasRelationType, Point } from './model'
+import type { Point } from './model'
 
-const props = defineProps<{
-  nodes: CanvasNode[]
-  visibleIds: Set<string>
-  edges: CanvasEdge[]
-  relations: CanvasGraphRelation[]
-  regions: CanvasRegion[]
+defineProps<{
+  paths: CanvasPaths
   selectedId?: string
-  tree?: boolean
   preview: { source: Point; target: Point } | null
 }>()
 const emit = defineEmits<{ select: [id: string]; openRelation: [id: string] }>()
 const { t } = useI18n()
 const markerId = `canvas-arrow-${useId()}`
-const pairKey = (source: string, target: string) => [source, target].sort().join(':')
-
-const paths = computed(() => {
-  const nodesById = new Map(props.nodes.map(node => [node.id, node]))
-  const regionsById = new Map(props.regions.map(region => [region.id, region]))
-  const groups = new Map<string, CanvasGraphRelation[]>()
-  const incoming = new Map<string, CanvasGraphRelation[]>()
-  for (const relation of props.relations) {
-    const key = pairKey(relation.sourceNodeId, relation.targetNodeId)
-    if (!groups.has(key)) groups.set(key, [])
-    groups.get(key)?.push(relation)
-    const source = nodesById.get(relation.sourceNodeId), target = nodesById.get(relation.targetNodeId)
-    if (!props.tree || !source || !target || Math.abs(source.position.x - target.position.x) < target.size.width) continue
-    const lane = `${target.id}:${source.position.x > target.position.x ? 'right' : 'left'}`
-    const list = incoming.get(lane) ?? []
-    list.push(relation)
-    incoming.set(lane, list)
-  }
-  const ports = new Map<string, number>()
-  const sharedPorts = new Map<string, number>()
-  for (const list of incoming.values()) {
-    list.sort((a, b) => nodesById.get(a.sourceNodeId)!.position.y - nodesById.get(b.sourceNodeId)!.position.y)
-    const step = Math.min(7, 72 / list.length)
-    list.forEach((link, index) => ports.set(link.id, (index - (list.length - 1) / 2) * step))
-    const siblings = new Map<CanvasRelationType, CanvasGraphRelation[]>()
-    for (const link of list) {
-      const source = nodesById.get(link.sourceNodeId)!, target = nodesById.get(link.targetNodeId)!
-      if (source.domainId !== target.domainId || Math.abs(source.position.x - target.position.x) >= source.size.width + 155) continue
-      const related = siblings.get(link.relation_type) ?? []
-      related.push(link)
-      siblings.set(link.relation_type, related)
-    }
-    for (const links of siblings.values()) {
-      if (links.length < 3) continue
-      const port = links.reduce((total, link) => total + (ports.get(link.id) ?? 0), 0) / links.length
-      links.forEach(link => sharedPorts.set(link.id, port))
-    }
-  }
-  const visible = (source: string, target: string) => props.visibleIds.has(source) || props.visibleIds.has(target)
-  const business = [...groups.values()].flatMap(list => list.flatMap((relation, index) => {
-    const source = nodesById.get(relation.sourceNodeId), target = nodesById.get(relation.targetNodeId)
-    if (!source || !target || !visible(source.id, target.id)) return []
-    const sourceRegion = source.domainId ? regionsById.get(source.domainId) : undefined
-    const targetRegion = target.domainId ? regionsById.get(target.domainId) : undefined
-    const offset = (index - (list.length - 1) / 2) * 14
-    const sharedPort = sharedPorts.get(relation.id)
-    const innerLane = sourceRegion && sourceRegion === targetRegion
-      ? Math.min(sourceRegion.position.y + 5 + index * 4, source.position.y - 9, target.position.y - 9) : undefined
-    const geometry = sharedPort !== undefined ? branchArrowGeometry(source, target, sharedPort)
-      : props.tree ? arrowGeometry(source, target, (ports.get(relation.id) ?? 0) + offset, true, innerLane)
-      : sourceRegion && targetRegion && sourceRegion !== targetRegion
-      ? crossDomainGeometry(source, target, sourceRegion, targetRegion, offset, relation.relation_type === 'PREREQUISITE' ? -15 : 0)
-      : arrowGeometry(source, target, offset, true, sourceRegion && sourceRegion.position.y + 63 + index * 6)
-    return [{
-      relation, style: relationStyles[relation.relation_type],
-      ...geometry,
-    }]
-  }))
-  const arrows = props.edges.flatMap(edge => {
-    const source = nodesById.get(edge.source), target = nodesById.get(edge.target)
-    if (!source || !target || !visible(source.id, target.id)) return []
-    const shared = groups.get(pairKey(source.id, target.id))?.length ?? 0
-    return [{ id: edge.id, path: arrowGeometry(source, target, shared ? (shared + 1) * 8 : 0).path }]
-  })
-  return { business, arrows }
-})
 </script>
 
 <template>

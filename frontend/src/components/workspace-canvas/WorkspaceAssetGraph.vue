@@ -130,7 +130,7 @@ const catalog = computed(() => {
   return buildCanvasCatalog(data, summaryOnly.value ? [] : planFiles.value.filter(file => liveIds.has(file.reference.id)))
 })
 const graph = computed(() => scene.value && catalog.value
-  ? layoutWorkspace(scene.value, catalog.value, summaryOnly.value, preview.value.width, expanded.value) : null)
+  ? layoutWorkspace(scene.value, catalog.value, summaryOnly.value, preview.value.space, expanded.value) : null)
 const nodes = computed(() => graph.value?.nodes || [])
 const nodesById = computed(() => new Map(nodes.value.map(node => [node.id, node])))
 const savedIds = computed(() => new Set(snapshot.value?.nodes.map(node => node.id)))

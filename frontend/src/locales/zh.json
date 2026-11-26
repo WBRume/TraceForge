@@ -2492,6 +2492,7 @@
       "expand": "展开下一级",
       "collapse": "收起分支",
       "more": "更多关联",
+      "locate_parent": "定位父节点",
       "no_neighbors": "这张卡片没有可展开的关联。",
       "expansion_limit": "已达到同时展开上限。可以收起一处分支，也可以右键选择「以此资产为入口」。"
     },

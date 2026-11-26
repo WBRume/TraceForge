@@ -169,6 +169,7 @@ export interface CanvasGraph extends Omit<CanvasSnapshot, 'assets' | 'relations'
   relations: CanvasGraphRelation[]
   regions: CanvasRegion[]
   continuations: CanvasBranchContinuation[]
+  branchRoutes: ReadonlyMap<string, CanvasBranchRoute>
   scopeOffsets: ReadonlyMap<string, Point>
   assetNodeIds: ReadonlyMap<string, string>
 }
@@ -177,6 +178,11 @@ export interface CanvasBranchContinuation {
   parentId: string
   position: Point
   stemHeight: number
+}
+
+export interface CanvasBranchRoute {
+  parentId: string
+  stemInset: number
 }
 
 export interface CanvasRegion {

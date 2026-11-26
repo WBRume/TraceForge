@@ -1,6 +1,48 @@
-import type { CanvasNode, CanvasRegion, Point, Size } from './model'
+import type { CanvasBranchRoute, CanvasNode, CanvasRegion, Point, Size } from './model'
 
 export interface Viewport extends Point { scale: number }
+export interface CanvasBounds { left: number; top: number; right: number; bottom: number }
+export interface ArrowGeometry {
+  path: string
+  label: Point
+  bounds: CanvasBounds
+  vertices?: Point[]
+  stem?: { x: number; top: number; bottom: number }
+}
+
+function boundsOf(points: Point[]): CanvasBounds {
+  return {
+    left: Math.min(...points.map(point => point.x)), top: Math.min(...points.map(point => point.y)),
+    right: Math.max(...points.map(point => point.x)), bottom: Math.max(...points.map(point => point.y)),
+  }
+}
+
+export function viewportBounds({ x, y, scale }: Viewport, { width, height }: Size, margin = 0): CanvasBounds {
+  return { left: (-x - margin) / scale, top: (-y - margin) / scale,
+    right: (width - x + margin) / scale, bottom: (height - y + margin) / scale }
+}
+
+function intersects(first: CanvasBounds, second: CanvasBounds) {
+  return first.left <= second.right && first.right >= second.left && first.top <= second.bottom && first.bottom >= second.top
+}
+
+export function arrowInBounds({ bounds, vertices }: ArrowGeometry, view: CanvasBounds) {
+  if (!intersects(bounds, view)) return false
+  if (!vertices) return true
+  for (let i = 1; i < vertices.length; i++) {
+    const start = vertices[i - 1], end = vertices[i]
+    if (Math.min(start.x, end.x) <= view.right && Math.max(start.x, end.x) >= view.left
+      && Math.min(start.y, end.y) <= view.bottom && Math.max(start.y, end.y) >= view.top) return true
+  }
+  return false
+}
+
+function orthogonal(vertices: Point[], label: Point): ArrowGeometry {
+  return {
+    path: vertices.map(({ x, y }, index) => `${index ? 'L' : 'M'} ${x} ${y}`).join(' '),
+    label, bounds: boundsOf(vertices), vertices,
+  }
+}
 
 export const minimumZoom = 0.0125
 export const zoomScale = (value: number) => Math.min(2.5, Math.max(minimumZoom, value))
@@ -47,7 +89,7 @@ export function frameMembers(frame: CanvasNode, nodes: CanvasNode[]) {
   })
 }
 
-export function arrowGeometry(source: CanvasNode, target: CanvasNode, offset = 0, business = false, guideY?: number) {
+export function arrowGeometry(source: CanvasNode, target: CanvasNode, offset = 0, business = false, guideY?: number): ArrowGeometry {
   const from = center(source.position, source.size)
   const to = center(target.position, target.size)
   const dx = Math.abs(to.x - from.x), dy = Math.abs(to.y - from.y)
@@ -60,8 +102,8 @@ export function arrowGeometry(source: CanvasNode, target: CanvasNode, offset = 0
     to.y += offset
     const fromLane = from.x + direction * 24
     const toLane = to.x - direction * 26
-    return { path: `M ${from.x} ${from.y} H ${fromLane} V ${guideY} H ${toLane} V ${to.y} H ${to.x}`,
-      label: { x: (fromLane + toLane) / 2, y: guideY } }
+    return orthogonal([from, { x: fromLane, y: from.y }, { x: fromLane, y: guideY },
+      { x: toLane, y: guideY }, { x: toLane, y: to.y }, to], { x: (fromLane + toLane) / 2, y: guideY })
   }
   if (business && !separatedColumns && dy > Math.max(source.size.height, target.size.height) * 1.5) {
     const left = Math.min(source.position.x, target.position.x) - 44 - Math.abs(offset)
@@ -70,7 +112,8 @@ export function arrowGeometry(source: CanvasNode, target: CanvasNode, offset = 0
     from.y += offset
     to.y += offset
     return { path: `M ${from.x} ${from.y} C ${left} ${from.y} ${left} ${to.y} ${to.x} ${to.y}`,
-      label: { x: (from.x + to.x + 6 * left) / 8, y: (from.y + to.y) / 2 } }
+      label: { x: (from.x + to.x + 6 * left) / 8, y: (from.y + to.y) / 2 },
+      bounds: boundsOf([from, { x: left, y: from.y }, { x: left, y: to.y }, to]) }
   }
   const horizontal = dx >= dy || (business && separatedColumns)
   const axis = horizontal ? 'x' : 'y'
@@ -85,7 +128,8 @@ export function arrowGeometry(source: CanvasNode, target: CanvasNode, offset = 0
   const controlFrom = { ...from, [axis]: from[axis] + direction * extension }
   const controlTo = { ...to, [axis]: to[axis] - direction * extension }
   const path = `M ${from.x} ${from.y} C ${controlFrom.x} ${controlFrom.y} ${controlTo.x} ${controlTo.y} ${to.x} ${to.y}`
-  return { path, label: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 } }
+  return { path, label: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 },
+    bounds: boundsOf([from, controlFrom, controlTo, to]) }
 }
 
 export function crossDomainGeometry(source: CanvasNode, target: CanvasNode, sourceRegion: CanvasRegion,
@@ -103,8 +147,9 @@ export function crossDomainGeometry(source: CanvasNode, target: CanvasNode, sour
   const sourceLane = sourceX + direction * 22
   const targetLane = targetX - direction * 22
   const laneY = bottom.position.y - Math.min(25, gap / 2)
-  return { path: `M ${sourceX} ${from.y + offset} H ${sourceLane} V ${laneY} H ${targetLane} V ${to.y + offset} H ${targetX}`,
-    label: { x: (sourceLane + targetLane) / 2, y: laneY } }
+  return orthogonal([{ x: sourceX, y: from.y + offset }, { x: sourceLane, y: from.y + offset },
+    { x: sourceLane, y: laneY }, { x: targetLane, y: laneY }, { x: targetLane, y: to.y + offset },
+    { x: targetX, y: to.y + offset }], { x: (sourceLane + targetLane) / 2, y: laneY })
 }
 
 export function branchArrowGeometry(source: CanvasNode, target: CanvasNode, port: number) {
@@ -114,6 +159,20 @@ export function branchArrowGeometry(source: CanvasNode, target: CanvasNode, port
   to.x += direction * (target.size.width / 2 + 8)
   to.y += port
   const lane = to.x + direction * Math.min(34, Math.abs(from.x - to.x) / 2)
-  return { path: `M ${from.x} ${from.y} H ${lane} V ${to.y} H ${to.x}`,
-    label: { x: (from.x + lane) / 2, y: from.y } }
+  return orthogonal([from, { x: lane, y: from.y }, { x: lane, y: to.y }, to], { x: (from.x + lane) / 2, y: from.y })
+}
+
+export function fanArrowGeometry(source: CanvasNode, target: CanvasNode, route: CanvasBranchRoute, port: number): ArrowGeometry | undefined {
+  const outgoing = source.id === route.parentId
+  const parent = outgoing ? source : target
+  const child = outgoing ? target : source
+  const bottom = parent.position.y + parent.size.height
+  const bus = Math.min(bottom + 39 + port, child.position.y - 12)
+  if (bus < bottom + 13) return undefined
+  const parentPort = { x: center(parent.position, parent.size).x + port * 1.5, y: bottom + (outgoing ? 2 : 8) }
+  const childPort = { x: child.position.x - (outgoing ? 8 : 2), y: center(child.position, child.size).y + port / 2 }
+  const x = Math.min(childPort.x - 3, child.position.x - route.stemInset + port / 2)
+  const vertices = [parentPort, { x: parentPort.x, y: bus }, { x, y: bus }, { x, y: childPort.y }, childPort]
+  if (!outgoing) vertices.reverse()
+  return { ...orthogonal(vertices, { x: x - 16, y: childPort.y }), stem: { x, top: bus, bottom: childPort.y } }
 }

@@ -83,5 +83,5 @@ export function planTreePreview(pages: CanvasRootWindow[], quarter: FiscalQuarte
       level = next
     }
   }
-  return { assets: selected, relations, parents, owner, groups, roots, width: space.width }
+  return { assets: selected, relations, parents, owner, groups, roots, space }
 }

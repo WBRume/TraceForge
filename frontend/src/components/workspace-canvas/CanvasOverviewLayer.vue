@@ -32,6 +32,11 @@ function onScreen(box: Box, size: Size) {
   return box.x < size.width && box.y < size.height && box.x + box.width > 0 && box.y + box.height > 0
 }
 
+function connectorOnScreen(from: Box, to: Box, size: Size) {
+  return Math.min(from.x, to.x) < size.width && Math.min(from.y, to.y) < size.height
+    && Math.max(from.x + from.width, to.x + to.width) > 0 && Math.max(from.y + from.height, to.y + to.height) > 0
+}
+
 function label(context: CanvasRenderingContext2D, text: string, box: Box, color: string) {
   const maxWidth = box.width - 22
   if (maxWidth < 45) return
@@ -108,20 +113,20 @@ function drawGraph(context: CanvasRenderingContext2D, nodes: CanvasNode[], regio
       const bundle = bundles.get(key)
       if (bundle) bundle.count++
       else bundles.set(key, { relation, source, target, count: 1 })
-    } else if (!grouped && (onScreen(from, size) || onScreen(to, size))) {
+    } else if (!grouped && connectorOnScreen(from, to, size)) {
       connector(context, from, to, relationStyles[relation.relation_type].color, false)
     }
   }
   for (const { relation, source, target, count } of bundles.values()) {
     const from = (grouped || count > 1 ? groupBoxes.get(source) : undefined) ?? visible.get(relation.sourceNodeId)
     const to = (grouped || count > 1 ? groupBoxes.get(target) : undefined) ?? visible.get(relation.targetNodeId)
-    if (!from || !to) continue
+    if (!from || !to || !connectorOnScreen(from, to, size)) continue
     const style = relationStyles[relation.relation_type]
     connector(context, from, to, style.color, true, count, style.dash)
   }
   for (const edge of edges) {
     const from = visible.get(edge.source), to = visible.get(edge.target)
-    if (from && to) connector(context, from, to, '#55708b', true, 1, '5 4')
+    if (from && to && connectorOnScreen(from, to, size)) connector(context, from, to, '#55708b', true, 1, '5 4')
   }
   for (const node of nodes) {
     if (grouped && node.kind === 'card' && node.id !== selectedId) continue
