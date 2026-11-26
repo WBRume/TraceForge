@@ -163,10 +163,8 @@ function formatLoc(loc: number): string {
   return loc >= 1000 ? `${(loc / 1000).toFixed(1)}k` : String(loc)
 }
 
-function formatTaskUpdatedAt(task: DioramaTaskItem): string {
-  const raw = task.updated_at || task.created_at
-  if (!raw) return ''
-  const date = new Date(raw)
+function formatTaskActivityAt(timestamp: string): string {
+  const date = new Date(timestamp)
   if (Number.isNaN(date.getTime())) return ''
   const m = String(date.getMonth() + 1).padStart(2, '0')
   const d = String(date.getDate()).padStart(2, '0')
@@ -312,9 +310,9 @@ function openRequirement(reqId: string) {
                   <span v-if="hasRepos" class="task-scope">
                     {{ t('dashboard.diorama.task_scope', { repos: task.repos.length, modules: task.modules.length }) }}
                   </span>
-                  <span v-else-if="formatTaskUpdatedAt(task)" class="task-scope task-date-mono">
-                    {{ formatTaskUpdatedAt(task) }}
-                  </span>
+                  <time v-if="task.last_activity_at" class="task-scope task-date-mono" :datetime="task.last_activity_at">
+                    {{ formatTaskActivityAt(task.last_activity_at) }}
+                  </time>
                 </div>
 
                 <div v-if="task.requirement_titles.length" class="req-tags">

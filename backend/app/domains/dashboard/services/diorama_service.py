@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import func
+from sqlalchemy import func, or_, select, union_all
 from sqlalchemy.orm import Session, joinedload, load_only, selectinload
 
+from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember
 from app.domains.dashboard.schemas.diorama import (
     DashboardDioramaResponse,
@@ -35,8 +36,11 @@ from app.domains.dashboard.services.diorama_repository import (
 from app.domains.dashboard.services.diorama_repository import (
     invalidate_diorama_cache as invalidate_diorama_cache,
 )
+from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
+from app.domains.task.models.session_turn import TaskSessionTurn
 from app.domains.task.models.task import SddTask
 from app.domains.task.models.task_repository import SddTaskRepository
+from app.domains.task.services.task_activity import active_task_chat_turn, task_chat_job_scope
 from app.domains.workflow.models.task_change import (
     SddTaskChangeProposal,
     SddTaskChangeProposalFile,
@@ -50,6 +54,7 @@ _MEMBER_COLORS = ("#0284c7", "#059669", "#d97706", "#7c3aed", "#0891b2", "#e11d4
 
 _MAX_MODULES_PER_REPO = 24
 _MAX_FILES_PER_MODULE = 18
+_MAX_DASHBOARD_TASKS = 18
 _DASHBOARD_WINDOWS = (14, 30, 60)
 
 
@@ -64,6 +69,13 @@ class _RepoDescriptor:
     base_dir: str | None
     repo_url: str
     color: str
+
+
+@dataclass(frozen=True)
+class _RecentTask:
+    task: SddTask
+    last_activity_at: datetime
+    proposal: SddTaskChangeProposal | None
 
 
 def _build_module_items(
@@ -285,12 +297,52 @@ def _repo_aliases(url: str | None, slug: str | None, name: str | None) -> list[t
     ]
 
 
-def _load_workspace_tasks(
+def _load_recent_workspace_tasks(
     db: Session,
     workspace_id: str,
-) -> list[tuple[SddTask, SddTaskChangeProposal | None]]:
+    *,
+    since: datetime,
+    as_of: datetime,
+) -> list[_RecentTask]:
+    chat_activity = (
+        select(ChatMessage.task_id, func.max(ChatMessage.created_at).label("occurred_at"))
+        .join(SddTask, SddTask.id == ChatMessage.task_id)
+        .outerjoin(TaskSessionTurn, TaskSessionTurn.id == ChatMessage.session_turn_id)
+        .where(
+            ChatMessage.workspace_id == workspace_id,
+            SddTask.workspace_id == workspace_id,
+            ChatMessage.role.in_((MessageRole.USER, MessageRole.ASSISTANT)),
+            ChatMessage.message_type != MessageType.INIT_REASON,
+            ChatMessage.created_at.between(since, as_of),
+            func.coalesce(ChatMessage.session_generation, TaskSessionTurn.session_generation, 0)
+            == SddTask.session_generation,
+            or_(ChatMessage.session_turn_id.is_(None), active_task_chat_turn()),
+        )
+        .group_by(ChatMessage.task_id)
+    )
+    job_activity_at = func.coalesce(SddAiJob.finished_at, SddAiJob.started_at)
+    job_activity = (
+        select(SddAiJob.task_id, func.max(job_activity_at).label("occurred_at"))
+        .join(SddTask, SddTask.id == SddAiJob.task_id)
+        .outerjoin(TaskSessionTurn, TaskSessionTurn.id == SddAiJob.session_turn_id)
+        .where(
+            *task_chat_job_scope(workspace_id, include_legacy_history=True),
+            SddAiJob.started_at.is_not(None),
+            SddAiJob.status != AiJobStatus.REVERTED,
+            or_(SddAiJob.session_turn_id.is_(None), active_task_chat_turn()),
+            job_activity_at.between(since, as_of),
+        )
+        .group_by(SddAiJob.task_id)
+    )
+    activity = union_all(chat_activity, job_activity).subquery()
+    latest = (
+        select(activity.c.task_id, func.max(activity.c.occurred_at).label("last_activity_at"))
+        .group_by(activity.c.task_id)
+        .subquery()
+    )
     tasks = (
-        db.query(SddTask)
+        db.query(SddTask, latest.c.last_activity_at)
+        .join(latest, latest.c.task_id == SddTask.id)
         .options(
             load_only(
                 SddTask.id,
@@ -315,14 +367,14 @@ def _load_workspace_tasks(
             .load_only(SddRequirement.title),
         )
         .filter(SddTask.workspace_id == workspace_id)
-        .order_by(func.coalesce(SddTask.updated_at, SddTask.created_at).desc(), SddTask.created_at.desc())
-        .limit(18)
+        .order_by(latest.c.last_activity_at.desc(), SddTask.id)
+        .limit(_MAX_DASHBOARD_TASKS)
         .all()
     )
     if not tasks:
         return []
 
-    task_ids = [t.id for t in tasks]
+    task_ids = [task.id for task, _ in tasks]
     latest_patch_sets = (
         db.query(SddTaskChangeProposal.task_id, func.max(SddTaskChangeProposal.patch_set_no).label("patch_set_no"))
         .filter(SddTaskChangeProposal.task_id.in_(task_ids))
@@ -355,11 +407,11 @@ def _load_workspace_tasks(
         .all()
     )
     latest_proposal = {prop.task_id: prop for prop in proposals}
-    return [(task, latest_proposal.get(task.id)) for task in tasks]
+    return [_RecentTask(task, last_activity_at, latest_proposal.get(task.id)) for task, last_activity_at in tasks]
 
 
 def _build_workspace_tasks(
-    tasks: list[tuple[SddTask, SddTaskChangeProposal | None]],
+    tasks: list[_RecentTask],
     repos: list[DioramaRepoItem],
     descriptors: list[_RepoDescriptor],
 ) -> list[DioramaTaskItem]:
@@ -374,25 +426,25 @@ def _build_workspace_tasks(
 
     return [
         _build_task_item(
-            task,
-            proposal,
+            entry,
             repositories_by_id,
             repo_lookup,
             modules_by_repo,
             default_repo_id,
         )
-        for task, proposal in tasks
+        for entry in tasks
     ]
 
 
 def _build_task_item(
-    task: SddTask,
-    proposal: SddTaskChangeProposal | None,
+    entry: _RecentTask,
     repositories_by_id: dict[str, str],
     repo_lookup: dict[tuple[str, str], str | None],
     modules_by_repo: dict[str, list[str]],
     default_repo_id: str | None,
 ) -> DioramaTaskItem:
+    task = entry.task
+    proposal = entry.proposal
     repo_set: set[str] = set()
     mod_churn: dict[str, int] = defaultdict(int)
     file_set: set[str] = set()
@@ -460,18 +512,20 @@ def _build_task_item(
         deleted=deleted_sum,
         created_at=task.created_at,
         updated_at=task.updated_at or task.created_at,
+        last_activity_at=entry.last_activity_at,
     )
 
 
 def _build_period(
     *,
     days: int,
-    cutoff: int,
+    cutoff: datetime,
     has_repositories: bool,
     descriptors: list[_RepoDescriptor],
     snapshots: dict[str, RepositorySnapshot],
-    tasks: list[tuple[SddTask, SddTaskChangeProposal | None]],
+    tasks: list[_RecentTask],
 ) -> DioramaPeriod:
+    commit_cutoff = int(cutoff.timestamp())
     repo_items: list[DioramaRepoItem] = []
     merged_day_commits: dict[str, list[tuple[int, DioramaCommitItem]]] = defaultdict(list)
     merged_day_heat: dict[str, dict[str, DioramaDayHeat]] = defaultdict(dict)
@@ -493,7 +547,7 @@ def _build_period(
             continue
 
         files = snapshot.files
-        commits = [commit for commit in snapshot.commits or [] if commit.timestamp >= cutoff]
+        commits = [commit for commit in snapshot.commits or [] if commit.timestamp >= commit_cutoff]
         modules, day_commits, day_heat = _build_module_items(desc.id, files, commits)
 
         for d, clist in day_commits.items():
@@ -538,6 +592,7 @@ def _build_period(
             )
         )
 
+    activity_cutoff = cutoff.replace(tzinfo=None)
     return DioramaPeriod(
         days=days,
         date_range=[timeline[0].date, timeline[-1].date] if timeline else [],
@@ -547,7 +602,11 @@ def _build_period(
         total_modules=sum(r.module_count for r in repo_items),
         total_commits=sum(d.commit_count for d in timeline),
         repos=repo_items,
-        tasks=_build_workspace_tasks(tasks, repo_items, descriptors),
+        tasks=_build_workspace_tasks(
+            [entry for entry in tasks if entry.last_activity_at >= activity_cutoff],
+            repo_items,
+            descriptors,
+        ),
         timeline=timeline,
     )
 
@@ -582,18 +641,26 @@ def get_repo_diorama(
         # avoid surfacing that fallback directory as an empty white-box repository slab.
         descriptors = []
         snapshots = {}
-    tasks = _load_workspace_tasks(db, workspace_id)
+    periods = dict.fromkeys((days, *_DASHBOARD_WINDOWS) if include_windows else (days,))
+    cutoffs = {period: now - timedelta(days=period) for period in periods}
+    # Any task in a narrower window's newest set is already in the widest window's newest set.
+    tasks = _load_recent_workspace_tasks(
+        db,
+        workspace_id,
+        since=min(cutoffs.values()).replace(tzinfo=None),
+        as_of=now.replace(tzinfo=None),
+    )
     members = _load_workspace_members(db, workspace_id)
     windows = {
         period: _build_period(
             days=period,
-            cutoff=int((now - timedelta(days=period)).timestamp()),
+            cutoff=cutoff,
             has_repositories=has_repositories,
             descriptors=descriptors,
             snapshots=snapshots,
             tasks=tasks,
         )
-        for period in dict.fromkeys((days, *_DASHBOARD_WINDOWS) if include_windows else (days,))
+        for period, cutoff in cutoffs.items()
     }
     selected = windows.pop(days)
     return DashboardDioramaResponse(

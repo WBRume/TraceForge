@@ -83,6 +83,10 @@ const searchHits = computed(() => {
 
 const showDropdown = computed(() => searchFocused.value && searchQuery.value.trim().length > 0)
 
+watch(isTheaterView, visible => {
+  if (visible) searchFocused.value = false
+})
+
 watch([searchQuery, () => props.searchCorpus], ([raw]) => {
   const q = raw.trim().toLocaleLowerCase()
   if (!q) {
@@ -155,65 +159,64 @@ function formatLoc(loc: number): string {
       <div v-else class="repo-pills" />
 
       <div class="toolbar-right-actions">
-        <template v-if="hasRepos && !isTheaterView">
-          <div class="search-box">
-            <el-input
-              v-model="searchQuery"
-              size="small"
-              clearable
-              :placeholder="t('dashboard.diorama.search_placeholder')"
-              @focus="searchFocused = true"
-              @blur="handleSearchBlur"
-              @keydown.enter.prevent="handleSearchEnter"
-            >
-              <template #prefix>
-                <Search class="input-icon" />
-              </template>
-            </el-input>
+        <div v-if="hasRepos && !isTheaterView" class="search-box">
+          <el-input
+            v-model="searchQuery"
+            size="small"
+            clearable
+            :placeholder="t('dashboard.diorama.search_placeholder')"
+            @focus="searchFocused = true"
+            @blur="handleSearchBlur"
+            @keydown.enter.prevent="handleSearchEnter"
+          >
+            <template #prefix>
+              <Search class="input-icon" />
+            </template>
+          </el-input>
 
-            <div v-if="showDropdown" class="search-dropdown">
-              <template v-if="searchHits.length">
-                <button
-                  v-for="hit in searchHits"
-                  :key="`${hit.kind}:${hit.path}`"
-                  type="button"
-                  class="search-hit-item"
-                  @mousedown.prevent="handleSelectHit(hit)"
-                >
-                  <span class="hit-kind" :class="hit.kind === 'module' ? 'is-module' : 'is-file'">
-                    {{ hit.kind === 'module' ? t('dashboard.diorama.kind_module') : t('dashboard.diorama.kind_file') }}
-                  </span>
-                  <span class="hit-main">
-                    <span class="hit-name">{{ hit.name }}</span>
-                    <span class="hit-path">{{ hit.path }}</span>
-                  </span>
-                  <span class="hit-meta">{{ formatLoc(hit.loc) }}</span>
-                </button>
-              </template>
-              <div v-else class="search-empty">{{ t('dashboard.diorama.search_empty') }}</div>
-            </div>
+          <div v-if="showDropdown" class="search-dropdown">
+            <template v-if="searchHits.length">
+              <button
+                v-for="hit in searchHits"
+                :key="`${hit.kind}:${hit.path}`"
+                type="button"
+                class="search-hit-item"
+                @mousedown.prevent="handleSelectHit(hit)"
+              >
+                <span class="hit-kind" :class="hit.kind === 'module' ? 'is-module' : 'is-file'">
+                  {{ hit.kind === 'module' ? t('dashboard.diorama.kind_module') : t('dashboard.diorama.kind_file') }}
+                </span>
+                <span class="hit-main">
+                  <span class="hit-name">{{ hit.name }}</span>
+                  <span class="hit-path">{{ hit.path }}</span>
+                </span>
+                <span class="hit-meta">{{ formatLoc(hit.loc) }}</span>
+              </button>
+            </template>
+            <div v-else class="search-empty">{{ t('dashboard.diorama.search_empty') }}</div>
           </div>
+        </div>
 
-          <div class="segmented-group" role="group" :aria-label="t('dashboard.diorama.days_label')">
-            <button
-              v-for="d in dayOptions"
-              :key="d"
-              type="button"
-              class="seg-btn"
-              :class="{ 'is-active': days === d }"
-              :aria-pressed="days === d"
-              @click="emit('update:days', d)"
-            >
-              {{ t('dashboard.diorama.days_unit', { count: d }) }}
-            </button>
-          </div>
-        </template>
+        <div v-if="ready" class="segmented-group" role="group" :aria-label="t('dashboard.diorama.days_label')">
+          <button
+            v-for="d in dayOptions"
+            :key="d"
+            type="button"
+            class="seg-btn"
+            :class="{ 'is-active': days === d }"
+            :aria-pressed="days === d"
+            @click="emit('update:days', d)"
+          >
+            {{ t('dashboard.diorama.days_unit', { count: d }) }}
+          </button>
+        </div>
 
         <button
-          v-else-if="ready"
+          v-if="ready && isTheaterView"
           type="button"
           class="toggle-chip"
           :class="{ 'is-active': theaterAutoplay }"
+          :aria-pressed="theaterAutoplay"
           @click="emit('update:theater-autoplay', !theaterAutoplay)"
         >
           <OctagonPause v-if="theaterAutoplay" class="chip-icon" />
@@ -300,6 +303,7 @@ function formatLoc(loc: number): string {
             type="button"
             class="seg-btn"
             :class="{ 'is-active': stageMode === '3d' }"
+            :aria-pressed="stageMode === '3d'"
             @click="emit('update:stage-mode', '3d')"
           >
             <Box class="chip-icon" />
@@ -309,6 +313,7 @@ function formatLoc(loc: number): string {
             type="button"
             class="seg-btn"
             :class="{ 'is-active': stageMode === 'top' }"
+            :aria-pressed="stageMode === 'top'"
             @click="emit('update:stage-mode', 'top')"
           >
             <Layers class="chip-icon" />
@@ -318,6 +323,7 @@ function formatLoc(loc: number): string {
             type="button"
             class="seg-btn"
             :class="{ 'is-active': stageMode === 'theater' }"
+            :aria-pressed="stageMode === 'theater'"
             @click="emit('update:stage-mode', 'theater')"
           >
             <Sparkles class="chip-icon" />

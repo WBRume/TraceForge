@@ -2,11 +2,12 @@
 
 from datetime import datetime
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
-from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.task.models.task import SddTask
+from app.domains.task.services.task_activity import task_chat_job_scope
 from app.domains.workspace_asset.models.workspace_asset import (
     RequirementStatus as Status,
 )
@@ -35,16 +36,10 @@ def _result_times(db: Session, workspace_id: str, task_ids: set[str], as_of: dat
         db.query(SddAiJob.task_id, func.max(SddAiJob.finished_at))
         .join(SddTask, SddTask.id == SddAiJob.task_id)
         .filter(
-            SddAiJob.workspace_id == workspace_id,
+            *task_chat_job_scope(workspace_id),
             SddAiJob.task_id.in_(task_ids),
-            SddAiJob.channel == AiJobChannel.TASK_CHAT,
-            SddAiJob.visibility == "workspace",
             SddAiJob.status == AiJobStatus.SUCCESS,
             SddAiJob.finished_at <= as_of,
-            or_(
-                SddAiJob.session_generation == SddTask.session_generation,
-                and_(SddAiJob.session_generation.is_(None), SddTask.status_run_id == SddAiJob.id),
-            ),
         )
         .group_by(SddAiJob.task_id)
         .all()

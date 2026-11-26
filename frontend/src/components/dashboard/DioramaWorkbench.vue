@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, shallowRef, useTemplateRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { MessageSquare, RefreshCw, TrendingUp, X } from '@/components/icons'
@@ -54,15 +54,17 @@ const {
   setDay,
   cycleSpeed,
   togglePlayback,
+  stopPlayback,
 } = useDashboardDiorama(() => props.workspaceId)
 
 const canvasRef = shallowRef<HTMLCanvasElement | null>(null)
 const viewportRef = shallowRef<HTMLDivElement | null>(null)
 const engineRef = shallowRef<ArchitecturalDioramaEngine | null>(null)
-const theaterRef = shallowRef<InstanceType<typeof DioramaSpatialTheater> | null>(null)
+const theaterRef = useTemplateRef<InstanceType<typeof DioramaSpatialTheater>>('theaterRef')
 const inspectorCollapsed = shallowRef(false)
 
 const hoverState = shallowRef<{ hit: DioramaHit; x: number; y: number } | null>(null)
+let searchMatches = new Set<string>()
 
 const hasRepos = computed(() => {
   const data = payload.value
@@ -72,6 +74,11 @@ const hasRepos = computed(() => {
 })
 const showTheater = computed(() => Boolean(payload.value && (!hasRepos.value || stageMode.value === 'theater')))
 const showDioramaCanvas = computed(() => Boolean(hasRepos.value && stageMode.value !== 'theater'))
+const visibleTasks = computed(() => {
+  const tasks = payload.value?.tasks ?? []
+  if (!showTheater.value || !hasRepos.value) return tasks
+  return tasks.filter(task => !task.repos.length || task.repos.some(id => enabledRepoIds.value.has(id)))
+})
 
 const pinnedTask = computed(() => {
   if (!pinnedTaskId.value || !payload.value) return null
@@ -136,6 +143,7 @@ function ensureEngine() {
     if (enabledRepoIds.value.size !== data.repos.length) {
       engineRef.value.setEnabledRepos(enabledRepoIds.value)
     }
+    if (searchMatches.size) engineRef.value.setSearchMatches(searchMatches)
   } else {
     engineRef.value.setData(data, enabledRepoIds.value)
   }
@@ -148,14 +156,26 @@ function ensureEngine() {
   eng.setHighlight(activeTaskId.value, effectiveMemberId.value)
 }
 
-watch([hasRepos, stageMode, payload, enabledRepoIds], ([isRepoBound, mode, data, ids], [, prevMode, previous]) => {
-  if (!isRepoBound || mode === 'theater' || prevMode === 'theater' || data !== previous) {
+watch([showDioramaCanvas, payload, enabledRepoIds], ([visible, data, ids], [wasVisible, previous]) => {
+  if (!visible || !wasVisible || data !== previous) {
     hoverState.value = null
     ensureEngine()
   } else {
     engineRef.value?.setEnabledRepos(ids)
   }
 }, { flush: 'post' })
+
+watch(showTheater, visible => {
+  if (!visible) return
+  stopPlayback()
+  selectedHit.value = null
+  drill.value = null
+})
+
+watch(visibleTasks, tasks => {
+  if (pinnedTaskId.value && !tasks.some(task => task.id === pinnedTaskId.value)) pinnedTaskId.value = null
+  if (hoveredTaskId.value && !tasks.some(task => task.id === hoveredTaskId.value)) hoveredTaskId.value = null
+})
 
 watch(locale, () => {
   engineRef.value?.setPendingRepoLabel(t('dashboard.diorama.repo_pending'))
@@ -201,6 +221,7 @@ function handleSelectModule(repo: DioramaRepoItem, mod: DioramaModuleItem) {
 }
 
 function handleSearchChange(moduleIds: Set<string>) {
+  searchMatches = moduleIds
   engineRef.value?.setSearchMatches(moduleIds)
 }
 
@@ -217,22 +238,24 @@ function handleDaysChange(next: typeof days.value) {
   else if (error.value) void load()
 }
 
+function clearTaskFocus() {
+  pinnedTaskId.value = null
+  hoveredTaskId.value = null
+}
+
 function handleKeydown(e: KeyboardEvent) {
-  const target = e.target as HTMLElement | null
-  if (
-    target
-    && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)
-  ) {
-    return
-  }
+  if (e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey) return
+  const target = e.target
+  if (target instanceof HTMLElement && target.isContentEditable) return
+  if (target instanceof Element && target.closest('input, textarea, select, [role="textbox"]')) return
+  if (e.key === ' ' && target instanceof Element && target.closest('button, a[href], [role="button"], [role="tab"]')) return
+
   if (showTheater.value) {
     if (e.key === ' ') {
       e.preventDefault()
-      theaterAutoplay.value = !theaterAutoplay.value
-    } else if (e.key === 'ArrowLeft') {
-      theaterRef.value?.step(-1)
-    } else if (e.key === 'ArrowRight') {
-      theaterRef.value?.step(1)
+      if (!e.repeat) theaterAutoplay.value = !theaterAutoplay.value
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      if (theaterRef.value?.step(e.key === 'ArrowLeft' ? -1 : 1)) e.preventDefault()
     } else if (e.key === 'Escape') {
       clearFocus()
     }
@@ -444,16 +467,15 @@ onBeforeUnmount(() => {
           v-else-if="showTheater"
           ref="theaterRef"
           :workspace-id="workspaceId"
-          :tasks="payload?.tasks ?? []"
+          :tasks="visibleTasks"
           :members="payload?.members ?? []"
           :active-member-id="activeMemberId"
           :pinned-task-id="pinnedTaskId"
           :hovered-task-id="hoveredTaskId"
           :autoplay="theaterAutoplay"
           :has-repos="hasRepos"
-          :enabled-repo-ids="enabledRepoIds"
           @toggle-pin-task="togglePinTask"
-          @update:autoplay="theaterAutoplay = $event"
+          @clear-task-focus="clearTaskFocus"
         />
 
         <div v-else v-loading="loading && !payload" class="diorama-stage is-shell">
@@ -488,7 +510,7 @@ onBeforeUnmount(() => {
         :is-theater-mode="showTheater"
         :repos="payload?.repos ?? []"
         :members="payload?.members ?? []"
-        :tasks="payload?.tasks ?? []"
+        :tasks="visibleTasks"
         :timeline="payload?.timeline ?? []"
         :day-index="dayIndex"
         :window-mode="windowMode"

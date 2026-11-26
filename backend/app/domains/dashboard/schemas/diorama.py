@@ -6,6 +6,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.core.timestamps import UtcTimestamp
+
 
 class DioramaFileItem(BaseModel):
     path: str
@@ -83,8 +85,9 @@ class DioramaTaskItem(BaseModel):
     files: list[str] = Field(default_factory=list)
     added: int = 0
     deleted: int = 0
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: UtcTimestamp | None = None
+    updated_at: UtcTimestamp | None = None
+    last_activity_at: UtcTimestamp
 
 
 class DioramaDayHeat(BaseModel):

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, shallowRef, watch, type CSSProperties } from 'vue'
+import { computed, onBeforeUnmount, onMounted, shallowRef, useTemplateRef, watch, type CSSProperties } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import UserAvatar from '@/components/user/UserAvatar.vue'
@@ -20,68 +20,56 @@ const props = defineProps<{
   hoveredTaskId: string | null
   autoplay: boolean
   hasRepos: boolean
-  enabledRepoIds: Set<string>
 }>()
 
 const emit = defineEmits<{
   'toggle-pin-task': [taskId: string]
-  'update:autoplay': [value: boolean]
+  'clear-task-focus': []
 }>()
 
 const { t, locale } = useI18n()
 const router = useRouter()
 
-const stageRef = shallowRef<HTMLElement | null>(null)
+const stageRef = useTemplateRef<HTMLDivElement>('stageRef')
 const stageSize = shallowRef({ width: 920, height: 500 })
-const activeIndex = shallowRef(0)
+const selectedTaskId = shallowRef<string | null>(null)
 const stageHovered = shallowRef(false)
 const parallax = shallowRef({ x: 0, y: 0 })
 let autoplayTimer: number | undefined
 let resizeObserver: ResizeObserver | undefined
-let lastWheelAt = 0
+let lastWheelAt = Number.NEGATIVE_INFINITY
 
 const memberById = computed(() => new Map(props.members.map(m => [m.id, m])))
 
-function taskTimestamp(task: DioramaTaskItem): number {
-  const raw = task.updated_at || task.created_at
-  if (!raw) return 0
-  const ms = Date.parse(raw)
-  return Number.isNaN(ms) ? 0 : ms
-}
-
-const filteredTasks = computed(() => {
-  return props.tasks
-    .filter(task => {
-      if (props.activeMemberId && task.creator_id !== props.activeMemberId) return false
-      if (props.hasRepos && task.repos.length > 0 && !task.repos.some(rid => props.enabledRepoIds.has(rid))) {
-        return false
-      }
-      return true
-    })
-    .slice()
-    .sort((a, b) => taskTimestamp(b) - taskTimestamp(a))
-})
+const memberTasks = computed(() => props.activeMemberId
+  ? props.tasks.filter(task => task.creator_id === props.activeMemberId)
+  : props.tasks)
+const pinnedTask = computed(() => props.tasks.find(task => task.id === props.pinnedTaskId))
+const hoveredTask = computed(() => props.tasks.find(task => task.id === props.hoveredTaskId))
+const focusedTask = computed(() => hoveredTask.value ?? pinnedTask.value)
 
 const theaterTasks = computed(() => {
-  const base = filteredTasks.value.slice(0, MAX_THEATER_CARDS)
-  const focusId = props.hoveredTaskId || props.pinnedTaskId
-  if (!focusId || base.some(task => task.id === focusId)) return base
-  const extra = filteredTasks.value.find(task => task.id === focusId)
-  if (!extra) return base
-  return [extra, ...base.slice(0, MAX_THEATER_CARDS - 1)]
+  const base = memberTasks.value.slice(0, MAX_THEATER_CARDS)
+  const focused = focusedTask.value
+  if (!focused || base.some(task => task.id === focused.id)) return base
+  return [focused, ...base.slice(0, MAX_THEATER_CARDS - 1)]
+})
+const activeIndex = computed(() => {
+  const taskId = focusedTask.value?.id ?? selectedTaskId.value
+  return Math.max(0, theaterTasks.value.findIndex(task => task.id === taskId))
 })
 
 const isPaused = computed(() => (
   !props.autoplay
   || stageHovered.value
-  || Boolean(props.pinnedTaskId)
-  || Boolean(props.hoveredTaskId)
+  || Boolean(focusedTask.value)
   || theaterTasks.value.length < 2
 ))
 
 const pauseReasonLabel = computed(() => {
-  if (props.pinnedTaskId) return t('dashboard.diorama.theater_paused_pinned')
-  if (props.hoveredTaskId || stageHovered.value) return t('dashboard.diorama.theater_paused_preview')
+  if (hoveredTask.value) return t('dashboard.diorama.theater_paused_preview')
+  if (pinnedTask.value) return t('dashboard.diorama.theater_paused_pinned')
+  if (stageHovered.value) return t('dashboard.diorama.theater_paused_preview')
   if (!props.autoplay) return t('dashboard.diorama.theater_paused_manual')
   return ''
 })
@@ -122,35 +110,25 @@ const spatialLayouts = computed(() => computeSpatialTheaterLayouts({
   stageHeight: stageSize.value.height,
 }))
 
-function cardLayout(index: number): { style: CSSProperties; isFront: boolean } {
-  const item = spatialLayouts.value[index]
-  if (!item) {
-    return { isFront: false, style: {} }
-  }
+const cardStyles = computed<CSSProperties[]>(() => spatialLayouts.value.map(item => {
   if (item.isFront) {
     return {
-      isFront: true,
-      style: {
-        zIndex: item.zIndex,
-        opacity: 1,
-        transform: `translate3d(${item.x}px, ${item.y}px, 0px)`,
-      },
+      zIndex: item.zIndex,
+      opacity: 1,
+      transform: `translate3d(${item.x}px, ${item.y}px, 0px)`,
     }
   }
   const px = Math.round(item.x + parallax.value.x * (-item.z / 95))
   const py = Math.round(item.y + parallax.value.y * (-item.z / 95))
   return {
-    isFront: false,
-    style: {
-      zIndex: item.zIndex,
-      opacity: item.opacity,
-      transform: `translate3d(${px}px, ${py}px, ${item.z}px) rotateX(${item.rotX}deg) rotateY(${item.rotY}deg) rotateZ(${item.rotZ}deg) scale(${item.scale})`,
-    },
+    zIndex: item.zIndex,
+    opacity: item.opacity,
+    transform: `translate3d(${px}px, ${py}px, ${item.z}px) rotateX(${item.rotX}deg) rotateY(${item.rotY}deg) rotateZ(${item.rotZ}deg) scale(${item.scale})`,
   }
-}
+}))
 
 function formatTaskDate(task: DioramaTaskItem): string {
-  const raw = task.updated_at || task.created_at
+  const raw = task.last_activity_at
   if (!raw) return ''
   const date = new Date(raw)
   if (Number.isNaN(date.getTime())) return ''
@@ -172,33 +150,34 @@ function formatTaskDate(task: DioramaTaskItem): string {
   return `${m}-${d} ${hh}:${mm}`
 }
 
+const taskDateLabels = computed(() => new Map(theaterTasks.value.map(task => [task.id, formatTaskDate(task)])))
+
 function taskTypeLabel(taskType: string): string {
   return String(taskType || '').toUpperCase() === 'DIAGNOSIS'
     ? t('task_types.diagnosis_short')
     : t('task_types.development_short')
 }
 
-function step(delta: number) {
-  const n = theaterTasks.value.length
-  if (n < 2) return
-  if (props.pinnedTaskId) emit('toggle-pin-task', props.pinnedTaskId)
-  activeIndex.value = (activeIndex.value + delta + n) % n
+function selectTask(taskId: string) {
+  selectedTaskId.value = taskId
+  if (props.pinnedTaskId || props.hoveredTaskId) emit('clear-task-focus')
 }
 
-function jumpTo(index: number) {
-  const n = theaterTasks.value.length
-  if (!n) return
-  if (props.pinnedTaskId) emit('toggle-pin-task', props.pinnedTaskId)
-  activeIndex.value = Math.max(0, Math.min(n - 1, index))
+function step(delta: -1 | 1) {
+  const tasks = theaterTasks.value
+  if (tasks.length < 2) return false
+  const nextIndex = (activeIndex.value + delta + tasks.length) % tasks.length
+  selectTask(tasks[nextIndex].id)
+  return true
 }
 
-function handleCardClick(task: DioramaTaskItem, index: number) {
-  if (index === activeIndex.value) {
-    emit('toggle-pin-task', task.id)
+function handleCardClick(taskId: string) {
+  if (taskId !== frontTask.value?.id) {
+    selectTask(taskId)
     return
   }
-  if (props.pinnedTaskId) emit('toggle-pin-task', props.pinnedTaskId)
-  activeIndex.value = index
+  selectedTaskId.value = taskId
+  emit('toggle-pin-task', taskId)
 }
 
 function openTaskChat(taskId: string) {
@@ -231,12 +210,14 @@ function handleMouseLeave() {
 }
 
 function handleWheel(e: WheelEvent) {
-  if (theaterTasks.value.length < 2) return
+  if (e.ctrlKey || theaterTasks.value.length < 2) return
+  const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
+  if (!delta) return
   e.preventDefault()
   const now = performance.now()
   if (now - lastWheelAt < 260) return
   lastWheelAt = now
-  step(e.deltaY > 0 || e.deltaX > 0 ? 1 : -1)
+  step(delta > 0 ? 1 : -1)
 }
 
 function syncAutoplayTimer() {
@@ -246,25 +227,9 @@ function syncAutoplayTimer() {
   }
   if (isPaused.value) return
   autoplayTimer = window.setInterval(() => {
-    const n = theaterTasks.value.length
-    if (n < 2) return
-    activeIndex.value = (activeIndex.value + 1) % n
+    if (!isPaused.value) step(1)
   }, AUTOPLAY_INTERVAL_MS)
 }
-
-watch(
-  [() => props.hoveredTaskId, () => props.pinnedTaskId, theaterTasks],
-  ([hoveredId, pinnedId, list]) => {
-    const targetId = hoveredId || pinnedId
-    if (targetId) {
-      const idx = list.findIndex(item => item.id === targetId)
-      if (idx !== -1) activeIndex.value = idx
-    } else if (activeIndex.value >= list.length) {
-      activeIndex.value = 0
-    }
-  },
-  { immediate: true },
-)
 
 watch(isPaused, () => {
   syncAutoplayTimer()
@@ -294,7 +259,7 @@ onBeforeUnmount(() => {
   }
 })
 
-defineExpose({ step, jumpTo })
+defineExpose({ step })
 </script>
 
 <template>
@@ -328,7 +293,6 @@ defineExpose({ step, jumpTo })
     <!-- Empty State -->
     <div v-if="!theaterTasks.length" class="empty-theater-card">
       <p class="empty-title">{{ t('dashboard.diorama.theater_empty') }}</p>
-      <p class="empty-desc">{{ t('dashboard.diorama.theater_empty_hint') }}</p>
     </div>
 
     <!-- 3D Glass Carousel World -->
@@ -340,12 +304,12 @@ defineExpose({ step, jumpTo })
         :class="[
           `tone-${statusTone(task)}`,
           {
-            'is-front': cardLayout(index).isFront,
+            'is-front': index === activeIndex,
             'is-pinned': pinnedTaskId === task.id,
           },
         ]"
-        :style="cardLayout(index).style"
-        @click="handleCardClick(task, index)"
+        :style="cardStyles[index]"
+        @click="handleCardClick(task.id)"
       >
         <div class="card-sheen" aria-hidden="true" />
         <div class="card-inner">
@@ -360,7 +324,13 @@ defineExpose({ step, jumpTo })
               />
               <span>{{ t(taskStatusKey(taskDisplayStatus(task.status, task.interrupt_kind))) }}</span>
             </span>
-            <time v-if="formatTaskDate(task)" class="card-time">{{ formatTaskDate(task) }}</time>
+            <time
+              v-if="taskDateLabels.get(task.id)"
+              class="card-time"
+              :datetime="task.last_activity_at ?? undefined"
+            >
+              {{ taskDateLabels.get(task.id) }}
+            </time>
           </header>
 
           <div class="card-title-block">
@@ -401,7 +371,7 @@ defineExpose({ step, jumpTo })
             </div>
 
             <button
-              v-if="cardLayout(index).isFront"
+              v-if="index === activeIndex"
               type="button"
               class="enter-chat-btn"
               @click.stop="openTaskChat(task.id)"
@@ -427,7 +397,7 @@ defineExpose({ step, jumpTo })
       >
         <ChevronLeft class="nav-icon" />
       </button>
-      <div class="nav-dots" role="tablist">
+      <div class="nav-dots" role="group" :aria-label="t('dashboard.diorama.theater_title')">
         <button
           v-for="(task, index) in theaterTasks"
           :key="task.id"
@@ -435,8 +405,8 @@ defineExpose({ step, jumpTo })
           class="nav-dot"
           :class="{ 'is-active': index === activeIndex }"
           :title="task.name"
-          :aria-selected="index === activeIndex"
-          @click="jumpTo(index)"
+          :aria-current="index === activeIndex ? 'true' : undefined"
+          @click="selectTask(task.id)"
         />
       </div>
       <button
@@ -572,12 +542,6 @@ defineExpose({ step, jumpTo })
   font-size: 14px;
   font-weight: 600;
   color: var(--color-text-title);
-}
-
-.empty-desc {
-  margin: 6px 0 0;
-  font-size: 12px;
-  color: var(--color-text-muted);
 }
 
 .spatial-world {

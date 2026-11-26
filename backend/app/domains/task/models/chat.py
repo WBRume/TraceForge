@@ -69,7 +69,10 @@ class ChatMessage(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     sort_seq = Column(BigInteger, nullable=True)
-    __table_args__ = (Index("ix_chat_message_context", "task_id", "created_at", "sort_seq", "id"),)
+    __table_args__ = (
+        Index("ix_chat_message_context", "task_id", "created_at", "sort_seq", "id"),
+        Index("ix_chat_messages_workspace_created_task", "workspace_id", "created_at", "task_id"),
+    )
 
     # Relationships
     task = relationship("SddTask", back_populates="messages")

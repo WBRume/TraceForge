@@ -18,6 +18,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.orm import relationship
 
@@ -51,6 +52,13 @@ class SddAiJob(Base):
         Index("ix_sdd_ai_jobs_reclaim", "status", "lease_expires_at"),
         Index("ix_sdd_ai_jobs_queue_claim", "queue_key", "status", "created_at", "id"),
         Index("ix_sdd_ai_jobs_worker_active", "worker_id", "worker_boot_id", "status"),
+        Index(
+            "ix_sdd_ai_jobs_workspace_channel_activity",
+            "workspace_id",
+            "channel",
+            text("(coalesce(finished_at, started_at))"),
+            "task_id",
+        ),
     )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)

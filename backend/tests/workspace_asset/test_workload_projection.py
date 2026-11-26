@@ -21,7 +21,7 @@ from app.domains.workspace_asset.models.workspace_asset import (
     SddTaskRequirement,
     TaskRequirementRelationType,
 )
-from app.domains.workspace_asset.routers import workspace_asset as routes
+from app.domains.workspace_asset.routers import workspace_asset_workload as routes
 from app.domains.workspace_asset.services.workload import get_workload
 from app.domains.workspace_asset.services.workload_overview import get_workspace_member_workload
 

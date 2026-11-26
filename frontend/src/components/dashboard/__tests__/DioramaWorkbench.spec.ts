@@ -5,13 +5,16 @@ import { createI18n } from 'vue-i18n'
 import zh from '@/locales/zh.json'
 import en from '@/locales/en.json'
 import type { DashboardDioramaResponse } from '@/types/dashboardDiorama'
+import DioramaTimelineBar from '../DioramaTimelineBar.vue'
 import DioramaWorkbench from '../DioramaWorkbench.vue'
 
-const { apiGetMock, pushMock, engineConstructMock, engineDestroyMock } = vi.hoisted(() => ({
+const { apiGetMock, pushMock, engineConstructMock, engineDestroyMock, engineEnableReposMock, engineSearchMock } = vi.hoisted(() => ({
   apiGetMock: vi.fn(),
   pushMock: vi.fn(),
   engineConstructMock: vi.fn(),
   engineDestroyMock: vi.fn(),
+  engineEnableReposMock: vi.fn(),
+  engineSearchMock: vi.fn(),
 }))
 
 vi.mock('vue-router', () => ({
@@ -34,14 +37,14 @@ vi.mock('@/utils/dioramaEngine', () => ({
     }
 
     setData = vi.fn()
-    setEnabledRepos = vi.fn()
+    setEnabledRepos = engineEnableReposMock
     setMetric = vi.fn()
     setIsoMode = vi.fn()
     setLayers = vi.fn()
     setTimeline = vi.fn()
     setHighlight = vi.fn()
     setPendingRepoLabel = vi.fn()
-    setSearchMatches = vi.fn()
+    setSearchMatches = engineSearchMock
     focusEntity = vi.fn()
     resetView = vi.fn()
     rotateView = vi.fn()
@@ -64,8 +67,8 @@ function makeTasks() {
     {
       id: 'task-newest',
       name: 'OpenCode-资产同步验证',
-      description: '等待人类确认资产同步策略',
-      status: 'AWAITING_INPUT',
+      description: '已确认资产同步策略',
+      status: 'COMPLETED',
       interrupt_kind: null,
       task_type: 'DIAGNOSIS',
       creator_id: 'u-yk',
@@ -78,8 +81,9 @@ function makeTasks() {
       files: [],
       added: 0,
       deleted: 0,
-      created_at: '2026-11-26T08:00:00Z',
-      updated_at: '2026-11-26T12:00:00Z',
+      created_at: '2026-10-01T08:00:00Z',
+      updated_at: '2026-10-02T12:00:00Z',
+      last_activity_at: '2026-11-26T12:00:00Z',
     },
     {
       id: 'task-mid',
@@ -100,13 +104,14 @@ function makeTasks() {
       deleted: 0,
       created_at: '2026-11-24T09:00:00Z',
       updated_at: '2026-11-25T10:00:00Z',
+      last_activity_at: '2026-11-25T10:00:00Z',
     },
     {
-      id: 'task-old',
+      id: 'task-interrupted',
       name: '实战路径查看',
-      description: '较早任务',
-      status: 'COMPLETED',
-      interrupt_kind: null,
+      description: '可恢复的中断任务',
+      status: 'INTERRUPTED',
+      interrupt_kind: 'MANUAL',
       task_type: 'DEVELOPMENT',
       creator_id: 'u-collab',
       creator_name: '白板兜底协作者',
@@ -119,7 +124,8 @@ function makeTasks() {
       added: 0,
       deleted: 0,
       created_at: '2026-11-23T09:00:00Z',
-      updated_at: '2026-11-23T11:00:00Z',
+      updated_at: '2026-11-26T13:00:00Z',
+      last_activity_at: '2026-11-05T11:00:00Z',
     },
   ]
 }
@@ -161,9 +167,7 @@ function makeResponse(hasRepos: boolean): DashboardDioramaResponse {
     repos: hasRepos ? ['repo-1'] : [],
   }))
 
-  return {
-    workspace_id: hasRepos ? 'ws-repo' : 'ws-repoless',
-    workspace_name: 'workspace',
+  const period = {
     days: 30,
     date_range: hasRepos ? ['2026-11-24', '2026-11-26'] : [],
     has_repositories: hasRepos,
@@ -172,10 +176,6 @@ function makeResponse(hasRepos: boolean): DashboardDioramaResponse {
     total_modules: hasRepos ? 3 : 0,
     total_commits: hasRepos ? 4 : 0,
     repos,
-    members: [
-      { id: 'u-yk', display_name: 'yk', role: 'OWNER', color: '#0284c7' },
-      { id: 'u-collab', display_name: '白板兜底协作者', role: 'DEVELOPER', color: '#059669' },
-    ],
     tasks,
     timeline: hasRepos
       ? [
@@ -189,20 +189,35 @@ function makeResponse(hasRepos: boolean): DashboardDioramaResponse {
           },
         ]
       : [],
+  }
+
+  return {
+    ...period,
+    workspace_id: hasRepos ? 'ws-repo' : 'ws-repoless',
+    workspace_name: 'workspace',
+    members: [
+      { id: 'u-yk', display_name: 'yk', role: 'OWNER', color: '#0284c7' },
+      { id: 'u-collab', display_name: '白板兜底协作者', role: 'DEVELOPER', color: '#059669' },
+    ],
     generated_at: '2026-11-26T12:00:00Z',
-    windows: {},
+    windows: hasRepos ? {} : { 14: { ...period, days: 14, tasks: tasks.slice(0, 2) } },
   }
 }
 
-function mountWorkbench(workspaceId: string) {
+function mountWorkbench(workspaceId: string, attachTo?: HTMLElement) {
   return mount(DioramaWorkbench, {
     props: { workspaceId },
+    attachTo,
     global: {
       plugins: [createTestI18n()],
       directives: { loading: () => {} },
       stubs: {
         'el-button': { template: '<button><slot /></button>' },
-        'el-input': { props: ['modelValue', 'size', 'clearable', 'placeholder'], template: '<input />' },
+        'el-input': {
+          props: ['modelValue', 'size', 'clearable', 'placeholder'],
+          emits: ['update:modelValue'],
+          template: '<input :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+        },
         'el-empty': { props: ['description'], template: '<div>{{ description }}<slot /></div>' },
         UserAvatar: { props: ['displayName'], template: '<span class="avatar-stub">{{ displayName }}</span>' },
       },
@@ -223,7 +238,7 @@ describe('DioramaWorkbench 3D spatial glass theater', () => {
     vi.useRealTimers()
   })
 
-  it('无仓工作区不渲染白膜与进度条，默认进入近期任务 3D 轮播剧场并支持双向联动', async () => {
+  it('无仓工作区按接口顺序轮播活跃任务并支持侧栏预览', async () => {
     apiGetMock.mockResolvedValue({ data: makeResponse(false) })
     const wrapper = mountWorkbench('ws-repoless')
     await flushPromises()
@@ -241,8 +256,9 @@ describe('DioramaWorkbench 3D spatial glass theater', () => {
     expect(cards).toHaveLength(3)
     expect(cards[0].text()).toContain('OpenCode-资产同步验证')
     expect(cards[0].classes()).toContain('is-front')
+    expect(cards[0].get('time').attributes('datetime')).toBe('2026-11-26T12:00:00Z')
 
-    // 自动轮播切换至下一条最近任务
+    // 中断任务更新时间较晚，轮播仍遵循接口给出的活动顺序。
     vi.advanceTimersByTime(4600)
     await nextTick()
     expect(wrapper.findAll('.spatial-card')[1].classes()).toContain('is-front')
@@ -254,11 +270,20 @@ describe('DioramaWorkbench 3D spatial glass theater', () => {
     expect(wrapper.findAll('.spatial-card')[2].classes()).toContain('is-front')
     expect(wrapper.find('.hud-pause-pill').text()).toContain('交互预览中')
 
+    const shortWindow = wrapper.findAll('.toolbar-row-top .seg-btn').find(btn => btn.text() === '14天')
+    await shortWindow!.trigger('click')
+    expect(shortWindow!.attributes('aria-pressed')).toBe('true')
+    expect(wrapper.findAll('.spatial-card')).toHaveLength(2)
+    expect(wrapper.findAll('.task-card')).toHaveLength(2)
+    expect(apiGetMock).toHaveBeenCalledTimes(1)
+
     wrapper.unmount()
   })
 
   it('有仓工作区可在 2.5D、俯视 与 剧场 视图之间切换', async () => {
-    apiGetMock.mockResolvedValue({ data: makeResponse(true) })
+    const response = makeResponse(true)
+    response.timeline.unshift({ ...response.timeline[0], date: '2026-11-25' })
+    apiGetMock.mockResolvedValue({ data: response })
     const wrapper = mountWorkbench('ws-repo')
     await flushPromises()
     await nextTick()
@@ -267,6 +292,18 @@ describe('DioramaWorkbench 3D spatial glass theater', () => {
     expect(wrapper.find('canvas.diorama-canvas').exists()).toBe(true)
     expect(wrapper.find('.diorama-timeline').exists()).toBe(true)
     expect(wrapper.find('.search-box').exists()).toBe(true)
+
+    await wrapper.get('.search-box input').setValue('src/views')
+    const matches = new Set(['repo-1::src/views'])
+    expect(engineSearchMock).toHaveBeenLastCalledWith(matches)
+    engineSearchMock.mockClear()
+
+    await wrapper.get('.diorama-timeline .play-btn').trigger('click')
+    expect(wrapper.getComponent(DioramaTimelineBar).props()).toMatchObject({ playing: true, dayIndex: 0 })
+
+    const topBtn = wrapper.findAll('.seg-btn').find(btn => btn.text().includes('俯视'))
+    await topBtn!.trigger('click')
+    expect(engineEnableReposMock).not.toHaveBeenCalled()
 
     const theaterBtn = wrapper.findAll('.seg-btn').find(btn => btn.text().includes('剧场'))
     expect(theaterBtn).toBeDefined()
@@ -279,6 +316,7 @@ describe('DioramaWorkbench 3D spatial glass theater', () => {
     expect(wrapper.find('.search-box').exists()).toBe(false)
     expect(wrapper.find('.spatial-stage').exists()).toBe(true)
 
+    vi.advanceTimersByTime(1000)
     const view3dBtn = wrapper.findAll('.seg-btn').find(btn => btn.text().includes('2.5D'))
     await view3dBtn!.trigger('click')
     await nextTick()
@@ -286,6 +324,66 @@ describe('DioramaWorkbench 3D spatial glass theater', () => {
     expect(engineConstructMock).toHaveBeenCalledTimes(2)
     expect(wrapper.find('canvas.diorama-canvas').exists()).toBe(true)
     expect(wrapper.find('.diorama-timeline').exists()).toBe(true)
+    expect(wrapper.getComponent(DioramaTimelineBar).props()).toMatchObject({ playing: false, dayIndex: 0 })
+    expect(engineSearchMock).toHaveBeenLastCalledWith(matches)
+
+    wrapper.unmount()
+  })
+
+  it('固定超出六张卡片的任务后正确翻页，隐藏仓库后清理不可见的固定任务', async () => {
+    const response = makeResponse(true)
+    response.workspace_id = 'ws-repo-filter'
+    response.repos.push({ ...response.repos[0], id: 'repo-2', name: '第二个仓库', modules: [] })
+    response.tasks = Array.from({ length: 8 }, (_, i) => ({
+      ...response.tasks[0],
+      id: `task-${i + 1}`,
+      name: `任务 ${i + 1}`,
+      repos: [i === 7 ? 'repo-2' : 'repo-1'],
+    }))
+    apiGetMock.mockResolvedValue({ data: response })
+    const wrapper = mountWorkbench(response.workspace_id)
+    await flushPromises()
+
+    await wrapper.findAll('.seg-btn').find(btn => btn.text().includes('剧场'))!.trigger('click')
+    const frontTitle = () => wrapper.get('.spatial-card.is-front .card-title').text()
+    await wrapper.findAll('.task-card')[7].trigger('click')
+    expect(frontTitle()).toBe('任务 8')
+
+    await wrapper.get('.nav-step-btn[title="下一条"]').trigger('click')
+    expect(frontTitle()).toBe('任务 1')
+
+    await wrapper.findAll('.task-card')[7].trigger('click')
+    await wrapper.findAll('.repo-pill')[1].trigger('click')
+    expect(wrapper.findAll('.task-card')).toHaveLength(7)
+    expect(wrapper.find('.task-card.is-pinned').exists()).toBe(false)
+    expect(frontTitle()).toBe('任务 1')
+    expect(wrapper.get('.hud-counter').text()).toBe('1 / 6')
+
+    vi.advanceTimersByTime(4500)
+    await nextTick()
+    expect(frontTitle()).toBe('任务 2')
+
+    wrapper.unmount()
+  })
+
+  it('在按钮上保留空格键的原生操作', async () => {
+    const response = { ...makeResponse(false), workspace_id: 'ws-keyboard' }
+    apiGetMock.mockResolvedValue({ data: response })
+    const wrapper = mountWorkbench(response.workspace_id, document.body)
+    await flushPromises()
+
+    const toggle = wrapper.get('button.toggle-chip')
+    const buttonSpace = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
+    toggle.element.dispatchEvent(buttonSpace)
+    await nextTick()
+    expect(buttonSpace.defaultPrevented).toBe(false)
+    expect(toggle.attributes('aria-pressed')).toBe('true')
+
+    const shortcut = new KeyboardEvent('keydown', { key: ' ', cancelable: true })
+    window.dispatchEvent(shortcut)
+    await nextTick()
+    expect(shortcut.defaultPrevented).toBe(true)
+    expect(toggle.attributes('aria-pressed')).toBe('false')
 
     wrapper.unmount()
   })

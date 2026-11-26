@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.task.models.chat import ChatMessage, MessageRole
-from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus
+from app.domains.task.models.session_turn import TaskSessionTurn
 from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.services.task_activity import active_task_chat_turn, task_chat_job_scope
 from app.domains.workspace.services.workspace_service import list_workspace_members
 from app.domains.workspace_asset.models.workspace_asset import HumanReviewStatus, SddHumanReview
 from app.domains.workspace_asset.schemas.workload import (
@@ -36,21 +37,11 @@ WAIT_LIMIT = timedelta(minutes=30)
 
 @register("ExecutionProject")
 def _job_facts(db: Session, workspace_id: str):
-    # The active job and the current task generation must agree. Older data may
-    # have a nullable job generation, in which case the task's run ID is required.
-    matching_generation = or_(
-        SddTask.session_generation == SddAiJob.session_generation,
-        and_(SddAiJob.session_generation.is_(None), SddTask.status_run_id == SddAiJob.id),
-    )
     return (
         db.query(SddAiJob, SddTask)
         .join(SddTask, SddTask.id == SddAiJob.task_id)
         .filter(
-            SddAiJob.workspace_id == workspace_id,
-            SddTask.workspace_id == workspace_id,
-            SddAiJob.channel == AiJobChannel.TASK_CHAT,
-            SddAiJob.visibility == "workspace",
-            matching_generation,
+            *task_chat_job_scope(workspace_id),
             or_(
                 SddAiJob.status.in_(ACTIVE_STATUSES | {AiJobStatus.WAITING_HITL}),
                 SddTask.status_run_id == SddAiJob.id,
@@ -112,8 +103,7 @@ def _followup_events(db: Session, workspace_id: str, task_ids: set[str]):
         .filter(
             TaskSessionTurn.workspace_id == workspace_id,
             TaskSessionTurn.task_id.in_(task_ids),
-            TaskSessionTurn.session_generation == SddTask.session_generation,
-            TaskSessionTurn.status == TaskSessionTurnStatus.ACTIVE,
+            active_task_chat_turn(),
             or_(TaskSessionTurn.turn_index > 1, prior_result),
             ChatMessage.role == MessageRole.USER,
         )
