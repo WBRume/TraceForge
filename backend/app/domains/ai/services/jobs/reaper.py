@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -36,6 +37,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
     REMOTE_STOP_UNCONFIRMED,
     AttemptTerminationRequest,
     evidence_from_stop_result,
+    lock_job_in_txn,
     request_attempt_termination_in_txn,
 )
 from app.domains.ai.services.jobs import attempts as attempt_ops
@@ -63,6 +65,29 @@ def remote_locator(db, job):
 
 
 # ────────────────────────── 可回收扫描与收养 ──────────────────────────
+
+
+@dataclass(frozen=True)
+class ReapReservation:
+    termination_attempt: int
+    locator: dict[str, Any]
+
+
+def _stop_locator(db, job: SddAiJob, reason: str) -> dict[str, Any]:
+    return {
+        "job_id": str(job.id),
+        "task_id": str(job.task_id or "") or None,
+        "run_token": str(job.run_token or ""),
+        "process_pid": job.process_pid,
+        "process_started_at": job.process_started_at,
+        "process_group_id": job.process_group_id,
+        "process_containment_id": job.process_containment_id,
+        "job_started_at": job.started_at,
+        "queue_key": str(job.queue_key or ""),
+        "reason": reason,
+        "worker_boot_id": job.worker_boot_id,
+        **remote_locator(db, job),
+    }
 
 
 def list_reclaimable_jobs_sync(task_id: str | None = None) -> list[dict[str, Any]]:
@@ -114,24 +139,10 @@ def list_reclaimable_jobs_sync(task_id: str | None = None) -> list[dict[str, Any
                 reason = "WORKER_RESTART" if owner_gone else "LEASE_EXPIRED"
             result.append(
                 {
-                    "job_id": str(job.id),
-                    "task_id": str(job.task_id or "") or None,
-                    "run_token": str(job.run_token or ""),
+                    **_stop_locator(db, job, reason),
                     "expected_run_token": str(job.run_token or "") or None,
-                    "process_pid": job.process_pid,
-                    "process_started_at": job.process_started_at,
-                    "process_group_id": job.process_group_id,
-                    "process_containment_id": job.process_containment_id,
-                    "job_started_at": job.started_at,
-                    "queue_key": str(job.queue_key or ""),
-                    "reason": reason,
                     "attempt_count": int(job.attempt_count or 0),
-                    "worker_boot_id": job.worker_boot_id,
                     "reap_failure_count": int(job.reap_failure_count or 0),
-                    # durable remote stop locator：reaper 在
-                    # worker 重启后必须能凭持久化行定位并停止远程 provider
-                    # session，而不是只做本地进程检查。
-                    **remote_locator(db, job),
                     "recoverable_remote": remote_recovery.recoverable(job) and remote_recovery.current_task(db, job),
                 }
             )
@@ -145,26 +156,24 @@ def adopt_reclaimable_job_sync(
     expected_run_token: str | None,
     adopted_run_token: str,
     reason: str,
-) -> bool:
+) -> ReapReservation | None:
     db = SessionLocal()
     try:
+        now = datetime.utcnow()
         query = db.query(SddAiJob).filter(SddAiJob.id == job_id, SddAiJob.execution_backend == "durable")
         query = query.filter(
             SddAiJob.run_token == expected_run_token if expected_run_token else SddAiJob.run_token.is_(None)
         )
-        affected = query.filter(
+        query = query.filter(
             or_(
                 SddAiJob.lease_expires_at.is_(None),
-                SddAiJob.lease_expires_at <= datetime.utcnow(),
+                SddAiJob.lease_expires_at <= now,
                 and_(SddAiJob.status == AiJobStatus.INTERRUPTED, attempt_ownership_predicate()),
             ),
             or_(
-                SddAiJob.status.in_(
-                    [
-                        AiJobStatus.RUNNING,
-                        AiJobStatus.TERMINATING,
-                        AiJobStatus.ORPHANED,
-                    ]
+                and_(
+                    SddAiJob.status.in_([AiJobStatus.RUNNING, AiJobStatus.TERMINATING, AiJobStatus.ORPHANED]),
+                    or_(SddAiJob.next_reap_at.is_(None), SddAiJob.next_reap_at <= now),
                 ),
                 and_(
                     SddAiJob.status == AiJobStatus.INTERRUPTED,
@@ -172,7 +181,20 @@ def adopt_reclaimable_job_sync(
                 ),
             ),
             SddAiJob.manual_intervention_required.isnot(True),
-        ).update(
+        )
+        job = lock_job_in_txn(db, query)
+        if job is None:
+            return None
+        locator = _stop_locator(db, job, reason)
+        if (
+            remote_recovery.recoverable(job)
+            and remote_recovery.current_task(db, job)
+            and not locator["legacy_unbound_after_switch"]
+        ):
+            # A checkpoint can commit after the scan. Let the next scan
+            # attach to the existing remote execution.
+            return None
+        affected = query.update(
             {
                 SddAiJob.status: AiJobStatus.TERMINATING,
                 SddAiJob.version: SddAiJob.version + 1,
@@ -183,18 +205,21 @@ def adopt_reclaimable_job_sync(
                 SddAiJob.termination_attempts: SddAiJob.termination_attempts + 1,
                 SddAiJob.terminal_reason: reason,
                 SddAiJob.failure_code: reason,
-                SddAiJob.last_reap_attempt_at: datetime.utcnow(),
-                SddAiJob.lease_expires_at: datetime.utcnow() + timedelta(seconds=60),
+                SddAiJob.last_reap_attempt_at: now,
+                SddAiJob.lease_expires_at: now + timedelta(seconds=60),
             },
             synchronize_session=False,
         )
-        if int(affected or 0) == 1:
-            db.expire_all()
-            from app.domains.ai.models.job_history import record_event
+        if affected != 1:
+            return None
+        db.expire_all()
+        from app.domains.ai.models.job_history import record_event
 
-            record_event(db, db.get(SddAiJob, job_id))
+        job = db.get(SddAiJob, job_id)
+        reservation = ReapReservation(job.termination_attempts, locator)
+        record_event(db, job)
         db.commit()
-        return int(affected or 0) == 1
+        return reservation
     finally:
         db.close()
 
@@ -437,14 +462,16 @@ async def reap_stale_jobs(*, task_id: str | None = None) -> int:
         if await remote_recovery.attach_reclaimable(row):
             continue
         token = row["run_token"] or str(uuid.uuid4())
-        if not await run_db(
+        reservation = await run_db(
             adopt_reclaimable_job_sync,
             row["job_id"],
             row.get("expected_run_token"),
             token,
             row["reason"],
-        ):
+        )
+        if reservation is None:
             continue
+        row = reservation.locator
         result = await stop_attempt_processes(row, token)
         if isinstance(result, AgentStopResult):
             # 远程 reaper：ACK 才允许业务终态并清 ownership；NACK/UNKNOWN
@@ -457,6 +484,7 @@ async def reap_stale_jobs(*, task_id: str | None = None) -> int:
                 reason=_reap_stop_reason(row, result),
                 failure_code=_reap_failure_code(row, result),
                 recovered_result=result.recovered_result,
+                expected_termination_attempt=reservation.termination_attempt,
                 evidence=evidence_from_stop_result(
                     result,
                     remote_session_started=True,
@@ -475,6 +503,7 @@ async def reap_stale_jobs(*, task_id: str | None = None) -> int:
                 confirmed_dead=confirmed_dead,
                 reason=_reap_stop_reason(row, result),
                 failure_code=_reap_failure_code(row, result),
+                expected_termination_attempt=reservation.termination_attempt,
             )
         if payload:
             reclaimed += 1

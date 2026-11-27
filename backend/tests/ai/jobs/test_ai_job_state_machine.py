@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 from app.agents import bind_agent_attempt, reset_agent_attempt, reset_agent_attempt_runtime
 from app.agents.contract import AgentAttemptContext, AgentAttemptRuntimeState, AgentProcessIdentity
@@ -238,7 +242,7 @@ def test_dirty_interrupted_with_ownership_is_reaped(monkeypatch):
     adopted = ai_reaper.adopt_reclaimable_job_sync(
         "reliability-job", "run-legacy", "run-legacy", "INTERRUPTED_OWNERSHIP_LEAK"
     )
-    assert adopted is True
+    assert adopted is not None
     db.expire_all()
     assert db.get(SddAiJob, "reliability-job").status == AiJobStatus.TERMINATING
 
@@ -248,6 +252,7 @@ def test_dirty_interrupted_with_ownership_is_reaped(monkeypatch):
         confirmed_dead=True,
         reason="reaper verified",
         failure_code="INTERRUPTED_OWNERSHIP_LEAK",
+        expected_termination_attempt=adopted.termination_attempt,
     )
     db.expire_all()
     saved = db.get(SddAiJob, "reliability-job")
@@ -264,7 +269,8 @@ def test_reaper_owns_termination_after_adopting_job_in_same_worker(monkeypatch):
     db.commit()
     patch_ai_job_db(monkeypatch, factory)
 
-    assert ai_reaper.adopt_reclaimable_job_sync(job.id, "run-1", "run-1", "LEASE_EXPIRED")
+    adopted = ai_reaper.adopt_reclaimable_job_sync(job.id, "run-1", "run-1", "LEASE_EXPIRED")
+    assert adopted is not None
     assert (
         ai_attempts.converge_termination_sync(
             job.id,
@@ -281,12 +287,73 @@ def test_reaper_owns_termination_after_adopting_job_in_same_worker(monkeypatch):
     assert job.run_token == "run-1"
 
     payload = ai_attempts.finish_termination_sync(
-        job.id, "run-1", confirmed_dead=True, reason="reaper verified", failure_code="LEASE_EXPIRED"
+        job.id,
+        "run-1",
+        confirmed_dead=True,
+        reason="reaper verified",
+        failure_code="LEASE_EXPIRED",
+        expected_termination_attempt=adopted.termination_attempt,
     )
 
     assert payload["status"] == AiJobStatus.INTERRUPTED.value
     db.refresh(job)
     _assert_no_ownership(job)
+
+
+@pytest.mark.asyncio
+async def test_expired_reaper_cannot_finalize_a_new_reservation_in_same_boot(monkeypatch):
+    factory = _session_factory()
+    patch_ai_job_db(monkeypatch, factory)
+    with factory() as db:
+        job = _owned_running_job(db)
+        job_id = job.id
+        job.lease_expires_at = datetime(2000, 1, 1)
+        db.commit()
+
+    entered = [asyncio.Event(), asyncio.Event()]
+    release = [asyncio.Event(), asyncio.Event()]
+    calls = 0
+
+    async def verify_stop(_row, _token):
+        nonlocal calls
+        attempt = calls
+        calls += 1
+        entered[attempt].set()
+        await release[attempt].wait()
+        return SimpleNamespace(confirmed_dead=True)
+
+    monkeypatch.setattr(ai_reaper, "stop_attempt_processes", verify_stop)
+    broadcast = AsyncMock()
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", broadcast)
+    first = asyncio.create_task(ai_reaper.reap_stale_jobs())
+    second = None
+    try:
+        await asyncio.wait_for(entered[0].wait(), timeout=5)
+        with factory() as db:
+            job = db.get(SddAiJob, job_id)
+            job.lease_expires_at = datetime(2000, 1, 1)
+            db.commit()
+        second = asyncio.create_task(ai_reaper.reap_stale_jobs())
+        await asyncio.wait_for(entered[1].wait(), timeout=5)
+        release[0].set()
+        assert await asyncio.wait_for(first, timeout=5) == 0
+        with factory() as db:
+            job = db.get(SddAiJob, job_id)
+            assert job.status == AiJobStatus.TERMINATING
+            assert job.run_token == "run-1"
+        broadcast.assert_not_awaited()
+        release[1].set()
+        assert await asyncio.wait_for(second, timeout=5) == 1
+        broadcast.assert_awaited_once()
+        with factory() as db:
+            job = db.get(SddAiJob, job_id)
+            assert job.status == AiJobStatus.INTERRUPTED
+            _assert_no_ownership(job)
+    finally:
+        tasks = [task for task in (first, second) if task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def test_dirty_interrupted_without_death_proof_is_not_cleared(monkeypatch):
@@ -301,7 +368,7 @@ def test_dirty_interrupted_without_death_proof_is_not_cleared(monkeypatch):
     adopted = ai_reaper.adopt_reclaimable_job_sync(
         "reliability-job", "run-legacy", "run-legacy", "INTERRUPTED_OWNERSHIP_LEAK"
     )
-    assert adopted is True
+    assert adopted is not None
     db.expire_all()
     assert db.get(SddAiJob, "reliability-job").status == AiJobStatus.TERMINATING
 
@@ -311,6 +378,7 @@ def test_dirty_interrupted_without_death_proof_is_not_cleared(monkeypatch):
         confirmed_dead=False,
         reason="cannot inspect tree",
         failure_code="PROCESS_TREE_STILL_ALIVE",
+        expected_termination_attempt=adopted.termination_attempt,
     )
     db.expire_all()
     saved = db.get(SddAiJob, "reliability-job")

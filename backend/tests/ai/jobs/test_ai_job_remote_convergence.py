@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 
+import pytest
+
 from app.agents.contract import (
     EXECUTION_KIND_REMOTE_SESSION,
     AgentAttemptContext,
@@ -396,10 +398,11 @@ class _FakeRemoteBackend:
         self.close_calls += 1
 
 
-def test_remote_reaper_uses_persisted_backend_and_session_id(monkeypatch):
+@pytest.mark.parametrize("locator_commits_after_scan", [False, True])
+def test_remote_reaper_uses_persisted_backend_and_session_id(monkeypatch, locator_commits_after_scan):
     factory = _session_factory()
     db = factory()
-    _seed_orphaned_remote_job(db)
+    _seed_orphaned_remote_job(db, session_id=None if locator_commits_after_scan else "persisted-session-1")
     patch_ai_job_db(monkeypatch, factory)
     monkeypatch.setattr("app.database.SessionLocal", factory)
 
@@ -409,6 +412,16 @@ def test_remote_reaper_uses_persisted_backend_and_session_id(monkeypatch):
         lambda name, *, task_id=None: fake_backend,
     )
     monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
+    if locator_commits_after_scan:
+        scan = ai_reaper.list_reclaimable_jobs_sync
+
+        def scan_before_locator_is_committed(task_id=None):
+            rows = scan(task_id)
+            with factory.begin() as writer:
+                writer.get(SddAiJob, "remote-reap-job").session_id = "persisted-session-1"
+            return rows
+
+        monkeypatch.setattr(ai_reaper, "list_reclaimable_jobs_sync", scan_before_locator_is_committed)
 
     reclaimed = asyncio.run(ai_reaper.reap_stale_jobs())
     assert reclaimed == 1
@@ -618,7 +631,8 @@ def test_remote_stop_ack_allows_interrupted():
     assert saved.run_token is None
 
 
-def test_first_task_revision_preserves_session_and_finalizes_remote_result(monkeypatch):
+@pytest.mark.parametrize("task_generation", [1, 2])
+def test_task_chat_callbacks_require_current_generation_at_first_revision(monkeypatch, task_generation):
     from app.domains.ai.services.jobs import fencing
     from app.domains.ai.services.jobs.executors.task_chat import _sync_engine_session_sync
     from app.domains.task.models.task import SddTask, TaskStatus
@@ -633,23 +647,21 @@ def test_first_task_revision_preserves_session_and_finalizes_remote_result(monke
             creator_id="user-1",
             name="First turn",
             status=TaskStatus.RUNNING,
+            session_generation=task_generation,
             session_revision=0,
         )
         db.add(task)
         job = _remote_job(db, status=AiJobStatus.RUNNING)
+        job.session_generation = 1
         job.session_revision = 0
         db.commit()
         gate = SessionGate(task_id=task.id, job_id=job.id, session_revision=0, ttl_seconds=1)
-        assert gate.fence_sync(db)
-        assert _sync_engine_session_sync(db, job.id, "remote-session", "run-1")
+        events_current = gate.fence_sync(db)
+        session_written = _sync_engine_session_sync(db, job.id, "remote-session", "run-1")
         db.commit()
         update = fencing.update_job_state_sync(
             job.id, session_id="remote-session", agent_backend="opencode", run_token="run-1"
         )
-        assert update["broadcast"]
-        db.expire_all()
-        assert task.session_id == "remote-session"
-        assert job.session_id == "remote-session"
         result = convergence.converge_job_attempt_sync(
             db,
             AttemptConvergenceRequest(
@@ -672,7 +684,10 @@ def test_first_task_revision_preserves_session_and_finalizes_remote_result(monke
                 intent=ConvergenceIntent.NORMAL_FINALIZE,
             ),
         )
-        assert result.changed
-        assert result.status == AiJobStatus.SUCCESS.value
-        assert job.run_token is None
-        assert job.finished_at is not None
+        current = task_generation == 1
+        assert (events_current, session_written, update["broadcast"], result.changed) == (current,) * 4
+        db.expire_all()
+        assert task.session_id == job.session_id == ("remote-session" if current else None)
+        assert job.status == (AiJobStatus.SUCCESS if current else AiJobStatus.RUNNING)
+        assert job.run_token == (None if current else "run-1")
+        assert (job.finished_at is not None) is current

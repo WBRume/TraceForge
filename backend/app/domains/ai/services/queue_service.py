@@ -209,6 +209,7 @@ def _adopt_orphaned_job_for_manual_action(
     return {
         "job_id": str(job.id),
         "run_token": adopted_run_token,
+        "termination_attempt": job.termination_attempts,
         "previous_run_token": previous_run_token,
         "process_pid": job.process_pid,
         "process_started_at": job.process_started_at,

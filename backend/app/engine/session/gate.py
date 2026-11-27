@@ -15,6 +15,7 @@ from app.core.logging import get_logger
 from app.core.offload import run_db
 from app.database import SessionLocal
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+from app.domains.ai.services.jobs.fencing import task_session_matches_job
 from app.domains.task.models.task import SddTask
 
 logger = get_logger(__name__, category="task_execution")
@@ -135,9 +136,7 @@ class SessionGate:
                 return False
             if job.task_id:
                 task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-                if not task or int(task.session_revision if task.session_revision is not None else -1) != int(
-                    self.session_revision
-                ):
+                if not task_session_matches_job(task, job):
                     return False
             return int(job.session_revision if job.session_revision is not None else -1) == int(self.session_revision)
         except Exception:

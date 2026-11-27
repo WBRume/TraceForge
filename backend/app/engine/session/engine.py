@@ -40,9 +40,10 @@ from app.config import settings
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
 from app.core.offload import run_db, run_git_job
 from app.database import SessionLocal
+from app.domains.ai.models.ai_job import SddAiJob
 from app.domains.skill.services import skill_runtime_trace_service
 from app.domains.task.models.log import LogType
-from app.domains.task.models.session_turn import TaskSessionTurn
+from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus
 from app.domains.task.services.status_machine import Trigger
 from app.engine.claude_event_adapter import claude_stream_to_agent_events
 from app.engine.session import turn_setup
@@ -400,6 +401,39 @@ class TaskAgentEngine:
         )
         return project_path, env_overrides
 
+    async def _run_backend(self, prompt, project_path, env_overrides, recovery, images):
+        request = turn_setup.build_agent_run_request(
+            backend=self.cli,
+            model=await run_db(turn_setup.task_model_sync, self.task_id, self.current_job_id),
+            prompt=prompt,
+            project_path=project_path,
+            session_id=self.session_id,
+            env_overrides=env_overrides,
+            task_id=self.task_id,
+            ws_id=self.ws_id,
+            user_id=self.user_id,
+            job_id=self.current_job_id,
+            attempt=self.attempt,
+            on_process_started=self._on_process_started,
+        )
+        self._configure_run_request(request, recovery, images)
+        result = await run_agent_backend_with_logging(self.cli, request, self.handle_agent_event)
+        self.last_result = result
+        self.last_termination_confirmed_dead = result.termination_confirmed_dead
+        if result.session_id:
+            self.session_id = result.session_id
+        if not self._interrupt_requested:
+            outcome = classify_turn_outcome(
+                result.result_text, is_error=not result.success, finish_reason=result.finish_reason or ""
+            )
+            self.last_result_success = None if outcome == "timeout" else outcome == "success"
+            self.last_result_interrupted = outcome == "timeout"
+            self.last_result_text = result.result_text
+        try:
+            await run_db(self._persist_provider_state_sync, result, self._gate, self.session_turn_id)
+        except Exception:
+            logger.exception("Provider result metadata could not be saved: job={}", self.current_job_id)
+
     async def run(
         self,
         prompt: str,
@@ -447,33 +481,7 @@ class TaskAgentEngine:
                     prompt += guide_turn["prompt"]
                 # 统一 AgentBackend 路径；旧 CliBridgeBase（mock/legacy）走 dict 事件兼容路径
                 if isinstance(self.cli, AgentBackend):
-                    request = turn_setup.build_agent_run_request(
-                        backend=self.cli,
-                        model=await run_db(turn_setup.task_model_sync, self.task_id, self.current_job_id),
-                        prompt=prompt,
-                        project_path=project_path,
-                        session_id=self.session_id,
-                        env_overrides=env_overrides,
-                        task_id=self.task_id,
-                        ws_id=self.ws_id,
-                        user_id=self.user_id,
-                        job_id=self.current_job_id,
-                        attempt=self.attempt,
-                        on_process_started=self._on_process_started,
-                    )
-                    self._configure_run_request(request, recovery, images)
-                    result = await run_agent_backend_with_logging(
-                        self.cli,
-                        request,
-                        self.handle_agent_event,
-                    )
-                    # 真实 provider result 已到达：先登记再持久化。持久化
-                    # 失败不能抹掉"provider 已结束"的证据。
-                    self.last_result = result
-                    self.last_termination_confirmed_dead = getattr(result, "termination_confirmed_dead", None)
-                    if result.session_id:
-                        self.session_id = result.session_id
-                    await run_db(self._persist_provider_state_sync, result)
+                    await self._run_backend(prompt, project_path, env_overrides, recovery, images)
                 else:
                     # 启动 CLI（传入 session_id 时会 --resume）
                     self.session_id = await self.cli.start_session(
@@ -508,16 +516,17 @@ class TaskAgentEngine:
                 await self._handle_run_error(e, recovery)
 
             finally:
-                await self._drain_buffers()
-                self.running = False
-                self._last_idle_since = time.monotonic()
-                if self._run_task is asyncio.current_task():
-                    self._run_task = None
-                if self.last_result_success is True:
-                    # 正常收口（job 已 SUCCESS）：立即摘除注册表条目，resume 走 DB 重建
-                    unregister_engine(self.task_id)
-                # 其余为可恢复态（INTERRUPTED/WAITING_HITL/超时）：保留以快速 resume，
-                # 由空闲收割器按 ENGINE_IDLE_TTL_SECONDS 兜底摘除
+                try:
+                    await self._drain_buffers()
+                except Exception:
+                    logger.exception("Engine buffers could not be drained: job={}", self.current_job_id)
+                finally:
+                    self.running = False
+                    self._last_idle_since = time.monotonic()
+                    if self._run_task is asyncio.current_task():
+                        self._run_task = None
+                    if self.last_result_success is True:
+                        unregister_engine(self.task_id)
 
     async def _save_execution_checkpoint(self, checkpoint: dict) -> None:
         from app.domains.ai.services.jobs.remote_recovery import save_checkpoint_sync
@@ -525,19 +534,36 @@ class TaskAgentEngine:
         await run_db(save_checkpoint_sync, self.attempt, checkpoint)
         self.remote_execution_checkpoint = dict(checkpoint)
 
-    def _persist_provider_state_sync(self, result: AgentRunResult) -> None:
-        """线程内执行：Attach provider IDs to the metadata-only turn audit row."""
-        if not self.session_turn_id:
+    def _persist_provider_state_sync(
+        self, result: AgentRunResult, gate: SessionGate | None, turn_id: str | None
+    ) -> None:
+        """Attach provider IDs while the result still owns the current turn."""
+        from app.domains.ai.services.ai_job_convergence_service import lock_job_in_txn
+
+        if not gate or not gate.job_id or not turn_id:
             return
-        db = SessionLocal()
-        try:
-            turn = db.query(TaskSessionTurn).filter(TaskSessionTurn.id == self.session_turn_id).first()
-            if not turn or getattr(turn.status, "value", turn.status) != "ACTIVE":
+        with SessionLocal.begin() as db:
+            job = lock_job_in_txn(db, db.query(SddAiJob).filter_by(id=gate.job_id))
+            if not job or job.session_turn_id != turn_id or not gate.fence_sync(db):
+                return
+            turn = (
+                db.query(TaskSessionTurn)
+                .filter_by(
+                    id=turn_id,
+                    ai_job_id=job.id,
+                    status=TaskSessionTurnStatus.ACTIVE,
+                    session_generation=job.session_generation,
+                    session_revision=job.session_revision,
+                )
+                .with_for_update()
+                .one_or_none()
+            )
+            if turn is None:
                 return
             metadata = result.metadata if isinstance(result.metadata, dict) else {}
             ids = metadata.get("provider_message_ids")
             turn.provider_session_id = (
-                str(result.session_id or self.session_id or "").strip() or turn.provider_session_id
+                str(result.session_id or job.session_id or "").strip() or turn.provider_session_id
             )
             turn.provider_message_ids_json = {
                 "provider_message_ids": [str(value) for value in ids if str(value).strip()]
@@ -552,12 +578,6 @@ class TaskAgentEngine:
                     else None
                 ),
             }
-            db.commit()
-        except Exception as exc:
-            db.rollback()
-            logger.warning(f"Persist provider message metadata failed: {exc}")
-        finally:
-            db.close()
 
     async def _stop_remote_session_after_error(self) -> None:
         """异常出口的远程会话兜底停止。
@@ -757,6 +777,14 @@ class TaskAgentEngine:
         if message:
             logger.debug(f"Agent provider event: message_length={len(message)}")
 
+    async def _project_result_event(self, event: AgentEvent) -> None:
+        try:
+            await self._on_result(event.payload, is_error=event.type == "error")
+        except Exception:
+            if event.type != "result":
+                raise
+            logger.exception("Provider result event could not be projected: job={}", self.current_job_id)
+
     async def handle_agent_event(self, event: AgentEvent):
         """处理统一 AgentEvent，供 AgentBackend.run() 路径使用。"""
         if not self.is_current():
@@ -800,7 +828,7 @@ class TaskAgentEngine:
             elif event_type == "log":
                 await self._on_provider_log(payload)
             elif event_type in {"result", "error"}:
-                await self._on_result(payload, is_error=event_type == "error")
+                await self._project_result_event(event)
 
     # ─────────────── 事件分支 ───────────────
 

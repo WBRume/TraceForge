@@ -18,6 +18,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy.exc import OperationalError
+
 from app.agents import (
     EXECUTION_KIND_LOCAL_PROCESS,
     AgentRunResult,
@@ -36,7 +38,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
 from app.domains.ai.services.jobs import attempts as attempt_ops
 from app.domains.ai.services.jobs import publishing, state
 from app.domains.ai.services.jobs.constants import FINAL_STATUSES, TASK_QUEUE_PAUSED_STATUSES, looks_like_timeout_text
-from app.domains.ai.services.jobs.fencing import attempt_is_current_sync
+from app.domains.ai.services.jobs.fencing import attempt_is_current_sync, task_session_matches_job
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime
 from app.domains.ai.services.jobs.store import row_has_leaked_interrupted_ownership
 from app.domains.task.models.task import SddTask
@@ -55,16 +57,13 @@ def _sync_engine_session_sync(
     run_token: str | None = None,
 ) -> bool:
     """引擎 session 上报落库（线程内执行，由 run_db_txn 包装）；返回是否继续广播。"""
-    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+    job = convergence.lock_job_in_txn(db, db.query(SddAiJob).filter_by(id=job_id))
     if not job or not job.task_id:
         return True
     if not attempt_is_current_sync(db, job_id=job_id, run_token=run_token):
         return False
-    task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-    if task and (
-        job.session_revision is None
-        or int(task.session_revision if task.session_revision is not None else -1) == int(job.session_revision)
-    ):
+    task = db.get(SddTask, job.task_id)
+    if task_session_matches_job(task, job):
         task.session_id = session_id
         if job.agent_service_binding and not (job.provider_execution_json or {}).get("phase"):
             from app.domains.task.services.agent_session_switch import session_key
@@ -238,6 +237,7 @@ def _load_task_chat_turn_state_sync(db, job_id: str, run_token: str | None = Non
     if (
         task.status in TASK_QUEUE_PAUSED_STATUSES
         or job.cancel_requested_at is not None
+        or not task_session_matches_job(task, job)
         or not attempt_is_current_sync(db, job_id=job_id, run_token=run_token)
     ):
         return None
@@ -538,8 +538,11 @@ def engine_provider_result(engine: Any) -> AgentRunResult | None:
 
 async def finalize_task_chat_job_from_engine(job_id: str, engine: TaskAgentEngine) -> None:
     # Fallback for missing callback updates.
-    is_timeout_interrupted = bool(getattr(engine, "last_result_interrupted", False)) or looks_like_timeout_text(
-        engine.last_result_text or ""
+    last_result_success = getattr(engine, "last_result_success", None)
+    last_result_text = engine.last_result_text or ""
+    engine_session_id = getattr(engine, "session_id", None)
+    is_timeout_interrupted = last_result_success is not True and (
+        bool(getattr(engine, "last_result_interrupted", False)) or looks_like_timeout_text(last_result_text)
     )
     attempt = current_agent_attempt()
     run_token = attempt.run_token if attempt else None
@@ -550,18 +553,26 @@ async def finalize_task_chat_job_from_engine(job_id: str, engine: TaskAgentEngin
         fallback_dead=getattr(engine, "last_termination_confirmed_dead", None),
         provider_result=engine_provider_result(engine),
     )
-    payload = await run_db_txn(
-        lambda db: _finalize_task_chat_job_sync(
+
+    def finalize(db):
+        return _finalize_task_chat_job_sync(
             db,
             job_id=job_id,
-            last_result_success=getattr(engine, "last_result_success", None),
-            last_result_text=engine.last_result_text or "",
+            last_result_success=last_result_success,
+            last_result_text=last_result_text,
             is_timeout_interrupted=is_timeout_interrupted,
-            engine_session_id=getattr(engine, "session_id", None),
+            engine_session_id=engine_session_id,
             run_token=run_token,
             evidence=evidence,
         )
-    )
+
+    try:
+        payload = await run_db_txn(finalize)
+    except OperationalError:
+        # Lock, ownership and settled-state checks make a rolled-back or
+        # ambiguously committed transaction safe to repeat.
+        logger.warning("Retrying task chat result transaction after database error: job={}", job_id)
+        payload = await run_db_txn(finalize)
     if payload is None:
         return
     is_success = str(payload.get("status") or "") == AiJobStatus.SUCCESS.value

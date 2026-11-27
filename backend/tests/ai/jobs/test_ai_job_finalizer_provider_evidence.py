@@ -17,12 +17,13 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-import app.domains.task.models.task  # noqa: F401
-from app.agents import current_agent_attempt_runtime
+from app.agents import current_agent_attempt, current_agent_attempt_runtime
 from app.agents.contract import (
     EXECUTION_KIND_LOCAL_PROCESS,
     EXECUTION_KIND_REMOTE_SESSION,
@@ -54,6 +55,8 @@ from app.domains.ai.services.jobs import (
 from app.domains.ai.services.jobs.executors import (
     task_chat as ai_task_chat,
 )
+from app.domains.task.models.session_turn import TaskSessionTurn
+from app.domains.task.models.task import SddTask
 from app.engine.session import engine as engine_module
 
 REMOTE = EXECUTION_KIND_REMOTE_SESSION
@@ -93,7 +96,7 @@ def _decide(evidence, *, intent=ConvergenceIntent.NORMAL_FINALIZE, requested=Non
     return convergence._decide_final_status(SimpleNamespace(), request, REMOTE)
 
 
-def _capture_finalizer_call(engine):
+def _capture_finalizer_call(engine, *, full=False):
     captured = {}
 
     def capture(db, **kwargs):
@@ -111,7 +114,7 @@ def _capture_finalizer_call(engine):
             import asyncio
 
             asyncio.run(ai_task_chat.finalize_task_chat_job_from_engine("job-1", engine))
-        return captured["evidence"]
+        return captured if full else captured["evidence"]
     finally:
         reset_agent_attempt(owner)
         reset_agent_attempt_runtime(binding)
@@ -127,19 +130,45 @@ def test_remote_success_finalizer_must_receive_provider_evidence():
     assert status == AiJobStatus.SUCCESS, (status, evidence)
 
 
-def test_real_result_object_with_persist_failure_is_provider_outcome(monkeypatch):
-    """真实 provider 结果到达后，即使持久化失败也能收敛为 INTERRUPTED。"""
+@pytest.mark.parametrize(
+    ("success", "recovery", "failure_stage"),
+    [
+        (True, None, "metadata"),
+        (False, None, "metadata"),
+        (True, {"session_id": "remote-1"}, "metadata"),
+        (True, None, "result_event"),
+        (True, None, "drain"),
+    ],
+)
+def test_completed_provider_result_survives_local_errors(monkeypatch, success, recovery, failure_stage):
     import asyncio
 
     provider = Mock(spec=AgentBackend, name="provider")
     provider.name = "opencode"
     provider.capabilities = AgentCapabilities(execution_kind=REMOTE, supports_steering=True)
-    result = AgentRunResult(session_id="remote-1", success=False, result_text="provider finished")
+    result = AgentRunResult(
+        session_id="remote-1",
+        success=success,
+        result_text="analysis of request timeout" if success else "provider failed",
+    )
     monkeypatch.setattr(engine_module.TaskAgentEngine, "_create_engine_backend", lambda _: provider)
     engine = engine_module.TaskAgentEngine("task-1", "ws-1", "user-1")
     monkeypatch.setattr(engine, "_prepare_turn_environment", AsyncMock(return_value=(".", {})))
     monkeypatch.setattr(engine_module, "register_engine", Mock())
-    monkeypatch.setattr(engine_module, "run_agent_backend_with_logging", AsyncMock(return_value=result))
+    monkeypatch.setattr(engine, "_configure_run_request", Mock())
+
+    async def run_provider(backend, request, callback):
+        if failure_stage == "result_event":
+            await callback(
+                engine_module.AgentEvent(
+                    type="result",
+                    payload={"success": result.success, "result": result.result_text},
+                    provider="opencode",
+                )
+            )
+        return result
+
+    monkeypatch.setattr(engine_module, "run_agent_backend_with_logging", run_provider)
 
     async def run_db(callback, *args):
         if callback is engine_module.turn_setup.playbook_turn_sync:
@@ -147,21 +176,36 @@ def test_real_result_object_with_persist_failure_is_provider_outcome(monkeypatch
         if callback is engine_module.turn_setup.task_model_sync:
             return None
         assert callback == engine._persist_provider_state_sync
-        raise OSError("persist failed")
+        if failure_stage == "metadata":
+            raise OSError("persist failed")
+        return None
+
+    if failure_stage == "drain":
+        monkeypatch.setattr(engine, "_drain_buffers", AsyncMock(side_effect=OSError("flush failed")))
+    if failure_stage == "result_event":
+        monkeypatch.setattr(engine.frontend, "push_result", AsyncMock(side_effect=OSError("event failed")))
+        monkeypatch.setattr(engine_module, "update_task_metrics", AsyncMock())
 
     monkeypatch.setattr(engine_module, "run_db", run_db)
-    monkeypatch.setattr(engine, "_stop_remote_session_after_error", AsyncMock())
+    stop = AsyncMock()
+    monkeypatch.setattr(engine, "_stop_remote_session_after_error", stop)
     monkeypatch.setattr(engine.segments, "flush", AsyncMock())
     monkeypatch.setattr(engine.frontend, "push_status", AsyncMock())
     monkeypatch.setattr(engine_module, "emit_status_event", AsyncMock())
-    asyncio.run(engine.run("Run the task"))
-    assert engine.last_result_success is False
-    assert engine.last_result_text == "persist failed"
+    asyncio.run(engine.run("Run the task", recovery=recovery))
+    stop.assert_not_awaited()
+    assert engine.running is False
+    assert engine._run_task is None
     assert engine.last_result is result
-    evidence = _capture_finalizer_call(engine)
+    captured = _capture_finalizer_call(engine, full=True)
+    assert captured["last_result_success"] is success
+    assert captured["last_result_text"] == result.result_text
+    assert not captured["is_timeout_interrupted"]
+    evidence = captured["evidence"]
     assert evidence.provider_outcome_seen is True
-    status, _ = _decide(evidence, requested=AiJobStatus.INTERRUPTED)
-    assert status == AiJobStatus.INTERRUPTED
+    expected = AiJobStatus.SUCCESS if success else AiJobStatus.INTERRUPTED
+    status, _ = _decide(evidence, requested=expected)
+    assert status == expected
 
 
 def test_engine_crash_without_result_stays_orphaned():
@@ -176,6 +220,38 @@ def test_engine_crash_without_result_stays_orphaned():
     status, orphan_code = _decide(evidence)
     assert status == AiJobStatus.ORPHANED
     assert orphan_code
+
+
+@pytest.mark.asyncio
+async def test_transient_closeout_error_retries_the_same_provider_result(monkeypatch):
+    result = AgentRunResult(session_id="remote-1", success=True, result_text="provider finished")
+    engine = SimpleNamespace(
+        session_id=result.session_id, last_result=result, last_result_success=True, last_result_text=result.result_text
+    )
+    transaction_count = 0
+    writes = []
+
+    def finalize(db, **kwargs):
+        writes.append(kwargs)
+
+    async def txn(fn):
+        nonlocal transaction_count
+        transaction_count += 1
+        fn(None)
+        if transaction_count == 1:
+            raise OperationalError("COMMIT", {}, RuntimeError("serialization conflict"))
+
+    monkeypatch.setattr(ai_task_chat, "run_db_txn", txn)
+    monkeypatch.setattr(ai_task_chat, "_finalize_task_chat_job_sync", finalize)
+    owner, binding = _bind_remote_runtime()
+    try:
+        await ai_task_chat.finalize_task_chat_job_from_engine("job-1", engine)
+    finally:
+        reset_agent_attempt(owner)
+        reset_agent_attempt_runtime(binding)
+    assert len(writes) == 2 and writes[0] == writes[1]
+    assert writes[0]["last_result_success"] is True
+    assert writes[0]["evidence"].provider_outcome_seen
 
 
 def test_engine_timeout_is_not_provider_outcome():
@@ -274,6 +350,85 @@ def _owned_job(db, *, token="run-1", status=AiJobStatus.RUNNING):
     db.add(job)
     db.commit()
     return job
+
+
+@pytest.mark.parametrize("fence", ["token", "boot", "generation", "revision", "stop"])
+def test_late_provider_ids_cannot_replace_the_current_turn_metadata(monkeypatch, fence):
+    factory = _session_factory()
+    monkeypatch.setattr(engine_module, "SessionLocal", factory)
+    monkeypatch.setattr(engine_module.TaskAgentEngine, "_create_engine_backend", Mock())
+    engine = engine_module.TaskAgentEngine("task-1", "ws-1", "user-1", job_id="job-1")
+    engine.session_turn_id = "turn-1"
+    owner, runtime = _bind_remote_runtime()
+    try:
+        engine._gate = engine_module.SessionGate(
+            task_id="task-1",
+            job_id="job-1",
+            session_revision=0,
+            ttl_seconds=1,
+            attempt=current_agent_attempt(),
+        )
+    finally:
+        reset_agent_attempt(owner)
+        reset_agent_attempt_runtime(runtime)
+    with factory() as db:
+        job = _owned_job(db)
+        job.session_turn_id = "turn-1"
+        job.session_generation = 1
+        job.session_revision = 0
+        db.add_all(
+            [
+                SddTask(
+                    id="task-1",
+                    workspace_id="ws-1",
+                    name="chat",
+                    creator_id="user-1",
+                    session_generation=1,
+                    session_revision=0,
+                ),
+                TaskSessionTurn(
+                    id="turn-1",
+                    workspace_id="ws-1",
+                    task_id="task-1",
+                    ai_job_id=job.id,
+                    session_generation=1,
+                    session_revision=0,
+                    turn_index=1,
+                    provider="opencode",
+                ),
+            ]
+        )
+        db.commit()
+
+    engine._persist_provider_state_sync(
+        AgentRunResult(session_id="remote-1", metadata={"provider_user_message_id": "current-input"}),
+        engine._gate,
+        engine.session_turn_id,
+    )
+    with factory.begin() as db:
+        turn = db.get(TaskSessionTurn, "turn-1")
+        assert turn.provider_session_id == "remote-1"
+        assert turn.provider_message_ids_json["provider_user_message_id"] == "current-input"
+        job = db.get(SddAiJob, "job-1")
+        task = db.get(SddTask, "task-1")
+        model, field, value = {
+            "token": (job, "run_token", "new-token"),
+            "boot": (job, "worker_boot_id", "new-boot"),
+            "generation": (task, "session_generation", 2),
+            "revision": (task, "session_revision", 1),
+            "stop": (job, "cancel_requested_at", datetime.utcnow()),
+        }[fence]
+        setattr(model, field, value)
+
+    engine._persist_provider_state_sync(
+        AgentRunResult(session_id="old-remote", metadata={"provider_user_message_id": "late-input"}),
+        engine._gate,
+        engine.session_turn_id,
+    )
+    with factory() as db:
+        turn = db.get(TaskSessionTurn, "turn-1")
+        assert turn.provider_session_id == "remote-1"
+        assert turn.provider_message_ids_json["provider_user_message_id"] == "current-input"
 
 
 def test_orphaned_convergence_keeps_ownership_in_db():

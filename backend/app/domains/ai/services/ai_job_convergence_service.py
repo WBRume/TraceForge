@@ -38,6 +38,7 @@ from app.agents.contract import (
 from app.config import settings
 from app.core.logging import get_logger
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.services.jobs.fencing import task_session_matches_job
 from app.domains.ai.services.jobs.store import has_attempt_ownership, is_settled_job, merge_json, serialize_job
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import status_machine as sm
@@ -503,6 +504,7 @@ class AttemptConvergenceRequest:
     mark_task_interrupted: bool = False
     interrupt_session_id: str | None = None
     reap_bookkeeping: bool = False
+    expected_termination_attempt: int | None = None
     # 终止请求的模式（CANCEL/INTERRUPT/WORKER_SHUTDOWN），仅 termination 意图
     # 收敛时由调用方传入；INTERRUPT 表示用户临时中断，job 落可恢复的
     # INTERRUPTED 而不是 CANCELLED。
@@ -965,6 +967,20 @@ def _resolve_runner_exit_intent(
     return replace(request, intent=ConvergenceIntent.NORMAL_FINALIZE)
 
 
+def _matches_termination_reservation(job: SddAiJob, request: AttemptConvergenceRequest) -> bool:
+    if request.intent not in {ConvergenceIntent.TERMINATION_FINALIZE, ConvergenceIntent.REAPER_FINALIZE}:
+        return True
+    reap_pending = job.last_reap_attempt_at is not None and (
+        job.last_reap_verified_at is None or job.last_reap_attempt_at > job.last_reap_verified_at
+    )
+    # Reapers preserve the process's run token. The reservation separates
+    # stop results from different reaps within the same worker boot.
+    expected = request.expected_termination_attempt
+    if expected is None:
+        return not reap_pending
+    return reap_pending and expected == job.termination_attempts
+
+
 def converge_job_attempt_in_txn(
     db: Session,
     request: AttemptConvergenceRequest,
@@ -972,7 +988,7 @@ def converge_job_attempt_in_txn(
     """唯一 job 终态事务核心。
 
     事务顺序固定：先锁任务再锁作业 -> 幂等检查 -> run token / worker
-    boot id 校验 -> TASK_CHAT session revision 校验 -> 按 intent 校验来源
+    boot id 校验 -> TASK_CHAT session generation/revision 校验 -> 按 intent 校验来源
     状态 -> 读取显式 execution kind -> 决策表 -> 同事务写 job/task/patch/
     ownership -> 返回。
 
@@ -1009,27 +1025,18 @@ def converge_job_attempt_in_txn(
 
     runner_exit = request.intent == ConvergenceIntent.RUNNER_EXIT
     request = _resolve_runner_exit_intent(job, request, token)
-    if (
-        request.intent == ConvergenceIntent.TERMINATION_FINALIZE
-        and job.last_reap_attempt_at is not None
-        and (job.last_reap_verified_at is None or job.last_reap_attempt_at > job.last_reap_verified_at)
-    ):
-        # The reaper keeps the run token for process discovery. Its reservation
-        # fences late stop results even when it shares the runner's boot ID.
+    if not _matches_termination_reservation(job, request):
         return _noop()
 
-    # 4. TASK_CHAT session revision 校验（仅正常收尾路径）。
+    # 4. Normal results belong to the current task session.
     if (
         request.intent == ConvergenceIntent.NORMAL_FINALIZE
         and job.channel == AiJobChannel.TASK_CHAT
         and job.task_id
-        and job.session_revision is not None
+        and (job.session_revision is not None or job.session_generation is not None)
+        and not task_session_matches_job(db.get(SddTask, job.task_id), job)
     ):
-        task_revision_row = db.query(SddTask.session_revision).filter(SddTask.id == job.task_id).first()
-        if not task_revision_row or int(task_revision_row[0] if task_revision_row[0] is not None else -1) != int(
-            job.session_revision
-        ):
-            return _noop()
+        return _noop()
 
     # 5. 按 intent 校验来源状态。
     if request.intent == ConvergenceIntent.NORMAL_FINALIZE:

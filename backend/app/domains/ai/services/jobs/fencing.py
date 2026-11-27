@@ -28,6 +28,16 @@ class AgentAttemptFencedError(RuntimeError):
     """Raised when a late attempt is no longer allowed to write business data."""
 
 
+def task_session_matches_job(task: SddTask | None, job: SddAiJob) -> bool:
+    """A session reset can advance generation before the next turn advances revision."""
+    generation = getattr(job, "session_generation", None)
+    return bool(
+        task
+        and (generation is None or task.session_generation == generation)
+        and (job.session_revision is None or task.session_revision == job.session_revision)
+    )
+
+
 def attempt_is_current_sync(
     db: Session,
     *,
@@ -162,14 +172,13 @@ def update_job_state_sync(
             # 缺少 fence 把已取消的 job 写回 RUNNING）。终态写入已统一走
             # convergence 事务，本分支只剩普通运行态写入。
             return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
-        if job.channel == AiJobChannel.TASK_CHAT and job.task_id and job.session_revision is not None:
-            task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-            if not task or int(task.session_revision if task.session_revision is not None else -1) != int(
-                job.session_revision
-            ):
-                # An undo or a newer session generation has fenced this worker.
-                # Do not let a late callback resurrect the old job state.
-                return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
+        if (
+            job.channel == AiJobChannel.TASK_CHAT
+            and job.task_id
+            and (job.session_revision is not None or job.session_generation is not None)
+            and not task_session_matches_job(db.get(SddTask, job.task_id), job)
+        ):
+            return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
         writable_statuses = {
             AiJobStatus.PENDING,
             AiJobStatus.RUNNING,

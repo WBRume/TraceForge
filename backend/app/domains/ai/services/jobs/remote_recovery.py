@@ -47,12 +47,9 @@ def recoverable(job) -> bool:
 
 
 def current_task(db, job) -> bool:
-    task = db.get(SddTask, job.task_id)
-    return bool(
-        task
-        and (job.session_revision is None or task.session_revision == job.session_revision)
-        and (job.session_generation is None or task.session_generation == job.session_generation)
-    )
+    from app.domains.ai.services.jobs.fencing import task_session_matches_job
+
+    return task_session_matches_job(db.get(SddTask, job.task_id), job)
 
 
 def legacy_binding_unknown(db, job) -> bool:

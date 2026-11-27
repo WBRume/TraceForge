@@ -217,6 +217,32 @@ async def test_startup_reaper_attaches_instead_of_stopping_remote(jobs, monkeypa
     assert current(jobs).status == AiJobStatus.RUNNING
 
 
+@pytest.mark.asyncio
+async def test_checkpoint_committed_after_scan_is_used_for_recovery(jobs, monkeypatch):
+    checkpoint = current(jobs).provider_execution_json
+    with jobs.begin() as db:
+        db.get(SddAiJob, "reliability-job").provider_execution_json = None
+    scan = reaper.list_reclaimable_jobs_sync
+
+    def scan_before_checkpoint(task_id=None):
+        rows = scan(task_id)
+        with jobs.begin() as db:
+            db.get(SddAiJob, "reliability-job").provider_execution_json = checkpoint
+        return rows
+
+    schedule = Mock()
+    stop = AsyncMock(return_value=None)
+    monkeypatch.setattr(runtime, "schedule_queue", schedule)
+    monkeypatch.setattr(reaper, "stop_attempt_processes", stop)
+    with monkeypatch.context() as before_commit:
+        before_commit.setattr(reaper, "list_reclaimable_jobs_sync", scan_before_checkpoint)
+        await reaper.reap_stale_jobs()
+    assert current(jobs).status == AiJobStatus.RUNNING
+    await reaper.reap_stale_jobs()
+    schedule.assert_called_once_with("TASK_CHAT:task-1", recovered_job_id="reliability-job")
+    stop.assert_not_awaited()
+
+
 def test_shutdown_preserves_recoverable_job_and_checkpoint_is_private(jobs):
     remote_recovery.claim_existing_sync("reliability-job", "old-token")
     assert reaper.mark_worker_jobs_terminating_sync("WORKER_SHUTDOWN") == []

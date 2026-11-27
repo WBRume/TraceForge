@@ -373,6 +373,7 @@ def converge_termination_sync(
     intent: ConvergenceIntent = ConvergenceIntent.TERMINATION_FINALIZE,
     termination_mode: str | None = None,
     recovered_result: AgentRunResult | None = None,
+    expected_termination_attempt: int | None = None,
 ) -> dict[str, Any] | None:
     """TERMINATION/REAPER 收敛 DB 段（线程内执行，由 run_db 包装）。
 
@@ -400,6 +401,7 @@ def converge_termination_sync(
             intent=intent,
             reap_bookkeeping=True,
             termination_mode=termination_mode,
+            expected_termination_attempt=expected_termination_attempt,
             result_patch={"result_preview": recovered_result.result_text[:1600]} if recovered_result else None,
             message=("AI reply completed" if recovered_result.success else "AI execution failed")
             if recovered_result
@@ -422,6 +424,7 @@ def finish_termination_sync(
     failure_code: str,
     evidence: _FinalizerEvidence | None = None,
     recovered_result: AgentRunResult | None = None,
+    expected_termination_attempt: int | None = None,
 ) -> dict[str, Any] | None:
     """Compatibility wrapper: reaper/worker-shutdown terminal writes.
 
@@ -448,6 +451,7 @@ def finish_termination_sync(
         failure_code=str(failure_code or "") or None,
         intent=ConvergenceIntent.REAPER_FINALIZE,
         recovered_result=recovered_result,
+        expected_termination_attempt=expected_termination_attempt,
     )
 
 

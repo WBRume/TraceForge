@@ -201,6 +201,7 @@ async def _recover_orphaned_job(
         ),
         evidence=stop_evidence,
         recovered_result=result.recovered_result if remote and result else None,
+        expected_termination_attempt=adopted["termination_attempt"],
     )
     if payload:
         # final 判定由 payload 状态决定。

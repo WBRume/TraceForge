@@ -15,6 +15,7 @@ def test_administrator_remote_recovery_requires_provider_ack(monkeypatch, confir
     adopted = {
         "job_id": "job",
         "run_token": "fenced-token",
+        "termination_attempt": 2,
         "execution_kind": "REMOTE_SESSION",
         "agent_backend": "opencode",
         "session_id": "remote-session",
@@ -67,5 +68,6 @@ def test_administrator_remote_recovery_requires_provider_ack(monkeypatch, confir
     asyncio.run(run())
     stop.assert_awaited_once_with(adopted)
     assert captured["confirmed_dead"] is acknowledged
+    assert captured["expected_termination_attempt"] == 2
     assert captured["evidence"].remote_stop_acknowledged is acknowledged
     assert captured["evidence"].execution_kind == "REMOTE_SESSION"
