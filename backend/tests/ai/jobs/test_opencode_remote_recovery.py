@@ -15,9 +15,11 @@ from app.agents.contract import (
     AgentStopResult,
 )
 from app.agents.errors import AgentExecutionDetached
-from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.schemas.job_result import JobArtifact
 from app.domains.ai.services.ai_job_convergence_service import evidence_from_stop_result
 from app.domains.ai.services.jobs import attempts, queue_runner, reaper, remote_recovery, store
+from app.domains.ai.services.jobs.domain_turn import stage_domain_success
 from app.domains.ai.services.jobs.executors import JobExecutionOutcome
 from app.domains.ai.services.jobs.executors.task_chat import _load_task_chat_turn_state_sync
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime
@@ -271,6 +273,64 @@ def test_reaper_recovers_a_failed_chat_turn_as_an_abnormal_interrupt(jobs):
     assert result["interrupt_kind"] == "ABNORMAL"
     assert result["task_snapshot"]["interrupt_kind"] == "ABNORMAL"
     assert result["session_id"] == recovered.session_id
+
+
+def test_reaper_keeps_the_committed_artifact_result_and_session(jobs):
+    with jobs.begin() as db:
+        job = db.get(SddAiJob, "reliability-job")
+        job.channel = AiJobChannel.ASSET_THREAD
+        job.queue_key = "ASSET_THREAD:thread-1"
+        job.context_json = {"job_kind": "RESOLUTION_PROPOSAL"}
+        job.worker_boot_id = WORKER_BOOT_ID
+        stage_domain_success(
+            job,
+            message="Proposal saved",
+            result={"proposal_id": "proposal", "result_preview": "Committed summary"},
+            artifact=JobArtifact(kind="resolution_proposal", id="proposal"),
+            context_patch={},
+            session_id="ses_committed",
+        )
+        job.status = AiJobStatus.TERMINATING
+
+    result = attempts.finish_termination_sync(
+        "reliability-job",
+        "old-token",
+        confirmed_dead=True,
+        reason="WORKER_RESTART",
+        failure_code="WORKER_RESTART",
+        evidence=evidence_from_stop_result(AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)),
+        recovered_result=AgentRunResult(session_id="ses_original", success=True, result_text="Provider output"),
+    )
+    assert result["status"] == "SUCCESS"
+    assert result["message"] == "Proposal saved"
+    assert result["result_json"] == {"proposal_id": "proposal", "result_preview": "Committed summary"}
+    assert result["session_id"] == "ses_committed"
+
+
+def test_reaper_keeps_a_manual_stop_when_the_provider_returns_success(jobs):
+    with jobs.begin() as db:
+        job = db.get(SddAiJob, "reliability-job")
+        job.worker_boot_id = WORKER_BOOT_ID
+        job.status = AiJobStatus.TERMINATING
+        job.cancel_requested_at = datetime.utcnow()
+        job.interrupted_by_id = job.creator_id
+        job.context_json = {"termination_mode": "INTERRUPT", "interrupt_kind": "MANUAL"}
+        task = db.get(SddTask, job.task_id)
+        task.status = TaskStatus.INTERRUPTED
+        task.interrupt_kind = "MANUAL"
+
+    result = attempts.finish_termination_sync(
+        "reliability-job",
+        "old-token",
+        confirmed_dead=True,
+        reason="WORKER_RESTART",
+        failure_code="WORKER_RESTART",
+        evidence=evidence_from_stop_result(AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)),
+        recovered_result=AgentRunResult(session_id="ses_original", success=True, result_text="Provider output"),
+    )
+    assert result["status"] == "INTERRUPTED"
+    assert result["interrupt_kind"] == result["task_snapshot"]["interrupt_kind"] == "MANUAL"
+    assert not result["result_json"]
 
 
 def test_shutdown_preserves_recoverable_job_and_checkpoint_is_private(jobs):

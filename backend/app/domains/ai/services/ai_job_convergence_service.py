@@ -38,6 +38,7 @@ from app.agents.contract import (
 from app.config import settings
 from app.core.logging import get_logger
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.services.jobs.constants import QUEUE_KEY_TASK_CHAT
 from app.domains.ai.services.jobs.fencing import task_session_matches_job
 from app.domains.ai.services.jobs.store import has_attempt_ownership, is_settled_job, merge_json, serialize_job
 from app.domains.task.models.task import SddTask, TaskStatus
@@ -509,6 +510,7 @@ class AttemptConvergenceRequest:
     # 收敛时由调用方传入；INTERRUPT 表示用户临时中断，job 落可恢复的
     # INTERRUPTED 而不是 CANCELLED。
     termination_mode: str | None = None
+    recovered_result: AgentRunResult | None = None
 
 
 @dataclass
@@ -567,13 +569,28 @@ def _resolve_termination_outcome(job: SddAiJob, request: AttemptConvergenceReque
         )
     if (
         request.intent == ConvergenceIntent.REAPER_FINALIZE
-        and request.requested_status is not None
+        and (request.requested_status is not None or request.recovered_result is not None)
         and persisted_stop_mode(job)
     ):
         # The provider outcome can prove cleanup while the committed stop
         # still determines the business status.
         return replace(request, requested_status=None, message=None, result_patch=None)
-    return request
+    recovered = request.recovered_result
+    if recovered is None:
+        return request
+    if recovered.success:
+        status, message = AiJobStatus.SUCCESS, "AI reply completed"
+    elif job.channel == AiJobChannel.TASK_CHAT and str(job.queue_key or "").startswith(f"{QUEUE_KEY_TASK_CHAT}:"):
+        return replace(request, requested_status=AiJobStatus.INTERRUPTED)
+    else:
+        status, message = AiJobStatus.FAILED, "AI execution failed"
+    return replace(
+        request,
+        requested_status=status,
+        session_id=recovered.session_id or None,
+        result_patch={"result_preview": recovered.result_text[:1600]},
+        message=message,
+    )
 
 
 def _derive_termination_business_status(
