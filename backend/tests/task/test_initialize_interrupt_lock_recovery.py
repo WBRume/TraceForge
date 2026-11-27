@@ -67,7 +67,7 @@ def task_api(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "DISTRIBUTED_LOCK_BLOCKING_TIMEOUT_SECONDS", 0.05)
     broadcast = mock.AsyncMock()
     monkeypatch.setattr(lifecycle.task_ws_manager, "send_message_to_room", broadcast)
-    monkeypatch.setattr(publishing, "publish_job", mock.AsyncMock())
+    monkeypatch.setattr(publishing, "publish_job_state", mock.AsyncMock())
 
     async def enqueue(job_id):
         # Simulate the remote worker reaching a native form wait. Keep real

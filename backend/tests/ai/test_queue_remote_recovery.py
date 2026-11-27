@@ -45,7 +45,6 @@ def test_administrator_remote_recovery_requires_provider_ack(monkeypatch, confir
 
     monkeypatch.setattr(queue, "run_db", run_db)
     monkeypatch.setattr(publishing, "broadcast_job_payload", AsyncMock())
-    monkeypatch.setattr(publishing, "reschedule_if_pending", lambda _: None)
     monkeypatch.setattr(queue, "audit_log", lambda **kwargs: None)
 
     async def run():

@@ -311,13 +311,15 @@ def test_expired_resource_snapshot_preserves_successful_build_history(execution_
         assert first.status == AiJobStatus.SUCCESS and first.result_json["baseline_session_id"] == "session"
 
 
-def test_enqueue_preserves_dispatch_and_outbox_when_notification_fails(execution_db, monkeypatch):
+@pytest.mark.parametrize("requeue", [False, True])
+def test_committed_pending_job_dispatches_when_notification_fails(execution_db, monkeypatch, requeue):
     from app.domains.ai.services.jobs import publishing
 
     factory, _ = execution_db
     with factory() as db:
         job = provision.create_job(db, job_type=ProvisionJobType.CREATE_WORKSPACE, creator_id="user")
-        job_id, queue_key = job.id, db.get(SddAiJob, job.id).queue_key
+        payload = store.serialize_job(db.get(SddAiJob, job.id))
+        job_id, queue_key = payload["id"], payload["queue_key"]
         db.commit()
     scheduled = []
 
@@ -328,7 +330,10 @@ def test_enqueue_preserves_dispatch_and_outbox_when_notification_fails(execution
 
     monkeypatch.setattr(publishing.runtime, "schedule_queue", scheduled.append)
     monkeypatch.setattr(publishing, "broadcast_job_payload", failed_notification)
-    assert asyncio.run(publishing.enqueue_job(job_id))["status"] == "PENDING"
+    if requeue:
+        asyncio.run(publishing.publish_converged_job(payload))
+    else:
+        assert asyncio.run(publishing.enqueue_job(job_id))["status"] == "PENDING"
     assert scheduled == [queue_key]
     with factory() as db:
         assert db.query(JobEvent).filter_by(job_id=job_id, published_at=None).count() == 1

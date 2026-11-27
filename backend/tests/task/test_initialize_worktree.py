@@ -67,7 +67,7 @@ def environment(tmp_path, monkeypatch):
     monkeypatch.setattr(selection, "resolve_task_backend", lambda *args: "opencode")
     monkeypatch.setattr(service.control, "get_engine", lambda *args: None)
     monkeypatch.setattr(publishing, "enqueue_task_chat_job", AsyncMock())
-    monkeypatch.setattr(publishing, "publish_job", AsyncMock())
+    monkeypatch.setattr(publishing, "publish_job_state", AsyncMock())
     yield factory, root, upstreams, checkpoint["root"]
     engine.dispose()
 

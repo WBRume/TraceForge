@@ -30,7 +30,7 @@ _event_delivery_cursor: tuple[datetime, str] | None = None
 
 
 async def broadcast_job_payload(payload: dict[str, Any]) -> None:
-    """Broadcast one job payload."""
+    """Deliver a job snapshot, propagating errors so the outbox can retry."""
     status = str(payload.get("status") or "")
     final = status in {item.value for item in constants.FINAL_STATUSES}
     channel = str(payload.get("channel") or "")
@@ -300,10 +300,14 @@ async def publish_committed_job(payload: dict[str, Any]) -> None:
         logger.exception("Committed job notification deferred: job_id={}", payload.get("id"))
 
 
-def reschedule_if_pending(payload: dict[str, Any]) -> None:
-    """收敛结果把作业打回 PENDING（如重试入队）时立即唤醒对应队列 runner。"""
+async def publish_converged_job(payload: dict[str, Any]) -> None:
+    """Apply local cleanup and scheduling before delivering a committed result."""
+    runtime.clear_cancel_for_payload(payload)
     if str(payload.get("status") or "") == AiJobStatus.PENDING.value:
-        runtime.schedule_queue(str(payload.get("queue_key") or ""))
+        queue_key = str(payload.get("queue_key") or "")
+        if queue_key:
+            runtime.schedule_queue(queue_key)
+    await publish_committed_job(payload)
 
 
 # ────────────────────────── 入队入口 ──────────────────────────
@@ -345,14 +349,6 @@ async def enqueue_asset_thread_job(job_id: str) -> dict[str, Any] | None:
 
 async def enqueue_task_chat_job(job_id: str) -> dict[str, Any] | None:
     return await enqueue_job(job_id, expected_channel=AiJobChannel.TASK_CHAT)
-
-
-async def publish_job(job_id: str) -> None:
-    """Publish after a committed command; the outbox retries delivery failures."""
-    try:
-        await publish_job_state(job_id)
-    except Exception:
-        logger.exception("Committed job notification deferred: job_id={}", job_id)
 
 
 async def enqueue_task_baseline_job(

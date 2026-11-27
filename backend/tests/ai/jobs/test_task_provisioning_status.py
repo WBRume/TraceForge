@@ -271,7 +271,7 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
         monkeypatch.setattr("app.domains.ai.services.jobs.attempts.process_supervisor.stop_attempt", stop_attempt)
         monkeypatch.setattr("app.domains.ai.services.jobs.attempts.process_supervisor.stop_persisted", stop_persisted)
         monkeypatch.setattr("app.domains.task.services.task_session_control_service.get_engine", lambda _: None)
-        monkeypatch.setattr("app.domains.ai.services.jobs.publishing.publish_job", noop)
+        monkeypatch.setattr("app.domains.ai.services.jobs.publishing.publish_job_state", noop)
         monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", noop)
         client = TestClient(_build_app(factory, user))
         response = client.post(f"/api/workspaces/{ws_id}/tasks/{task_id}/initialize", json={"prompt": "restart"})
@@ -339,7 +339,7 @@ def test_initialize_preserves_or_recovers_session_after_cleanup(monkeypatch, rec
             "app.domains.task.services.task_session_control_service.get_engine",
             lambda _: SimpleNamespace(stop=stop, running=False) if recovery == "stop_failure" else None,
         )
-        monkeypatch.setattr("app.domains.ai.services.jobs.publishing.publish_job", noop)
+        monkeypatch.setattr("app.domains.ai.services.jobs.publishing.publish_job_state", noop)
         monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", noop)
         monkeypatch.setattr(ai_reaper, "reap_stale_jobs", reap)
         client = TestClient(_build_app(factory, user), raise_server_exceptions=False)

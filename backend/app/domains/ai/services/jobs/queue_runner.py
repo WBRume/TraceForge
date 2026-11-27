@@ -190,9 +190,7 @@ async def _converge_runner_exit(
             reason=reason,
         )
         if payload:
-            runtime.clear_cancel_for_payload(payload)
-            publishing.reschedule_if_pending(payload)
-            await publishing.publish_committed_job(payload)
+            await publishing.publish_converged_job(payload)
         return
 
     # status == RUNNING：业务执行路径漏掉 finalizer，runner 兜底收敛。
@@ -229,9 +227,7 @@ async def _converge_runner_exit(
         mark_task_interrupted=is_task_chat,
     )
     if payload:
-        runtime.clear_cancel_for_payload(payload)
-        publishing.reschedule_if_pending(payload)
-        await publishing.publish_committed_job(payload)
+        await publishing.publish_converged_job(payload)
 
 
 # ────────────────────────── 队列主循环 ──────────────────────────
@@ -265,10 +261,7 @@ async def run_queue(queue_key: str, *, recovered_job_id: str | None = None) -> N
                 error=RuntimeError("executor did not produce an outcome"),
             )
             try:
-                try:
-                    await publishing.publish_job_state(job_id)
-                except Exception:
-                    logger.exception("Could not publish claimed job state: job_id={}", job_id)
+                await publishing.publish_job_state(job_id)
                 try:
                     outcome = await executors.execute_job(job_id)
                 except BaseException as exc:

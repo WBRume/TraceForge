@@ -342,7 +342,7 @@ async def interrupt_task(
     if "submission" in receipt:
         state["submission"] = receipt["submission"]
     if target and target.changed:
-        await ai_job_publishing.publish_job(target.job_id)
+        await ai_job_publishing.publish_job_state(target.job_id)
     task_event_publisher.wake()
     await _publish_interruption(resolved_task_id, state)
     return state

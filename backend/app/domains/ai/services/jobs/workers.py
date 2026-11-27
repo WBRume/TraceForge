@@ -22,7 +22,7 @@ from app.core.logging import get_logger
 from app.core.offload import run_db
 from app.domains.ai.services.jobs import attempts as attempt_ops
 from app.domains.ai.services.jobs import reaper
-from app.domains.ai.services.jobs.publishing import publish_committed_job
+from app.domains.ai.services.jobs.publishing import publish_converged_job
 from app.domains.ai.services.jobs.registry import runtime
 from app.domains.ai.services.jobs.store import list_pending_queue_keys_sync
 
@@ -457,5 +457,4 @@ async def _shutdown_owned_attempts() -> None:
             else None
         )
         if payload:
-            runtime.clear_cancel_for_payload(payload)
-            await publish_committed_job(payload)
+            await publish_converged_job(payload)

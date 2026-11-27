@@ -242,7 +242,7 @@ async def _stop_previous(run, ws_id, task_id, actor_id, db):
                 "旧任务执行尚未清理完成，请稍后重试初始化；无需删除任务。", status_code=409
             ) from exc
     for job_id in prepared["cancelled_job_ids"]:
-        await publishing.publish_job(job_id)
+        await publishing.publish_job_state(job_id)
     await recover_task_attempts(task_id, run_txn=run, wait_for_running=True)
 
 

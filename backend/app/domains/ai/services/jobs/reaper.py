@@ -528,8 +528,7 @@ async def reap_stale_jobs(*, task_id: str | None = None) -> int:
             )
         if payload:
             reclaimed += 1
-            publishing.reschedule_if_pending(payload)
-            await publishing.publish_committed_job(payload)
+            await publishing.publish_converged_job(payload)
     return reclaimed
 
 

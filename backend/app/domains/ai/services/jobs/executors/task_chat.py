@@ -600,9 +600,7 @@ async def finalize_task_chat_job_from_engine(job_id: str, engine: TaskAgentEngin
             raise
     if payload is None:
         return
-    runtime.clear_cancel_for_payload(payload)
-    publishing.reschedule_if_pending(payload)
-    await publishing.publish_committed_job(payload)
+    await publishing.publish_converged_job(payload)
     if payload.get("guide_snapshot"):
         from app.domains.diagnosis_playbook.guide_execution import dispatch
 
@@ -639,8 +637,7 @@ async def finalize_task_chat_job_failure(
     )
     if payload is None:
         return None
-    publishing.reschedule_if_pending(payload)
-    await publishing.publish_committed_job(payload)
+    await publishing.publish_converged_job(payload)
     if payload.get("guide_snapshot"):
         from app.domains.diagnosis_playbook.guide_execution import dispatch
 

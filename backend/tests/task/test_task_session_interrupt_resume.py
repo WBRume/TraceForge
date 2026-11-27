@@ -156,7 +156,7 @@ def test_task_interrupt_converges_unclaimed_job_with_stop_evidence(monkeypatch, 
         events.append((task_id, payload["status"], payload["job"]["id"]))
 
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: engine)
-    monkeypatch.setattr(ai_publishing, "publish_job", _publish_job)
+    monkeypatch.setattr(ai_publishing, "publish_job_state", _publish_job)
     monkeypatch.setattr(task_session_control_service, "_publish_interruption", _broadcast)
 
     payload = asyncio.run(
@@ -220,7 +220,7 @@ def test_task_interrupt_with_claimed_attempt_converges_to_resumable_interrupted(
         events.append((task_id, payload["status"], payload["job"]["id"]))
 
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: engine)
-    monkeypatch.setattr(ai_publishing, "publish_job", _publish_job)
+    monkeypatch.setattr(ai_publishing, "publish_job_state", _publish_job)
     monkeypatch.setattr(task_session_control_service, "_publish_interruption", _broadcast)
 
     payload = asyncio.run(
@@ -414,7 +414,7 @@ def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch)
         events.append((task_id, payload["status"], payload["job"]["id"]))
 
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: None)
-    monkeypatch.setattr(ai_publishing, "publish_job", _publish_job)
+    monkeypatch.setattr(ai_publishing, "publish_job_state", _publish_job)
     monkeypatch.setattr(task_session_control_service, "_publish_interruption", _broadcast)
 
     payload = asyncio.run(
@@ -471,7 +471,7 @@ def test_interrupt_without_engine_only_stops_current_attempt(monkeypatch, provid
         )
         db.commit()
         monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: None)
-        monkeypatch.setattr(ai_publishing, "publish_job", AsyncMock())
+        monkeypatch.setattr(ai_publishing, "publish_job_state", AsyncMock())
         monkeypatch.setattr(task_session_control_service, "_publish_interruption", AsyncMock())
         cancelled = []
         monkeypatch.setattr(ai_registry.runtime, "request_cancel", cancelled.append)

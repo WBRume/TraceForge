@@ -567,7 +567,7 @@ async def cancel_ai_job(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    await ai_job_publishing.publish_job(str(payload["id"]))
+    await ai_job_publishing.publish_job_state(str(payload["id"]))
     return AiJobResponse(**payload)
 
 

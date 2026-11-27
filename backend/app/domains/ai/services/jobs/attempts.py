@@ -446,10 +446,7 @@ def finish_termination_sync(
 
 
 async def terminate_attempt(attempt: AgentAttemptContext, reason: str) -> None:
-    from app.domains.ai.services.jobs.publishing import (
-        publish_committed_job,
-        reschedule_if_pending,
-    )
+    from app.domains.ai.services.jobs.publishing import publish_converged_job
 
     begun = await run_db(begin_termination_sync, attempt.job_id, attempt.run_token, reason)
     # 心跳任务继承 runner 的 attempt/runtime 绑定：唯一 resolver 可以直接
@@ -475,9 +472,7 @@ async def terminate_attempt(attempt: AgentAttemptContext, reason: str) -> None:
         failure_code=evidence.failure_code or reason,
     )
     if payload:
-        runtime.clear_cancel_for_payload(payload)
-        reschedule_if_pending(payload)
-        await publish_committed_job(payload)
+        await publish_converged_job(payload)
 
 
 def finalize_interruption_in_txn(

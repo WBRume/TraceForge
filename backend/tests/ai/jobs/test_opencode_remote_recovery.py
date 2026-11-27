@@ -516,10 +516,9 @@ async def test_recovered_queue_executes_claimed_job_and_detaches_without_finaliz
     monkeypatch.setattr(queue_runner, "claim_next_pending_job_id", claim)
     monkeypatch.setattr(
         queue_runner.publishing,
-        "publish_job_state",
-        AsyncMock(side_effect=OSError("initial state publication unavailable") if publication_fails else None),
+        "broadcast_job_payload",
+        AsyncMock(side_effect=[OSError("initial state publication unavailable"), None] if publication_fails else None),
     )
-    monkeypatch.setattr(queue_runner.publishing, "broadcast_job_payload", AsyncMock())
     await queue_runner.run_queue("TASK_CHAT:task-1", recovered_job_id="reliability-job")
     execute.assert_awaited_once_with("reliability-job")
     claim.assert_not_awaited()
@@ -615,7 +614,6 @@ async def test_recovered_provider_terminal_reaches_durable_job_finalizer(jobs, m
     adapter = OpenCodeAdapter("http://agent")
     adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(provider))
     monkeypatch.setattr(task_chat.publishing, "broadcast_job_payload", AsyncMock())
-    monkeypatch.setattr(task_chat.publishing, "reschedule_if_pending", Mock())
     try:
         result = await adapter.run(
             AgentRunRequest(session_id=saved["session_id"], execution_checkpoint=saved, on_execution_checkpoint=save),

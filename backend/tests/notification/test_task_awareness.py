@@ -325,7 +325,7 @@ async def test_interrupt_notifies_initiator_unless_they_confirmed_the_stop(
 
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _: Engine())
     monkeypatch.setattr(task_session_control_service, "_publish_interruption", ignore)
-    monkeypatch.setattr(publishing, "publish_job", ignore)
+    monkeypatch.setattr(publishing, "publish_job_state", ignore)
     await task_session_control_service.interrupt_task(
         db, task=task, actor_user_id=actor.id, reason="暂停本轮，稍后继续"
     )
