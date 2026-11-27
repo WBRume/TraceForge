@@ -536,7 +536,7 @@ def claude_stream_to_agent_events(event: dict[str, Any]) -> list[AgentEvent]:
     - system/init        -> session_started
     - assistant 事件     -> usage + 逐 content block（thinking/text/tool_use/
                             tool_result/context_compacted）
-    - result 事件        -> result（is_error/subtype 折叠进 finish_reason）
+    - result 事件        -> result（is_error/subtype 决定 success 与 finish_reason）
     - 其他类型命中压缩信号 -> context_compacted
     """
     event_type = event.get("type")
@@ -554,13 +554,15 @@ def claude_stream_to_agent_events(event: dict[str, Any]) -> list[AgentEvent]:
         ]
 
     if event_type == "result":
-        is_error = bool(event.get("is_error")) or str(event.get("subtype") or "") == "error"
+        subtype = str(event.get("subtype") or "")
+        is_error = bool(event.get("is_error")) or subtype == "error" or subtype.startswith("error_")
         usage = extract_claude_usage(event)
         return [
             AgentEvent(
                 type="result",
                 payload={
-                    "result": event.get("result", ""),
+                    "success": not is_error,
+                    "result": str(event.get("result") or ""),
                     "duration_ms": event.get("duration_ms"),
                     "cost_usd": event.get("total_cost_usd"),
                     "usage": usage,

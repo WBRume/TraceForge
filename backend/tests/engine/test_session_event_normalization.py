@@ -83,6 +83,7 @@ class ClaudeStreamNormalizationTest(unittest.TestCase):
         )
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].type, "result")
+        self.assertIs(events[0].payload["success"], True)
         self.assertEqual(events[0].payload["result"], "done")
         self.assertEqual(events[0].payload["duration_ms"], 2500)
         self.assertEqual(events[0].payload["cost_usd"], 0.5)
@@ -98,6 +99,13 @@ class ClaudeStreamNormalizationTest(unittest.TestCase):
             }
         )
         self.assertEqual(events[0].payload["finish_reason"], "error")
+        self.assertIs(events[0].payload["success"], False)
+
+    def test_error_subtype_normalizes_missing_fields(self):
+        [event] = claude_stream_to_agent_events({"type": "result", "subtype": "error_during_execution", "result": None})
+        self.assertIs(event.payload["success"], False)
+        self.assertEqual(event.payload["result"], "")
+        self.assertEqual(event.payload["finish_reason"], "error")
 
     def test_compaction_signal_in_unknown_event(self):
         events = claude_stream_to_agent_events(
