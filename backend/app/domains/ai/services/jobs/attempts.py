@@ -447,7 +447,7 @@ def finish_termination_sync(
 
 async def terminate_attempt(attempt: AgentAttemptContext, reason: str) -> None:
     from app.domains.ai.services.jobs.publishing import (
-        broadcast_job_payload,
+        publish_committed_job,
         reschedule_if_pending,
     )
 
@@ -476,8 +476,8 @@ async def terminate_attempt(attempt: AgentAttemptContext, reason: str) -> None:
     )
     if payload:
         runtime.clear_cancel_for_payload(payload)
-        await broadcast_job_payload(payload)
         reschedule_if_pending(payload)
+        await publish_committed_job(payload)
 
 
 def finalize_interruption_in_txn(

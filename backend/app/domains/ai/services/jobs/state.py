@@ -75,7 +75,6 @@ async def update_job_state(
     if not result["broadcast"]:
         return payload
     is_final = result["is_final"]
-    await publishing.broadcast_job_payload(payload)
     if is_final:
         runtime.clear_cancel(job_id)
         # The convergence transaction may have converged the turn's receipt and
@@ -86,4 +85,5 @@ async def update_job_state(
         queue_key = str(payload.get("queue_key") or "")
         if queue_key:
             runtime.schedule_queue(queue_key)
+    await publishing.publish_committed_job(payload)
     return payload

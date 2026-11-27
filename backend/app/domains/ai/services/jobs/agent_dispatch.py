@@ -1,5 +1,7 @@
 """Persist native session identity before the adapter submits work."""
 
+from functools import partial
+
 from app.agents.contract import AgentBackend, current_agent_attempt
 from app.agents.errors import AgentError
 from app.core.offload import run_db
@@ -49,11 +51,18 @@ def _record_dsh_prompt_sync(attempt, session_id, request_id):
 def guard_native_session(backend: AgentBackend, request, sink):
     attempt = current_agent_attempt()
     binding = attempt.agent_service_binding if attempt else None
-    if not binding or backend.name != binding["backend"]:
+    if attempt is None or (binding and backend.name != binding["backend"]):
         return sink
+    tracks_opencode_input = backend.name == "opencode" and request.on_execution_checkpoint is not None
 
     async def guarded(event):
-        if event.type == "session_started" and not request.execution_checkpoint:
+        if event.type == "session_started" and tracks_opencode_input:
+            from app.domains.ai.services.jobs.remote_recovery import persist_stop_admission
+
+            backend._persist_stop_admission = partial(
+                persist_stop_admission, job_id=attempt.job_id, run_token=attempt.run_token
+            )
+        if event.type == "session_started" and binding and not request.execution_checkpoint:
             sid = event.payload["provider_session_id"]
             identity = {
                 "id": sid,
@@ -61,7 +70,7 @@ def guard_native_session(backend: AgentBackend, request, sink):
                 "created": getattr(backend, "_native_created", None),
             }
             checkpoint = None
-            if backend.name == "opencode" and request.on_execution_checkpoint is not None:
+            if tracks_opencode_input:
                 from app.domains.ai.services.jobs.remote_recovery import valid_checkpoint
 
                 checkpoint = dict(getattr(backend, "_execution_checkpoint", {}))

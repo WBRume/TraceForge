@@ -362,7 +362,10 @@ async def _stop_interrupt_engine(run_txn, engine, target: TerminationRequestResu
 
 
 async def _publish_interruption(task_id: str, state: dict[str, Any]) -> None:
-    await task_ws_manager.send_message_to_room(task_id, WSMessage(type="task_interrupted", payload=state))
+    try:
+        await task_ws_manager.send_message_to_room(task_id, WSMessage(type="task_interrupted", payload=state))
+    except Exception:
+        logger.exception("Committed task interruption notification deferred: task_id={}", task_id)
 
 
 def _prepare_interrupted_resume(

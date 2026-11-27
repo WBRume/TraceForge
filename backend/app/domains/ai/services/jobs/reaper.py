@@ -11,6 +11,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Any
 
 from sqlalchemy import and_, func, or_
@@ -242,6 +243,19 @@ async def stop_remote_session(row: dict[str, Any]) -> AgentStopResult:
                 f"session_id={session_id or '-'}"
             ),
         )
+    checkpoint = row.get("provider_execution")
+    if backend_name == "opencode" and checkpoint:
+        if not remote_recovery.valid_checkpoint(checkpoint) or checkpoint["session_id"] != session_id:
+            return AgentStopResult(
+                EXECUTION_KIND_REMOTE_SESSION,
+                False,
+                failure_code=REMOTE_STOP_UNCONFIRMED,
+                error_message="Invalid OpenCode stop checkpoint for this session",
+            )
+        from app.agents.adapters.opencode.execution import owned_stop_phase
+
+        if owned_stop_phase(session_id, checkpoint) in {"prepared", "rejected"}:
+            return AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)
     from app.agents.selection import create_agent_backend_by_name
 
     if row.get("legacy_unbound_after_switch"):
@@ -319,7 +333,14 @@ def opencode_stop_checkpoint(backend, row):
 async def stop_persisted_target(backend, session_id, row):
     checkpoint = opencode_stop_checkpoint(backend, row)
     if checkpoint is not None:
-        return await backend.cancel_persisted_session(session_id, checkpoint=checkpoint)
+        persist_admission = None
+        if row.get("job_id") and row.get("run_token"):
+            persist_admission = partial(
+                remote_recovery.persist_stop_admission, job_id=row["job_id"], run_token=row["run_token"]
+            )
+        return await backend.cancel_persisted_session(
+            session_id, checkpoint=checkpoint, persist_admission=persist_admission
+        )
     return await backend.cancel_persisted_session(session_id)
 
 
@@ -365,24 +386,14 @@ def recovered_remote_result(session_id, success, text):
 
 async def stop_bound_session(backend, binding, row):
     session_id = row["session_id"]
-    checkpoint = opencode_stop_checkpoint(backend, row)
-    tracked = checkpoint is not None
+    tracked = opencode_stop_checkpoint(backend, row) is not None
     async with asyncio.timeout(8):
         if not await matches_remote_session(backend, binding, session_id):
             return unknown_remote_service()
-        if tracked and checkpoint["session_id"] != session_id:
-            return AgentStopResult(
-                EXECUTION_KIND_REMOTE_SESSION,
-                False,
-                failure_code=REMOTE_STOP_UNCONFIRMED,
-                error_message="OpenCode stop checkpoint belongs to a different session",
-            )
         completed = await completed_remote_session(backend, row)
         if completed:
             return completed
         execution = row.get("provider_execution") or {}
-        if execution.get("phase") in {"prepared", "rejected"}:
-            return AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)
         running = await backend.session_running(session_id)
         if not running and not tracked:
             # An idle auxiliary session without a durable input ID can be
@@ -420,7 +431,7 @@ async def stop_attempt_processes(row: dict[str, Any], token: str) -> Any:
     unavailable the attempt stays ORPHANED.
     """
     if str(row.get("execution_kind") or "") == EXECUTION_KIND_REMOTE_SESSION:
-        remote_result = await stop_remote_session(row)
+        remote_result = await stop_remote_session({**row, "run_token": token})
         # 结构化 NACK/UNKNOWN 保留给 convergence 决策（ORPHANED）。
         if not remote_result.stop_acknowledged:
             return remote_result
@@ -517,8 +528,8 @@ async def reap_stale_jobs(*, task_id: str | None = None) -> int:
             )
         if payload:
             reclaimed += 1
-            await publishing.broadcast_job_payload(payload)
             publishing.reschedule_if_pending(payload)
+            await publishing.publish_committed_job(payload)
     return reclaimed
 
 

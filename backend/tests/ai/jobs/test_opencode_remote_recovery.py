@@ -156,6 +156,63 @@ async def test_reaper_needs_quiescence_to_accept_an_aborted_tool_as_terminal(run
         assert proof.stop_acknowledged and not proof.recovered_result.success
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["prepared", "rejected", "stopping"])
+async def test_reaper_releases_an_unsubmitted_input_without_remote_access(monkeypatch, phase):
+    from app.agents.service_binding import AgentService
+
+    offline = Mock(side_effect=ConnectionError("Provider offline"))
+    monkeypatch.setattr(AgentService, "adapter", offline)
+    result = await reaper.stop_remote_session(
+        {
+            "agent_backend": "opencode",
+            "session_id": "ses_original",
+            "agent_service_binding": {"native_session": {"id": "ses_original"}, "backend": "opencode"},
+            "provider_execution": {
+                "version": 1,
+                "session_id": "ses_original",
+                "prompt_id": "msg_original",
+                "deadline": time.time() + 100,
+                "phase": phase,
+                "phase_before_stop": "prepared",
+                "rejection_message": "Input rejected",
+            },
+        }
+    )
+    assert result.stop_acknowledged
+    offline.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["submitting", "stopping"])
+async def test_stop_admission_is_durable_and_preserves_termination_intent(jobs, phase):
+    with jobs.begin() as db:
+        job = db.get(SddAiJob, "reliability-job")
+        job.status = AiJobStatus.TERMINATING
+        job.cancel_requested_at = datetime.utcnow()
+        job.provider_execution_json = {
+            **job.provider_execution_json,
+            "phase": phase,
+            "phase_before_stop": "submitting",
+        }
+    job = current(jobs)
+    witness = job.provider_execution_json
+    with pytest.raises(AgentExecutionDetached):
+        await remote_recovery.persist_stop_admission(witness, job_id=job.id, run_token="stale")
+    assert current(jobs).provider_execution_json == witness
+
+    for _ in range(2):
+        await remote_recovery.persist_stop_admission(witness, job_id=job.id, run_token=job.run_token)
+
+    saved = current(jobs)
+    assert saved.status == AiJobStatus.TERMINATING and saved.cancel_requested_at
+    if phase == "stopping":
+        assert saved.provider_execution_json["phase"] == "stopping"
+        assert saved.provider_execution_json["phase_before_stop"] == "submitted"
+    else:
+        assert saved.provider_execution_json["phase"] == "submitted"
+
+
 def previous_owner(jobs):
     row = current(jobs)
     return AgentAttemptContext(

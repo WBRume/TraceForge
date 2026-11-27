@@ -99,6 +99,35 @@ def save_checkpoint_sync(attempt, checkpoint):
         db.commit()
 
 
+async def persist_stop_admission(checkpoint, *, job_id: str, run_token: str) -> None:
+    await run_db(_persist_stop_admission_sync, checkpoint, job_id=job_id, run_token=run_token)
+
+
+def _persist_stop_admission_sync(checkpoint, *, job_id: str, run_token: str) -> None:
+    """Retain the provider's admission proof before withdrawing a queued input."""
+    from app.domains.ai.services.ai_job_convergence_service import lock_job_in_txn
+
+    with SessionLocal.begin() as db:
+        job = lock_job_in_txn(db, db.query(SddAiJob).filter_by(id=job_id, run_token=run_token))
+        saved = job.provider_execution_json if job else None
+        if not (
+            job
+            and not job.manual_intervention_required
+            and job.agent_backend == "opencode"
+            and job.status in {AiJobStatus.RUNNING, AiJobStatus.TERMINATING, AiJobStatus.ORPHANED}
+            and valid_checkpoint(saved)
+            and job.session_id == checkpoint["session_id"]
+            and all(saved[key] == checkpoint[key] for key in ("session_id", "prompt_id", "deadline"))
+        ):
+            raise AgentExecutionDetached("OpenCode stop no longer owns this input")
+        field = "phase_before_stop" if saved["phase"] == "stopping" else "phase"
+        if saved.get(field) == "submitted":
+            return
+        if saved.get(field) != "submitting":
+            raise AgentExecutionDetached("OpenCode input admission can no longer be recorded")
+        job.provider_execution_json = {**saved, field: "submitted"}
+
+
 def claim_existing_sync(job_id, expected_token):
     from app.domains.ai.services.ai_job_convergence_service import lock_job_in_txn
     from app.domains.ai.services.jobs.store import lease_ttl_seconds

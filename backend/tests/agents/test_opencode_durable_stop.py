@@ -119,6 +119,12 @@ async def test_stop_proves_the_owned_prompt_before_interrupting_the_session(
     adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(native))
     adapter._session_id = "ses_owned"
     adapter._execution_checkpoint = {"session_id": "ses_owned", "prompt_id": "owned", "phase": phase}
+
+    async def persist(checkpoint):
+        assert checkpoint["prompt_id"] == "owned"
+        calls.append(("PERSIST", "owned"))
+
+    adapter._persist_stop_admission = persist
     try:
         result = await adapter.interrupt()
     finally:
@@ -126,4 +132,7 @@ async def test_stop_proves_the_owned_prompt_before_interrupting_the_session(
 
     assert result.stop_acknowledged is expected_ack
     assert (("POST", "/api/session/ses_owned/interrupt") in calls) is abort_session
-    assert (("DELETE", "/api/session/ses_owned/inbox/owned") in calls) is (phase in {"submitted", "submitting"})
+    delete = ("DELETE", "/api/session/ses_owned/inbox/owned")
+    assert (delete in calls) is (phase == "submitted" or queued)
+    if phase == "submitting" and queued:
+        assert calls.index(("PERSIST", "owned")) < calls.index(delete)

@@ -600,16 +600,13 @@ async def finalize_task_chat_job_from_engine(job_id: str, engine: TaskAgentEngin
             raise
     if payload is None:
         return
-    is_success = str(payload.get("status") or "") == AiJobStatus.SUCCESS.value
     runtime.clear_cancel_for_payload(payload)
-    await publishing.broadcast_job_payload(payload)
+    publishing.reschedule_if_pending(payload)
+    await publishing.publish_committed_job(payload)
     if payload.get("guide_snapshot"):
         from app.domains.diagnosis_playbook.guide_execution import dispatch
 
         await dispatch(payload["task_id"], payload["guide_snapshot"])
-    if not is_success:
-        return
-    publishing.reschedule_if_pending(payload)
 
 
 async def finalize_task_chat_job_failure(
@@ -642,7 +639,8 @@ async def finalize_task_chat_job_failure(
     )
     if payload is None:
         return None
-    await publishing.broadcast_job_payload(payload)
+    publishing.reschedule_if_pending(payload)
+    await publishing.publish_committed_job(payload)
     if payload.get("guide_snapshot"):
         from app.domains.diagnosis_playbook.guide_execution import dispatch
 

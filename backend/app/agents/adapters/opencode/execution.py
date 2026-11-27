@@ -88,25 +88,30 @@ def aborted_tool_turn(messages: list[dict]) -> bool:
     )
 
 
-async def withdraw_owned_prompt(adapter, client, session_id: str, checkpoint: dict) -> bool:
-    """Withdraw pending input, or require proof before a session-level interrupt."""
-    prompt_id = checkpoint.get("prompt_id")
-    if not prompt_id or checkpoint.get("session_id") != session_id:
+def owned_stop_phase(session_id: str, checkpoint: dict) -> str | None:
+    if not checkpoint.get("prompt_id") or checkpoint.get("session_id") != session_id:
         raise AgentError(
             "OpenCode stop checkpoint belongs to a different session", failure_code="REMOTE_STOP_UNCONFIRMED"
         )
     phase = checkpoint.get("phase")
-    if phase == "stopping":
-        phase = checkpoint.get("phase_before_stop")
-    if phase in {"prepared", "rejected"}:
-        return True
+    return checkpoint.get("phase_before_stop") if phase == "stopping" else phase
+
+
+async def withdraw_owned_prompt(adapter, client, session_id: str, checkpoint: dict, phase, persist_admission) -> bool:
+    """Withdraw pending input, or require proof before a session-level interrupt."""
+    prompt_id = checkpoint["prompt_id"]
     admitted = phase == "submitted"
     if not admitted:
         response = await client.get(adapter._session_url(session_id, "/inbox"))
         adapter._check_response(response, "list pending input")
         admitted = any(row.get("id") == prompt_id for row in response.json()["data"])
+        if admitted and persist_admission is not None:
+            # DELETE is also a no-op for an absent input. Save what we observed
+            # while it can still be proven, before deletion makes it ambiguous.
+            await persist_admission(checkpoint)
 
-    await adapter._cancel_inbox_input(client, session_id, prompt_id)
+    if admitted:
+        await adapter._cancel_inbox_input(client, session_id, prompt_id)
     # Cancellation of an already delivered input is a provider no-op. Checking
     # history after DELETE distinguishes that case from a withdrawn queued input.
     messages = await adapter.list_messages(session_id)

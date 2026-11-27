@@ -284,10 +284,20 @@ def _load_job_payload_sync(job_id: str) -> dict[str, Any] | None:
 
 
 async def publish_job_state(job_id: str) -> None:
-    payload = await run_db(_load_job_payload_sync, job_id)
-    if not payload:
-        return
-    await broadcast_job_payload(payload)
+    try:
+        payload = await run_db(_load_job_payload_sync, job_id)
+        if payload:
+            await publish_committed_job(payload)
+    except Exception:
+        logger.exception("Committed job snapshot could not be read for publication: job_id={}", job_id)
+
+
+async def publish_committed_job(payload: dict[str, Any]) -> None:
+    """Attempt immediate delivery after commit. Failed delivery stays in the outbox."""
+    try:
+        await broadcast_job_payload(payload)
+    except Exception:
+        logger.exception("Committed job notification deferred: job_id={}", payload.get("id"))
 
 
 def reschedule_if_pending(payload: dict[str, Any]) -> None:
@@ -323,9 +333,9 @@ async def enqueue_job(job_id: str, expected_channel: AiJobChannel | None = None)
     payload = state["payload"]
     queue_key = state["queue_key"]
 
-    await broadcast_job_payload(payload)
     if queue_key:
         runtime.schedule_queue(queue_key)
+    await publish_committed_job(payload)
     return payload
 
 

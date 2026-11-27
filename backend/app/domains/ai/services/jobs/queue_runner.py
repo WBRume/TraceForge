@@ -191,8 +191,8 @@ async def _converge_runner_exit(
         )
         if payload:
             runtime.clear_cancel_for_payload(payload)
-            await publishing.broadcast_job_payload(payload)
             publishing.reschedule_if_pending(payload)
+            await publishing.publish_committed_job(payload)
         return
 
     # status == RUNNING：业务执行路径漏掉 finalizer，runner 兜底收敛。
@@ -230,8 +230,8 @@ async def _converge_runner_exit(
     )
     if payload:
         runtime.clear_cancel_for_payload(payload)
-        await publishing.broadcast_job_payload(payload)
         publishing.reschedule_if_pending(payload)
+        await publishing.publish_committed_job(payload)
 
 
 # ────────────────────────── 队列主循环 ──────────────────────────
@@ -290,7 +290,7 @@ async def run_queue(queue_key: str, *, recovered_job_id: str | None = None) -> N
                             defer_observation_sync, attempt, failure_code=getattr(outcome.error, "failure_code", None)
                         )
                         if payload:
-                            await publishing.broadcast_job_payload(payload)
+                            await publishing.publish_committed_job(payload)
                     except Exception:
                         logger.exception("Remote observer retry state could not be saved: job={}", job_id)
                 if not runtime.shutdown_in_progress() and not detached:

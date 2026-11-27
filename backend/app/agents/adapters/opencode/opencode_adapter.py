@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import quote
@@ -16,7 +17,7 @@ from urllib.parse import quote
 import httpx
 
 from app.agents.activity_watchdog import AgentActivityWatchdog
-from app.agents.adapters.opencode.execution import ExecutionMonitor
+from app.agents.adapters.opencode.execution import ExecutionMonitor, owned_stop_phase, withdraw_owned_prompt
 from app.agents.adapters.opencode.workspace_permissions import same_directory, workspace_permissions
 from app.agents.contract import (
     EXECUTION_KIND_REMOTE_SESSION,
@@ -103,6 +104,7 @@ class OpenCodeAdapter(AgentBackend):
         self._watchdog: AgentActivityWatchdog | None = None
         self._pending_asks: set[str] = set()
         self._execution_checkpoint: dict[str, Any] = {}
+        self._persist_stop_admission: Callable[[dict], Awaitable[None]] | None = None
         self._observer_task: asyncio.Task | None = None
         self._stopped_input = False
 
@@ -752,6 +754,7 @@ class OpenCodeAdapter(AgentBackend):
         self._stopped_input = False
         self._execution_checkpoint = dict(request.execution_checkpoint)
         self._execution_monitor = None
+        self._persist_stop_admission = None
 
     async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
         await self._ensure_client()
@@ -858,30 +861,36 @@ class OpenCodeAdapter(AgentBackend):
             self._pending_asks.clear()
 
     async def _abort_session(
-        self, sid: str, *, connect: bool = False, checkpoint: dict | None = None
+        self,
+        sid: str,
+        *,
+        connect: bool = False,
+        checkpoint: dict | None = None,
+        persist_admission: Callable[[dict], Awaitable[None]] | None = None,
     ) -> AgentStopResult:
-        """Interrupt the v2 worker and verify quiescence before acknowledging stop."""
-        if self._client is None and not connect:
-            return AgentStopResult(
-                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
-                stop_acknowledged=False,
-                failure_code="REMOTE_STOP_UNCONFIRMED",
-                error_message="OpenCode client is closed; abort not sent",
-            )
+        """Stop an owned input, interrupting the worker only when required."""
         try:
-            from app.domains.ai.services.jobs.agent_dispatch import verify_bound_stop
+            target = dict(self._execution_checkpoint if checkpoint is None else checkpoint)
+            phase = owned_stop_phase(sid, target) if target else None
+            if phase in {"prepared", "rejected"}:
+                return self._release_stopped_input()
+            if self._client is None and not connect:
+                return AgentStopResult(
+                    execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                    stop_acknowledged=False,
+                    failure_code="REMOTE_STOP_UNCONFIRMED",
+                    error_message="OpenCode client is closed; abort not sent",
+                )
 
-            from .execution import withdraw_owned_prompt
+            from app.domains.ai.services.jobs.agent_dispatch import verify_bound_stop
 
             async with asyncio.timeout(8):
                 await verify_bound_stop(self, sid)
             client = await self._ensure_client() if connect else self._client
-            target = self._execution_checkpoint if checkpoint is None else checkpoint
-            if target and await withdraw_owned_prompt(self, client, sid, target):
-                self._stopped_input = True
-                if self._observer_task and not self._observer_task.done():
-                    self._observer_task.cancel()
-                return AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)
+            if target and await withdraw_owned_prompt(
+                self, client, sid, target, phase, persist_admission or self._persist_stop_admission
+            ):
+                return self._release_stopped_input()
             response = await client.post(self._session_url(sid, "/interrupt"), params={"resume": "false"})
         except Exception as exc:
             return AgentStopResult(
@@ -910,6 +919,12 @@ class OpenCodeAdapter(AgentBackend):
             error_message=f"OpenCode abort returned HTTP {response.status_code}",
         )
 
+    def _release_stopped_input(self) -> AgentStopResult:
+        self._stopped_input = True
+        if self._observer_task and not self._observer_task.done():
+            self._observer_task.cancel()
+        return AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)
+
     async def interrupt(self, run_id: str | None = None, *, session_id: str | None = None) -> AgentStopResult:
         sid = session_id or self._session_id
         if not sid:
@@ -935,7 +950,13 @@ class OpenCodeAdapter(AgentBackend):
             )
         return await self._abort_session(sid)
 
-    async def cancel_persisted_session(self, session_id: str, *, checkpoint: dict | None = None) -> AgentStopResult:
+    async def cancel_persisted_session(
+        self,
+        session_id: str,
+        *,
+        checkpoint: dict | None = None,
+        persist_admission: Callable[[dict], Awaitable[None]] | None = None,
+    ) -> AgentStopResult:
         """Reaper durable stop：目标必须是显式传入的持久化 session id。
 
         禁止回退到 ``self._session_id``（reaper 每次新建 adapter，内存
@@ -952,7 +973,7 @@ class OpenCodeAdapter(AgentBackend):
             )
         # Reapers create a fresh adapter without running/probing a session first.
         # Durable cleanup must establish its own authenticated transport.
-        return await self._abort_session(sid, connect=True, checkpoint=checkpoint)
+        return await self._abort_session(sid, connect=True, checkpoint=checkpoint, persist_admission=persist_admission)
 
     def is_running(self, run_id: str | None = None) -> bool:
         return self._running

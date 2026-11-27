@@ -311,6 +311,29 @@ def test_expired_resource_snapshot_preserves_successful_build_history(execution_
         assert first.status == AiJobStatus.SUCCESS and first.result_json["baseline_session_id"] == "session"
 
 
+def test_enqueue_preserves_dispatch_and_outbox_when_notification_fails(execution_db, monkeypatch):
+    from app.domains.ai.services.jobs import publishing
+
+    factory, _ = execution_db
+    with factory() as db:
+        job = provision.create_job(db, job_type=ProvisionJobType.CREATE_WORKSPACE, creator_id="user")
+        job_id, queue_key = job.id, db.get(SddAiJob, job.id).queue_key
+        db.commit()
+    scheduled = []
+
+    async def failed_notification(payload):
+        assert payload["id"] == job_id
+        assert scheduled == [queue_key]
+        raise ConnectionError("WebSocket transport unavailable")
+
+    monkeypatch.setattr(publishing.runtime, "schedule_queue", scheduled.append)
+    monkeypatch.setattr(publishing, "broadcast_job_payload", failed_notification)
+    assert asyncio.run(publishing.enqueue_job(job_id))["status"] == "PENDING"
+    assert scheduled == [queue_key]
+    with factory() as db:
+        assert db.query(JobEvent).filter_by(job_id=job_id, published_at=None).count() == 1
+
+
 @pytest.mark.parametrize("page_size", [1, 100])
 def test_notification_failure_does_not_block_other_committed_events(execution_db, monkeypatch, page_size):
     from unittest.mock import AsyncMock
