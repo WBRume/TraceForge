@@ -260,9 +260,9 @@ def _load_task_chat_turn_state_sync(db, job_id: str, run_token: str | None = Non
         "session_turn_id": getattr(job, "session_turn_id", None),
         "session_revision": getattr(job, "session_revision", None),
         "recovery": recovery,
-        "images": ()
-        if recovery
-        else load_agent_images(db, task.id, (job.context_json or {}).get(CHAT_IMAGES_KEY) or []),
+        "images": load_agent_images(db, task.id, (job.context_json or {}).get(CHAT_IMAGES_KEY) or [])
+        if not recovery or recovery.get("phase") in {"prepared", "submitting"}
+        else (),
         "agent_service_replacement": bool((job.context_json or {}).get("agent_service_replacement")),
         "failed_session_check": (job.context_json or {}).get("_agent_session_check_failed"),
         "additional_workspace_directories": additional_directories,
@@ -373,7 +373,7 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> bool | None:
         image_kwargs = {"images": state_row["images"]} if state_row["images"] else {}
         if recovery:
             engine.session_id = recovery["session_id"]
-            await engine.run(prompt, recovery=recovery)
+            await engine.run(prompt, recovery=recovery, **image_kwargs)
         elif fresh_session:
             await engine.run(prompt, fresh_session=True, **image_kwargs)
         elif engine.session_id and not engine.running:

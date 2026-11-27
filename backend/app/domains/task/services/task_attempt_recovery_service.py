@@ -3,7 +3,7 @@
 import asyncio
 from datetime import datetime
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 
 from app.config import settings
 from app.core.distributed_lock import lock_task
@@ -40,14 +40,20 @@ def active_statuses(db, task_id):
 
 
 def _interrupt_lease_remaining(db, task_id: str) -> float:
+    # The engine may already have marked the task interrupted while its Job is still finalizing.
     expires_at = (
         db.query(func.max(SddAiJob.lease_expires_at))
         .filter(
             SddAiJob.task_id == task_id,
             SddAiJob.channel == AiJobChannel.TASK_CHAT,
-            SddAiJob.status == AiJobStatus.TERMINATING,
-            SddAiJob.cancel_requested_at.isnot(None),
-            SddAiJob.context_json["termination_mode"].as_string() == "INTERRUPT",
+            or_(
+                SddAiJob.status == AiJobStatus.RUNNING,
+                and_(
+                    SddAiJob.status == AiJobStatus.TERMINATING,
+                    SddAiJob.cancel_requested_at.isnot(None),
+                    SddAiJob.context_json["termination_mode"].as_string() == "INTERRUPT",
+                ),
+            ),
         )
         .scalar()
     )

@@ -21,6 +21,7 @@ from app.agents.adapters.opencode.event_mapper import map_opencode_event, openco
 from app.agents.contract import AgentInputImage
 from app.agents.errors import (
     AgentExecutionDetached,
+    AgentPromptRejectedError,
     AgentSteeringClosedError,
     AgentSteeringRejectedError,
     AgentTimeoutError,
@@ -174,7 +175,7 @@ class ExecutionMonitor:
     async def ensure_submitted(self):
         phase = self.checkpoint["phase"]
         if phase == "submitted":
-            return
+            return None
         if time.time() >= self.checkpoint["deadline"]:
             raise AgentTimeoutError(
                 "OpenCode execution deadline has expired", phase="hard", limit_seconds=self.request.timeout_seconds
@@ -185,12 +186,16 @@ class ExecutionMonitor:
             if any(row.get("id") == self.checkpoint["prompt_id"] for row in [*messages, *inbox]):
                 self.checkpoint["phase"] = "submitted"
                 await self.save()
-                return
+                return None
         self.checkpoint["phase"] = "submitting"
         await self.save()  # Intent + stable input ID must commit before POST.
-        await self.adapter._send_prompt(self.session_id, self.request)
+        try:
+            await self.adapter._send_prompt(self.session_id, self.request)
+        except AgentPromptRejectedError as exc:
+            return {"success": False, "finish_reason": "input_rejected", "input_rejection": str(exc)}
         self.checkpoint["phase"] = "submitted"
         await self.save()
+        return None
 
     async def emit(self, event: AgentEvent, key: str = ""):
         if key and key in self.delivered:
@@ -395,10 +400,8 @@ class ExecutionMonitor:
     async def handle_event(self, event):
         kind = event.get("type")
         if kind == "server.connected":
-            await self.ensure_submitted()
-            if self.restoring:
-                return await self.reconcile()
-            return None
+            rejected = await self.ensure_submitted()
+            return rejected or (await self.reconcile() if self.restoring else None)
         if self.checkpoint["phase"] != "submitted" or opencode_event_session_id(event) != self.session_id:
             return None
         data = event.get("data") or {}

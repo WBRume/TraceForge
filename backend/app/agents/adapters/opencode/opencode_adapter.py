@@ -32,6 +32,7 @@ from app.agents.errors import (
     AgentExecutionDetached,
     AgentInteractionClosedError,
     AgentInteractionDeliveryUncertain,
+    AgentPromptRejectedError,
     AgentSteeringClosedError,
     AgentTimeoutError,
     SessionForkError,
@@ -364,6 +365,8 @@ class OpenCodeAdapter(AgentBackend):
         if self._user_message_id:
             body["id"] = self._user_message_id
         response = await client.post(self._session_url(session_id, "/prompt"), json=body)
+        if response.status_code in {400, 413, 415, 422}:
+            raise AgentPromptRejectedError(f"OpenCode 拒绝了消息输入（HTTP {response.status_code}）")
         response.raise_for_status()
         self._check_response(response, "prompt")
         data = response.json().get("data", {})
@@ -674,12 +677,12 @@ class OpenCodeAdapter(AgentBackend):
     async def _emit_run_result(self, consumed, seen_types, session_id, request, started_at, _tracked_event):
         finish_reason = consumed.get("finish_reason")
         success = bool(consumed.get("success"))
-        final = await self._fetch_final_message(session_id)
-        await self._emit_missing_final_events(
-            final,
-            seen_types,
-            _tracked_event,
-        )
+        rejection = consumed.get("input_rejection")
+        if rejection is None:
+            final = await self._fetch_final_message(session_id)
+            await self._emit_missing_final_events(final, seen_types, _tracked_event)
+        else:
+            final = {"text": rejection}
         if not finish_reason:
             finish_reason = self._normalize_finish_reason(final.get("finish")) or ("completed" if success else "error")
         if self._interrupted:
@@ -714,8 +717,8 @@ class OpenCodeAdapter(AgentBackend):
             return_code=None,
             raw_trace=json.dumps(consumed, ensure_ascii=False, default=str),
             metadata={
-                "provider_message_ids": sorted(self._message_ids),
-                "provider_user_message_id": self._user_message_id,
+                "provider_message_ids": sorted(self._message_ids) if rejection is None else [],
+                "provider_user_message_id": self._user_message_id if rejection is None else None,
                 "provider_assistant_message_id": final.get("id"),
             },
         )

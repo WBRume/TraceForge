@@ -8,10 +8,17 @@ from tests.engine.test_workflow_segment_buffer import _engine
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "reason,is_error,expected",
-    [("completed", False, "SUCCESS"), ("timeout", False, "INTERRUPTED"), ("error", True, "INTERRUPTED")],
+    "reason,is_error,provider_success,expected",
+    [
+        ("completed", False, None, "SUCCESS"),
+        ("timeout", False, None, "INTERRUPTED"),
+        ("error", True, None, "INTERRUPTED"),
+        ("input_rejected", False, False, "INTERRUPTED"),
+    ],
 )
-async def test_diagnosis_timeout_words_do_not_override_provider_result(monkeypatch, reason, is_error, expected):
+async def test_diagnosis_timeout_words_do_not_override_provider_result(
+    monkeypatch, reason, is_error, provider_success, expected
+):
     engine = _engine()
     engine.is_current = lambda: True
     engine.thinking.finish = AsyncMock()
@@ -28,6 +35,7 @@ async def test_diagnosis_timeout_words_do_not_override_provider_result(monkeypat
             "result": "MySQL 1205 Lock wait timeout exceeded，请核对锁等待。",
             "duration_ms": 65520,
             "finish_reason": reason,
+            "success": provider_success,
         },
         is_error=is_error,
     )

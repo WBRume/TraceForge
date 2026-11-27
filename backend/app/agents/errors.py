@@ -39,6 +39,10 @@ class AgentExecutionDetached(AgentError):
     """Observation stopped; the durable remote execution must remain recoverable."""
 
 
+class AgentPromptRejectedError(AgentError):
+    """The provider rejected a primary prompt before admission."""
+
+
 class AgentInteractionClosedError(AgentError):
     """The provider no longer accepts replies to this interaction."""
 

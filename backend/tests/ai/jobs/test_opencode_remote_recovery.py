@@ -7,12 +7,14 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from app.agents.contract import AgentAttemptContext
+from app.agents.contract import AgentAttemptContext, AgentInputImage
 from app.agents.errors import AgentExecutionDetached
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import attempts, queue_runner, reaper, remote_recovery, store
 from app.domains.ai.services.jobs.executors import JobExecutionOutcome
+from app.domains.ai.services.jobs.executors.task_chat import _load_task_chat_turn_state_sync
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime
+from app.domains.task.models.chat import TaskChatImage
 from app.domains.task.models.task import SddTask, TaskStatus
 from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
 from tests.ai.jobs.reliability_helpers import _job, _session_factory
@@ -129,6 +131,32 @@ def test_claim_existing_job_rotates_ownership_without_resetting_execution(jobs):
     assert after.attempt_count == before.attempt_count + 1
     assert remote_recovery.claim_existing_sync(after.id, "old-token") is None
     assert remote_recovery.claim_existing_sync(after.id, after.run_token) is None
+
+
+@pytest.mark.parametrize("phase", ["prepared", "submitting", "submitted"])
+def test_checkpoint_recovery_loads_images_only_when_input_can_still_need_submission(jobs, phase):
+    with jobs() as db:
+        job = db.get(SddAiJob, "reliability-job")
+        image = TaskChatImage(
+            id="attachment",
+            task_id=job.task_id,
+            creator_id=job.creator_id,
+            filename="fixture.png",
+            media_type="image/png",
+            data=b"raster bytes",
+        )
+        job.context_json = {
+            "chat_images": [{"id": image.id, "filename": image.filename, "media_type": image.media_type}]
+        }
+        job.provider_execution_json = {**job.provider_execution_json, "phase": phase}
+        if phase != "submitted":
+            db.add(image)
+        db.commit()
+
+        state = _load_task_chat_turn_state_sync(db, job.id)
+
+    expected = () if phase == "submitted" else (AgentInputImage("fixture.png", "image/png", b"raster bytes"),)
+    assert state["images"] == expected
 
 
 def test_checkpoint_rejects_replaced_owner_and_changed_input(jobs):

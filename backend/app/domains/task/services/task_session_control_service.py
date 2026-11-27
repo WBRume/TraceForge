@@ -452,7 +452,7 @@ async def resume_interrupted_task(
 
     from app.domains.task.services.task_attempt_recovery_service import recover_task_attempts
 
-    await recover_task_attempts(task_id, run_txn=run_db_txn, wait_for_interrupt_lease=True)
+    await recover_task_attempts(task_id, run_txn=run_db_txn, wait_for_running=True, wait_for_interrupt_lease=True)
     await run_db_txn(lambda db: chat_submission_service._reconcile_sync(db, task_id=task_id))
     await chat_submission_service.wake_event_publisher()
 

@@ -171,9 +171,11 @@ export function useChatSend(options: {
             : options.submissions.send(taskId, clientMessageId, normalized, sendOptions.metadata)
         options.scrollTo('chat')
         const accepted = await submission
-        if (accepted && options.getTaskId() === taskId) options.onAgentSessionAccepted?.()
-        if (accepted) options.onModelSubmitted?.(modelSelection)
-        if (options.getTaskId() === taskId && accepted) options.scrollTo('chat')
+        if (accepted && options.getTaskId() === taskId && options.getWorkspaceId() === targetWorkspaceId) {
+          options.onAgentSessionAccepted?.()
+          options.onModelSubmitted?.(modelSelection)
+          options.scrollTo('chat')
+        }
         if (options.getTaskId() === taskId && options.getWorkspaceId() === targetWorkspaceId
           && options.submissions.current.value.some((row: any) =>
           row.client_message_id === clientMessageId && row.creator_id === options.getCreatorMeta().creator_id

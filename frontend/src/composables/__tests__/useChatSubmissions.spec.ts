@@ -7,8 +7,9 @@ vi.mock('@/utils/api', () => ({ default: { get: vi.fn(), post: vi.fn() } }))
 const receipt = { id: 'r', task_id: 'a', client_message_id: 'c', content: 'prompt', status: 'PREPARING', version: 1 }
 const setup = (resumeInterruptedTask = vi.fn()) => {
   const task = ref('a')
-  return { task, model: useChatSubmissions({
-    workspaceId: () => 'w', taskId: () => task.value, userId: () => 'u', resumeInterruptedTask,
+  const workspace = ref('w')
+  return { task, workspace, model: useChatSubmissions({
+    workspaceId: () => workspace.value, taskId: () => task.value, userId: () => 'u', resumeInterruptedTask,
   }) }
 }
 beforeEach(() => { vi.resetAllMocks(); sessionStorage.clear() })
@@ -31,6 +32,55 @@ describe('durable chat submissions', () => {
     expect(model.busy.value).toBe(true)
     expect(model.current.value[0]?.status).toBe('UNKNOWN')
     expect(model.unconfirmedKeys()).toEqual(['c'])
+  })
+  it('stores a delayed acceptance under its original workspace', async () => {
+    const { model, workspace } = setup()
+    let respond!: (value: { data: typeof receipt }) => void
+    vi.mocked(api.post).mockImplementationOnce(() => new Promise(resolve => { respond = resolve }))
+    const send = model.send('a', 'c', 'prompt')
+    workspace.value = 'other'
+    respond({ data: receipt })
+    expect(await send).toBe(true)
+    expect(model.current.value).toEqual([])
+    workspace.value = 'w'
+    expect(model.current.value[0]?.status).toBe('PREPARING')
+    expect(model.unconfirmedKeys()).toEqual([])
+  })
+  it.each([false, true])('settles a delayed failure while another workspace is selected (definitive %s)', async definitive => {
+    const { model, workspace } = setup()
+    let fail!: (reason: unknown) => void
+    vi.mocked(api.post).mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject }))
+    const send = model.send('a', 'c', 'prompt')
+    workspace.value = 'other'
+    fail(definitive ? { response: { status: 409, data: { detail: 'rejected' } } } : new Error('connection lost'))
+    expect(await send).toBe(!definitive)
+    expect(model.current.value).toEqual([])
+    workspace.value = 'w'
+    expect(model.current.value[0]?.status).toBe(definitive ? 'FAILED' : 'UNKNOWN')
+    expect(model.unconfirmedKeys()).toEqual(definitive ? [] : ['c'])
+    expect(model.busy.value).toBe(!definitive)
+  })
+  it('keeps the new view’s pending input when a previous view receives its acceptance', async () => {
+    const oldView = setup().model
+    let respond!: (value: { data: typeof receipt }) => void
+    vi.mocked(api.post).mockImplementationOnce(() => new Promise(resolve => { respond = resolve }))
+    const firstSend = oldView.send('a', 'c', 'prompt')
+    const nextView = setup().model
+    vi.mocked(api.post).mockRejectedValueOnce(new Error('second response lost'))
+    await nextView.send('a', 'new', 'new prompt')
+    respond({ data: receipt })
+    await firstSend
+
+    expect(setup().model.unconfirmedKeys()).toEqual(['new'])
+  })
+  it('forgets a settled receipt stored under the older workspace key', () => {
+    sessionStorage.setItem('traceforge.chat-submissions:u', JSON.stringify({
+      'w:a:c': { task_id: 'a', client_message_id: 'c', content: 'prompt', status: 'SENDING' },
+    }))
+    const { model } = setup()
+    expect(model.unconfirmedKeys()).toEqual(['c'])
+    model.put(receipt)
+    expect(setup().model.unconfirmedKeys()).toEqual([])
   })
   it('ignores a stale preparation response after execution has completed', async () => {
     const { model } = setup()

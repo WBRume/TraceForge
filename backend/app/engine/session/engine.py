@@ -1038,6 +1038,7 @@ class TaskAgentEngine:
         """处理统一 result/error 事件的最终逻辑。"""
         if not self.is_current():
             return
+        is_error = is_error or payload.get("success") is False
         result_text = str(payload.get("result") or "")
         duration = payload.get("duration_ms")
         cost = payload.get("cost_usd")

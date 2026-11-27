@@ -576,6 +576,47 @@ def test_task_resume_requires_interrupted_status(monkeypatch):
     assert exc.value.status_code == 409
 
 
+@pytest.mark.asyncio
+async def test_resume_waits_for_running_job_to_record_abnormal_interruption(monkeypatch):
+    from app.domains.ai.services.jobs import reaper
+
+    factory = _build_session()
+    with factory() as db:
+        task, job = _seed_task(db, task_status=TaskStatus.INTERRUPTED)
+        task.status_run_id = None
+        task.interrupt_kind = "ABNORMAL"
+        job.lease_expires_at = datetime.utcnow() + timedelta(seconds=3)
+        db.commit()
+        task_id, job_id = task.id, job.id
+
+    read_active = task_attempt_recovery_service.active_statuses
+    reads = 0
+
+    def settle_during_wait(db, target):
+        nonlocal reads
+        reads += 1
+        if reads == 3:
+            old = db.get(SddAiJob, job_id)
+            old.status = AiJobStatus.INTERRUPTED
+            old.lease_expires_at = None
+        return read_active(db, target)
+
+    monkeypatch.setattr(task_attempt_recovery_service, "active_statuses", settle_during_wait)
+    monkeypatch.setattr(reaper, "reap_stale_jobs", AsyncMock())
+    monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: SimpleNamespace(running=reads < 3))
+    monkeypatch.setattr(chat_submission_service, "schedule", lambda _receipt_id: None)
+    patch_ai_job_db(monkeypatch, factory)
+
+    result = await task_session_control_service.resume_interrupted_task(
+        task_id=task_id, actor_user_id="user-1", prompt="continue", client_message_id="resume-after-error"
+    )
+
+    assert result["submission"]["status"] == "PREPARING"
+    with factory() as db:
+        row = db.get(TaskChatSubmission, result["submission"]["id"])
+        assert row.metadata_json["resumed_from_job_id"] == job_id
+
+
 @pytest.mark.parametrize("session_id", ["session-1", None])
 @pytest.mark.parametrize("checkpoint_fails", [False, True])
 def test_task_resume_keeps_a_recoverable_owner_until_checkpoint(monkeypatch, session_id, checkpoint_fails):

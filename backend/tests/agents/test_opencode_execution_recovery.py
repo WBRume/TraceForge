@@ -32,6 +32,7 @@ class Provider:
         self.outcome = "succeeded"
         self.forms = []
         self.unavailable = False
+        self.prompt_rejection: int | None = None
 
     @property
     def done(self):
@@ -80,6 +81,8 @@ class Provider:
             return httpx.Response(200, stream=Stream())
         if path.endswith("/prompt"):
             self.posts += 1
+            if self.prompt_rejection is not None:
+                return httpx.Response(self.prompt_rejection, json={"message": "Input rejected"})
             self.prompt_id = json.loads(request.content)["id"]
             if self.lost_response and self.posts == 1:
                 raise httpx.ReadTimeout("accepted but response lost", request=request)
@@ -149,6 +152,28 @@ async def test_lost_admission_response_reconciles_instead_of_resubmitting(fast_r
     result, _, _ = await execute(provider)
     assert result.success
     assert provider.posts == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", [None, "submitting"])
+async def test_definitive_prompt_rejection_converges_without_a_provider_message(fast_reconcile, phase):
+    provider = Provider(active=False)
+    recovery = checkpoint(provider, phase=phase) if phase else {}
+    provider.prompt_id = None
+    provider.prompt_rejection = 422
+
+    result, events, adapter = await execute(
+        provider, execution_checkpoint=recovery, on_execution_checkpoint=AsyncMock()
+    )
+
+    assert not result.success and result.finish_reason == "input_rejected"
+    assert "422" in result.result_text
+    assert result.metadata["provider_user_message_id"] is None
+    assert [(event.payload["success"], event.payload["result"]) for event in events if event.type == "result"] == [
+        (False, result.result_text)
+    ]
+    assert provider.posts == 1 and provider.prompt_id is None
+    adapter.interrupt.assert_not_awaited()
 
 
 @pytest.mark.asyncio
