@@ -148,6 +148,18 @@ describe('durable chat submissions', () => {
     expect(model.bubbles([])[0].delivery_error).toBe('snapshot failed')
     expect(api.post).not.toHaveBeenCalled()
   })
+  it('clears another sender’s temporary bubble when preparation fails', () => {
+    const { model } = setup()
+    const pending = { ...receipt, creator_id: 'other' }
+    model.put(pending)
+    expect(model.busy.value).toBe(true)
+    expect(model.bubbles([])[0].delivery_status).toBe('preparing')
+
+    model.put({ ...pending, status: 'FAILED', version: 2, error_message: 'preparation failed' })
+    model.put(pending)
+    expect(model.busy.value).toBe(false)
+    expect(model.bubbles([])).toEqual([])
+  })
   it('retries an unknown receipt with the same key on demand', async () => {
     vi.mocked(api.post).mockRejectedValueOnce(new Error('lost response'))
     const { model } = setup()

@@ -184,6 +184,8 @@ export function useChatSubmissions(options: {
       return row ? { ...message, delivery_status: row.status.toLowerCase(), delivery_error: row.error_message } : message
     })
     for (const row of current.value) {
+      // A preparation failure without a chat message belongs to the sender's history.
+      if (row.status === 'FAILED' && !row.chat_message_id && !row.ai_job_id && row.creator_id !== options.userId()) continue
       const awaitingHistory = provisional.has(keyForReceipt(row))
       const identity = messageIdentity(row)
       if ((row.status === 'SUCCEEDED' && !awaitingHistory)
