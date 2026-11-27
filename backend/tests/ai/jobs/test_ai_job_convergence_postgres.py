@@ -19,6 +19,7 @@ import uuid
 from datetime import datetime
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
@@ -38,8 +39,10 @@ from app.domains.ai.services.jobs import (
     registry as ai_registry,
 )
 from app.domains.ai.services.jobs import store as ai_store
+from app.domains.task.models.context_token import ContextTokenCategory, SddContextTokenSnapshot
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import chat_steering_service as steering
+from app.domains.task.services import context_token_service as context
 from app.domains.task.services import status_machine as sm
 from app.domains.task.services.chat_submission_service import SubmissionError
 from app.domains.task.services.task_session_control_service import _accept_interrupt_command
@@ -137,6 +140,72 @@ def test_job_lock_preserves_pending_task_reading_watermark(postgres_factory):
         db.commit()
     with postgres_factory() as db:
         assert db.get(SddTask, "task-1").reading_change_seq == 1
+
+
+def assert_state_locks_allow_context_foreign_keys(factory, job_id, snapshot_id):
+    def insert_segment():
+        with factory() as db:
+            db.execute(text("SET LOCAL lock_timeout = '2s'"))
+            snapshot = db.get(SddContextTokenSnapshot, snapshot_id)
+            return context.record_segment(
+                db,
+                snapshot=snapshot,
+                category=ContextTokenCategory.HISTORY,
+                source_kind="lock_test",
+                content="context write must coexist with state locks",
+            ).id
+
+    with factory.begin() as owner:
+        assert lock_job_in_txn(owner, owner.query(SddAiJob).filter_by(id=job_id))
+        thread, result, _ = _run_in_thread(insert_segment)
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert "value" in result, result.get("error")
+
+
+def assert_thinking_locks_task_before_job(factory, task_id, job_id, snapshot_id):
+    connecting = threading.Event()
+    worker_pids = []
+
+    def insert_thinking():
+        with factory.begin() as db:
+            db.execute(text("SET LOCAL lock_timeout = '5s'"))
+            worker_pids.append(db.execute(text("SELECT pg_backend_pid()")).scalar_one())
+            connecting.set()
+            snapshot = db.get(SddContextTokenSnapshot, snapshot_id)
+            context._upsert_job_thinking(db, snapshot, "thinking must wait for the task")
+        return True
+
+    with factory.begin() as owner:
+        owner.execute(text("SET LOCAL lock_timeout = '3s'"))
+        owner.query(SddTask).filter_by(id=task_id).with_for_update().one()
+        thread, result, _ = _run_in_thread(insert_thinking)
+        assert connecting.wait(timeout=3)
+        wait_query = text("SELECT pg_backend_pid() = ANY(pg_blocking_pids(:worker_pid))")
+        deadline = time.monotonic() + 3
+        while not owner.execute(wait_query, {"worker_pid": worker_pids[0]}).scalar_one():
+            assert time.monotonic() < deadline, result
+            time.sleep(0.025)
+        assert lock_job_in_txn(owner, owner.query(SddAiJob).filter_by(id=job_id))
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert result == {"value": True}
+
+
+def test_job_state_lock_allows_context_segment_foreign_keys(postgres_factory):
+    with postgres_factory() as db:
+        job = _seed_running_job(db)
+        snapshot = context.ensure_snapshot_for_job(db, job)
+        job_id, snapshot_id = job.id, snapshot.id
+    assert_state_locks_allow_context_foreign_keys(postgres_factory, job_id, snapshot_id)
+
+
+def test_context_thinking_does_not_invert_task_and_job_locks(postgres_factory):
+    with postgres_factory() as db:
+        job = _seed_running_job(db)
+        snapshot = context.ensure_snapshot_for_job(db, job)
+        task_id, job_id, snapshot_id = job.task_id, job.id, snapshot.id
+    assert_thinking_locks_task_before_job(postgres_factory, task_id, job_id, snapshot_id)
 
 
 def test_steering_waits_for_task_before_locking_job(postgres_factory):

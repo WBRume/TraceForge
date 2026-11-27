@@ -653,7 +653,7 @@ def _apply_task_interrupt_in_txn(
     if request.evidence.failure_code:
         job.failure_code = request.evidence.failure_code
     if task:
-        task = db.query(SddTask).filter_by(id=task.id).populate_existing().with_for_update().one_or_none()
+        task = db.query(SddTask).filter_by(id=task.id).populate_existing().with_for_update(key_share=True).one_or_none()
     if task and task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
         # 用户已显式关闭/失败的任务不能被引擎回调降级回 INTERRUPTED。
         transition = sm.execution_event(
@@ -927,18 +927,19 @@ def _decide_final_status(
 
 
 def lock_job_in_txn(db: Session, query: Query) -> SddAiJob | None:
-    """Lock the owning task before a task-chat job, then reload the job under its lock."""
+    """Lock task then job without blocking foreign-key inserts from context writers."""
     with db.no_autoflush:
         owner = query.with_entities(SddAiJob.task_id, SddAiJob.channel).first()
         if owner is None:
             return None
         if owner.task_id and owner.channel == AiJobChannel.TASK_CHAT:
-            task = db.query(SddTask).filter_by(id=owner.task_id).with_for_update().first()
+            task = db.query(SddTask).filter_by(id=owner.task_id).with_for_update(key_share=True).first()
             if task is not None:
                 if task in db.dirty:
                     db.flush([task])
                 db.refresh(task)
-        return query.populate_existing().with_for_update().first()
+        # PostgreSQL FOR NO KEY UPDATE still serializes state writers.
+        return query.populate_existing().with_for_update(key_share=True).first()
 
 
 def _resolve_runner_exit_intent(
@@ -1161,7 +1162,13 @@ class TerminationRequestResult:
 
 def _mark_task_interrupted(db, job, request, resolved_session_id, reason, now):
     if request.mark_task_interrupted and job.task_id:
-        task = db.query(SddTask).filter(SddTask.id == job.task_id).populate_existing().with_for_update().first()
+        task = (
+            db.query(SddTask)
+            .filter(SddTask.id == job.task_id)
+            .populate_existing()
+            .with_for_update(key_share=True)
+            .first()
+        )
         if task is not None and task.status not in {
             TaskStatus.COMPLETED,
             TaskStatus.FAILED,

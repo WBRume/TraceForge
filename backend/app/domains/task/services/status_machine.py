@@ -139,7 +139,7 @@ def dispatch(
     fingerprint = _fingerprint(trigger, actor_id, job_id, generation, revision, reason, content)
     # Flush the caller's pending changes before reloading under the row lock.
     db.flush()
-    task = db.query(SddTask).filter_by(id=task.id).populate_existing().with_for_update().one()
+    task = db.query(SddTask).filter_by(id=task.id).populate_existing().with_for_update(key_share=True).one()
     # Reload the transition under the task lock to observe the preceding writer.
     previous = db.query(TaskStatusEvent).filter_by(task_id=task.id, event_key=event_key).with_for_update().one_or_none()
     if previous:

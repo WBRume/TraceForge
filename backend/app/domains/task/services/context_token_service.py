@@ -470,7 +470,9 @@ def _ensure_batch_snapshots(db, entries, snapshot_update, _snapshot_key):
 
 def _upsert_job_thinking(db: Session, snapshot: SddContextTokenSnapshot, content: Any) -> SddContextTokenSegment:
     """Serialize writers for a job, including databases with historical snapshots."""
-    db.query(SddAiJob.id).filter_by(id=snapshot.ai_job_id).with_for_update(key_share=True).one_or_none()
+    from app.domains.ai.services.ai_job_convergence_service import lock_job_in_txn
+
+    lock_job_in_txn(db, db.query(SddAiJob).filter_by(id=snapshot.ai_job_id, task_id=snapshot.task_id))
     row = (
         db.query(SddContextTokenSegment)
         .filter_by(ai_job_id=snapshot.ai_job_id, category=ContextTokenCategory.THINKING)

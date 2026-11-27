@@ -72,7 +72,7 @@ def _enum_text(value: Any) -> str:
 
 def lock_task_row(db: Session, task_id: str) -> SddTask | None:
     """任务行锁（with_for_update）。调用方事务内重复加锁是安全的同事务重入。"""
-    return db.query(SddTask).filter(SddTask.id == task_id).with_for_update().first()
+    return db.query(SddTask).filter(SddTask.id == task_id).with_for_update(key_share=True).first()
 
 
 def allocate_change_seq(task: SddTask) -> int:

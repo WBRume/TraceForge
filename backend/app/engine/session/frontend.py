@@ -338,8 +338,13 @@ class FrontendFeed:
             task, job = None, None
             if (key or confirmation_event) and owner.current_job_id:
                 # Serialize replay dedupe with ownership claims on the same job.
-                task = db.query(SddTask).filter(SddTask.id == owner.task_id).with_for_update().first()
-                job = db.query(SddAiJob).filter(SddAiJob.id == owner.current_job_id).with_for_update().first()
+                task = db.query(SddTask).filter(SddTask.id == owner.task_id).with_for_update(key_share=True).first()
+                job = (
+                    db.query(SddAiJob)
+                    .filter(SddAiJob.id == owner.current_job_id)
+                    .with_for_update(key_share=True)
+                    .first()
+                )
             # 关键写入兜底 fence：job 未撤销/取消且 session_revision 未变
             gate = owner.gate
             if gate is not None and not gate.fence_sync(db):

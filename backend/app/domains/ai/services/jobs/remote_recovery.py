@@ -64,11 +64,12 @@ def legacy_binding_unknown(db, job) -> bool:
 
 
 def save_checkpoint_sync(attempt, checkpoint):
+    from app.domains.ai.services.ai_job_convergence_service import lock_job_in_txn
+
     if not valid_checkpoint(checkpoint):
         raise ValueError("Invalid remote execution checkpoint")
     with SessionLocal() as db:
-        db.query(SddTask).filter(SddTask.id == attempt.task_id).with_for_update().first()
-        job = db.query(SddAiJob).filter(SddAiJob.id == attempt.job_id).with_for_update().first()
+        job = lock_job_in_txn(db, db.query(SddAiJob).filter_by(id=attempt.job_id, task_id=attempt.task_id))
         if not (
             job
             and job.status == AiJobStatus.RUNNING
@@ -92,12 +93,11 @@ def save_checkpoint_sync(attempt, checkpoint):
 
 
 def claim_existing_sync(job_id, expected_token):
+    from app.domains.ai.services.ai_job_convergence_service import lock_job_in_txn
     from app.domains.ai.services.jobs.store import lease_ttl_seconds
 
     with SessionLocal() as db:
-        task_id = db.query(SddAiJob.task_id).filter(SddAiJob.id == job_id).scalar()
-        db.query(SddTask).filter(SddTask.id == task_id).with_for_update().first()
-        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).with_for_update().first()
+        job = lock_job_in_txn(db, db.query(SddAiJob).filter_by(id=job_id))
         if not recoverable(job) or job.run_token != expected_token or not current_task(db, job):
             return None
         if legacy_binding_unknown(db, job):

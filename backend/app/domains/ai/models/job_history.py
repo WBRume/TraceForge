@@ -119,7 +119,7 @@ def capture_changes(db, _context, _instances):
             # Long-lived domain sessions can hold an older identity while a
             # heartbeat/finalizer uses another connection. Allocate the event
             # version under the database lock, never from that cached identity.
-            current = db.query(SddAiJob.version).filter(SddAiJob.id == job.id).with_for_update().scalar()
+            current = db.query(SddAiJob.version).filter(SddAiJob.id == job.id).with_for_update(key_share=True).scalar()
             job.version = int(current or 1) + 1
         else:
             continue

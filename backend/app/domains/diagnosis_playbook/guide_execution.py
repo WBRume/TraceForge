@@ -141,7 +141,7 @@ def command(db, task, request, user_id):
 def on_job_finished(db, job):
     from app.domains.task.models.task import SddTask
 
-    task = db.query(SddTask).filter_by(id=job.task_id).populate_existing().with_for_update().one_or_none()
+    task = db.query(SddTask).filter_by(id=job.task_id).populate_existing().with_for_update(key_share=True).one_or_none()
     if not task or not (task.task_meta_json or {}).get("diagnosis_playbook_guide"):
         return None
     if job.session_generation is not None and job.session_generation != task.session_generation:

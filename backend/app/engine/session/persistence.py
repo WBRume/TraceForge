@@ -479,8 +479,13 @@ def _emit_status_event_sync(owner, trigger, event_key, reason):
     from app.domains.task.services import status_machine as sm
 
     with SessionLocal() as db:
-        task = db.query(SddTask).filter_by(id=owner.task_id).with_for_update().first()
-        job = db.query(SddAiJob).filter_by(id=owner.current_job_id, task_id=owner.task_id).with_for_update().first()
+        task = db.query(SddTask).filter_by(id=owner.task_id).with_for_update(key_share=True).first()
+        job = (
+            db.query(SddAiJob)
+            .filter_by(id=owner.current_job_id, task_id=owner.task_id)
+            .with_for_update(key_share=True)
+            .first()
+        )
         if not job or not task:
             return
         gate = owner.gate
