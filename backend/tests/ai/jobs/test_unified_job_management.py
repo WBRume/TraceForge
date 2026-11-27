@@ -304,3 +304,37 @@ def test_notification_failure_does_not_block_other_committed_events(execution_db
     assert delivered.call_args.args[0]["version"] == 1
     with factory() as db:
         assert db.get(SddAiJob, job_id).attempt_count == 0
+
+
+def test_notification_replays_one_snapshot_and_leaves_a_concurrent_version_pending(execution_db, monkeypatch):
+    from app.domains.ai.services.jobs import publishing
+
+    factory, _ = execution_db
+    with factory() as db:
+        job_id = provision.create_job(db, job_type=ProvisionJobType.CREATE_WORKSPACE, creator_id="user").id
+        job = db.get(SddAiJob, job_id)
+        job.progress = 20
+        db.commit()
+        job.progress = 30
+        db.commit()
+        version = job.version
+
+    sent = []
+
+    async def publish(payload):
+        sent.append(payload["version"])
+        if len(sent) == 1:
+            with factory() as db:
+                db.get(SddAiJob, job_id).progress = 40
+                db.commit()
+
+    monkeypatch.setattr(publishing, "_event_delivery_cursor", None)
+    monkeypatch.setattr(publishing, "broadcast_job_payload", publish)
+    assert asyncio.run(publishing.publish_pending_job_events()) == version
+    assert sent == [version]
+    with factory() as db:
+        pending = db.query(JobEvent).filter_by(job_id=job_id, published_at=None).one()
+        assert pending.version == version + 1
+    assert asyncio.run(publishing.publish_pending_job_events()) == 1
+    assert asyncio.run(publishing.publish_pending_job_events()) == 0
+    assert sent == [version, version + 1]

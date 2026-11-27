@@ -239,28 +239,36 @@ def _pending_events_sync(cursor: tuple[datetime, str] | None):
         return pending.limit(_EVENT_DELIVERY_BATCH_SIZE).all()
 
 
-def _acknowledge_event_sync(event_id: str) -> None:
+def _acknowledge_snapshot_sync(job_id: str, version: int) -> int:
     with SessionLocal() as db:
-        db.query(JobEvent).filter_by(id=event_id, published_at=None).update({"published_at": datetime.utcnow()})
+        count = (
+            db.query(JobEvent)
+            .filter(JobEvent.job_id == job_id, JobEvent.published_at.is_(None), JobEvent.version <= version)
+            .update({"published_at": datetime.utcnow()}, synchronize_session=False)
+        )
         db.commit()
+        return count
 
 
 async def publish_pending_job_events() -> int:
-    """Retry committed notifications, rotating past undeliverable rows."""
+    """Replay the current snapshot once per Job while advancing the event cursor."""
     global _event_delivery_cursor
     events = await run_db(_pending_events_sync, _event_delivery_cursor)
     count = 0
+    visited = set()
     for event_id, job_id, created_at in events:
         _event_delivery_cursor = (created_at, event_id)
+        if job_id in visited:
+            continue
+        visited.add(job_id)
         try:
             payload = await run_db(_load_job_payload_sync, job_id)
             if payload:
                 await broadcast_job_payload(payload)
-            await run_db(_acknowledge_event_sync, event_id)
+                # A concurrent update after the snapshot was read still needs delivery.
+                count += await run_db(_acknowledge_snapshot_sync, job_id, payload["version"])
         except Exception:
             logger.exception("Job notification deferred: job_id={}, event_id={}", job_id, event_id)
-            continue
-        count += 1
     return count
 
 
