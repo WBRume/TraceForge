@@ -71,8 +71,9 @@ async def recover_task_attempts(task_id, *, run_txn=run_db_txn, wait_for_running
     await reap_stale_jobs(task_id=task_id)
     remaining = await run_txn(lambda db: _interrupt_lease_remaining(db, task_id)) if wait_for_interrupt_lease else 0
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + remaining + settings.TASK_SESSION_REVERT_WAIT_SECONDS
-    reap_at = loop.time() + remaining if remaining else None
+    now = loop.time()
+    deadline = now + remaining + settings.TASK_SESSION_REVERT_WAIT_SECONDS
+    reap_at = now + remaining if wait_for_interrupt_lease else None
     while statuses := await run_txn(lambda db: active_statuses(db, task_id)):
         # Queued/running/HITL turns still belong to the user. Ordinary chat
         # must reject these promptly, rather than request their cancellation.
@@ -88,9 +89,16 @@ async def recover_task_attempts(task_id, *, run_txn=run_db_txn, wait_for_running
             return
         now = loop.time()
         if reap_at is not None and now >= reap_at:
-            await reap_stale_jobs(task_id=task_id)
-            reap_at = None
-            continue
+            # The lease uses wall time, which can still be ahead of the
+            # monotonic wake-up estimate. A lease may also expire after the
+            # initial scan but before the first read above.
+            remaining = await run_txn(lambda db: _interrupt_lease_remaining(db, task_id))
+            if remaining == 0:
+                await reap_stale_jobs(task_id=task_id)
+                reap_at = None
+                continue
+            now = loop.time()
+            reap_at = min(deadline, now + remaining)
         if now >= deadline:
             return
         delay = 0.25 if wait_for_interrupt_lease else 0.1

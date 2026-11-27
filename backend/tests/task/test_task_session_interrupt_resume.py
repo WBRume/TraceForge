@@ -523,7 +523,8 @@ def test_interrupt_without_engine_only_stops_current_attempt(monkeypatch, provid
 
 
 @pytest.mark.asyncio
-async def test_resume_reaps_the_previous_attempt_when_its_stop_lease_expires(monkeypatch):
+@pytest.mark.parametrize("early_samples", [0, 2], ids=["expired-since-scan", "early-timer"])
+async def test_resume_reaps_the_previous_attempt_when_its_stop_lease_expires(monkeypatch, early_samples):
     from app.domains.ai.services.jobs import reaper
 
     factory = _build_session()
@@ -532,7 +533,7 @@ async def test_resume_reaps_the_previous_attempt_when_its_stop_lease_expires(mon
         task_id, job_id = task.id, job.id
         job.context_json = {"termination_mode": "INTERRUPT"}
         job.cancel_requested_at = datetime.utcnow()
-        job.lease_expires_at = datetime.utcnow() + timedelta(seconds=0.2)
+        job.lease_expires_at = datetime.utcnow() + timedelta(minutes=1)
         db.commit()
 
     async def txn(body):
@@ -547,11 +548,25 @@ async def test_resume_reaps_the_previous_attempt_when_its_stop_lease_expires(mon
                 job.status = AiJobStatus.INTERRUPTED
                 job.lease_expires_at = None
 
+    samples = []
+
+    def lease_remaining(db, task_id):
+        assert task_id == "task-1"
+        samples.append(task_id)
+        if len(samples) <= early_samples:
+            # The monotonic wait reaches its wake-up point while the wall
+            # clock still reports a live stop lease.
+            return 0.001
+        db.get(SddAiJob, job_id).lease_expires_at = datetime.utcnow() - timedelta(seconds=1)
+        return 0
+
     reaper_spy = AsyncMock(side_effect=reap)
     monkeypatch.setattr(reaper, "reap_stale_jobs", reaper_spy)
-    monkeypatch.setattr(task_attempt_recovery_service.settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(task_attempt_recovery_service, "_interrupt_lease_remaining", lease_remaining)
+    monkeypatch.setattr(task_attempt_recovery_service.settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 1.0)
     await task_attempt_recovery_service.recover_task_attempts(task_id, run_txn=txn, wait_for_interrupt_lease=True)
     assert reaper_spy.await_count == 2
+    assert len(samples) == max(2, early_samples + 1)
     with factory() as db:
         assert db.get(SddAiJob, job_id).status == AiJobStatus.INTERRUPTED
 
