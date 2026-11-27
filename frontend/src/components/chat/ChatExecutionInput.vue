@@ -29,6 +29,7 @@ const props = defineProps<{
   contextKey?: string
   disabled: boolean
   sendBlocked?: boolean
+  submissionBlocked?: boolean
   running: boolean
   steeringJobId?: string
   canInterrupt: boolean
@@ -145,7 +146,8 @@ const primaryAction = computed(() => {
   return props.steeringJobId && hasInput.value && !props.interrupting ? 'steer' : 'stop'
 })
 const canSubmit = computed(() => hasInput.value && primaryAction.value !== 'stop'
-  && !props.disabled && !props.sendBlocked && !speechBusy.value)
+  && !props.disabled && !props.sendBlocked && !speechBusy.value
+  && (!props.submissionBlocked || primaryAction.value === 'steer' || isPreInput.value))
 const primaryActionDisabled = computed(() => primaryAction.value === 'stop'
   ? !props.canInterrupt || props.interrupting
   : !canSubmit.value)

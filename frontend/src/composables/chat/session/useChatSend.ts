@@ -79,6 +79,12 @@ export function useChatSend(options: {
   })
   const sendingChat = ref(false)
   const imageDraft = useChatImageDraft(options.getWorkspaceId, options.getTaskId)
+  const pendingConfirmation = computed(() => options.task.getCurrentTask()?.status === 'AWAITING_INPUT'
+    ? options.getPendingConfirmation?.() : undefined)
+  const submissionBlocked = computed(() => options.submissions.busy.value && (
+    !options.task.isTaskInterrupted.value
+    || options.submissions.current.value.some(row => ['SENDING', 'UNKNOWN', 'PREPARING'].includes(row.status))
+  ))
   let unconfirmedSteering: { jobId: string; taskId: string; content: string; imagesKey: string; clientMessageId: string } | undefined
   const chatInputPlaceholder = computed(() => {
     if (!options.suggestionOnly?.() && options.resourceBlocked?.()) return '本地资源未连接，恢复在线后可发送消息'
@@ -102,7 +108,7 @@ export function useChatSend(options: {
   ): Promise<boolean> => {
     if (options.isInitializing?.()) return false
     if (options.task.isTerminalStatus.value || options.task.isTaskProvisioning.value) return false
-    const confirmation = options.task.getCurrentTask()?.status === 'AWAITING_INPUT' ? options.getPendingConfirmation?.() : undefined
+    const confirmation = pendingConfirmation.value
     if (confirmation && !sendOptions.metadata?.interaction_id) {
       sendOptions = { ...sendOptions, metadata: { ...sendOptions.metadata,
         interaction_id: confirmation.interaction_id, reply_to_message_id: confirmation.message_id,
@@ -133,10 +139,7 @@ export function useChatSend(options: {
       return false
     }
     if (sendingChat.value || options.isUndoing()) return false
-    if (!confirmationReply && options.submissions.busy.value && (
-      !options.task.isTaskInterrupted.value
-      || options.submissions.current.value.some(row => ['SENDING', 'UNKNOWN', 'PREPARING'].includes(row.status))
-    )) return false
+    if (!confirmationReply && submissionBlocked.value) return false
     const normalized = String(content || '').trim()
     if (!normalized && (confirmationReply || !sendOptions.images?.length)) return false
     const targetTaskId = options.getTaskId()
@@ -348,6 +351,7 @@ export function useChatSend(options: {
     removeImage: imageDraft.remove,
     restoreImages: imageDraft.restore,
     sendingChat,
+    submissionBlocked: computed(() => submissionBlocked.value && !pendingConfirmation.value && !options.suggestionOnly?.()),
     chatInputPlaceholder,
     sendChat: () => sendComposer(),
     sendSteeringChat: (jobId: string) => sendComposer(jobId),

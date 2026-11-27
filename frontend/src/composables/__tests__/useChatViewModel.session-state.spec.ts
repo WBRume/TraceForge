@@ -408,6 +408,16 @@ describe('useChatViewModel session state single flight', () => {
     await flushPromises()
     expect(vm.messages.value.some(item => String(item.id || '') === 'm1')).toBe(true)
     expect(vm.activeChatJobs.value.j1?.id).toBe('j1')
+    expect(vm.submissionBlocked.value).toBe(true)
+
+    socket.receive({ type: 'event', contract_version: 2, aggregate_id: null, aggregate_version: null, created_at: '2026-11-10T09:00:00Z', room: 'task:t1', epoch: 'e', sequence: 3, event_id: 'ev-3',
+      event_type: 'chat_submission_update', payload: {
+        task_id: 't1', session_generation: 1, session_revision: 1, event_id: 'ev-3',
+        receipt: { id: 'r1', task_id: 't1', client_message_id: 'c1', status: 'SUCCEEDED', version: 3,
+          chat_message_id: 'm1', ai_job_id: 'j1' },
+      } })
+    await flushPromises()
+    expect(vm.submissionBlocked.value).toBe(false)
 
     // 事件路径零 REST 反查
     expect(countCalls('/session-state')).toBe(before)

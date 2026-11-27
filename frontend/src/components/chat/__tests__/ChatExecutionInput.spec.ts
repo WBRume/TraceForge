@@ -107,6 +107,21 @@ describe('ChatExecutionInput', () => {
     expect(wrapper.emitted('submit')).toHaveLength(1)
   })
 
+  it('keeps the draft editable and waits for the previous receipt before sending', async () => {
+    const wrapper = mountInput({ submissionBlocked: true })
+    const send = wrapper.get<HTMLButtonElement>('button[aria-label="send"]')
+    expect(wrapper.get('textarea').element.disabled).toBe(false)
+    expect(send.element.disabled).toBe(true)
+    await pressEnter(wrapper)
+    expect(wrapper.emitted('submit')).toBeUndefined()
+
+    await wrapper.setProps({ submissionBlocked: false })
+    expect(send.element.disabled).toBe(false)
+    await send.trigger('click')
+    expect(wrapper.emitted('submit')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
   it('offers both answer and stop while the task awaits a reply', async () => {
     const wrapper = mountInput({ running: false, canInterrupt: true })
 
@@ -129,7 +144,7 @@ describe('ChatExecutionInput', () => {
   })
 
   it('uses the same button for Stop and Steer as the running draft changes', async () => {
-    const wrapper = mountInput({ running: true, steeringJobId: 'active-job', modelValue: ' ' })
+    const wrapper = mountInput({ running: true, steeringJobId: 'active-job', modelValue: ' ', submissionBlocked: true })
     const button = wrapper.get('button[aria-label="stop"]')
     expect(wrapper.findAll('.primary-action-btn')).toHaveLength(1)
     expect(wrapper.find('.steer-btn').exists()).toBe(false)

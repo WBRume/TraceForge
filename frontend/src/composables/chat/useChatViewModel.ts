@@ -1186,6 +1186,7 @@ export function useChatViewModel() {
     chatInput: send.chatInput,
     annotations,
     sendingChat: send.sendingChat,
+    submissionBlocked: send.submissionBlocked,
     chatInputPlaceholder: send.chatInputPlaceholder,
     acceptsChatImages,
     chatImageDrafts: send.imageDrafts,
