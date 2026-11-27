@@ -110,19 +110,22 @@ const spatialLayouts = computed(() => computeSpatialTheaterLayouts({
   stageHeight: stageSize.value.height,
 }))
 
+const cardLayerStyles = computed<CSSProperties[]>(() => spatialLayouts.value.map(item => ({
+  '--card-depth': `${item.z}px`,
+  zIndex: item.zIndex,
+})))
+
 const cardStyles = computed<CSSProperties[]>(() => spatialLayouts.value.map(item => {
   if (item.isFront) {
     return {
-      zIndex: item.zIndex,
       transform: `translate3d(${item.x}px, ${item.y}px, 0px)`,
     }
   }
   const px = Math.round(item.x + parallax.value.x * (-item.z / 95))
   const py = Math.round(item.y + parallax.value.y * (-item.z / 95))
   return {
-    zIndex: item.zIndex,
     '--card-content-opacity': item.opacity,
-    transform: `translate3d(${px}px, ${py}px, ${item.z}px) rotateX(${item.rotX}deg) rotateY(${item.rotY}deg) rotateZ(${item.rotZ}deg) scale(${item.scale})`,
+    transform: `translate3d(${px}px, ${py}px, 0px) rotateX(${item.rotX}deg) rotateY(${item.rotY}deg) rotateZ(${item.rotZ}deg) scale(${item.scale})`,
   }
 }))
 
@@ -296,94 +299,99 @@ defineExpose({ step })
 
     <!-- 3D Glass Carousel World -->
     <div v-else class="spatial-world">
-      <article
+      <div
         v-for="(task, index) in theaterTasks"
         :key="task.id"
-        class="spatial-card"
-        :class="[
-          `tone-${statusTone(task)}`,
-          {
-            'is-front': index === activeIndex,
-            'is-pinned': pinnedTaskId === task.id,
-          },
-        ]"
-        :style="cardStyles[index]"
-        @click="handleCardClick(task.id)"
+        class="spatial-card-layer"
+        :style="cardLayerStyles[index]"
       >
-        <div class="card-sheen" aria-hidden="true" />
-        <div class="card-inner">
-          <header class="card-head">
-            <span class="status-badge" :class="`tone-${statusTone(task)}`">
-              <span
-                class="status-dot"
-                :class="{
-                  'is-live': isActiveTaskStatus(task.status),
-                  'is-blocked': statusTone(task) === 'blocked',
-                }"
-              />
-              <span>{{ t(taskStatusKey(taskDisplayStatus(task.status, task.interrupt_kind))) }}</span>
-            </span>
-            <time
-              v-if="taskDateLabels.get(task.id)"
-              class="card-time"
-              :datetime="task.last_activity_at ?? undefined"
-            >
-              {{ taskDateLabels.get(task.id) }}
-            </time>
-          </header>
-
-          <div class="card-title-block">
-            <h3 class="card-title" :title="task.name">{{ task.name }}</h3>
-            <div class="card-tags">
-              <span class="meta-chip">{{ taskTypeLabel(task.task_type) }}</span>
-              <span v-if="hasRepos && task.repos.length" class="meta-chip is-repo">
-                {{ t('dashboard.diorama.theater_repos_count', { count: task.repos.length }) }}
+        <article
+          class="spatial-card"
+          :class="[
+            `tone-${statusTone(task)}`,
+            {
+              'is-front': index === activeIndex,
+              'is-pinned': pinnedTaskId === task.id,
+            },
+          ]"
+          :style="cardStyles[index]"
+          @click="handleCardClick(task.id)"
+        >
+          <div class="card-sheen" aria-hidden="true" />
+          <div class="card-inner">
+            <header class="card-head">
+              <span class="status-badge" :class="`tone-${statusTone(task)}`">
+                <span
+                  class="status-dot"
+                  :class="{
+                    'is-live': isActiveTaskStatus(task.status),
+                    'is-blocked': statusTone(task) === 'blocked',
+                  }"
+                />
+                <span>{{ t(taskStatusKey(taskDisplayStatus(task.status, task.interrupt_kind))) }}</span>
               </span>
-              <button
-                v-if="task.requirement_titles[0]"
-                type="button"
-                class="meta-chip is-req"
-                :title="task.requirement_titles[0]"
-                @click.stop="task.requirement_ids[0] && openRequirement(task.requirement_ids[0])"
+              <time
+                v-if="taskDateLabels.get(task.id)"
+                class="card-time"
+                :datetime="task.last_activity_at ?? undefined"
               >
-                {{ t('dashboard.diorama.theater_req_label') }}: {{ task.requirement_titles[0] }}
+                {{ taskDateLabels.get(task.id) }}
+              </time>
+            </header>
+
+            <div class="card-title-block">
+              <h3 class="card-title" :title="task.name">{{ task.name }}</h3>
+              <div class="card-tags">
+                <span class="meta-chip">{{ taskTypeLabel(task.task_type) }}</span>
+                <span v-if="hasRepos && task.repos.length" class="meta-chip is-repo">
+                  {{ t('dashboard.diorama.theater_repos_count', { count: task.repos.length }) }}
+                </span>
+                <button
+                  v-if="task.requirement_titles[0]"
+                  type="button"
+                  class="meta-chip is-req"
+                  :title="task.requirement_titles[0]"
+                  @click.stop="task.requirement_ids[0] && openRequirement(task.requirement_ids[0])"
+                >
+                  {{ t('dashboard.diorama.theater_req_label') }}: {{ task.requirement_titles[0] }}
+                </button>
+              </div>
+            </div>
+
+            <p v-if="task.description" class="card-summary" :title="task.description">
+              {{ task.description }}
+            </p>
+
+            <footer class="card-foot">
+              <div class="creator-info">
+                <UserAvatar
+                  :display-name="task.creator_name || ''"
+                  :email="memberById.get(task.creator_id)?.email"
+                  :user-id="task.creator_id"
+                  :avatar-url="memberById.get(task.creator_id)?.avatar_url"
+                  :avatar-svg="memberById.get(task.creator_id)?.avatar_svg"
+                  :accent-color="memberById.get(task.creator_id)?.color"
+                  size="xs"
+                />
+                <span class="creator-name">{{ task.creator_name || memberById.get(task.creator_id)?.display_name || '-' }}</span>
+              </div>
+
+              <button
+                v-if="index === activeIndex"
+                type="button"
+                class="enter-chat-btn"
+                @click.stop="openTaskChat(task.id)"
+              >
+                <MessageSquare class="btn-mini-icon" />
+                <span>{{ t('dashboard.diorama.theater_enter_chat') }}</span>
               </button>
-            </div>
+              <span v-else class="side-focus-label">
+                {{ t('dashboard.diorama.theater_focus_card') }}
+              </span>
+            </footer>
           </div>
-
-          <p v-if="task.description" class="card-summary" :title="task.description">
-            {{ task.description }}
-          </p>
-
-          <footer class="card-foot">
-            <div class="creator-info">
-              <UserAvatar
-                :display-name="task.creator_name || ''"
-                :email="memberById.get(task.creator_id)?.email"
-                :user-id="task.creator_id"
-                :avatar-url="memberById.get(task.creator_id)?.avatar_url"
-                :avatar-svg="memberById.get(task.creator_id)?.avatar_svg"
-                :accent-color="memberById.get(task.creator_id)?.color"
-                size="xs"
-              />
-              <span class="creator-name">{{ task.creator_name || memberById.get(task.creator_id)?.display_name || '-' }}</span>
-            </div>
-
-            <button
-              v-if="index === activeIndex"
-              type="button"
-              class="enter-chat-btn"
-              @click.stop="openTaskChat(task.id)"
-            >
-              <MessageSquare class="btn-mini-icon" />
-              <span>{{ t('dashboard.diorama.theater_enter_chat') }}</span>
-            </button>
-            <span v-else class="side-focus-label">
-              {{ t('dashboard.diorama.theater_focus_card') }}
-            </span>
-          </footer>
-        </div>
-      </article>
+        </article>
+      </div>
     </div>
 
     <!-- Bottom Carousel Controls (dots + prev/next only, no timeline bar) -->
@@ -426,12 +434,15 @@ defineExpose({ step })
 
 <style scoped>
 .spatial-stage {
+  --theater-perspective: 1050px;
+  --theater-perspective-origin: 50% 48%;
+  --theater-card-motion: 0.72s cubic-bezier(0.22, 1, 0.36, 1);
   position: relative;
   flex: 1;
   min-height: 490px;
   background: radial-gradient(circle at 50% 42%, #fafdff 0%, #f1f5f9 64%, #e8eff7 100%);
-  perspective: 1050px;
-  perspective-origin: 50% 48%;
+  perspective: var(--theater-perspective);
+  perspective-origin: var(--theater-perspective-origin);
   overflow: hidden;
   user-select: none;
 }
@@ -546,10 +557,18 @@ defineExpose({ step })
 .spatial-world {
   position: absolute;
   inset: 0;
-  perspective: inherit;
-  perspective-origin: inherit;
-  /* Keep perspective on each card while z-index decides which whole card is in front. */
-  transform-style: flat;
+  transform-style: preserve-3d;
+  pointer-events: none;
+}
+
+.spatial-card-layer {
+  position: absolute;
+  inset: 0;
+  transform: translateZ(var(--card-depth));
+  /* Project the tilt into this card's plane using its remaining distance to the camera. */
+  perspective: calc(var(--theater-perspective) - var(--card-depth));
+  perspective-origin: var(--theater-perspective-origin);
+  transition: transform var(--theater-card-motion), perspective var(--theater-card-motion);
 }
 
 .spatial-card {
@@ -565,10 +584,11 @@ defineExpose({ step })
   backface-visibility: hidden;
   -webkit-font-smoothing: antialiased;
   transition:
-    transform 0.72s cubic-bezier(0.22, 1, 0.36, 1),
+    transform var(--theater-card-motion),
     box-shadow 0.52s ease,
     border-color 0.35s ease;
   cursor: pointer;
+  pointer-events: auto;
   overflow: hidden;
 }
 
@@ -906,7 +926,7 @@ defineExpose({ step })
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .spatial-world,
+  .spatial-card-layer,
   .spatial-card,
   .card-inner,
   .nav-dot {
