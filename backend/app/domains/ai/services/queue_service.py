@@ -84,6 +84,17 @@ def list_orphaned_jobs(
     return rows, total
 
 
+def _lock_orphaned_job(db: Session, job_id: str) -> SddAiJob:
+    from app.domains.ai.services.ai_job_convergence_service import lock_job_in_txn
+
+    job = lock_job_in_txn(db, db.query(SddAiJob).filter_by(id=str(job_id or "").strip()))
+    if job is None:
+        raise LookupError("Queue job not found")
+    if job.status != AiJobStatus.ORPHANED:
+        raise ValueError(f"Only ORPHANED jobs can be managed (current status: {_enum_text(job.status)})")
+    return job
+
+
 def protect_orphaned_job(
     db: Session,
     *,
@@ -97,19 +108,13 @@ def protect_orphaned_job(
     This is intentionally not a generic status-edit endpoint. The job stays
     ORPHANED until a separate, evidence-backed recovery workflow is performed.
     """
-    from app.domains.ai.services.ai_job_convergence_service import lock_job_in_txn
-
     if not _is_admin(db, operator_id):
         raise PermissionError("Only platform administrators can protect orphaned jobs")
     normalized_reason = str(reason or "").strip()
     normalized_evidence = str(evidence or "").strip()
     if not normalized_reason or not normalized_evidence:
         raise ValueError("reason and evidence are required")
-    job = lock_job_in_txn(db, db.query(SddAiJob).filter(SddAiJob.id == str(job_id or "").strip()))
-    if not job:
-        raise LookupError("Queue job not found")
-    if job.status != AiJobStatus.ORPHANED:
-        raise ValueError("Only ORPHANED jobs can be protected")
+    job = _lock_orphaned_job(db, job_id)
     job.manual_intervention_required = True
     job.manual_intervention_operator_id = str(operator_id)
     job.manual_intervention_reason = normalized_reason
@@ -170,12 +175,7 @@ def _adopt_orphaned_job_for_manual_action(
     normalized_evidence = str(evidence or "").strip() or None
     if not normalized_reason:
         raise ValueError("reason is required")
-    normalized_job_id = str(job_id or "").strip()
-    job = db.query(SddAiJob).filter(SddAiJob.id == normalized_job_id).with_for_update().first()
-    if not job:
-        raise LookupError("Queue job not found")
-    if job.status != AiJobStatus.ORPHANED:
-        raise ValueError(f"Queue job is no longer ORPHANED (current status: {_enum_text(job.status)})")
+    job = _lock_orphaned_job(db, job_id)
 
     from app.domains.ai.services.jobs.reaper import remote_locator
     from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID

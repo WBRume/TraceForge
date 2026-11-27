@@ -23,7 +23,15 @@ from tests.ai.jobs.test_domain_jobs import execution_db as execution_fixture
 execution_db = execution_fixture
 
 
-def test_orphan_protection_rechecks_a_cached_status_under_lock(execution_db):
+@pytest.mark.parametrize(
+    ("command", "args"),
+    [
+        (queue_service.protect_orphaned_job, {"evidence": "fixture evidence"}),
+        (queue_service.begin_orphaned_retry_termination, {}),
+        (queue_service.begin_orphaned_cleanup_confirmation, {"evidence": "fixture evidence"}),
+    ],
+)
+def test_orphan_command_rechecks_a_cached_status_under_lock(execution_db, command, args):
     factory, _ = execution_db
     with factory.begin() as db:
         db.add(
@@ -51,9 +59,7 @@ def test_orphan_protection_rechecks_a_cached_status_under_lock(execution_db):
         with factory.begin() as writer:
             writer.get(SddAiJob, cached.id).status = AiJobStatus.FAILED
         with pytest.raises(ValueError, match="Only ORPHANED jobs"):
-            queue_service.protect_orphaned_job(
-                stale, job_id=cached.id, operator_id="user", reason="old observation", evidence="fixture evidence"
-            )
+            command(stale, job_id=cached.id, operator_id="user", reason="old observation", **args)
         assert cached.status == AiJobStatus.FAILED and not cached.manual_intervention_required
 
 

@@ -62,6 +62,12 @@ def turn_messages(messages: list[dict], prompt_id: str) -> list[dict]:
     return result
 
 
+def recorded_turn_outcome(turn: list[dict]) -> str | None:
+    """Return the verdict of the owned input's durable idle record."""
+    outcome = next((row.get("outcome") for row in turn if row.get("type") == "idle"), None)
+    return outcome if outcome in ("succeeded", "failed", "interrupted") else None
+
+
 def aborted_tool_turn(messages: list[dict]) -> bool:
     """Recognize a completed interruption within the owned input's message slice."""
     if not messages:
@@ -110,10 +116,7 @@ async def withdraw_owned_prompt(adapter, client, session_id: str, checkpoint: di
         if row.get("type") == "user" and not str(row.get("id") or "").startswith(STEERING_PREFIX)
     ]
     if prompt_id in inputs:
-        if any(
-            row.get("type") == "idle" and row.get("outcome") in {"succeeded", "failed", "interrupted"}
-            for row in turn_messages(messages, prompt_id)
-        ):
+        if recorded_turn_outcome(turn_messages(messages, prompt_id)):
             return True
         if inputs[-1] == prompt_id:
             return False
@@ -387,17 +390,17 @@ class ExecutionMonitor:
             return self.rejected_result()
         messages = await self.adapter.list_messages(self.session_id)
         current = turn_messages(messages, self.checkpoint["prompt_id"])
+        terminal = any(row.get("type") == "idle" for row in current)
         if any(row.get("id") == self.checkpoint["prompt_id"] for row in messages):
             self.prompt_delivered = True
-            self.steering_open = not any(row.get("type") == "idle" for row in current)
+            self.steering_open = not terminal
         await self.restore_messages(current)
-        terminal = next((row for row in current if row.get("type") == "idle"), None)
         if self.prompt_delivered:
-            await self.restore_asks(terminal=bool(terminal))
+            await self.restore_asks(terminal=terminal)
         self.last_check = time.monotonic()
-        if terminal and terminal.get("outcome") in {"succeeded", "failed", "interrupted"}:
+        outcome = recorded_turn_outcome(current)
+        if outcome:
             await self._close_steering()
-            outcome = terminal["outcome"]
             return {
                 "success": outcome == "succeeded",
                 "finish_reason": {"succeeded": "completed", "failed": "error"}.get(outcome, outcome),

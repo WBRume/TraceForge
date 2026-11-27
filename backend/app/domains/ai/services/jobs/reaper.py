@@ -331,15 +331,14 @@ async def completed_remote_session(backend, row):
         and remote_recovery.valid_checkpoint(checkpoint)
         and checkpoint["session_id"] == row["session_id"]
     ):
-        from app.agents.adapters.opencode.execution import aborted_tool_turn, turn_messages
+        from app.agents.adapters.opencode.execution import aborted_tool_turn, recorded_turn_outcome, turn_messages
 
         messages = await backend.list_messages(row["session_id"])
         turn = turn_messages(messages, checkpoint["prompt_id"])
-        idle = next((item for item in turn if item.get("type") == "idle"), {})
-        outcome = idle.get("outcome")
-        if outcome in {"succeeded", "failed", "interrupted"} or (
-            aborted_tool_turn(turn) and not await backend.session_running(row["session_id"])
-        ):
+        outcome = recorded_turn_outcome(turn)
+        if not outcome and aborted_tool_turn(turn) and not await backend.session_running(row["session_id"]):
+            outcome = "interrupted"
+        if outcome:
             text = "\n".join(
                 part["text"]
                 for message in turn
