@@ -42,7 +42,7 @@ export const useAuthStore = defineStore('auth', () => {
   
   /**
    * 清除 Electron 桌面端持久化的 token（%APPDATA%/frontend/config.json）。
-   * 登录时 PortalView 会把 token 写入桌面配置，登出若不同步清理，
+   * 登录弹窗会把 token 写入桌面配置，登出若不同步清理，
    * 刷新 / 重启（initializeApiFromDesktopConfig）和 loadLocalConfig 都会把
    * 旧 token 恢复回来，表现为"登出无效，刷新又登录"。
    */

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router'
-import { onMounted, onUnmounted, watch } from 'vue'
+import { RouterView, useRoute } from 'vue-router'
+import { defineAsyncComponent, onMounted, onUnmounted, provide, shallowRef, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useProvisioningStore } from '@/stores/provisioning'
 import { useNotificationStore } from '@/stores/notification'
 import GlobalSearchHost from '@/components/global-search/GlobalSearchHost.vue'
 import ProvisionFloatingWidget from '@/components/ProvisionFloatingWidget.vue'
+import { openDesktopAuthDialogKey, type PortalAuthMode } from '@/components/auth/portalAuthDialog'
 import { useTaskAwarenessHost } from '@/composables/useTaskAwarenessHost'
 import { useDesktopTabs } from '@/desktop/workspaceTabs'
 import DesktopTitleBar from '@/components/desktop/DesktopTitleBar.vue'
@@ -14,6 +15,23 @@ const authStore = useAuthStore()
 const provisioningStore = useProvisioningStore()
 const notificationStore = useNotificationStore()
 const desktopTabs = useDesktopTabs()
+const route = useRoute()
+const PortalAuthDialog = defineAsyncComponent(() => import('@/components/auth/PortalAuthDialog.vue'))
+const desktopAuthMode = shallowRef<PortalAuthMode | null>(null)
+
+function openDesktopAuthDialog(mode: PortalAuthMode) {
+  desktopAuthMode.value = mode
+}
+
+if (desktopTabs) {
+  provide(openDesktopAuthDialogKey, openDesktopAuthDialog)
+  watch(() => route.fullPath, () => {
+    // A rejected login can redirect to the portal while the dialog is showing the error.
+    if (route.name === 'portal' && !authStore.isAuthenticated) return
+    desktopAuthMode.value = null
+  })
+}
+
 useTaskAwarenessHost()
 
 // User notifications carry background-job updates across every application route.
@@ -35,9 +53,10 @@ onMounted(async () => {
 
 <template>
   <div v-if="desktopTabs" class="desktop-app">
-    <DesktopTitleBar />
+    <DesktopTitleBar @login="openDesktopAuthDialog('login')" />
     <div id="desktop-workspace-panel" class="desktop-route" :role="desktopTabs.enabled.value ? 'tabpanel' : undefined">
       <RouterView />
+      <PortalAuthDialog v-model="desktopAuthMode" />
     </div>
   </div>
   <RouterView v-else />

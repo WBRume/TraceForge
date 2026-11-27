@@ -1,24 +1,22 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { 
-  ArrowRight, Shield, GitBranch, Loader2, Languages, Database,
+  ArrowRight, Shield, GitBranch, Languages, Database,
   Terminal, ServerCog, LibraryBig
 } from '@/components/icons'
 import { useAuthStore } from '@/stores/auth'
-import api, { getApiServerUrl } from '@/utils/api'
-import { formatApiError } from '@/utils/error'
-import { getSddDesktop, isDesktop } from '@/utils/runtime'
-import { useDesktopTabs } from '@/desktop/workspaceTabs'
+import { isDesktop } from '@/utils/runtime'
 import UserMenu from '@/components/user/UserMenu.vue'
-import OAuthProviderButtons from '@/components/auth/OAuthProviderButtons.vue'
+import PortalAuthDialog from '@/components/auth/PortalAuthDialog.vue'
+import { openDesktopAuthDialogKey, type PortalAuthMode } from '@/components/auth/portalAuthDialog'
 
 const { locale, t } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
 const desktop = isDesktop()
-const desktopTabs = useDesktopTabs()
+const openDesktopAuthDialog = inject(openDesktopAuthDialogKey, null)
 
 const toggleLanguage = () => {
   const newLang = locale.value === 'zh' ? 'en' : 'zh'
@@ -26,95 +24,11 @@ const toggleLanguage = () => {
   localStorage.setItem('sdd_lang', newLang)
 }
 const observer = ref<IntersectionObserver | null>(null)
-const LAST_LOGIN_EMAIL_KEY = 'sdd_last_login_email'
+const authMode = shallowRef<PortalAuthMode | null>(null)
 
-// --- Auth Modal State ---
-const showAuthModal = ref(false)
-const isLoginMode = ref(true)
-const authLoading = ref(false)
-const authError = ref('')
-const authModalOverlayArmed = ref(false)
-const authForm = ref({
-  email: '',
-  password: '',
-  displayName: ''
-})
-
-const getSavedLoginEmail = (): string => localStorage.getItem(LAST_LOGIN_EMAIL_KEY)?.trim() ?? ''
-
-const rememberLoginEmail = () => {
-  const email = authForm.value.email.trim()
-  if (email) {
-    localStorage.setItem(LAST_LOGIN_EMAIL_KEY, email)
-  }
-}
-
-const openAuthModal = (mode = 'login') => {
-  isLoginMode.value = mode === 'login'
-  showAuthModal.value = true
-  authError.value = ''
-  authForm.value.password = ''
-  if (isLoginMode.value) {
-    authForm.value.email = getSavedLoginEmail()
-  }
-}
-
-const toggleAuthMode = () => {
-  isLoginMode.value = !isLoginMode.value
-  authError.value = ''
-  authForm.value.password = ''
-  if (isLoginMode.value && !authForm.value.email.trim()) {
-    authForm.value.email = getSavedLoginEmail()
-  }
-}
-
-const syncElectronAuthConfig = async () => {
-  const desktop = getSddDesktop()
-  if (!desktop) return
-  await desktop.config.setConfig({
-    serverUrl: getApiServerUrl(),
-    token: authStore.token,
-  })
-}
-
-const handleAuthSubmit = async () => {
-  authLoading.value = true
-  authError.value = ''
-  
-  try {
-    if (isLoginMode.value) {
-      const params = new URLSearchParams()
-      params.append('username', authForm.value.email.trim())
-      params.append('password', authForm.value.password)
-      
-      const res = await api.post('/auth/login', params)
-      authStore.setToken(res.data.access_token)
-      await authStore.fetchCurrentUser()
-      rememberLoginEmail()
-      showAuthModal.value = false
-      await syncElectronAuthConfig()
-    } else {
-      await api.post('/auth/register', {
-        email: authForm.value.email,
-        password: authForm.value.password,
-        display_name: authForm.value.displayName || authForm.value.email.split('@')[0]
-      })
-      // Auto login after register
-      const params = new URLSearchParams()
-      params.append('username', authForm.value.email)
-      params.append('password', authForm.value.password)
-      const res = await api.post('/auth/login', params)
-      authStore.setToken(res.data.access_token)
-      await authStore.fetchCurrentUser()
-      rememberLoginEmail()
-      showAuthModal.value = false
-      await syncElectronAuthConfig()
-    }
-  } catch (error: unknown) {
-    authError.value = formatApiError(error, t('auth.errors.auth_failed'), t)
-  } finally {
-    authLoading.value = false
-  }
+function openAuthModal(mode: PortalAuthMode) {
+  if (openDesktopAuthDialog) openDesktopAuthDialog(mode)
+  else authMode.value = mode
 }
 
 const handleStartBuilding = () => {
@@ -123,21 +37,6 @@ const handleStartBuilding = () => {
   } else {
     openAuthModal('login')
   }
-}
-
-const armAuthModalOverlayClose = (event: PointerEvent) => {
-  if (event.button !== 0) return
-  authModalOverlayArmed.value = true
-}
-
-const cancelAuthModalOverlayClose = () => {
-  authModalOverlayArmed.value = false
-}
-
-const finishAuthModalOverlayClose = () => {
-  if (!authModalOverlayArmed.value) return
-  authModalOverlayArmed.value = false
-  showAuthModal.value = false
 }
 
 const features = computed(() => [
@@ -206,7 +105,6 @@ const highlightFeatures = computed(() => [
 ])
 
 onMounted(() => {
-  window.addEventListener('blur', cancelAuthModalOverlayClose)
   observer.value = new IntersectionObserver((entries) => {
     entries.forEach(entry => {
       if (entry.isIntersecting) {
@@ -221,7 +119,6 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('blur', cancelAuthModalOverlayClose)
   observer.value?.disconnect()
 })
 </script>
@@ -239,7 +136,7 @@ onBeforeUnmount(() => {
         <div class="v-divider"></div>
         <template v-if="authStore.isAuthenticated">
           <UserMenu
-            v-if="!desktopTabs"
+            v-if="!openDesktopAuthDialog"
             :display-name="authStore.user?.display_name"
             :email="authStore.user?.email"
             :user-id="authStore.user?.id"
@@ -250,7 +147,7 @@ onBeforeUnmount(() => {
           <button class="btn-primary" @click="router.push('/workspaces')">{{ $t('portal.enter_workspace') }}</button>
         </template>
         <template v-else>
-          <button class="btn-ghost" @click="openAuthModal('login')">{{ $t('common.login') }}</button>
+          <button v-if="!openDesktopAuthDialog" class="btn-ghost" @click="openAuthModal('login')">{{ $t('common.login') }}</button>
           <button class="btn-primary" @click="openAuthModal('register')">{{ $t('portal.start_building') }}</button>
         </template>
         
@@ -357,62 +254,11 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </footer>
-
-    <!-- Auth Modal -->
-    <div
-      v-if="showAuthModal"
-      class="modal-overlay"
-      @pointerdown.self="armAuthModalOverlayClose"
-      @pointerup.self="finishAuthModalOverlayClose"
-      @pointerleave.self="cancelAuthModalOverlayClose"
-      @pointercancel.self="cancelAuthModalOverlayClose"
-    >
-      <div class="auth-modal glass-panel fade-in-visible">
-        <div class="auth-modal-header">
-          <h2>{{ isLoginMode ? $t('portal.login_welcome') : $t('portal.register_start') }}</h2>
-          <p class="auth-subtitle">{{ $t('portal.auth_subtitle') }}</p>
-        </div>
-
-        <form @submit.prevent="handleAuthSubmit" class="auth-form-content">
-          <div v-if="!isLoginMode" class="form-group">
-            <label>{{ $t('portal.display_name') }}</label>
-            <input v-model="authForm.displayName" type="text" class="modal-input" :placeholder="$t('portal.display_name')">
-          </div>
-          <div class="form-group">
-            <label>{{ $t('portal.email') }}</label>
-            <input v-model="authForm.email" type="email" required class="modal-input" :placeholder="$t('portal.email_placeholder')">
-          </div>
-          <div class="form-group">
-            <label>{{ $t('portal.password') }}</label>
-            <input v-model="authForm.password" type="password" required class="modal-input" :placeholder="$t('portal.password_placeholder')">
-          </div>
-
-          <div v-if="authError" class="auth-error-msg">
-            {{ authError }}
-          </div>
-
-          <button type="submit" class="btn-primary auth-modal-submit" :disabled="authLoading">
-            <Loader2 v-if="authLoading" class="w-4 h-4 animate-spin" />
-            {{ authLoading ? $t('common.loading') : (isLoginMode ? $t('common.login') : $t('common.register')) }}
-          </button>
-        </form>
-
-        <!-- 三方登录按钮区（三方优先，双入口并存）：弹窗场景为纯登录语义，已登录用户不会看到弹窗 -->
-        <OAuthProviderButtons mode="login" @authorize-error="(msg: string) => (authError = msg)" />
-
-        <div class="auth-modal-footer">
-          <p>
-            {{ isLoginMode ? $t('portal.no_account') : $t('portal.has_account') }}
-            <a href="#" @click.prevent="toggleAuthMode">
-              {{ isLoginMode ? $t('portal.switch_to_register') : $t('portal.switch_to_login') }}
-            </a>
-          </p>
-        </div>
-      </div>
-    </div>
+    <PortalAuthDialog v-if="!openDesktopAuthDialog" v-model="authMode" />
   </div>
 </template>
 
+<style scoped src="../components/auth/portalPrimaryButton.css"></style>
 <style scoped>
 @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap');
 
@@ -519,29 +365,6 @@ onBeforeUnmount(() => {
 }
 
 /* Buttons */
-.btn-primary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  background-color: var(--color-primary-500);
-  color: white;
-  border: none;
-  padding: 0.625rem 1.25rem;
-  border-radius: 6px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 4px 6px -1px rgba(14, 165, 233, 0.2);
-}
-
-.btn-primary:hover {
-  background-color: var(--color-primary-600);
-  transform: translateY(-1px);
-  box-shadow: 0 10px 15px -3px rgba(14, 165, 233, 0.3), 0 4px 6px -2px rgba(14, 165, 233, 0.1);
-  text-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
-}
-
 .btn-ghost {
   background: none;
   border: none;
@@ -947,114 +770,5 @@ onBeforeUnmount(() => {
   .bento-grid { grid-template-columns: 1fr; padding: 0 1rem; }
   .stat-banner { flex-direction: column; gap: 2rem; }
   .stat-divider { display: none; }
-}
-
-/* Auth Modal Styles */
-.modal-overlay {
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(15, 23, 42, 0.4);
-  backdrop-filter: blur(8px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.auth-modal {
-  width: 100%;
-  max-width: 400px;
-  background: white;
-  padding: 2.5rem;
-  border-radius: 1.5rem;
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-  border: 1px solid #f1f5f9;
-}
-
-.auth-modal-header {
-  text-align: center;
-  margin-bottom: 2rem;
-}
-
-.auth-modal-header h2 {
-  font-family: 'Poppins', sans-serif;
-  font-size: 1.5rem;
-  font-weight: 700;
-  margin-bottom: 0.5rem;
-}
-
-.auth-subtitle {
-  font-size: 0.875rem;
-  color: #64748b;
-}
-
-.auth-form-content {
-  display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
-}
-
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.form-group label {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: #475569;
-}
-
-.modal-input {
-  padding: 0.75rem 1rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  font-size: 0.9375rem;
-  transition: all 0.2s;
-  font-family: inherit;
-}
-
-.modal-input:focus {
-  border-color: #0ea5e9;
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
-}
-
-.auth-modal-submit {
-  padding: 0.875rem;
-  font-size: 1rem;
-  margin-top: 0.5rem;
-}
-
-.auth-error-msg {
-  padding: 0.75rem;
-  background: #fef2f2;
-  color: #ef4444;
-  border-radius: 8px;
-  font-size: 0.8125rem;
-  text-align: left;
-  white-space: pre-line;
-}
-
-.auth-modal-footer {
-  margin-top: 1.5rem;
-  text-align: center;
-  font-size: 0.875rem;
-  color: #64748b;
-}
-
-.auth-modal-footer a {
-  color: #0ea5e9;
-  font-weight: 600;
-  text-decoration: none;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.animate-spin {
-  animation: spin 1s linear infinite;
 }
 </style>

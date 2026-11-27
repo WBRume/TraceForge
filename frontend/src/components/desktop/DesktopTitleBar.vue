@@ -16,6 +16,7 @@ import DesktopTabStrip from './DesktopTabStrip.vue'
 import DesktopWorkspacePicker from './DesktopWorkspacePicker.vue'
 import { describeDesktopTab } from './desktopTabLabels'
 
+const emit = defineEmits<{ login: [] }>()
 const desktop = getSddDesktop()
 const windows = useDesktopTabs()!
 const { state, active, enabled, failed } = windows
@@ -26,6 +27,7 @@ const auth = useAuthStore()
 const search = useGlobalSearchStore()
 const tabStrip = shallowRef<InstanceType<typeof DesktopTabStrip>>()
 const icon = `${import.meta.env.BASE_URL}favicon.svg`
+const showLogin = computed(() => route.name !== 'login' && !route.path.startsWith('/oauth/'))
 const workspaceId = computed(() => typeof route.params.wsId === 'string' ? route.params.wsId : '')
 const tabs = computed(() => state.value?.tabs.map(tab => describeDesktopTab(tab, router, t)) ?? [])
 watch(() => enabled.value && tabs.value.find(tab => tab.id === active.value?.id)?.label, label => {
@@ -112,7 +114,7 @@ onScopeDispose(() => {
     </button>
     <UserMenu
       v-if="auth.isAuthenticated"
-      class="titlebar-user"
+      class="titlebar-account"
       :display-name="auth.user?.display_name"
       :email="auth.user?.email"
       :user-id="auth.user?.id"
@@ -121,6 +123,9 @@ onScopeDispose(() => {
       size="sm"
       variant="titlebar"
     />
+    <button v-else-if="showLogin" class="titlebar-account titlebar-login" type="button" aria-haspopup="dialog" @click="emit('login')">
+      {{ t('common.login') }}
+    </button>
     <DesktopCaptionButtons v-if="desktop?.runtime === 'tauri'" :api="windows.api" @error="error" />
     <div v-else class="caption-reserve" aria-hidden="true"></div>
   </header>
@@ -132,7 +137,19 @@ onScopeDispose(() => {
 .desktop-home:hover { color: #0369a1; }
 .desktop-home:focus-visible { outline: 2px solid #0284c7; outline-offset: 2px; }
 .workspace-switcher { flex: none; border-right: 1px solid #e2e8f0; padding-right: 7px; }
-.titlebar-user { flex: none; -webkit-app-region: no-drag; app-region: no-drag; }
+.titlebar-account { flex: none; -webkit-app-region: no-drag; app-region: no-drag; }
+.titlebar-login {
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.titlebar-login:hover { border-color: #cbd5e1; background: #eef2f7; }
 .titlebar-search { flex: none; display: flex; height: 29px; align-items: center; gap: 7px; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0 8px; font-size: 12px; color: #475569; background: #ffffff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03); transition: background-color 140ms, border-color 140ms, color 140ms; }
 .titlebar-search:hover { background: #ffffff; border-color: #bae6fd; color: #0f172a; }
 .titlebar-search svg { width: 15px; height: 15px; }
