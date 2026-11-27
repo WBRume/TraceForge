@@ -237,7 +237,7 @@ def test_dirty_interrupted_with_ownership_is_reaped(monkeypatch):
     patch_ai_job_db(monkeypatch, factory)
 
     rows = ai_reaper.list_reclaimable_jobs_sync()
-    assert any(row["job_id"] == "reliability-job" and row["reason"] == "INTERRUPTED_OWNERSHIP_LEAK" for row in rows)
+    assert any(row.job_id == "reliability-job" and row.reason == "INTERRUPTED_OWNERSHIP_LEAK" for row in rows)
 
     adopted = ai_reaper.adopt_reclaimable_job_sync(
         "reliability-job", "run-legacy", "run-legacy", "INTERRUPTED_OWNERSHIP_LEAK"

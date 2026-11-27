@@ -63,7 +63,7 @@ def test_task_scoped_recovery_does_not_select_other_tasks(monkeypatch):
     patch_ai_job_db(monkeypatch, factory)
     assert ai_reaper.list_reclaimable_jobs_sync("other-task") == []
     rows = ai_reaper.list_reclaimable_jobs_sync("target-task")
-    assert [row["job_id"] for row in rows] == ["reliability-job"]
+    assert [row.job_id for row in rows] == ["reliability-job"]
 
 
 def test_cancel_running_job_is_not_reported_as_finished(monkeypatch):

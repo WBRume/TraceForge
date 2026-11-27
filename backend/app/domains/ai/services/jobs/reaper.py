@@ -1,6 +1,6 @@
 """孤儿作业回收器（reaper）。
 
-职责：扫描 owner 消失/租约过期的 attempt 并收养（TERMINATING + 新 token），
+职责：扫描租约过期的 attempt，认领停止验证并保留用于定位进程的 run token，
 按固定顺序停止远程会话与本地进程树，最后经统一 convergence 事务收敛终态。
 死亡未被证明的 attempt 保持 ORPHANED 并退避重试。
 """
@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, func, or_
+from sqlalchemy.orm import Query, Session
 
 from app.agents import (
     EXECUTION_KIND_REMOTE_SESSION,
@@ -43,7 +44,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
 from app.domains.ai.services.jobs import attempts as attempt_ops
 from app.domains.ai.services.jobs import publishing, remote_recovery
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID
-from app.domains.ai.services.jobs.store import attempt_ownership_predicate, row_has_leaked_interrupted_ownership
+from app.domains.ai.services.jobs.store import attempt_ownership_predicate
 
 logger = get_logger(__name__, category="ai_session")
 
@@ -65,6 +66,15 @@ def remote_locator(db, job):
 
 
 # ────────────────────────── 可回收扫描与收养 ──────────────────────────
+
+
+@dataclass(frozen=True)
+class ReapCandidate:
+    job_id: str
+    run_token: str | None
+    reason: str
+    recovery_queue_key: str | None = None
+    legacy_binding_unknown: bool = False
 
 
 @dataclass(frozen=True)
@@ -90,63 +100,46 @@ def _stop_locator(db, job: SddAiJob, reason: str) -> dict[str, Any]:
     }
 
 
-def list_reclaimable_jobs_sync(task_id: str | None = None) -> list[dict[str, Any]]:
+def _reclaimable_jobs_query(db: Session, now: datetime) -> Query:
+    """Apply the same lease, backoff and ownership rules at scan and reservation."""
+    return db.query(SddAiJob).filter(
+        SddAiJob.execution_backend == "durable",
+        SddAiJob.manual_intervention_required.isnot(True),
+        or_(
+            and_(
+                SddAiJob.status.in_([AiJobStatus.RUNNING, AiJobStatus.TERMINATING, AiJobStatus.ORPHANED]),
+                or_(SddAiJob.lease_expires_at.is_(None), SddAiJob.lease_expires_at <= now),
+                or_(SddAiJob.next_reap_at.is_(None), SddAiJob.next_reap_at <= now),
+            ),
+            # Historical interrupted rows with attached process ownership need immediate verification.
+            and_(SddAiJob.status == AiJobStatus.INTERRUPTED, attempt_ownership_predicate()),
+        ),
+    )
+
+
+def list_reclaimable_jobs_sync(task_id: str | None = None) -> list[ReapCandidate]:
     db = SessionLocal()
     try:
-        now = datetime.utcnow()
-        rows = (
-            db.query(SddAiJob)
-            .filter(
-                SddAiJob.execution_backend == "durable",
-                SddAiJob.task_id == task_id if task_id is not None else True,
-                or_(
-                    and_(
-                        SddAiJob.status.in_(
-                            [
-                                AiJobStatus.RUNNING,
-                                AiJobStatus.TERMINATING,
-                                AiJobStatus.ORPHANED,
-                            ]
-                        ),
-                        SddAiJob.manual_intervention_required.isnot(True),
-                        (SddAiJob.next_reap_at.is_(None) | (SddAiJob.next_reap_at <= now)),
-                    ),
-                    # Compatibility scan for dirty INTERRUPTED rows written by
-                    # earlier releases: adopt them through the reaper instead
-                    # of exposing a resumable session with a possibly live CLI.
-                    and_(
-                        SddAiJob.status == AiJobStatus.INTERRUPTED,
-                        attempt_ownership_predicate(),
-                        SddAiJob.manual_intervention_required.isnot(True),
-                    ),
-                ),
-            )
-            .all()
-        )
-        result: list[dict[str, Any]] = []
-        for job in rows:
-            if row_has_leaked_interrupted_ownership(job):
-                # The attempt already stopped writing; a leaked ownership row
-                # is reclaimed immediately instead of waiting for its lease.
+        query = _reclaimable_jobs_query(db, datetime.utcnow())
+        if task_id is not None:
+            query = query.filter(SddAiJob.task_id == task_id)
+        candidates = []
+        for job in query.all():
+            if job.status == AiJobStatus.INTERRUPTED:
                 reason = "INTERRUPTED_OWNERSHIP_LEAK"
             else:
-                owner_gone = str(job.worker_boot_id or "") != WORKER_BOOT_ID
-                lease_expired = bool(job.lease_expires_at and job.lease_expires_at <= now)
-                # A different boot ID can belong to another healthy API process.
-                # Only the durable lease proves its ownership has expired.
-                if job.lease_expires_at is not None and not lease_expired:
-                    continue
-                reason = "WORKER_RESTART" if owner_gone else "LEASE_EXPIRED"
-            result.append(
-                {
-                    **_stop_locator(db, job, reason),
-                    "expected_run_token": str(job.run_token or "") or None,
-                    "attempt_count": int(job.attempt_count or 0),
-                    "reap_failure_count": int(job.reap_failure_count or 0),
-                    "recoverable_remote": remote_recovery.recoverable(job) and remote_recovery.current_task(db, job),
-                }
+                reason = "LEASE_EXPIRED" if job.worker_boot_id == WORKER_BOOT_ID else "WORKER_RESTART"
+            recoverable = remote_recovery.recoverable(job) and remote_recovery.current_task(db, job)
+            candidates.append(
+                ReapCandidate(
+                    job_id=str(job.id),
+                    run_token=job.run_token or None,
+                    reason=reason,
+                    recovery_queue_key=str(job.queue_key or "") if recoverable else None,
+                    legacy_binding_unknown=recoverable and remote_recovery.legacy_binding_unknown(db, job),
+                )
             )
-        return result
+        return candidates
     finally:
         db.close()
 
@@ -160,27 +153,9 @@ def adopt_reclaimable_job_sync(
     db = SessionLocal()
     try:
         now = datetime.utcnow()
-        query = db.query(SddAiJob).filter(SddAiJob.id == job_id, SddAiJob.execution_backend == "durable")
-        query = query.filter(
-            SddAiJob.run_token == expected_run_token if expected_run_token else SddAiJob.run_token.is_(None)
-        )
-        query = query.filter(
-            or_(
-                SddAiJob.lease_expires_at.is_(None),
-                SddAiJob.lease_expires_at <= now,
-                and_(SddAiJob.status == AiJobStatus.INTERRUPTED, attempt_ownership_predicate()),
-            ),
-            or_(
-                and_(
-                    SddAiJob.status.in_([AiJobStatus.RUNNING, AiJobStatus.TERMINATING, AiJobStatus.ORPHANED]),
-                    or_(SddAiJob.next_reap_at.is_(None), SddAiJob.next_reap_at <= now),
-                ),
-                and_(
-                    SddAiJob.status == AiJobStatus.INTERRUPTED,
-                    attempt_ownership_predicate(),
-                ),
-            ),
-            SddAiJob.manual_intervention_required.isnot(True),
+        query = _reclaimable_jobs_query(db, now).filter(
+            SddAiJob.id == job_id,
+            SddAiJob.run_token == expected_run_token,
         )
         job = lock_job_in_txn(db, query)
         if job is None:
@@ -453,21 +428,23 @@ async def stop_attempt_processes(row: dict[str, Any], token: str) -> Any:
 
 async def reap_stale_jobs(*, task_id: str | None = None) -> int:
     """Reclaim attempts whose owner disappeared or whose lease expired."""
-    if task_id is None:
-        rows = await run_db(list_reclaimable_jobs_sync)
-    else:
-        rows = await run_db(list_reclaimable_jobs_sync, task_id)
+    candidates = await run_db(list_reclaimable_jobs_sync, task_id)
     reclaimed = 0
-    for row in rows:
-        if await remote_recovery.attach_reclaimable(row):
+    for candidate in candidates:
+        if candidate.recovery_queue_key is not None and await remote_recovery.attach_reclaimable(
+            candidate.job_id,
+            candidate.run_token,
+            candidate.recovery_queue_key,
+            legacy_binding_unknown=candidate.legacy_binding_unknown,
+        ):
             continue
-        token = row["run_token"] or str(uuid.uuid4())
+        token = candidate.run_token or str(uuid.uuid4())
         reservation = await run_db(
             adopt_reclaimable_job_sync,
-            row["job_id"],
-            row.get("expected_run_token"),
+            candidate.job_id,
+            candidate.run_token,
             token,
-            row["reason"],
+            candidate.reason,
         )
         if reservation is None:
             continue

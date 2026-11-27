@@ -119,18 +119,17 @@ def claim_existing_sync(job_id, expected_token):
         return queue_key
 
 
-async def attach_reclaimable(row) -> bool:
+async def attach_reclaimable(
+    job_id: str, expected_token: str | None, queue_key: str, *, legacy_binding_unknown: bool
+) -> bool:
     """True means this row belongs to recovery, even if a competing claim won."""
-    if not row.get("recoverable_remote"):
-        return False
-    queue_key = str(row["queue_key"])
     running = runtime.queue_runners.get(queue_key)
     if running and not running.done():
         return True
-    claimed_queue = await run_db(claim_existing_sync, row["job_id"], row.get("expected_run_token"))
+    claimed_queue = await run_db(claim_existing_sync, job_id, expected_token)
     if claimed_queue:
-        runtime.schedule_queue(claimed_queue, recovered_job_id=row["job_id"])
-    return bool(claimed_queue) or not row.get("legacy_unbound_after_switch")
+        runtime.schedule_queue(claimed_queue, recovered_job_id=job_id)
+    return bool(claimed_queue) or not legacy_binding_unknown
 
 
 def defer_observation_sync(attempt):

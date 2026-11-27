@@ -185,7 +185,7 @@ def test_persisted_stop_intent_closes_check_to_interrupt_takeover_race(jobs):
         db.commit()
     assert remote_recovery.claim_existing_sync(owner.job_id, owner.run_token) is None
     rows = reaper.list_reclaimable_jobs_sync()
-    assert len(rows) == 1 and not rows[0]["recoverable_remote"]
+    assert len(rows) == 1 and rows[0].recovery_queue_key is None
 
 
 @pytest.mark.parametrize("change", ["cancel", "revision", "generation", "terminal"])
@@ -202,7 +202,7 @@ def test_cancel_or_superseded_session_cannot_be_recovered(jobs, change):
             job.status = AiJobStatus.SUCCESS
         db.commit()
     assert remote_recovery.claim_existing_sync("reliability-job", "old-token") is None
-    assert not any(row["recoverable_remote"] for row in reaper.list_reclaimable_jobs_sync())
+    assert not any(row.recovery_queue_key is not None for row in reaper.list_reclaimable_jobs_sync())
 
 
 @pytest.mark.asyncio

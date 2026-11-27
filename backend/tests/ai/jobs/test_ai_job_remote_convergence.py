@@ -434,7 +434,7 @@ def test_remote_reaper_uses_persisted_backend_and_session_id(monkeypatch, locato
     assert saved.run_token is None
     # ACK 后不再反复进入 reaper。
     rows = ai_reaper.list_reclaimable_jobs_sync()
-    assert all(row["job_id"] != "remote-reap-job" for row in rows)
+    assert all(row.job_id != "remote-reap-job" for row in rows)
 
 
 def test_remote_reaper_nack_remains_orphaned(monkeypatch):

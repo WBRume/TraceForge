@@ -249,14 +249,22 @@ def test_other_process_with_valid_lease_is_not_reclaimed(execution_db):
     assert reaper.list_reclaimable_jobs_sync() == []
 
 
-def test_reaper_rechecks_a_renewed_lease_before_adopting(execution_db):
+@pytest.mark.parametrize("deferral", ["lease_expires_at", "next_reap_at", "manual_intervention_required"])
+def test_reaper_rechecks_eligibility_after_scan(execution_db, deferral):
     factory, _ = execution_db
     job_id = create_provision(factory)
     _, attempt = claim(factory, job_id)
+    now = datetime.utcnow()
+    with factory.begin() as db:
+        job = db.get(SddAiJob, job_id)
+        job.lease_expires_at = now - timedelta(seconds=1)
+    assert [candidate.job_id for candidate in reaper.list_reclaimable_jobs_sync()] == [job_id]
     with factory() as db:
-        db.get(SddAiJob, job_id).lease_expires_at = datetime.utcnow() + timedelta(seconds=60)
+        value = True if deferral == "manual_intervention_required" else now + timedelta(seconds=60)
+        setattr(db.get(SddAiJob, job_id), deferral, value)
         db.commit()
-    assert not reaper.adopt_reclaimable_job_sync(job_id, attempt.run_token, "reaper-token", "LEASE_EXPIRED")
+    assert reaper.list_reclaimable_jobs_sync() == []
+    assert reaper.adopt_reclaimable_job_sync(job_id, attempt.run_token, "reaper-token", "LEASE_EXPIRED") is None
 
 
 @pytest.mark.parametrize("exhausted", [False, True])
