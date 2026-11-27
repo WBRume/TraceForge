@@ -18,6 +18,8 @@ from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID, runtime
 from app.domains.task.models.task import SddTask
 
+REMOTE_CLOSEOUT_PENDING = "REMOTE_CLOSEOUT_PENDING"
+
 
 def valid_checkpoint(value) -> bool:
     return bool(
@@ -132,7 +134,7 @@ async def attach_reclaimable(
     return bool(claimed_queue) or not legacy_binding_unknown
 
 
-def defer_observation_sync(attempt):
+def defer_observation_sync(attempt, *, failure_code: str | None = None):
     """Leave remote work intact and expose a retryable observation outage."""
     from app.domains.ai.services.jobs.store import serialize_job
 
@@ -142,11 +144,12 @@ def defer_observation_sync(attempt):
             recoverable(job) and job.run_token == attempt.run_token and job.worker_boot_id == attempt.worker_boot_id
         ):
             return None
-        message, code = (
-            (OLD_SERVICE_MESSAGE, OLD_SERVICE_UNKNOWN)
-            if job.agent_service_binding
-            else ("OpenCode 状态暂不可确认，正在重新接管原任务", "REMOTE_OBSERVER_DETACHED")
-        )
+        if failure_code == OLD_SERVICE_UNKNOWN:
+            message, code = OLD_SERVICE_MESSAGE, OLD_SERVICE_UNKNOWN
+        elif failure_code == REMOTE_CLOSEOUT_PENDING:
+            message, code = "OpenCode 已返回结果，正在恢复本轮收尾", REMOTE_CLOSEOUT_PENDING
+        else:
+            message, code = "OpenCode 状态暂不可确认，正在重新接管原任务", "REMOTE_OBSERVER_DETACHED"
         if job.failure_code != code or job.message != message:
             job.message, job.failure_code = message, code
             job.version = int(job.version or 1) + 1

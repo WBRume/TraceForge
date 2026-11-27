@@ -25,6 +25,8 @@ from app.agents import (
     AgentRunResult,
     current_agent_attempt,
 )
+from app.agents.errors import AgentExecutionDetached
+from app.agents.service_binding import OLD_SERVICE_UNKNOWN
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
 from app.core.offload import run_db, run_db_txn
 from app.database import SessionLocal
@@ -314,7 +316,6 @@ async def _engine_for_turn(state_row, attempt, job_id, fresh_session):
 async def _verify_recovery_target(engine, binding, session_id):
     import asyncio
 
-    from app.agents.errors import AgentExecutionDetached
     from app.domains.ai.services.jobs.reaper import matches_remote_session
 
     try:
@@ -322,8 +323,13 @@ async def _verify_recovery_target(engine, binding, session_id):
             if not await matches_remote_session(engine.cli, binding, session_id):
                 raise ValueError("Original service identity could not be verified")
     except Exception as exc:
-        await engine.cli.close()
-        raise AgentExecutionDetached("Original service identity could not be verified") from exc
+        try:
+            await engine.cli.close()
+        except Exception:
+            logger.warning("Closing the unverified recovery adapter failed for session={}", session_id)
+        raise AgentExecutionDetached(
+            "Original service identity could not be verified", failure_code=OLD_SERVICE_UNKNOWN
+        ) from exc
     engine.cli._dispatch_identity = binding["native_session"]
 
 
@@ -498,6 +504,7 @@ def _finalize_task_chat_job_sync(
         context_patch=None if success else context_patch,
         message="AI reply completed" if success else message,
         error_message=None,
+        session_id=(str(engine_session_id or "").strip() or None) if success else None,
         mark_task_interrupted=not success,
         interrupt_session_id=engine_session_id,
         intent=ConvergenceIntent.NORMAL_FINALIZE,
@@ -549,9 +556,10 @@ async def finalize_task_chat_job_from_engine(job_id: str, engine: TaskAgentEngin
     # Attempt-local runtime evidence is authoritative (it survives CLI exits
     # followed by parse/persist failures); engine attributes are the fallback
     # consumed by the unique resolver.
+    provider_result = engine_provider_result(engine)
     evidence = attempt_ops.resolve_current_attempt_evidence(
         fallback_dead=getattr(engine, "last_termination_confirmed_dead", None),
-        provider_result=engine_provider_result(engine),
+        provider_result=provider_result,
     )
 
     def finalize(db):
@@ -572,7 +580,24 @@ async def finalize_task_chat_job_from_engine(job_id: str, engine: TaskAgentEngin
         # Lock, ownership and settled-state checks make a rolled-back or
         # ambiguously committed transaction safe to repeat.
         logger.warning("Retrying task chat result transaction after database error: job={}", job_id)
-        payload = await run_db_txn(finalize)
+        try:
+            payload = await run_db_txn(finalize)
+        except OperationalError as exc:
+            from app.domains.ai.services.jobs.remote_recovery import REMOTE_CLOSEOUT_PENDING, valid_checkpoint
+
+            checkpoint = getattr(engine, "remote_execution_checkpoint", None)
+            if (
+                attempt is not None
+                and provider_result is not None
+                and valid_checkpoint(checkpoint)
+                and checkpoint["phase"] == "submitted"
+                and checkpoint["session_id"] == engine_session_id
+            ):
+                raise AgentExecutionDetached(
+                    "OpenCode finished; result transaction will be retried by recovery",
+                    failure_code=REMOTE_CLOSEOUT_PENDING,
+                ) from exc
+            raise
     if payload is None:
         return
     is_success = str(payload.get("status") or "") == AiJobStatus.SUCCESS.value

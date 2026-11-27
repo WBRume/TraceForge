@@ -755,10 +755,12 @@ def _apply_business_status_in_txn(
         job.last_reap_verified_at = now
         job.next_reap_at = None
     _finalize_submission_in_txn(db, job, final_status)
-    _converge_task_status_in_txn(db, job, final_status)
+    _converge_task_status_in_txn(db, job, final_status, provider_session_id=request.session_id)
 
 
-def _converge_task_status_in_txn(db: Session, job: SddAiJob, final_status: AiJobStatus) -> None:
+def _converge_task_status_in_txn(
+    db: Session, job: SddAiJob, final_status: AiJobStatus, *, provider_session_id: str | None = None
+) -> None:
     if job.channel != AiJobChannel.TASK_CHAT or final_status not in {
         AiJobStatus.SUCCESS,
         AiJobStatus.FAILED,
@@ -779,7 +781,7 @@ def _converge_task_status_in_txn(db: Session, job: SddAiJob, final_status: AiJob
             if final_status == AiJobStatus.SUCCESS
             else sm.Trigger.EXECUTION_INTERRUPTED
         )
-        sm.execution_event(
+        transition = sm.execution_event(
             db,
             task,
             trigger,
@@ -788,6 +790,14 @@ def _converge_task_status_in_txn(db: Session, job: SddAiJob, final_status: AiJob
             generation=int(job.session_generation or 0),
             revision=int(job.session_revision or 0),
         )
+        if (
+            final_status == AiJobStatus.SUCCESS
+            and provider_session_id
+            and transition["outcome"] in {"APPLIED", "IGNORED_NO_CHANGE"}
+        ):
+            # The provider result can arrive even when the startup hook
+            # could not save the identity used by the next conversation turn.
+            task.session_id = provider_session_id
 
 
 def _finalize_submission_in_txn(db: Session, job: SddAiJob, final_status: AiJobStatus) -> None:

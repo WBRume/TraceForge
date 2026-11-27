@@ -7,9 +7,16 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from app.agents.contract import AgentAttemptContext, AgentInputImage
+from app.agents.contract import (
+    EXECUTION_KIND_REMOTE_SESSION,
+    AgentAttemptContext,
+    AgentInputImage,
+    AgentRunResult,
+    AgentStopResult,
+)
 from app.agents.errors import AgentExecutionDetached
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+from app.domains.ai.services.ai_job_convergence_service import evidence_from_stop_result
 from app.domains.ai.services.jobs import attempts, queue_runner, reaper, remote_recovery, store
 from app.domains.ai.services.jobs.executors import JobExecutionOutcome
 from app.domains.ai.services.jobs.executors.task_chat import _load_task_chat_turn_state_sync
@@ -243,6 +250,29 @@ async def test_checkpoint_committed_after_scan_is_used_for_recovery(jobs, monkey
     stop.assert_not_awaited()
 
 
+def test_reaper_recovers_a_failed_chat_turn_as_an_abnormal_interrupt(jobs):
+    with jobs.begin() as db:
+        job = db.get(SddAiJob, "reliability-job")
+        task = db.get(SddTask, job.task_id)
+        task.status_run_id = job.id
+        job.status = AiJobStatus.TERMINATING
+        job.worker_boot_id = WORKER_BOOT_ID
+    recovered = AgentRunResult(session_id="ses_original", success=False, result_text="Provider interrupted the turn")
+    result = attempts.finish_termination_sync(
+        "reliability-job",
+        "old-token",
+        confirmed_dead=True,
+        reason="WORKER_RESTART",
+        failure_code="WORKER_RESTART",
+        evidence=evidence_from_stop_result(AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)),
+        recovered_result=recovered,
+    )
+    assert result["status"] == "INTERRUPTED"
+    assert result["interrupt_kind"] == "ABNORMAL"
+    assert result["task_snapshot"]["interrupt_kind"] == "ABNORMAL"
+    assert result["session_id"] == recovered.session_id
+
+
 def test_shutdown_preserves_recoverable_job_and_checkpoint_is_private(jobs):
     remote_recovery.claim_existing_sync("reliability-job", "old-token")
     assert reaper.mark_worker_jobs_terminating_sync("WORKER_SHUTDOWN") == []
@@ -253,8 +283,23 @@ def test_shutdown_preserves_recoverable_job_and_checkpoint_is_private(jobs):
     assert "msg_original" not in str(payload)
 
 
+def test_closeout_retry_is_distinct_from_an_unavailable_bound_service(jobs):
+    with jobs.begin() as db:
+        db.get(SddAiJob, "reliability-job").agent_service_binding = {"backend": "opencode", "generation": 1}
+    remote_recovery.claim_existing_sync("reliability-job", "old-token")
+    attempt = attempts.load_attempt_context_sync("reliability-job")
+    payload = remote_recovery.defer_observation_sync(attempt, failure_code=remote_recovery.REMOTE_CLOSEOUT_PENDING)
+    assert payload["status"] == "RUNNING"
+    assert payload["failure_code"] == remote_recovery.REMOTE_CLOSEOUT_PENDING
+    assert current(jobs).run_token == attempt.run_token
+    assert current(jobs).provider_execution_json["prompt_id"] == "msg_original"
+
+
 @pytest.mark.asyncio
-async def test_recovered_queue_executes_claimed_job_and_detaches_without_finalizer(jobs, monkeypatch):
+@pytest.mark.parametrize("publication_fails", [False, True])
+async def test_recovered_queue_executes_claimed_job_and_detaches_without_finalizer(
+    jobs, monkeypatch, publication_fails
+):
     remote_recovery.claim_existing_sync("reliability-job", "old-token")
     outcome = JobExecutionOutcome(requested_status=None, error=AgentExecutionDetached("transport"))
     execute = AsyncMock(return_value=outcome)
@@ -262,7 +307,11 @@ async def test_recovered_queue_executes_claimed_job_and_detaches_without_finaliz
     monkeypatch.setattr(queue_runner.executors, "execute_job", execute)
     monkeypatch.setattr(queue_runner, "_converge_runner_exit", finalizer)
     monkeypatch.setattr(queue_runner, "claim_next_pending_job_id", claim)
-    monkeypatch.setattr(queue_runner.publishing, "publish_job_state", AsyncMock())
+    monkeypatch.setattr(
+        queue_runner.publishing,
+        "publish_job_state",
+        AsyncMock(side_effect=OSError("initial state publication unavailable") if publication_fails else None),
+    )
     monkeypatch.setattr(queue_runner.publishing, "broadcast_job_payload", AsyncMock())
     await queue_runner.run_queue("TASK_CHAT:task-1", recovered_job_id="reliability-job")
     execute.assert_awaited_once_with("reliability-job")

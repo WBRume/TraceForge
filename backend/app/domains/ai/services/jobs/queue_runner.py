@@ -265,7 +265,10 @@ async def run_queue(queue_key: str, *, recovered_job_id: str | None = None) -> N
                 error=RuntimeError("executor did not produce an outcome"),
             )
             try:
-                await publishing.publish_job_state(job_id)
+                try:
+                    await publishing.publish_job_state(job_id)
+                except Exception:
+                    logger.exception("Could not publish claimed job state: job_id={}", job_id)
                 try:
                     outcome = await executors.execute_job(job_id)
                 except BaseException as exc:
@@ -283,7 +286,9 @@ async def run_queue(queue_key: str, *, recovered_job_id: str | None = None) -> N
                     try:
                         from .remote_recovery import defer_observation_sync
 
-                        payload = await run_db(defer_observation_sync, attempt)
+                        payload = await run_db(
+                            defer_observation_sync, attempt, failure_code=getattr(outcome.error, "failure_code", None)
+                        )
                         if payload:
                             await publishing.broadcast_job_payload(payload)
                     except Exception:

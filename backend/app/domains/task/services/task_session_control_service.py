@@ -173,6 +173,26 @@ def _interrupt_preparing_submission(db: Session, task_id: str, message: str) -> 
     return chat_submission_service.serialize(failed) if failed else None
 
 
+def _interrupt_sequence_after_binding(
+    db: Session, task: SddTask, job: SddAiJob | None, sequence: int | None
+) -> int | None:
+    if job is None or sequence is None or task.status_seq != sequence + 1:
+        return sequence
+    submission_id = (job.context_json or {}).get("submission_id")
+    if not submission_id:
+        return sequence
+    binding = sm.receipt(db, task.id, f"bind:{job.id}")
+    if not binding or binding["status_seq"] != str(task.status_seq):
+        return sequence
+    # A click during preparation still targets the same submission after its
+    # Job is bound. The audit ties both sequences to that exact submission.
+    for prefix in ("input", "recovered-input"):
+        preparing = sm.receipt(db, task.id, f"{prefix}:{submission_id}")
+        if preparing and preparing["status_seq"] == str(sequence):
+            return task.status_seq
+    return sequence
+
+
 def _accept_interrupt_command(
     db: Session,
     task_id: str,
@@ -206,6 +226,8 @@ def _accept_interrupt_command(
         if user_requested:
             raise TaskSessionControlError("当前执行已请求终止，请等待回收完成", status_code=409)
         return {**_task_payload(task), "duplicate": True}, None
+    if user_requested:
+        sequence = _interrupt_sequence_after_binding(db, task, job, sequence)
     result = sm.dispatch(
         db,
         task,

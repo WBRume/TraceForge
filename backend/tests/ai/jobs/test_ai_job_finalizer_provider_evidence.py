@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -38,6 +39,7 @@ from app.agents.contract import (
     reset_agent_attempt,
     reset_agent_attempt_runtime,
 )
+from app.agents.errors import AgentExecutionDetached
 from app.database import Base
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services import ai_job_convergence_service as convergence
@@ -56,7 +58,7 @@ from app.domains.ai.services.jobs.executors import (
     task_chat as ai_task_chat,
 )
 from app.domains.task.models.session_turn import TaskSessionTurn
-from app.domains.task.models.task import SddTask
+from app.domains.task.models.task import SddTask, TaskStatus
 from app.engine.session import engine as engine_module
 
 REMOTE = EXECUTION_KIND_REMOTE_SESSION
@@ -223,10 +225,21 @@ def test_engine_crash_without_result_stays_orphaned():
 
 
 @pytest.mark.asyncio
-async def test_transient_closeout_error_retries_the_same_provider_result(monkeypatch):
+@pytest.mark.parametrize(("failures", "phase"), [(1, "submitted"), (2, "submitted"), (2, "submitting")])
+async def test_transient_closeout_error_preserves_the_provider_result(monkeypatch, failures, phase):
     result = AgentRunResult(session_id="remote-1", success=True, result_text="provider finished")
     engine = SimpleNamespace(
-        session_id=result.session_id, last_result=result, last_result_success=True, last_result_text=result.result_text
+        session_id=result.session_id,
+        last_result=result,
+        last_result_success=True,
+        last_result_text=result.result_text,
+        remote_execution_checkpoint={
+            "version": 1,
+            "session_id": result.session_id,
+            "prompt_id": "msg-1",
+            "phase": phase,
+            "deadline": time.time() + 60,
+        },
     )
     transaction_count = 0
     writes = []
@@ -238,14 +251,24 @@ async def test_transient_closeout_error_retries_the_same_provider_result(monkeyp
         nonlocal transaction_count
         transaction_count += 1
         fn(None)
-        if transaction_count == 1:
+        if transaction_count <= failures:
             raise OperationalError("COMMIT", {}, RuntimeError("serialization conflict"))
 
     monkeypatch.setattr(ai_task_chat, "run_db_txn", txn)
     monkeypatch.setattr(ai_task_chat, "_finalize_task_chat_job_sync", finalize)
     owner, binding = _bind_remote_runtime()
     try:
-        await ai_task_chat.finalize_task_chat_job_from_engine("job-1", engine)
+        if failures == 1:
+            await ai_task_chat.finalize_task_chat_job_from_engine("job-1", engine)
+        elif phase == "submitted":
+            with pytest.raises(AgentExecutionDetached) as detached:
+                await ai_task_chat.finalize_task_chat_job_from_engine("job-1", engine)
+            assert detached.value.failure_code == "REMOTE_CLOSEOUT_PENDING"
+        else:
+            # A prompt that was never admitted cannot be sent again just to
+            # settle a known result after a local write failure.
+            with pytest.raises(OperationalError):
+                await ai_task_chat.finalize_task_chat_job_from_engine("job-1", engine)
     finally:
         reset_agent_attempt(owner)
         reset_agent_attempt_runtime(binding)
@@ -503,6 +526,45 @@ def test_provider_outcome_convergence_clears_ownership_in_db():
     assert row.status == AiJobStatus.SUCCESS
     assert row.process_pid is None and row.process_group_id is None
     db.close()
+
+
+@pytest.mark.parametrize("persisted_session", [None, "remote-1"])
+def test_task_chat_finalizer_restores_provider_session_if_start_callback_failed(persisted_session):
+    factory = _session_factory()
+    with factory() as db:
+        job = _owned_job(db)
+        job.session_id = persisted_session
+        job.session_generation, job.session_revision = 1, 2
+        db.add(
+            SddTask(
+                id=job.task_id,
+                name="Chat",
+                workspace_id=job.workspace_id,
+                creator_id=job.creator_id,
+                status=TaskStatus.RUNNING,
+                status_run_id=job.id,
+                session_generation=1,
+                session_revision=2,
+            )
+        )
+        db.commit()
+        payload = ai_task_chat._finalize_task_chat_job_sync(
+            db,
+            job_id=job.id,
+            last_result_success=True,
+            last_result_text="provider result",
+            is_timeout_interrupted=False,
+            engine_session_id="remote-1",
+            run_token=job.run_token,
+            evidence=resolve_attempt_evidence(
+                execution_kind=REMOTE, provider_result=AgentRunResult(session_id="remote-1", success=True)
+            ),
+        )
+        db.commit()
+        assert payload["status"] == "SUCCESS"
+        task = db.get(SddTask, job.task_id)
+        assert task.status == TaskStatus.ROUND_COMPLETED
+        assert task.session_id == job.session_id == "remote-1"
 
 
 def test_finalizer_db_segment_is_fenced_by_run_token():

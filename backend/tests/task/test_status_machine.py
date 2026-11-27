@@ -285,6 +285,49 @@ def test_interrupt_command_atomically_persists_its_stop_intent(db, user_requeste
         assert restarted.query(TaskEventOutbox).one().payload_json["status"] == "INTERRUPTED"
 
 
+@pytest.mark.parametrize("matches_submission", [True, False])
+@pytest.mark.parametrize(
+    ("state", "trigger", "event_key"),
+    [
+        (S.ROUND_COMPLETED, sm.Trigger.INPUT_SUBMITTED, "input:submission"),
+        (S.INTERRUPTED, sm.Trigger.RESUME, "recovered-input:submission"),
+    ],
+)
+def test_interrupt_while_preparation_binds_a_job(db, state, trigger, event_key, matches_submission):
+    from app.domains.ai.models.ai_job import AiJobStatus
+    from app.domains.ai.services.jobs.store import create_task_chat_job
+    from app.domains.task.services.task_session_control_service import _accept_interrupt_command
+
+    task = seed(db, state)
+    preparing = event(db, task, trigger, event_key)
+    job = create_task_chat_job(
+        db,
+        workspace_id=task.workspace_id,
+        task_id=task.id,
+        creator_id=task.creator_id,
+        prompt_text="Stop during queue admission",
+        context_json={"submission_id": "submission" if matches_submission else "other-submission"},
+        commit=False,
+    )
+    db.commit()
+
+    def stop():
+        return _accept_interrupt_command(
+            db, task.id, task.creator_id, "stop", int(preparing["status_seq"]), "stop", user_requested=True
+        )
+
+    if matches_submission:
+        result, _ = stop()
+        assert result["interrupt_kind"] == "MANUAL"
+        assert job.status == AiJobStatus.CANCELLED
+        assert stop()[0]["duplicate"] is True
+    else:
+        with pytest.raises(sm.StatusTransitionError, match="Task status sequence has changed"):
+            stop()
+        assert task.status == S.RUNNING
+        assert job.status == AiJobStatus.PENDING
+
+
 def test_pre_input_turn_uses_input_transition_and_binds_its_actual_job(db):
     from app.domains.task.services import task_session_service as turns
 

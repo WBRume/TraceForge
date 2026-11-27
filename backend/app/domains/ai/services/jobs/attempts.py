@@ -50,6 +50,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
 from app.domains.ai.services.ai_job_convergence_service import (
     AttemptFinalizerEvidence as _FinalizerEvidence,
 )
+from app.domains.ai.services.jobs.constants import QUEUE_KEY_TASK_CHAT
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID, runtime
 from app.domains.ai.services.jobs.store import blocking_attempt_predicate, is_job_cancelled_or_final_sync
 
@@ -389,23 +390,36 @@ def converge_termination_sync(
                 row_kind != evidence.execution_kind
             ):
                 evidence = dataclasses.replace(evidence, execution_kind=row_kind)
+        recovered_status = None
+        if recovered_result is not None:
+            if recovered_result.success:
+                recovered_status = AiJobStatus.SUCCESS
+            elif (
+                row is not None
+                and row.channel == AiJobChannel.TASK_CHAT
+                and str(row.queue_key or "").startswith(f"{QUEUE_KEY_TASK_CHAT}:")
+            ):
+                recovered_status = AiJobStatus.INTERRUPTED
+            else:
+                recovered_status = AiJobStatus.FAILED
         request = AttemptConvergenceRequest(
             job_id=job_id,
             run_token=str(run_token or ""),
             worker_boot_id=WORKER_BOOT_ID,
-            requested_status=(
-                (AiJobStatus.SUCCESS if recovered_result.success else AiJobStatus.FAILED) if recovered_result else None
-            ),
+            requested_status=recovered_status,
             reason=str(reason or ""),
             evidence=evidence,
             intent=intent,
             reap_bookkeeping=True,
             termination_mode=termination_mode,
             expected_termination_attempt=expected_termination_attempt,
-            result_patch={"result_preview": recovered_result.result_text[:1600]} if recovered_result else None,
-            message=("AI reply completed" if recovered_result.success else "AI execution failed")
-            if recovered_result
+            session_id=(recovered_result.session_id or None) if recovered_result else None,
+            result_patch={"result_preview": recovered_result.result_text[:1600]}
+            if recovered_result and recovered_status != AiJobStatus.INTERRUPTED
             else None,
+            message={AiJobStatus.SUCCESS: "AI reply completed", AiJobStatus.FAILED: "AI execution failed"}.get(
+                recovered_status
+            ),
         )
         result = convergence.converge_job_attempt_sync(db, request)
         if not result.changed or not result.payload:
