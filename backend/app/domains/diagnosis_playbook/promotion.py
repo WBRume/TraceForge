@@ -255,7 +255,7 @@ def confirm_draft(db, job, revision, draft, user_id):
         and saved.get("draft_revision") == revision
         and saved.get("confirmed_digest") == confirmed_digest
     ):
-        return view(job)
+        return job
     require_draft(job, revision)
     validate_candidates(db, job, draft)
     spec_ids = []
@@ -296,16 +296,16 @@ def confirm_draft(db, job, revision, draft, user_id):
         "case_count": len(job.context_json["case_ids"]),
     }
     job.message = "诊断规程已确认入库"
-    return view(job)
+    return job
 
 
 def discard_draft(job, revision):
     if (job.result_json or {}).get("review_state") == "DISCARDED" and job.result_json.get("draft_revision") == revision:
-        return view(job)
+        return job
     saved = require_draft(job, revision)
     job.result_json = {**saved, "review_state": "DISCARDED"}
     job.message = "规程草案已放弃"
-    return view(job)
+    return job
 
 
 def dismiss_job(job):
@@ -318,7 +318,7 @@ def dismiss_job(job):
     if saved.get("review_state") == "PENDING":
         discard_draft(job, saved["draft_revision"])
     job.result_json = {**(job.result_json or {}), "dismissed": True}
-    return view(job)
+    return job
 
 
 def regenerate(db, job, revision, key, user_id):

@@ -163,9 +163,9 @@ def promote(
     access(db, ws_id, user, write=True)
     from app.domains.ai.services.jobs.publishing import enqueue_asset_thread_job
 
-    from .promotion import create, view
+    from .promotion import create
 
-    result = commit(db, lambda: view(create(db, ws_id, body.case_ids, user.id, body.idempotency_key)))
+    result = commit_promotion_job(db, lambda: create(db, ws_id, body.case_ids, user.id, body.idempotency_key))
     background.add_task(enqueue_asset_thread_job, result["job_id"])
     return result
 
@@ -220,7 +220,7 @@ def confirm_promotion(
 
     from .promotion import confirm_draft, owned_job
 
-    result = commit(
+    result = commit_promotion_job(
         db, lambda: confirm_draft(db, owned_job(db, ws_id, job_id, user.id), body.draft_revision, body.draft, user.id)
     )
     background.add_task(publish_job_state, job_id)
@@ -242,7 +242,7 @@ def discard_promotion(
 
     from .promotion import discard_draft, owned_job
 
-    result = commit(db, lambda: discard_draft(owned_job(db, ws_id, job_id, user.id), body.draft_revision))
+    result = commit_promotion_job(db, lambda: discard_draft(owned_job(db, ws_id, job_id, user.id), body.draft_revision))
     background.add_task(publish_job_state, job_id)
     return result
 
@@ -259,12 +259,12 @@ def regenerate_promotion(
     access(db, ws_id, user, write=True)
     from app.domains.ai.services.jobs.publishing import enqueue_asset_thread_job, publish_job_state
 
-    from .promotion import owned_job, regenerate, view
+    from .promotion import owned_job, regenerate
 
-    result = commit(
+    result = commit_promotion_job(
         db,
-        lambda: view(
-            regenerate(db, owned_job(db, ws_id, job_id, user.id), body.draft_revision, body.idempotency_key, user.id)
+        lambda: regenerate(
+            db, owned_job(db, ws_id, job_id, user.id), body.draft_revision, body.idempotency_key, user.id
         ),
     )
     background.add_task(publish_job_state, job_id)
@@ -285,7 +285,7 @@ def dismiss_promotion(
 
     from .promotion import dismiss_job, owned_job
 
-    result = commit(db, lambda: dismiss_job(owned_job(db, ws_id, job_id, user.id)))
+    result = commit_promotion_job(db, lambda: dismiss_job(owned_job(db, ws_id, job_id, user.id)))
     background.add_task(publish_job_state, job_id)
     return result
 
@@ -303,7 +303,7 @@ def cancel_promotion(
     from app.domains.ai.services.jobs.constants import FINAL_STATUSES
     from app.domains.ai.services.jobs.publishing import publish_job_state
 
-    from .promotion import dismiss_job, owned_job, view
+    from .promotion import dismiss_job, owned_job
 
     def close():
         job = owned_job(db, ws_id, job_id, user.id)
@@ -312,9 +312,9 @@ def cancel_promotion(
             return dismiss_job(job)
         cancel_job(db, workspace_id=ws_id, job_id=job_id)
         db.refresh(job)
-        return view(job)
+        return job
 
-    result = commit(db, close)
+    result = commit_promotion_job(db, close)
     background.add_task(publish_job_state, job_id)
     return result
 
@@ -342,6 +342,18 @@ def commit(db, operation):
         raise HTTPException(
             409, {"code": "CONCURRENT_WRITE", "recoverable": True, "missing_facts": [], "current_state_version": None}
         ) from exc
+
+
+def commit_promotion_job(db, operation):
+    from .promotion import view
+
+    def snapshot():
+        job = operation()
+        # The JobEvent flush assigns the version of this mutation.
+        db.flush()
+        return view(job)
+
+    return commit(db, snapshot)
 
 
 @router.get("/cases/playbooks")

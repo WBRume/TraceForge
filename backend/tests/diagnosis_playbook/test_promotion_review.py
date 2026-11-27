@@ -51,7 +51,7 @@ def test_two_plus_one_is_only_a_draft_until_explicit_confirmation(db, monkeypatc
     assert first.status_code == 200, first.text
     assert first.json()["result"]["review_state"] == "CONFIRMED"
     assert db.query(PlaybookSpec).count() == 2 and db.query(CasePlaybookLink).count() == 3
-    assert client.post(url, json=body).json()["result"]["spec_ids"] == first.json()["result"]["spec_ids"]
+    assert client.post(url, json=body).json() == first.json()
     body["draft"]["playbooks"][0]["title"] = "并发修改"
     assert client.post(url, json=body).status_code == 409
     for spec in db.query(PlaybookSpec):
@@ -93,9 +93,18 @@ def test_discard_and_review_state_change_cannot_publish(db, monkeypatch):
     db.commit()
     with pytest.raises(PlaybookError, match="CASE_NOT_APPROVED"):
         promotion.confirm_draft(db, job, revision, draft, user.id)
-    promotion.discard_draft(job, revision)
-    db.commit()
-    assert client_for(db, user).get("/cases/playbook-promotions/active").json()["items"] == []
+    from unittest.mock import AsyncMock
+
+    from app.domains.ai.services.jobs import publishing
+
+    monkeypatch.setattr(publishing, "publish_job_state", AsyncMock())
+    client = client_for(db, user)
+    url = f"/workspaces/{ws.id}/cases/playbook-promotions/{job.id}/discard"
+    command = {"draft_revision": revision}
+    response = client.post(url, json=command)
+    assert response.status_code == 200, response.text
+    assert client.post(url, json=command).json() == response.json()
+    assert client.get("/cases/playbook-promotions/active").json()["items"] == []
     assert db.query(PlaybookSpec).count() == 0
 
 
