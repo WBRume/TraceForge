@@ -590,7 +590,7 @@ async def finalize_task_chat_job_from_engine(job_id: str, engine: TaskAgentEngin
                 attempt is not None
                 and provider_result is not None
                 and valid_checkpoint(checkpoint)
-                and checkpoint["phase"] == "submitted"
+                and checkpoint["phase"] in {"submitted", "rejected"}
                 and checkpoint["session_id"] == engine_session_id
             ):
                 raise AgentExecutionDetached(

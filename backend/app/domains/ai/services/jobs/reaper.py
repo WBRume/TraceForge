@@ -351,7 +351,7 @@ async def stop_bound_session(backend, binding, row):
         if completed:
             return completed
         checkpoint = row.get("provider_execution") or {}
-        if checkpoint.get("phase") == "prepared":
+        if checkpoint.get("phase") in {"prepared", "rejected"}:
             return AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)
         if not await backend.session_running(session_id):
             # An idle auxiliary session without a durable input ID can be

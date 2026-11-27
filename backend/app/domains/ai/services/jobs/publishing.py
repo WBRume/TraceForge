@@ -7,17 +7,26 @@ ORPHANED/INTERRUPTED）只产生 ``*_update``；``*_done``/``*_failed`` 只允�
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
+from sqlalchemy import tuple_
+
+from app.core.logging import get_logger
 from app.core.offload import run_db
 from app.database import SessionLocal
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.models.job_history import JobEvent
 from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.ai.services.jobs import constants
 from app.domains.ai.services.jobs.registry import runtime
 from app.domains.ai.services.jobs.store import serialize_job
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
 from app.domains.websocket.ws.manager import manager as task_ws_manager
+
+logger = get_logger(__name__, category="ai_session")
+_EVENT_DELIVERY_BATCH_SIZE = 100
+_event_delivery_cursor: tuple[datetime, str] | None = None
 
 
 async def broadcast_job_payload(payload: dict[str, Any]) -> None:
@@ -212,41 +221,45 @@ async def publish_domain_snapshot(job_id: str) -> None:
         )
 
 
-async def publish_pending_job_events() -> int:
-    """Retry committed notifications after a worker or transport failure.
-
-    Duplicate delivery is expected: snapshots carry monotonically increasing
-    versions. Delivery never re-executes a business operation.
-    """
-    from datetime import datetime
-
-    from app.domains.ai.models.job_history import JobEvent
-
-    def pending():
-        with SessionLocal() as db:
-            return [
-                (e.id, e.job_id)
-                for e in db.query(JobEvent)
-                .filter(
-                    JobEvent.published_at.is_(None),
-                )
-                .order_by(JobEvent.created_at, JobEvent.id)
-                .limit(100)
+def _pending_events_sync(cursor: tuple[datetime, str] | None):
+    with SessionLocal() as db:
+        pending = (
+            db.query(JobEvent.id, JobEvent.job_id, JobEvent.created_at)
+            .filter(JobEvent.published_at.is_(None))
+            .order_by(JobEvent.created_at, JobEvent.id)
+        )
+        if cursor is not None:
+            rows = (
+                pending.filter(tuple_(JobEvent.created_at, JobEvent.id) > cursor)
+                .limit(_EVENT_DELIVERY_BATCH_SIZE)
                 .all()
-            ]
+            )
+            if rows:
+                return rows
+        return pending.limit(_EVENT_DELIVERY_BATCH_SIZE).all()
 
+
+def _acknowledge_event_sync(event_id: str) -> None:
+    with SessionLocal() as db:
+        db.query(JobEvent).filter_by(id=event_id, published_at=None).update({"published_at": datetime.utcnow()})
+        db.commit()
+
+
+async def publish_pending_job_events() -> int:
+    """Retry committed notifications, rotating past undeliverable rows."""
+    global _event_delivery_cursor
+    events = await run_db(_pending_events_sync, _event_delivery_cursor)
     count = 0
-    for event_id, job_id in await run_db(pending):
-        payload = await run_db(_load_job_payload_sync, job_id)
-        if payload:
-            await broadcast_job_payload(payload)
-
-        def acknowledge(event_id=event_id):
-            with SessionLocal() as db:
-                db.query(JobEvent).filter_by(id=event_id).update({"published_at": datetime.utcnow()})
-                db.commit()
-
-        await run_db(acknowledge)
+    for event_id, job_id, created_at in events:
+        _event_delivery_cursor = (created_at, event_id)
+        try:
+            payload = await run_db(_load_job_payload_sync, job_id)
+            if payload:
+                await broadcast_job_payload(payload)
+            await run_db(_acknowledge_event_sync, event_id)
+        except Exception:
+            logger.exception("Job notification deferred: job_id={}, event_id={}", job_id, event_id)
+            continue
         count += 1
     return count
 
@@ -317,8 +330,11 @@ async def enqueue_task_chat_job(job_id: str) -> dict[str, Any] | None:
 
 
 async def publish_job(job_id: str) -> None:
-    """Broadcast the durable job payload; final 判定由 payload 状态决定。"""
-    await publish_job_state(job_id)
+    """Publish after a committed command; the outbox retries delivery failures."""
+    try:
+        await publish_job_state(job_id)
+    except Exception:
+        logger.exception("Committed job notification deferred: job_id={}", job_id)
 
 
 async def enqueue_task_baseline_job(

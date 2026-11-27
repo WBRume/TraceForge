@@ -29,7 +29,10 @@ def valid_checkpoint(value) -> bool:
         and value.get("prompt_id")
         and isinstance(value.get("deadline"), (int, float))
         and math.isfinite(value["deadline"])
-        and value.get("phase") in {"prepared", "submitting", "submitted", "stopping"}
+        and (
+            value.get("phase") in {"prepared", "submitting", "submitted", "stopping"}
+            or (value.get("phase") == "rejected" and isinstance(value.get("rejection_message"), str))
+        )
     )
 
 
@@ -88,6 +91,8 @@ def save_checkpoint_sync(attempt, checkpoint):
             raise AgentExecutionDetached("Remote execution identity cannot change during an attempt")
         if valid_checkpoint(old) and old["phase"] == "stopping" and checkpoint["phase"] != "stopping":
             raise AgentExecutionDetached("Remote execution is already being stopped")
+        if valid_checkpoint(old) and old["phase"] == "rejected" and checkpoint != old:
+            raise AgentExecutionDetached("Remote input was definitively rejected")
         job.provider_execution_json = dict(checkpoint)
         job.session_id = checkpoint["session_id"]
         job.agent_backend = "opencode"

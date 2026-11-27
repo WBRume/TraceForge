@@ -270,7 +270,8 @@ def test_expired_resource_snapshot_preserves_successful_build_history(execution_
         assert first.status == AiJobStatus.SUCCESS and first.result_json["baseline_session_id"] == "session"
 
 
-def test_notification_failure_leaves_committed_event_for_redelivery(execution_db, monkeypatch):
+@pytest.mark.parametrize("page_size", [1, 100])
+def test_notification_failure_does_not_block_other_committed_events(execution_db, monkeypatch, page_size):
     from unittest.mock import AsyncMock
 
     from app.domains.ai.services.jobs import publishing
@@ -278,11 +279,24 @@ def test_notification_failure_leaves_committed_event_for_redelivery(execution_db
     factory, _ = execution_db
     with factory() as db:
         job_id = provision.create_job(db, job_type=ProvisionJobType.CREATE_WORKSPACE, creator_id="user").id
-    monkeypatch.setattr(publishing, "broadcast_job_payload", AsyncMock(side_effect=ConnectionError("offline")))
-    with pytest.raises(ConnectionError):
-        asyncio.run(publishing.publish_pending_job_events())
+        next_id = provision.create_job(db, job_type=ProvisionJobType.CREATE_WORKSPACE, creator_id="user").id
+        db.query(JobEvent).filter_by(job_id=job_id).one().created_at = datetime(2026, 1, 1)
+        db.commit()
+
+    async def broadcast(payload):
+        if payload["id"] == job_id:
+            raise ConnectionError("offline")
+
+    monkeypatch.setattr(publishing, "_EVENT_DELIVERY_BATCH_SIZE", page_size, raising=False)
+    monkeypatch.setattr(publishing, "_event_delivery_cursor", None, raising=False)
+    monkeypatch.setattr(publishing, "broadcast_job_payload", AsyncMock(side_effect=broadcast))
+    first = asyncio.run(publishing.publish_pending_job_events())
+    assert first == (1 if page_size > 1 else 0)
+    if not first:
+        assert asyncio.run(publishing.publish_pending_job_events()) == 1
     with factory() as db:
         assert db.query(JobEvent).filter_by(job_id=job_id, published_at=None).count() == 1
+        assert db.query(JobEvent).filter_by(job_id=next_id, published_at=None).count() == 0
     delivered = AsyncMock()
     monkeypatch.setattr(publishing, "broadcast_job_payload", delivered)
     assert asyncio.run(publishing.publish_pending_job_events()) == 1

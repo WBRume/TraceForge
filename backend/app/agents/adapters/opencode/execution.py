@@ -102,6 +102,7 @@ class ExecutionMonitor:
         self.last_check = time.monotonic()
         self.interval = min(settings.OPENCODE_RECONCILE_INTERVAL_SECONDS, request.idle_timeout_seconds / 3)
         self.watchdog = adapter._watchdog
+        self.prompt_delivered = False
         self.steering_open = False
         self._steering_lock = asyncio.Lock()
         self._pending_steers: set[str] = set()
@@ -137,8 +138,13 @@ class ExecutionMonitor:
 
     async def _observe_user_input(self, provider_id: str) -> None:
         if provider_id == self.checkpoint["prompt_id"]:
+            self.prompt_delivered = True
             self.steering_open = True
-        elif provider_id.startswith(STEERING_PREFIX) and provider_id not in self._delivered_steers:
+        elif (
+            self.prompt_delivered
+            and provider_id.startswith(STEERING_PREFIX)
+            and provider_id not in self._delivered_steers
+        ):
             if self.request.on_steering_delivered:
                 await self.request.on_steering_delivered(provider_id.removeprefix(STEERING_PREFIX))
             self.adapter._message_ids.add(provider_id)
@@ -192,10 +198,19 @@ class ExecutionMonitor:
         try:
             await self.adapter._send_prompt(self.session_id, self.request)
         except AgentPromptRejectedError as exc:
-            return {"success": False, "finish_reason": "input_rejected", "input_rejection": str(exc)}
+            self.checkpoint.update(phase="rejected", rejection_message=str(exc))
+            await self.save()
+            return self.rejected_result()
         self.checkpoint["phase"] = "submitted"
         await self.save()
         return None
+
+    def rejected_result(self) -> dict:
+        return {
+            "success": False,
+            "finish_reason": "input_rejected",
+            "input_rejection": self.checkpoint["rejection_message"],
+        }
 
     async def emit(self, event: AgentEvent, key: str = ""):
         if key and key in self.delivered:
@@ -327,13 +342,17 @@ class ExecutionMonitor:
         if self.watchdog:
             self.watchdog.pause_idle()  # A status lookup in flight is not idle evidence.
         await self.save()  # Also fences observation and terminal finalization.
+        if self.checkpoint["phase"] == "rejected":
+            return self.rejected_result()
         messages = await self.adapter.list_messages(self.session_id)
         current = turn_messages(messages, self.checkpoint["prompt_id"])
         if any(row.get("id") == self.checkpoint["prompt_id"] for row in messages):
+            self.prompt_delivered = True
             self.steering_open = not any(row.get("type") == "idle" for row in current)
         await self.restore_messages(current)
         terminal = next((row for row in current if row.get("type") == "idle"), None)
-        await self.restore_asks(terminal=bool(terminal))
+        if self.prompt_delivered:
+            await self.restore_asks(terminal=bool(terminal))
         self.last_check = time.monotonic()
         if terminal and terminal.get("outcome") in {"succeeded", "failed", "interrupted"}:
             await self._close_steering()
@@ -411,6 +430,9 @@ class ExecutionMonitor:
             return await self.reconcile()
         if kind == "session.inbox.delivered":
             await self._observe_user_input(str(data.get("inboxID") or ""))
+            return None
+        if not self.prompt_delivered:
+            # An accepted inbox input can still be queued behind another run.
             return None
         mid = str(data.get("assistantMessageID") or data.get("messageID") or "")
         if mid:

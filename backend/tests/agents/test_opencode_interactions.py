@@ -15,7 +15,7 @@ def form():
     return {"id": "frm_test", "sessionID": "ses_test", "title": "Choose", "fields": [{"key": "q0", "type": "string"}]}
 
 
-def create_monitor(handler, checkpoint=None):
+async def create_monitor(handler, checkpoint=None, *, delivered=True):
     adapter = OpenCodeAdapter("http://agent")
     adapter._session_id = "ses_test"
     adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -33,6 +33,13 @@ def create_monitor(handler, checkpoint=None):
     monitor = ExecutionMonitor(adapter, "ses_test", request, collect)
     monitor.checkpoint["phase"] = "submitted"
     adapter._execution_monitor = monitor
+    if delivered:
+        await monitor.handle_event(
+            {
+                "type": "session.inbox.delivered",
+                "data": {"sessionID": "ses_test", "inboxID": monitor.checkpoint["prompt_id"]},
+            }
+        )
     return adapter, monitor, events, checkpoints
 
 
@@ -47,7 +54,7 @@ def create_monitor(handler, checkpoint=None):
     ],
 )
 async def test_terminal_events_clear_wait_and_publish_once(kind, data, status):
-    adapter, monitor, events, checkpoints = create_monitor(lambda r: httpx.Response(200, json={"data": []}))
+    adapter, monitor, events, checkpoints = await create_monitor(lambda r: httpx.Response(200, json={"data": []}))
     rid = data.get("id") or data["requestID"]
     adapter._pending_asks.add(rid)
     event = {"type": kind, "data": {"sessionID": "ses_test", **data}}
@@ -73,10 +80,10 @@ async def test_worker_restart_recovers_answer_or_closes_expired_form(state):
             )
         return httpx.Response(200, json={"data": []})
 
-    first, monitor, _, checkpoints = create_monitor(handler)
+    first, monitor, _, checkpoints = await create_monitor(handler)
     await monitor.handle_event({"type": "form.created", "data": {"form": form()}})
     await first.close()
-    adapter, recovered, events, _ = create_monitor(handler, checkpoints[-1])
+    adapter, recovered, events, _ = await create_monitor(handler, checkpoints[-1])
     try:
         await recovered.restore_asks()
         assert [event.type for event in events] == ["ask_user", "ask_user_resolved"]
@@ -92,7 +99,7 @@ async def test_worker_restart_recovers_answer_or_closes_expired_form(state):
 
 @pytest.mark.asyncio
 async def test_transport_failure_does_not_invent_a_resolution():
-    adapter, monitor, events, _ = create_monitor(lambda r: httpx.Response(503))
+    adapter, monitor, events, _ = await create_monitor(lambda r: httpx.Response(503))
     try:
         await monitor.handle_event({"type": "form.created", "data": {"form": form()}})
         with pytest.raises(httpx.HTTPStatusError):
@@ -105,12 +112,14 @@ async def test_transport_failure_does_not_invent_a_resolution():
 
 @pytest.mark.asyncio
 async def test_settled_checkpoint_replays_without_querying_expired_result():
-    adapter, monitor, events, checkpoints = create_monitor(lambda r: httpx.Response(200, json={"data": []}))
+    adapter, monitor, events, checkpoints = await create_monitor(lambda r: httpx.Response(200, json={"data": []}))
     await monitor.handle_event(
         {"type": "form.replied", "data": {"sessionID": "ses_test", "id": "frm_test", "answer": {"q0": "A"}}}
     )
     await adapter.close()
-    adapter, recovered, events, _ = create_monitor(lambda r: httpx.Response(200, json={"data": []}), checkpoints[-1])
+    adapter, recovered, events, _ = await create_monitor(
+        lambda r: httpx.Response(200, json={"data": []}), checkpoints[-1]
+    )
     try:
         await recovered.restore_asks()
         assert events[-1].payload["answer"] == {"q0": "A"}
@@ -130,7 +139,7 @@ async def test_late_answer_is_rejected_and_authoritative_answer_is_published(rac
         state = {"status": "pending"} if race and not posts else {"status": "answered", "answer": {"q0": "external"}}
         return httpx.Response(200, json={"data": {**form(), "state": state}})
 
-    adapter, monitor, events, _ = create_monitor(handler)
+    adapter, monitor, events, _ = await create_monitor(handler)
     try:
         await monitor.handle_event({"type": "form.created", "data": {"form": form()}})
         with pytest.raises(AgentInteractionClosedError):
@@ -148,7 +157,7 @@ async def test_uncertain_reply_delivery_is_reported_without_fabricating_an_answe
             raise httpx.ReadTimeout("reply response lost")
         return httpx.Response(200, json={"data": form()})
 
-    adapter, monitor, events, _ = create_monitor(handler)
+    adapter, monitor, events, _ = await create_monitor(handler)
     try:
         await monitor.handle_event({"type": "form.created", "data": {"form": form()}})
         with pytest.raises(AgentError, match="could not be confirmed"):
@@ -207,7 +216,7 @@ async def test_cancelled_tool_without_idle_requires_owned_completed_turn_and_qui
             return httpx.Response(200, json={"data": [{"id": "msg_owned"}] if inbox else []})
         return httpx.Response(200, json={"data": []})
 
-    adapter, monitor, _, _ = create_monitor(handler)
+    adapter, monitor, _, _ = await create_monitor(handler, delivered=False)
     monitor.checkpoint["prompt_id"] = "msg_owned"
     try:
         result = await monitor.reconcile()

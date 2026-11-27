@@ -177,6 +177,40 @@ async def test_definitive_prompt_rejection_converges_without_a_provider_message(
 
 
 @pytest.mark.asyncio
+async def test_restart_after_definitive_prompt_rejection_never_posts_again(fast_reconcile):
+    provider = Provider(active=False)
+    provider.prompt_rejection = 422
+    persist = AsyncMock()
+    first, _, _ = await execute(provider, on_execution_checkpoint=persist)
+    recovered = persist.call_args.args[0]
+    provider.prompt_rejection = None
+    second, _, _ = await execute(provider, execution_checkpoint=recovered, on_execution_checkpoint=persist)
+
+    assert second.finish_reason == first.finish_reason == "input_rejected"
+    assert second.result_text == first.result_text
+    assert provider.posts == 1
+
+
+@pytest.mark.asyncio
+async def test_queued_prompt_ignores_events_from_the_previous_native_execution():
+    adapter = OpenCodeAdapter("http://agent")
+    emit = AsyncMock()
+    request = AgentRunRequest(execution_checkpoint={"prompt_id": "msg_ours", "phase": "submitted"})
+    monitor = ExecutionMonitor(adapter, "ses_test", request, emit)
+
+    def text_event(text):
+        return {"type": "session.text.ended", "data": {"sessionID": "ses_test", "text": text}}
+
+    await monitor.handle_event(text_event("output from the previous execution"))
+    await monitor.handle_event(
+        {"type": "session.inbox.delivered", "data": {"sessionID": "ses_test", "inboxID": "msg_ours"}}
+    )
+    await monitor.handle_event(text_event("output from this job"))
+
+    assert [call.args[0].payload["text"] for call in emit.await_args_list] == ["output from this job"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["succeeded", "failed", "interrupted"])
 async def test_missing_terminal_sse_converges_from_this_input(outcome, fast_reconcile):
     provider = Provider()

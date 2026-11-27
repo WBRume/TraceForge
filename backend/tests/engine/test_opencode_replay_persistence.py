@@ -173,7 +173,7 @@ async def test_provider_answer_is_not_attributed_to_a_rejected_platform_reply(
             adapter._pending_asks.add(event.payload["ask_user_id"])
         await engine.handle_agent_event(event)
 
-    adapter, monitor, _, _ = create_monitor(native)
+    adapter, monitor, _, _ = await create_monitor(native)
     monitor.on_event = on_event
     engine.cli = adapter
     monkeypatch.setattr(task_chat, "get_engine", lambda task_id: engine)

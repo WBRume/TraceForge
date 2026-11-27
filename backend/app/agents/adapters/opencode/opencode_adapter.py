@@ -784,7 +784,7 @@ class OpenCodeAdapter(AgentBackend):
             )
 
             consumed, seen_types = None, set()
-            if request.execution_checkpoint.get("phase") in {"submitting", "submitted"}:
+            if request.execution_checkpoint.get("phase") in {"submitting", "submitted", "rejected"}:
                 from .execution import ExecutionMonitor
 
                 self._execution_monitor = ExecutionMonitor(self, session_id, request, _tracked_event)

@@ -11,6 +11,24 @@ from app.agents.contract import AgentRunRequest
 from app.agents.errors import AgentError, AgentTimeoutError
 
 
+class PromptStream(httpx.AsyncByteStream):
+    def __init__(self, events, *, keep_open=False):
+        self.events = events
+        self.keep_open = keep_open
+        self.input_id = asyncio.get_running_loop().create_future()
+
+    async def __aiter__(self):
+        yield b'data: {"type":"server.connected","data":{}}\n\n'
+        delivered = {
+            "type": "session.inbox.delivered",
+            "data": {"sessionID": "ses_test", "inboxID": await self.input_id},
+        }
+        for event in [delivered, *self.events]:
+            yield ("data: " + json.dumps(event) + "\n\n").encode()
+        if self.keep_open:
+            await asyncio.Future()
+
+
 def form_event(session_id="ses_test", form_id="frm_test"):
     return {
         "type": "form.created",
@@ -92,17 +110,18 @@ def test_v2_form_maps_all_questions_and_options_to_unified_confirmation():
 @pytest.mark.asyncio
 async def test_v2_form_filters_nested_session_owner_before_mapping():
     prompt_id = None
-    events = [
-        {"type": "server.connected", "data": {}},
-        form_event("ses_other", "frm_other"),
-        form_event(),
-        {"type": "session.execution.succeeded", "data": {"sessionID": "ses_test"}},
-    ]
+    stream = PromptStream(
+        [
+            form_event("ses_other", "frm_other"),
+            form_event(),
+            {"type": "session.execution.succeeded", "data": {"sessionID": "ses_test"}},
+        ]
+    )
 
     def handler(request):
         nonlocal prompt_id
         if request.url.path == "/api/event":
-            return httpx.Response(200, text="".join("data: " + json.dumps(e) + "\n\n" for e in events))
+            return httpx.Response(200, stream=stream)
         if request.url.path.endswith("/form/frm_test"):
             return httpx.Response(404)
         if request.url.path.endswith("/message"):
@@ -117,6 +136,7 @@ async def test_v2_form_filters_nested_session_owner_before_mapping():
                 },
             )
         prompt_id = json.loads(request.content)["id"]
+        stream.input_id.set_result(prompt_id)
         return httpx.Response(200, json={"data": {"id": prompt_id}})
 
     adapter = OpenCodeAdapter("http://agent")
@@ -142,21 +162,17 @@ async def test_v2_form_waits_for_human_then_restarts_idle_timeout(after_reply):
     replies = []
     prompt_id = None
 
-    class Stream(httpx.AsyncByteStream):
-        async def __aiter__(self):
-            for event in [{"type": "server.connected", "data": {}}, form_event()]:
-                yield ("data: " + json.dumps(event) + "\n\n").encode()
-            if after_reply == "external_reply":
-                yield b'data: {"type":"form.replied","data":{"id":"frm_test","sessionID":"ses_test"}}\n\n'
-            if after_reply == "complete":
-                yield b'data: {"type":"session.execution.succeeded","data":{"sessionID":"ses_test"}}\n\n'
-            else:
-                await asyncio.sleep(10)
+    events = [form_event()]
+    if after_reply == "external_reply":
+        events.append({"type": "form.replied", "data": {"id": "frm_test", "sessionID": "ses_test"}})
+    elif after_reply == "complete":
+        events.append({"type": "session.execution.succeeded", "data": {"sessionID": "ses_test"}})
+    stream = PromptStream(events, keep_open=after_reply != "complete")
 
     def handler(request):
         nonlocal prompt_id
         if request.url.path == "/api/event":
-            return httpx.Response(200, stream=Stream())
+            return httpx.Response(200, stream=stream)
         if request.url.path.endswith("/form/frm_test"):
             return httpx.Response(200, json={"data": form_event()["data"]["form"]})
         if request.url.path.endswith("/form/frm_test/reply"):
@@ -164,6 +180,7 @@ async def test_v2_form_waits_for_human_then_restarts_idle_timeout(after_reply):
             return httpx.Response(400 if after_reply == "reply_error" else 204, json={"message": "invalid answer"})
         if request.url.path.endswith("/prompt"):
             prompt_id = json.loads(request.content)["id"]
+            stream.input_id.set_result(prompt_id)
             return httpx.Response(200, json={"data": {"id": prompt_id}})
         if request.url.path.endswith("/message"):
             rows = [{"id": prompt_id, "type": "user"}]
@@ -212,18 +229,19 @@ async def test_v2_form_waits_for_human_then_restarts_idle_timeout(after_reply):
 @pytest.mark.parametrize("outcome", ["succeeded", "failed"])
 async def test_v2_stream_waits_for_execution_after_step_and_filters_other_sessions(outcome):
     prompt_id = None
-    events = [
-        {"type": "server.connected", "data": {}},
-        {"type": "session.execution.succeeded", "data": {"sessionID": "other"}},
-        {"type": "session.step.ended", "data": {"sessionID": "ses_test", "finish": "stop"}},
-        {"type": "session.text.delta", "data": {"sessionID": "ses_test", "delta": " tail "}},
-        {"type": "session.execution." + outcome, "data": {"sessionID": "ses_test"}},
-    ]
+    stream = PromptStream(
+        [
+            {"type": "session.execution.succeeded", "data": {"sessionID": "other"}},
+            {"type": "session.step.ended", "data": {"sessionID": "ses_test", "finish": "stop"}},
+            {"type": "session.text.delta", "data": {"sessionID": "ses_test", "delta": " tail "}},
+            {"type": "session.execution." + outcome, "data": {"sessionID": "ses_test"}},
+        ]
+    )
 
     def handler(request):
         nonlocal prompt_id
         if request.url.path == "/api/event":
-            return httpx.Response(200, text="".join("data: " + json.dumps(event) + "\n\n" for event in events))
+            return httpx.Response(200, stream=stream)
         if request.url.path.endswith("/message"):
             return httpx.Response(
                 200,
@@ -240,6 +258,7 @@ async def test_v2_stream_waits_for_execution_after_step_and_filters_other_sessio
         assert body["text"] == "hi"
         assert body["id"].startswith("msg_")
         prompt_id = body["id"]
+        stream.input_id.set_result(prompt_id)
         return httpx.Response(200, json={"data": {"id": prompt_id}})
 
     adapter = OpenCodeAdapter("http://agent")
