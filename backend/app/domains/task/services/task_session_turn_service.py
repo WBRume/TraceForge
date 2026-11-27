@@ -405,20 +405,9 @@ def _persist_chat_turn_sync(
 
     reading_info = reading_capture_service.record_message_change(db, task_id=task_id, message=message)
     if submission is not None:
-        submission.ai_job_id = job.id
-        submission.chat_message_id = message.id
-        submission.status = "EXECUTING"
-        submission.version = int(submission.version or 1) + 1
-        # Same transaction carries the receipt's EXECUTING event with the formal
-        # user message and job; the publisher relays both into the task room.
-        from app.domains.task.services import chat_submission_service
+        from app.domains.task.services.chat_submission_service import bind_execution_in_txn
 
-        chat_submission_service.save_task_event_outbox(
-            db,
-            row=submission,
-            message=_chat_message_event_dto(db, message),
-            job=ai_job_store.serialize_job(job),
-        )
+        bind_execution_in_txn(db, submission, message=_chat_message_event_dto(db, message), job=job)
     db.commit()
     try:
         from app.domains.task.services import context_token_service

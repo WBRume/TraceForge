@@ -167,14 +167,10 @@ def _load_interrupt_state_sync(db: Session, *, task_id: str, job_id: str | None)
 def _interrupt_preparing_submission(db: Session, task_id: str, message: str) -> dict[str, Any] | None:
     from app.domains.task.models.chat_submission import TaskChatSubmission
     from app.domains.task.services import chat_submission_service
-    from app.domains.workspace_collaboration.service import abandon_input
 
     row = db.query(TaskChatSubmission).filter_by(task_id=task_id, status="PREPARING").with_for_update().one_or_none()
-    if not row:
-        return None
-    abandon_input(db, task_id, row.id)
-    chat_submission_service._transition(db, row, "FAILED", error_message=message)
-    return chat_submission_service.serialize(row)
+    failed = chat_submission_service.fail_preparation_in_txn(db, row, message)
+    return chat_submission_service.serialize(failed) if failed else None
 
 
 def _accept_interrupt_command(

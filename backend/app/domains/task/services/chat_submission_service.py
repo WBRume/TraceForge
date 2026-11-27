@@ -97,13 +97,8 @@ def serialize(row):
     return payload
 
 
-def validate_transition(row, target_status):
-    allowed = _ALLOWED_TRANSITIONS.get(str(row.status or ""))
-    if not allowed or target_status not in allowed:
-        raise SubmissionError("受理状态不允许该变更", "SUBMISSION_INVALID_TRANSITION")
-
-
-def _event_payload(row, *, message=None, job=None):
+def _queue_receipt_event(db, row, *, message=None, job=None):
+    """Record the current receipt version in the caller's transaction."""
     payload = {
         "event_id": str(uuid4()),
         "task_id": row.task_id,
@@ -115,17 +110,6 @@ def _event_payload(row, *, message=None, job=None):
         payload["message"] = message
     if job is not None:
         payload["job"] = job
-    return payload
-
-
-def save_task_event_outbox(db, *, row, message=None, job=None):
-    """Queue the publish for the receipt's committed state; same transaction as the change.
-
-    The caller has already advanced ``row.status``/``row.version``; this helper
-    only records the event so a crash between commit and broadcast still
-    recovers through the publisher.
-    """
-    payload = _event_payload(row, message=message, job=job)
     db.add(
         TaskEventOutbox(
             event_id=payload["event_id"],
@@ -291,7 +275,7 @@ def _accept_sync(
     from app.domains.workspace_collaboration.hooks import request_input
 
     request_input(db, task, row)
-    save_task_event_outbox(db, row=row)
+    _queue_receipt_event(db, row)
     return serialize(row)
 
 
@@ -415,45 +399,48 @@ def _load_preparation(db, submission_id):
     }
 
 
-def _transition(db, row, target_status, *, error_message=None):
+def _transition(db, row, target_status, *, error_message=None, message=None, job=None):
     """Advance one receipt inside the caller's transaction and queue its event."""
-    validate_transition(row, target_status)
+    if target_status not in _ALLOWED_TRANSITIONS.get(row.status, ()):
+        raise SubmissionError("受理状态不允许该变更", "SUBMISSION_INVALID_TRANSITION")
+    if target_status == "EXECUTING":
+        row.ai_job_id = job["id"]
+        row.chat_message_id = message["id"]
     row.status = target_status
     row.version = int(row.version or 1) + 1
     if target_status in {"FAILED", "SUCCEEDED"}:
         row.active_task_id = None
     if error_message is not None:
         row.error_message = error_message
-    save_task_event_outbox(db, row=row)
+    _queue_receipt_event(db, row, message=message, job=job)
     return row
 
 
-def _fail_sync(db, submission_id, message):
-    """Close a preparation and its task state in the same transaction."""
-    task_id = db.query(TaskChatSubmission.task_id).filter_by(id=submission_id).scalar()
-    if not task_id:
-        return None
-    task = db.query(SddTask).filter_by(id=task_id).populate_existing().with_for_update().one_or_none()
-    row = db.query(TaskChatSubmission).filter_by(id=submission_id).populate_existing().with_for_update().one_or_none()
-    # A commit may have completed despite a lost caller.
+def bind_execution_in_txn(db, row: TaskChatSubmission, *, job: SddAiJob, message: dict) -> None:
+    """Attach the created turn and publish its EXECUTING version in one write path."""
+    _transition(db, row, "EXECUTING", message=message, job=serialize_job(job))
+
+
+def fail_preparation_in_txn(db, row: TaskChatSubmission | None, message: str, *, task: SddTask | None = None):
+    """Release an unbound preparation under the task lock and record the failure."""
     if row is None or row.status != "PREPARING" or row.ai_job_id:
         return None
-    from app.domains.workspace_collaboration import service as collaboration
+    from app.domains.workspace_collaboration.service import abandon_input
 
-    collaboration.abandon_input(db, task_id, submission_id)
+    abandon_input(db, row.task_id, row.id)
     if (
         task is not None
         and task.status == TaskStatus.RUNNING
         and task.baselined_at is None
-        and row.active_task_id == task_id
+        and row.active_task_id == task.id
         and (row.session_generation, row.session_revision) == (task.session_generation, task.session_revision)
-        and not active_statuses(db, task_id)
+        and not active_statuses(db, task.id)
     ):
         sm.dispatch(
             db,
             task,
             sm.Trigger.INPUT_PREPARATION_FAILED,
-            event_key=f"input-failed:{submission_id}",
+            event_key=f"input-failed:{row.id}",
             reason=message,
         )
         task.interrupt_reason = message
@@ -461,6 +448,15 @@ def _fail_sync(db, submission_id, message):
         task.interrupted_at = datetime.utcnow()
         task.error_message = None
     return _transition(db, row, "FAILED", error_message=message)
+
+
+def _fail_sync(db, submission_id, message):
+    task_id = db.query(TaskChatSubmission.task_id).filter_by(id=submission_id).scalar()
+    if not task_id:
+        return None
+    task = db.query(SddTask).filter_by(id=task_id).populate_existing().with_for_update().one_or_none()
+    row = db.query(TaskChatSubmission).filter_by(id=submission_id).populate_existing().with_for_update().one_or_none()
+    return fail_preparation_in_txn(db, row, message, task=task)
 
 
 async def _run(submission_id):

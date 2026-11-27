@@ -281,6 +281,14 @@ async def test_recovered_send_creates_one_turn_using_existing_provider_session(t
     assert job.session_id == "preserved-session"
     assert job.prompt_text == "try again"
     assert task_db.query(SddAiJob).count() == 2
+    events = task_db.query(TaskEventOutbox).filter_by(receipt_id=new.id).order_by(TaskEventOutbox.receipt_version).all()
+    assert [(event.receipt_version, event.payload_json["receipt"]["status"]) for event in events] == [
+        (1, "PREPARING"),
+        (2, "EXECUTING"),
+    ]
+    executing = events[-1].payload_json
+    assert executing["job"]["id"] == executing["receipt"]["ai_job_id"] == job.id
+    assert executing["message"]["id"] == executing["receipt"]["chat_message_id"] == new.chat_message_id
     enqueue.assert_awaited_once_with(job.id)
 
 
