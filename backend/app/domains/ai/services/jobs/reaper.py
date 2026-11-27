@@ -262,7 +262,7 @@ async def stop_remote_session(row: dict[str, Any]) -> AgentStopResult:
     try:
         if binding:
             return await stop_bound_session(backend, binding, row)
-        result = await backend.cancel_persisted_session(session_id)
+        result = await stop_persisted_target(backend, session_id, row)
         if not isinstance(result, AgentStopResult):
             return AgentStopResult(
                 execution_kind=EXECUTION_KIND_REMOTE_SESSION,
@@ -307,17 +307,39 @@ async def matches_remote_session(backend, binding, session_id):
     return await matches_native_session(backend, binding.get("native_session") or {}, session_id)
 
 
+def opencode_stop_checkpoint(backend, row):
+    checkpoint = row.get("provider_execution")
+    return (
+        checkpoint
+        if getattr(backend, "name", None) == "opencode" and remote_recovery.valid_checkpoint(checkpoint)
+        else None
+    )
+
+
+async def stop_persisted_target(backend, session_id, row):
+    checkpoint = opencode_stop_checkpoint(backend, row)
+    if checkpoint is not None:
+        return await backend.cancel_persisted_session(session_id, checkpoint=checkpoint)
+    return await backend.cancel_persisted_session(session_id)
+
+
 async def completed_remote_session(backend, row):
     # A stopped/idle session alone does not prove what happened to the submitted input.
     checkpoint = row.get("provider_execution") or {}
-    if backend.name == "opencode" and remote_recovery.valid_checkpoint(checkpoint):
+    if (
+        backend.name == "opencode"
+        and remote_recovery.valid_checkpoint(checkpoint)
+        and checkpoint["session_id"] == row["session_id"]
+    ):
         from app.agents.adapters.opencode.execution import aborted_tool_turn, turn_messages
 
         messages = await backend.list_messages(row["session_id"])
         turn = turn_messages(messages, checkpoint["prompt_id"])
         idle = next((item for item in turn if item.get("type") == "idle"), {})
         outcome = idle.get("outcome")
-        if outcome in {"succeeded", "failed", "interrupted"} or aborted_tool_turn(turn):
+        if outcome in {"succeeded", "failed", "interrupted"} or (
+            aborted_tool_turn(turn) and not await backend.session_running(row["session_id"])
+        ):
             text = "\n".join(
                 part["text"]
                 for message in turn
@@ -344,27 +366,39 @@ def recovered_remote_result(session_id, success, text):
 
 async def stop_bound_session(backend, binding, row):
     session_id = row["session_id"]
+    checkpoint = opencode_stop_checkpoint(backend, row)
+    tracked = checkpoint is not None
     async with asyncio.timeout(8):
         if not await matches_remote_session(backend, binding, session_id):
             return unknown_remote_service()
+        if tracked and checkpoint["session_id"] != session_id:
+            return AgentStopResult(
+                EXECUTION_KIND_REMOTE_SESSION,
+                False,
+                failure_code=REMOTE_STOP_UNCONFIRMED,
+                error_message="OpenCode stop checkpoint belongs to a different session",
+            )
         completed = await completed_remote_session(backend, row)
         if completed:
             return completed
-        checkpoint = row.get("provider_execution") or {}
-        if checkpoint.get("phase") in {"prepared", "rejected"}:
+        execution = row.get("provider_execution") or {}
+        if execution.get("phase") in {"prepared", "rejected"}:
             return AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)
-        if not await backend.session_running(session_id):
+        running = await backend.session_running(session_id)
+        if not running and not tracked:
             # An idle auxiliary session without a durable input ID can be
             # released. A tracked input needs its own terminal evidence.
-            return unknown_remote_service() if checkpoint else AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)
-        if row.get("old_service") and not row.get("cancel_requested") and row.get("action") is None:
+            return unknown_remote_service() if execution else AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)
+        if running and row.get("old_service") and not row.get("cancel_requested") and row.get("action") is None:
             return AgentStopResult(
                 EXECUTION_KIND_REMOTE_SESSION,
                 False,
                 failure_code="REMOTE_EXECUTION_ACTIVE",
                 error_message="正在等待原 Agent 服务上的作业结束",
             )
-    result = await backend.cancel_persisted_session(session_id)
+    result = await stop_persisted_target(backend, session_id, row)
+    if tracked and isinstance(result, AgentStopResult):
+        return result
     if not isinstance(result, AgentStopResult) or not result.stop_acknowledged:
         return unknown_remote_service()
     if backend.name == "dsh":

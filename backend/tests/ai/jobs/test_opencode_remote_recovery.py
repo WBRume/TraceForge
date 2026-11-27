@@ -115,6 +115,43 @@ async def test_old_service_stop_checks_identity_then_reads_terminal_turn(monkeyp
     backend.cancel_persisted_session.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("running", [False, True])
+async def test_reaper_needs_quiescence_to_accept_an_aborted_tool_as_terminal(running):
+    backend = SimpleNamespace(
+        name="opencode",
+        session_running=AsyncMock(return_value=running),
+        list_messages=AsyncMock(
+            return_value=[
+                {"type": "user", "id": "msg_owned"},
+                {
+                    "type": "assistant",
+                    "finish": "error",
+                    "time": {"completed": 123},
+                    "content": [{"type": "tool", "state": {"status": "error", "error": {"type": "aborted"}}}],
+                },
+            ]
+        ),
+    )
+    proof = await reaper.completed_remote_session(
+        backend,
+        {
+            "session_id": "ses_owned",
+            "provider_execution": {
+                "version": 1,
+                "session_id": "ses_owned",
+                "prompt_id": "msg_owned",
+                "deadline": time.time() + 60,
+                "phase": "submitted",
+            },
+        },
+    )
+    if running:
+        assert proof is None
+    else:
+        assert proof.stop_acknowledged and not proof.recovered_result.success
+
+
 def previous_owner(jobs):
     row = current(jobs)
     return AgentAttemptContext(

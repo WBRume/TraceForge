@@ -14,12 +14,47 @@ from app.domains.ai.services import queue_service
 from app.domains.ai.services.jobs import domain_jobs, reaper, store
 from app.domains.ai.services.jobs.backends import schedule_trigger_key
 from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
+from app.domains.auth.models.user import User
 from app.domains.workflow.models.provision_job import ProvisionJobType, SddProvisionJob
 from app.domains.workflow.services import provision_job_service as provision
 from tests.ai.jobs.test_domain_jobs import claim, create_provision
 from tests.ai.jobs.test_domain_jobs import execution_db as execution_fixture
 
 execution_db = execution_fixture
+
+
+def test_orphan_protection_rechecks_a_cached_status_under_lock(execution_db):
+    factory, _ = execution_db
+    with factory.begin() as db:
+        db.add(
+            User(
+                id="user",
+                email="operator@example.invalid",
+                display_name="Operator",
+                hashed_password="fixture",
+                is_admin=True,
+            )
+        )
+        db.add(
+            SddAiJob(
+                id="orphan-race",
+                creator_id="user",
+                queue_key="DOMAIN_JOB:PROVISION:orphan",
+                channel=AiJobChannel.BACKGROUND,
+                status=AiJobStatus.ORPHANED,
+            )
+        )
+
+    with factory() as stale:
+        cached = stale.get(SddAiJob, "orphan-race")
+        assert cached.status == AiJobStatus.ORPHANED
+        with factory.begin() as writer:
+            writer.get(SddAiJob, cached.id).status = AiJobStatus.FAILED
+        with pytest.raises(ValueError, match="Only ORPHANED jobs"):
+            queue_service.protect_orphaned_job(
+                stale, job_id=cached.id, operator_id="user", reason="old observation", evidence="fixture evidence"
+            )
+        assert cached.status == AiJobStatus.FAILED and not cached.manual_intervention_required
 
 
 def test_complete_history_filters_counts_and_stable_pages(execution_db):

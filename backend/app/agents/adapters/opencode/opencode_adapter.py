@@ -18,6 +18,7 @@ import httpx
 from app.agents.activity_watchdog import AgentActivityWatchdog
 from app.agents.adapters.opencode.workspace_permissions import same_directory, workspace_permissions
 from app.agents.contract import (
+    EXECUTION_KIND_REMOTE_SESSION,
     AgentBackend,
     AgentCapabilities,
     AgentEventSink,
@@ -26,8 +27,10 @@ from app.agents.contract import (
     AgentRunResult,
     AgentStopResult,
     TokenUsage,
+    record_attempt_remote_stop,
 )
 from app.agents.errors import (
+    AgentCancelledError,
     AgentError,
     AgentExecutionDetached,
     AgentInteractionClosedError,
@@ -99,6 +102,8 @@ class OpenCodeAdapter(AgentBackend):
         self._watchdog: AgentActivityWatchdog | None = None
         self._pending_asks: set[str] = set()
         self._execution_checkpoint: dict[str, Any] = {}
+        self._observer_task: asyncio.Task | None = None
+        self._stopped_input = False
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         from app.core.feature_settings import feature_settings
@@ -380,8 +385,13 @@ class OpenCodeAdapter(AgentBackend):
     async def _remove_pending_steers(self, session_id: str, provider_ids: set[str]) -> None:
         client = await self._ensure_client()
         for provider_id in provider_ids:
-            response = await client.delete(self._session_url(session_id, "/inbox/" + provider_id), timeout=5)
-            response.raise_for_status()
+            await self._cancel_inbox_input(client, session_id, provider_id)
+
+    async def _cancel_inbox_input(self, client: httpx.AsyncClient, session_id: str, provider_id: str) -> None:
+        response = await client.delete(
+            self._session_url(session_id, "/inbox/" + quote(provider_id, safe="")), timeout=5
+        )
+        response.raise_for_status()
 
     @staticmethod
     def _prompt_payload(text: str, images: tuple[AgentInputImage, ...]) -> dict[str, Any]:
@@ -672,7 +682,17 @@ class OpenCodeAdapter(AgentBackend):
         if monitor is None:
             monitor = ExecutionMonitor(self, session_id, request, on_event)
             self._execution_monitor = monitor
-        return await monitor.run()
+        self._observer_task = asyncio.current_task()
+        try:
+            if not self._stopped_input:
+                return await monitor.run()
+        except asyncio.CancelledError:
+            if not self._stopped_input:
+                raise
+        finally:
+            self._observer_task = None
+        record_attempt_remote_stop(AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True))
+        raise AgentCancelledError("OpenCode input was stopped")
 
     async def _emit_run_result(self, consumed, seen_types, session_id, request, started_at, _tracked_event):
         finish_reason = consumed.get("finish_reason")
@@ -730,6 +750,7 @@ class OpenCodeAdapter(AgentBackend):
         self._message_ids = set()
         self._user_message_id = None
         self._pending_asks.clear()
+        self._stopped_input = False
         self._execution_checkpoint = dict(request.execution_checkpoint)
         self._execution_monitor = None
 
@@ -805,15 +826,17 @@ class OpenCodeAdapter(AgentBackend):
                 if consumed is None:
                     # A replaced owner must never interrupt its successor.
                     if request.on_execution_checkpoint and self._execution_checkpoint:
-                        stopping = {**self._execution_checkpoint, "phase": "stopping"}
+                        stopping = {
+                            **self._execution_checkpoint,
+                            "phase": "stopping",
+                            "phase_before_stop": self._execution_checkpoint["phase"],
+                        }
                         # Persist the stop intent atomically with the ownership
                         # check. A successor can no longer attach in the gap
                         # between this check and the remote interrupt request.
                         await request.on_execution_checkpoint(stopping)
                         self._execution_checkpoint.update(stopping)
                     stop = await self.interrupt(session_id=session_id)
-                    from app.agents.contract import record_attempt_remote_stop
-
                     record_attempt_remote_stop(stop)
                     raise
 
@@ -825,7 +848,7 @@ class OpenCodeAdapter(AgentBackend):
             if (
                 self._execution_checkpoint
                 and request.on_execution_checkpoint
-                and not isinstance(exc, (AgentExecutionDetached, AgentTimeoutError))
+                and not isinstance(exc, (AgentCancelledError, AgentExecutionDetached, AgentTimeoutError))
             ):
                 raise AgentExecutionDetached(f"OpenCode observation detached: {exc}") from exc
             if isinstance(exc, AgentError):
@@ -837,10 +860,10 @@ class OpenCodeAdapter(AgentBackend):
             self._watchdog = None
             self._pending_asks.clear()
 
-    async def _abort_session(self, sid: str, *, connect: bool = False) -> AgentStopResult:
+    async def _abort_session(
+        self, sid: str, *, connect: bool = False, checkpoint: dict | None = None
+    ) -> AgentStopResult:
         """Interrupt the v2 worker and verify quiescence before acknowledging stop."""
-        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
-
         if self._client is None and not connect:
             return AgentStopResult(
                 execution_kind=EXECUTION_KIND_REMOTE_SESSION,
@@ -851,9 +874,17 @@ class OpenCodeAdapter(AgentBackend):
         try:
             from app.domains.ai.services.jobs.agent_dispatch import verify_bound_stop
 
+            from .execution import withdraw_owned_prompt
+
             async with asyncio.timeout(8):
                 await verify_bound_stop(self, sid)
             client = await self._ensure_client() if connect else self._client
+            target = self._execution_checkpoint if checkpoint is None else checkpoint
+            if target and await withdraw_owned_prompt(self, client, sid, target):
+                self._stopped_input = True
+                if self._observer_task and not self._observer_task.done():
+                    self._observer_task.cancel()
+                return AgentStopResult(EXECUTION_KIND_REMOTE_SESSION, True)
             response = await client.post(self._session_url(sid, "/interrupt"), params={"resume": "false"})
         except Exception as exc:
             return AgentStopResult(
@@ -883,8 +914,6 @@ class OpenCodeAdapter(AgentBackend):
         )
 
     async def interrupt(self, run_id: str | None = None, *, session_id: str | None = None) -> AgentStopResult:
-        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
-
         sid = session_id or self._session_id
         if not sid:
             return AgentStopResult(
@@ -897,8 +926,6 @@ class OpenCodeAdapter(AgentBackend):
         return await self._abort_session(sid)
 
     async def cancel(self, run_id: str | None = None) -> AgentStopResult:
-        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
-
         sid = self._session_id
         self._interrupted = True
         self._running = False
@@ -911,14 +938,12 @@ class OpenCodeAdapter(AgentBackend):
             )
         return await self._abort_session(sid)
 
-    async def cancel_persisted_session(self, session_id: str) -> AgentStopResult:
+    async def cancel_persisted_session(self, session_id: str, *, checkpoint: dict | None = None) -> AgentStopResult:
         """Reaper durable stop：目标必须是显式传入的持久化 session id。
 
         禁止回退到 ``self._session_id``（reaper 每次新建 adapter，内存
         session 必然为空；P1-3 修复）。
         """
-        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
-
         sid = str(session_id or "").strip()
         self._running = False
         if not sid:
@@ -930,7 +955,7 @@ class OpenCodeAdapter(AgentBackend):
             )
         # Reapers create a fresh adapter without running/probing a session first.
         # Durable cleanup must establish its own authenticated transport.
-        return await self._abort_session(sid, connect=True)
+        return await self._abort_session(sid, connect=True, checkpoint=checkpoint)
 
     def is_running(self, run_id: str | None = None) -> bool:
         return self._running

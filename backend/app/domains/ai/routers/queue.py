@@ -122,7 +122,7 @@ async def _recover_orphaned_job(
     from app.agents import EXECUTION_KIND_REMOTE_SESSION
     from app.domains.ai.services.ai_job_convergence_service import evidence_from_stop_result
     from app.domains.ai.services.jobs import attempts as ai_job_attempts
-    from app.domains.ai.services.jobs.publishing import broadcast_job_payload, reschedule_if_pending
+    from app.domains.ai.services.jobs.publishing import publish_job, reschedule_if_pending
     from app.domains.ai.services.jobs.reaper import stop_remote_session
 
     try:
@@ -204,9 +204,8 @@ async def _recover_orphaned_job(
         expected_termination_attempt=adopted["termination_attempt"],
     )
     if payload:
-        # final 判定由 payload 状态决定。
-        await broadcast_job_payload(payload)
         reschedule_if_pending(payload)
+        await publish_job(adopted["job_id"])
     audit_log(
         action=("orphaned_job_cleanup_confirmed" if confirm_cleanup else "orphaned_job_retry_termination"),
         outcome="success" if confirmed_dead and payload else "failed",

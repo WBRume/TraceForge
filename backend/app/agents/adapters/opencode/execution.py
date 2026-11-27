@@ -20,6 +20,7 @@ import httpx
 from app.agents.adapters.opencode.event_mapper import map_opencode_event, opencode_event_session_id, text_segment_fields
 from app.agents.contract import AgentInputImage
 from app.agents.errors import (
+    AgentError,
     AgentExecutionDetached,
     AgentPromptRejectedError,
     AgentSteeringClosedError,
@@ -79,6 +80,46 @@ def aborted_tool_turn(messages: list[dict]) -> bool:
         and part["state"]["error"].get("type") == "aborted"
         for part in last.get("content", [])
     )
+
+
+async def withdraw_owned_prompt(adapter, client, session_id: str, checkpoint: dict) -> bool:
+    """Withdraw pending input, or require proof before a session-level interrupt."""
+    prompt_id = checkpoint.get("prompt_id")
+    if not prompt_id or checkpoint.get("session_id") != session_id:
+        raise AgentError(
+            "OpenCode stop checkpoint belongs to a different session", failure_code="REMOTE_STOP_UNCONFIRMED"
+        )
+    phase = checkpoint.get("phase")
+    if phase == "stopping":
+        phase = checkpoint.get("phase_before_stop")
+    if phase in {"prepared", "rejected"}:
+        return True
+    admitted = phase == "submitted"
+    if not admitted:
+        response = await client.get(adapter._session_url(session_id, "/inbox"))
+        adapter._check_response(response, "list pending input")
+        admitted = any(row.get("id") == prompt_id for row in response.json()["data"])
+
+    await adapter._cancel_inbox_input(client, session_id, prompt_id)
+    # Cancellation of an already delivered input is a provider no-op. Checking
+    # history after DELETE distinguishes that case from a withdrawn queued input.
+    messages = await adapter.list_messages(session_id)
+    inputs = [
+        row.get("id")
+        for row in messages
+        if row.get("type") == "user" and not str(row.get("id") or "").startswith(STEERING_PREFIX)
+    ]
+    if prompt_id in inputs:
+        if any(
+            row.get("type") == "idle" and row.get("outcome") in {"succeeded", "failed", "interrupted"}
+            for row in turn_messages(messages, prompt_id)
+        ):
+            return True
+        if inputs[-1] == prompt_id:
+            return False
+    elif admitted:
+        return True
+    raise AgentError("OpenCode could not confirm the stopped input", failure_code="REMOTE_STOP_UNCONFIRMED")
 
 
 class ExecutionMonitor:

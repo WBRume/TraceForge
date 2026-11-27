@@ -97,13 +97,15 @@ def protect_orphaned_job(
     This is intentionally not a generic status-edit endpoint. The job stays
     ORPHANED until a separate, evidence-backed recovery workflow is performed.
     """
+    from app.domains.ai.services.ai_job_convergence_service import lock_job_in_txn
+
     if not _is_admin(db, operator_id):
         raise PermissionError("Only platform administrators can protect orphaned jobs")
     normalized_reason = str(reason or "").strip()
     normalized_evidence = str(evidence or "").strip()
     if not normalized_reason or not normalized_evidence:
         raise ValueError("reason and evidence are required")
-    job = db.query(SddAiJob).filter(SddAiJob.id == str(job_id or "").strip()).first()
+    job = lock_job_in_txn(db, db.query(SddAiJob).filter(SddAiJob.id == str(job_id or "").strip()))
     if not job:
         raise LookupError("Queue job not found")
     if job.status != AiJobStatus.ORPHANED:

@@ -76,3 +76,54 @@ async def test_ordinary_interrupt_after_close_does_not_reopen_transport(monkeypa
     monkeypatch.setattr(httpx, "AsyncClient", forbidden)
     result = await adapter.interrupt(session_id="ses_old")
     assert not result.stop_acknowledged
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("phase", "transcript", "queued", "expected_ack", "abort_session"),
+    [
+        ("submitted", ["previous"], True, True, False),
+        ("submitting", ["previous"], True, True, False),
+        ("submitting", ["previous"], False, False, False),
+        ("submitted", ["previous", "owned"], False, True, True),
+        ("submitted", ["owned", "idle", "next"], False, True, False),
+        ("submitted", ["owned", "next"], False, False, False),
+        ("prepared", ["previous"], False, True, False),
+        ("rejected", ["previous"], False, True, False),
+    ],
+)
+async def test_stop_proves_the_owned_prompt_before_interrupting_the_session(
+    phase, transcript, queued, expected_ack, abort_session
+):
+    calls = []
+
+    def native(request):
+        calls.append((request.method, request.url.path))
+        if request.method == "DELETE":
+            assert request.url.path.endswith("/inbox/owned")
+            return httpx.Response(204)
+        if request.url.path.endswith("/inbox"):
+            return httpx.Response(200, json={"data": [{"id": "owned"}] if queued else []})
+        if request.url.path.endswith("/message"):
+            rows = [
+                {"id": item, "type": "idle", "outcome": "succeeded"} if item == "idle" else {"id": item, "type": "user"}
+                for item in transcript
+            ]
+            return httpx.Response(200, json={"data": rows, "cursor": {}})
+        if request.url.path.endswith("/interrupt"):
+            return httpx.Response(200, json={"interrupted": True})
+        assert request.url.path.endswith("/active")
+        return httpx.Response(200, json={"data": {}})
+
+    adapter = OpenCodeAdapter("http://provider")
+    adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(native))
+    adapter._session_id = "ses_owned"
+    adapter._execution_checkpoint = {"session_id": "ses_owned", "prompt_id": "owned", "phase": phase}
+    try:
+        result = await adapter.interrupt()
+    finally:
+        await adapter.close()
+
+    assert result.stop_acknowledged is expected_ack
+    assert (("POST", "/api/session/ses_owned/interrupt") in calls) is abort_session
+    assert (("DELETE", "/api/session/ses_owned/inbox/owned") in calls) is (phase in {"submitted", "submitting"})
