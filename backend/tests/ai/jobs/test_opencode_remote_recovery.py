@@ -1,10 +1,12 @@
 """Recovery owns the existing job; cancellation and old writers stay fenced."""
 
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
 
 from app.agents.contract import (
@@ -13,6 +15,8 @@ from app.agents.contract import (
     AgentInputImage,
     AgentRunResult,
     AgentStopResult,
+    bind_agent_attempt,
+    reset_agent_attempt,
 )
 from app.agents.errors import AgentExecutionDetached
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
@@ -164,6 +168,55 @@ def previous_owner(jobs):
         attempt_count=row.attempt_count,
         execution_kind="REMOTE_SESSION",
     )
+
+
+@pytest.mark.asyncio
+async def test_stop_before_provider_submit_keeps_the_native_session(jobs, monkeypatch):
+    from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
+    from app.agents.contract import AgentRunRequest
+    from app.agents.errors import AgentCancelledError
+    from app.agents.service_binding import AgentService
+    from app.domains.ai.services.jobs import agent_dispatch
+
+    monkeypatch.setattr(agent_dispatch, "SessionLocal", jobs)
+    service = AgentService("opencode", 1, {"server_url": "http://agent"})
+    with jobs.begin() as db:
+        job = db.get(SddAiJob, "reliability-job")
+        job.agent_service_binding = service.persist()
+        job.provider_execution_json = None
+    owner = replace(previous_owner(jobs), agent_service_binding=service.persist())
+    adapter = OpenCodeAdapter("http://agent")
+    adapter._ensure_workspace_permissions = AsyncMock()
+    adapter.native_session = AsyncMock(return_value={"directory": "G:/task"})
+    requests = []
+
+    def native(request):
+        requests.append((request.method, request.url.path))
+        return httpx.Response(503)
+
+    adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(native))
+    request = AgentRunRequest(
+        session_id="ses_original", prompt="hello", project_path="G:/task", on_execution_checkpoint=AsyncMock()
+    )
+
+    async def stop_during_session_callback(event):
+        assert event.type == "session_started"
+        row = current(jobs)
+        assert row.agent_service_binding["native_session"]["id"] == row.session_id
+        assert row.provider_execution_json and row.provider_execution_json["phase"] == "prepared"
+        assert row.provider_execution_json == adapter._execution_checkpoint
+        assert (await adapter.interrupt()).stop_acknowledged
+
+    token = bind_agent_attempt(owner)
+    try:
+        sink = agent_dispatch.guard_native_session(adapter, request, stop_during_session_callback)
+        with pytest.raises(AgentCancelledError):
+            await adapter.run(request, sink)
+    finally:
+        reset_agent_attempt(token)
+        await adapter.close()
+
+    assert requests == []
 
 
 def test_claim_existing_job_rotates_ownership_without_resetting_execution(jobs):

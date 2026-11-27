@@ -16,6 +16,7 @@ from urllib.parse import quote
 import httpx
 
 from app.agents.activity_watchdog import AgentActivityWatchdog
+from app.agents.adapters.opencode.execution import ExecutionMonitor
 from app.agents.adapters.opencode.workspace_permissions import same_directory, workspace_permissions
 from app.agents.contract import (
     EXECUTION_KIND_REMOTE_SESSION,
@@ -676,8 +677,6 @@ class OpenCodeAdapter(AgentBackend):
         request: AgentRunRequest,
         on_event: AgentEventSink,
     ) -> tuple[dict[str, Any], set[str]]:
-        from .execution import ExecutionMonitor
-
         monitor = getattr(self, "_execution_monitor", None)
         if monitor is None:
             monitor = ExecutionMonitor(self, session_id, request, on_event)
@@ -790,6 +789,7 @@ class OpenCodeAdapter(AgentBackend):
             else:
                 session_id = await self._create_session(request)
             self._session_id = session_id
+            monitor = self._execution_monitor = ExecutionMonitor(self, session_id, request, _tracked_event)
 
             await _tracked_event(
                 AgentEvent(
@@ -806,14 +806,11 @@ class OpenCodeAdapter(AgentBackend):
 
             consumed, seen_types = None, set()
             if request.execution_checkpoint.get("phase") in {"submitting", "submitted", "rejected"}:
-                from .execution import ExecutionMonitor
-
-                self._execution_monitor = ExecutionMonitor(self, session_id, request, _tracked_event)
                 # An execution may have finished while this backend was down,
                 # even if its original deadline has now passed.
                 async with asyncio.timeout(30):
-                    consumed = await self._execution_monitor.reconcile()
-                seen_types = self._execution_monitor.seen_types
+                    consumed = await monitor.reconcile()
+                seen_types = monitor.seen_types
             try:
                 if consumed is None:
                     consumed, seen_types = await watchdog.wait(self._consume_sse(session_id, request, _tracked_event))

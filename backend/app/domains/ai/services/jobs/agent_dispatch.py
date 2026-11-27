@@ -7,7 +7,7 @@ from app.database import SessionLocal
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 
 
-def _record_native_session(attempt, identity):
+def _record_native_session(attempt, identity, checkpoint=None):
     with SessionLocal.begin() as db:
         job = db.query(SddAiJob).filter_by(id=attempt.job_id).with_for_update().one()
         if (
@@ -21,6 +21,9 @@ def _record_native_session(attempt, identity):
         job.agent_service_binding = {**job.agent_service_binding, "native_session": identity}
         job.agent_backend = job.agent_service_binding["backend"]
         job.session_id = identity["id"]
+        if checkpoint is not None:
+            # Commit the prepared input with its session before any callback can stop the job.
+            job.provider_execution_json = checkpoint
 
 
 async def record_dsh_prompt(session_id, request_id):
@@ -57,7 +60,18 @@ def guard_native_session(backend: AgentBackend, request, sink):
                 "directory": request.project_path,
                 "created": getattr(backend, "_native_created", None),
             }
-            await run_db(_record_native_session, attempt, identity)
+            checkpoint = None
+            if backend.name == "opencode" and request.on_execution_checkpoint is not None:
+                from app.domains.ai.services.jobs.remote_recovery import valid_checkpoint
+
+                checkpoint = dict(getattr(backend, "_execution_checkpoint", {}))
+                if (
+                    not valid_checkpoint(checkpoint)
+                    or checkpoint["phase"] != "prepared"
+                    or checkpoint["session_id"] != sid
+                ):
+                    raise AgentError("OpenCode dispatch is missing its prepared input checkpoint")
+            await run_db(_record_native_session, attempt, identity, checkpoint)
             backend._dispatch_identity = identity
         await sink(event)
 
