@@ -19,6 +19,7 @@ export interface SpatialLayoutInput {
 }
 
 const STAGE_PERSPECTIVE = 1050
+const FRONT_CARD_Z_INDEX = 40
 const CARD_BASE_W = 352
 const CARD_BASE_H = 192
 
@@ -88,7 +89,7 @@ export function computeSpatialTheaterLayouts({
     rotZ: 0,
     scale: 1,
     opacity: 1,
-    zIndex: 40,
+    zIndex: FRONT_CARD_Z_INDEX,
     isFront: true,
   }
 
@@ -200,7 +201,8 @@ export function computeSpatialTheaterLayouts({
     }
   }
 
-  for (const node of bgNodes) {
+  bgNodes.sort((a, b) => a.z - b.z || a.idx - b.idx)
+  for (const [depthIndex, node] of bgNodes.entries()) {
     const pScale = perspectiveScale(node.z)
     // Compensate 3D coordinates for perspective shrink so screen position matches (sx, sy)
     const x3d = node.sx / pScale
@@ -210,7 +212,6 @@ export function computeSpatialTheaterLayouts({
     const rotY = Number(clamp(-(node.sx / Math.max(1, boundX)) * 12 + signedRandom(node.seed, 15) * 4, -15, 15).toFixed(2))
     const rotX = Number(clamp((node.sy / Math.max(1, boundY)) * 5 + signedRandom(node.seed, 16) * 2.5, -8, 8).toFixed(2))
     const rotZ = Number(clamp((node.sx * node.sy) / Math.max(1, boundX * boundY) * 2.8 + signedRandom(node.seed, 17) * 2.5, -4, 4).toFixed(2))
-    const zIndex = clamp(Math.round(36 + node.z / 10), 10, 36)
 
     layouts[node.idx] = {
       x: Math.round(x3d),
@@ -221,7 +222,7 @@ export function computeSpatialTheaterLayouts({
       rotZ,
       scale: Number(node.scale.toFixed(3)),
       opacity: Number(node.opacity.toFixed(3)),
-      zIndex,
+      zIndex: FRONT_CARD_Z_INDEX - bgNodes.length + depthIndex,
       isFront: false,
     }
   }

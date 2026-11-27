@@ -114,7 +114,6 @@ const cardStyles = computed<CSSProperties[]>(() => spatialLayouts.value.map(item
   if (item.isFront) {
     return {
       zIndex: item.zIndex,
-      opacity: 1,
       transform: `translate3d(${item.x}px, ${item.y}px, 0px)`,
     }
   }
@@ -122,7 +121,7 @@ const cardStyles = computed<CSSProperties[]>(() => spatialLayouts.value.map(item
   const py = Math.round(item.y + parallax.value.y * (-item.z / 95))
   return {
     zIndex: item.zIndex,
-    opacity: item.opacity,
+    '--card-content-opacity': item.opacity,
     transform: `translate3d(${px}px, ${py}px, ${item.z}px) rotateX(${item.rotX}deg) rotateY(${item.rotY}deg) rotateZ(${item.rotZ}deg) scale(${item.scale})`,
   }
 }))
@@ -547,7 +546,10 @@ defineExpose({ step })
 .spatial-world {
   position: absolute;
   inset: 0;
-  transform-style: preserve-3d;
+  perspective: inherit;
+  perspective-origin: inherit;
+  /* Keep perspective on each card while z-index decides which whole card is in front. */
+  transform-style: flat;
 }
 
 .spatial-card {
@@ -558,13 +560,12 @@ defineExpose({ step })
   height: fit-content;
   border-radius: 18px;
   border: 1px solid rgba(226, 232, 240, 0.94);
-  background: rgba(255, 255, 255, 0.95);
+  background: #fafcfe;
   box-shadow: 0 18px 36px rgba(15, 23, 42, 0.08);
   backface-visibility: hidden;
   -webkit-font-smoothing: antialiased;
   transition:
     transform 0.72s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.52s ease,
     box-shadow 0.52s ease,
     border-color 0.35s ease;
   cursor: pointer;
@@ -572,7 +573,7 @@ defineExpose({ step })
 }
 
 .spatial-card.is-front {
-  background: rgba(255, 255, 255, 0.99);
+  background: #fff;
 }
 
 .spatial-card.is-front.tone-blocked {
@@ -620,6 +621,8 @@ defineExpose({ step })
   display: flex;
   flex-direction: column;
   gap: 11px;
+  opacity: var(--card-content-opacity, 1);
+  transition: opacity 0.52s ease;
 }
 
 .card-head {
@@ -905,6 +908,7 @@ defineExpose({ step })
 @media (prefers-reduced-motion: reduce) {
   .spatial-world,
   .spatial-card,
+  .card-inner,
   .nav-dot {
     transition: none;
   }

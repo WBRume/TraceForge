@@ -63,4 +63,23 @@ describe('computeSpatialTheaterLayouts', () => {
       expect(Math.abs(pt.sy)).toBeLessThanOrEqual(140)
     }
   })
+
+  it('assigns a distinct front-to-back layer to every card at each carousel position', () => {
+    const cards = Array.from({ length: 6 }, (_, index) => `theater-${index + 1}`)
+
+    for (let activeIndex = 0; activeIndex < cards.length; activeIndex++) {
+      const layout = computeSpatialTheaterLayouts({
+        ids: cards,
+        activeIndex,
+        stageWidth: 1100,
+        stageHeight: 618,
+      })
+      const byLayer = [...layout].sort((a, b) => a.zIndex - b.zIndex)
+      const depths = byLayer.map(card => card.z)
+
+      expect(new Set(layout.map(card => card.zIndex)).size).toBe(cards.length)
+      expect(depths).toEqual([...depths].sort((a, b) => a - b))
+      expect(byLayer.at(-1)).toBe(layout[activeIndex])
+    }
+  })
 })
