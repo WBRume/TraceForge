@@ -102,13 +102,13 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- ================= 阶段 1：需求建模与资产拆分 ================= -->
+        <!-- ================= 阶段 1：需求建模、资产白板与原文审阅 ================= -->
         <div class="phase-group">
-          <div class="phase-badge">Phase 1: 需求建模与资产拆分 (正向研发)</div>
+          <div class="phase-badge">Phase 1: 需求建模、资产白板与原文审阅 (正向研发)</div>
           
           <div class="node-card node-ext external-floating" style="top: 8px; left: -300px; width: 192px;">
-            <div class="node-header txt-ext" style="font-size: 0.75rem;"><GitBranch class="w-4 h-4" /> 需求源与规范包</div>
-            <div class="node-desc" style="font-size: 10px;">Markdown 规范包与工作区隔离沙箱</div>
+            <div class="node-header txt-ext" style="font-size: 0.75rem;"><GitBranch class="w-4 h-4" /> 需求源、白板与工作区</div>
+            <div class="node-desc" style="font-size: 10px;">多仓绑定 · 链接邀请 · 列表/白板模式切换</div>
           </div>
           <div class="loop-path path-ext" style="top: 32px; left: -100px; width: 100px; z-index: 10;">
             <div class="loop-arrow-up-right ext-connector"></div>
@@ -120,39 +120,39 @@ onMounted(() => {
           </div>
 
           <div class="node-card node-human">
-            <div class="node-header txt-human"><FilePlus class="w-5 h-5" /> 用户：导入 Markdown 需求</div>
-            <div class="node-desc">划定租户空间与安全沙箱基准</div>
+            <div class="node-header txt-human"><FilePlus class="w-5 h-5" /> 用户：导入需求与白板关系编排</div>
+            <div class="node-desc">支持多仓/无仓工作区，按季度与分支图谱组织资产并指派负责人</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
           
           <div class="node-card node-ai bg-ai-half glow-ai">
-            <div class="node-header txt-ai"><Brain class="w-5 h-5" /> AI & 用户：树状拆分与块级评审 (Split Review)</div>
-            <div class="node-desc">粗粒度需求分解为原子需求项，绑定验收准则并关联 Task</div>
+            <div class="node-header txt-ai"><Brain class="w-5 h-5" /> AI & 用户：拆分评审与 DOCX/MD 原文联合修订</div>
+            <div class="node-desc">精确选区同位置讨论、后台生成联合修订提案并逐项采纳发布</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-sys">
-            <div class="node-header txt-sys"><CheckCircle class="w-5 h-5" /> 系统：建立全链路覆盖度基准矩阵</div>
-            <div class="node-subtext">Requirement → Task 严格挂载，杜绝无需求编码</div>
+            <div class="node-header txt-sys"><CheckCircle class="w-5 h-5" /> 系统：覆盖度基准、工作负载投影与沙盘映射</div>
+            <div class="node-subtext">2.5D 代码沙盘 / 3D 任务剧场实时呈现，跨工作区负载自动核验</div>
           </div>
         </div>
 
         <div class="flow-line separator"></div>
         <div class="flow-arrow separator-arrow"></div>
 
-        <!-- ================= 阶段 2：契约先行与 API Mock 隔离 ================= -->
+        <!-- ================= 阶段 2：契约先行、可视化构图与 Mock 隔离 ================= -->
         <div class="phase-group">
-          <div class="phase-badge">Phase 2: 契约先行与 API Mock 隔离 (正向研发)</div>
+          <div class="phase-badge">Phase 2: 契约先行、架构绘图与 API Mock 隔离 (正向研发)</div>
 
           <div class="node-card node-sys">
-            <div class="node-header txt-sys"><ClipboardList class="w-5 h-5" /> 系统：解析 OpenAPI / Swagger 契约</div>
-            <div class="node-desc">自动提取 Endpoint 端点定义与 Entity 数据实体结构</div>
+            <div class="node-header txt-sys"><ClipboardList class="w-5 h-5" /> 系统：解析 OpenAPI 契约与独立绘图板设计</div>
+            <div class="node-desc">提取 Endpoint/Entity；Ctrl+Alt+D 呼出绘图板，手绘格式化快速绘制架构/时序图</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-ai bg-ai-half">
-            <div class="node-header txt-ai"><Bot class="w-5 h-5" /> AI：自动推导多场景 Mock Case</div>
-            <div class="node-desc">生成正常响应、参数校验 400、权限 403、熔断 500 与空边界用例</div>
+            <div class="node-header txt-ai"><Bot class="w-5 h-5" /> AI：统一作业队列推导多场景 Mock Case</div>
+            <div class="node-desc">经 MCP 强类型领域工具生成正常、400/403/500 与空边界用例</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
@@ -173,38 +173,38 @@ onMounted(() => {
         <div class="flow-line separator"></div>
         <div class="flow-arrow separator-arrow"></div>
 
-        <!-- ================= 阶段 3：终端协同与人在回路 (HITL) ================= -->
+        <!-- ================= 阶段 3：多引擎协同、桌面浮窗与人在回路 ================= -->
         <div class="phase-group">
-          <div class="phase-badge">Phase 3: 终端协同与人在回路 (正向研发)</div>
+          <div class="phase-badge">Phase 3: 多引擎协同、桌面便捷交互与 HITL (正向研发)</div>
 
           <div class="node-card node-human">
-            <div class="node-header txt-human"><User class="w-5 h-5" /> 用户：多模态录入 (键盘 / 离线 Whisper 语音)</div>
-            <div class="node-desc">高精度输入提示词与业务约束，解放双手</div>
+            <div class="node-header txt-human"><User class="w-5 h-5" /> 用户：多模态录入、图片附件与消息/Diff 批注</div>
+            <div class="node-desc">支持在线/离线语音、草稿自动保存、选中引用批注及桌面多标签/置顶浮窗漫游</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-ai bg-ai-half glow-ai">
-            <div class="node-header txt-ai"><Terminal class="w-5 h-5" /> AI (Claude CLI / PTY)：协作编码与计划比对</div>
-            <div class="node-desc">流式展示推理过程、工具调用与计划文档高亮快照</div>
+            <div class="node-header txt-ai"><Terminal class="w-5 h-5" /> 多引擎 AI (Claude / OpenCode / DSH)：受控协作编码</div>
+            <div class="node-desc">MCP 2026 强类型工具 · 运行中追加引导 · 思考胶囊、CLI 悬浮卡与计划快照高亮</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-decision">
-            <div class="node-header txt-decision"><PlugZap class="w-5 h-5" /> HITL 拦截：高危变更授权与双向澄清</div>
-            <div class="node-subtext">高危文件操作强制挂起等待人工授权；主动发起问答消除歧义</div>
+            <div class="node-header txt-decision"><PlugZap class="w-5 h-5" /> HITL 拦截：持久化问答回执与免登录会话分享</div>
+            <div class="node-subtext">高危改动挂起等待确认；支持只读/邀请输入分享，外部建议由发起人编辑采纳</div>
           </div>
         </div>
 
         <div class="flow-line separator"></div>
         <div class="flow-arrow separator-arrow"></div>
 
-        <!-- ================= 阶段 4：TDD 并行开发与单测绿灯 ================= -->
+        <!-- ================= 阶段 4：双端并行开发与本地协同同步 ================= -->
         <div class="phase-group">
-          <div class="phase-badge blue">Phase 4: TDD 并行开发与单测绿灯 (正向研发)</div>
+          <div class="phase-badge blue">Phase 4: 云端并行开发、桌面本地协同与基线同步 (正向研发)</div>
 
           <div class="node-card node-sys bg-sys-third">
-            <div class="node-header txt-sys"><PlugZap class="w-5 h-5" /> 系统：注入唯一 Mock Base URL</div>
-            <div class="node-subtext">统一稳定的全局契约上下文基座</div>
+            <div class="node-header txt-sys"><PlugZap class="w-5 h-5" /> 系统：注入唯一 Mock 基座 & 多仓 Worktree 并行准备</div>
+            <div class="node-subtext">统一契约上下文与持久化作业回执；桌面内置本地资源服务零端口 IPC 就绪</div>
           </div>
 
           <!-- 分叉结构 -->
@@ -217,14 +217,14 @@ onMounted(() => {
 
           <!-- 左右分支并联节点 -->
           <div class="parallel-nodes">
-            <!-- 左侧：前端 UI -->
+            <!-- 左侧：桌面本地协同 -->
             <div class="node-card node-ai bg-white relative">
-              <div class="node-header txt-blue branch-header"><Monitor class="w-5 h-5 text-blue-600" /> UI 前端工程流</div>
-              <div class="node-desc" style="color: #334155;">🤖 独立对接 Mock 网关，不被阻塞</div>
-              <div class="node-subtext">自动编写页面组件、Pinia 状态与交互逻辑</div>
+              <div class="node-header txt-blue branch-header"><Monitor class="w-5 h-5 text-blue-600" /> 桌面本地协同 & 前端流</div>
+              <div class="node-desc" style="color: #334155;">💻 本机 IDE 编辑与云端 Agent 并行推进</div>
+              <div class="node-subtext">事件自动刷新、按轮次备份、VS Code/IDEA 直达定位</div>
             </div>
 
-            <!-- 右侧：后端 TDD -->
+            <!-- 右侧：云端 TDD 与基线合并 -->
             <div class="node-card node-ai bg-white relative">
               <!-- TDD 内部红绿循环 -->
               <div class="loop-path local-right path-decision" style="top: 40px; bottom: 30px; right: -24px; width: 32px;">
@@ -232,10 +232,10 @@ onMounted(() => {
                 <div class="loop-label decision side-loop">红绿重写</div>
               </div>
 
-              <div class="node-header txt-green branch-header"><Database class="w-5 h-5 text-green-600" /> 业务后端工程流 (TDD)</div>
-              <div class="node-desc" style="color: #334155;">🤖 读取实体生成 POJO 模型</div>
-              <div class="node-desc" style="color: #334155;">🤖 Mock 用例转为 Controller 单测</div>
-              <div class="node-subtext">底层 Service 实现直至<strong>单测绿灯通过</strong></div>
+              <div class="node-header txt-green branch-header"><Database class="w-5 h-5 text-green-600" /> 业务后端流 (TDD & 基线更新)</div>
+              <div class="node-desc" style="color: #334155;">🤖 自动对照契约并完成单测验证</div>
+              <div class="node-desc" style="color: #334155;">🔀 支持远端基线三方合并更新与 Agent 冲突适配</div>
+              <div class="node-subtext">所有变更收敛直至<strong>单测与累计评审绿灯通过</strong></div>
             </div>
           </div>
 
@@ -248,33 +248,33 @@ onMounted(() => {
           </div>
 
           <div class="node-card node-sys">
-            <div class="node-header txt-sys"><CheckCircle class="w-5 h-5" /> 系统：生成基准代码快照 (Git Worktree)</div>
-            <div class="node-subtext">为变更归因与验收准备稳定的初始版本</div>
+            <div class="node-header txt-sys"><CheckCircle class="w-5 h-5" /> 系统：任务产物筛选、在线预览与流式 ZIP 导出</div>
+            <div class="node-subtext">支持多仓累计差异与无仓工作区差异对比，懒加载预览 PDF/Office/HTML/Diff</div>
           </div>
         </div>
 
         <div class="flow-line separator"></div>
         <div class="flow-arrow separator-arrow"></div>
 
-        <!-- ================= 阶段 5：差异归因与三步收尾交付 ================= -->
+        <!-- ================= 阶段 5：差异归因、Webhook 联动与收尾交付 ================= -->
         <div class="phase-group">
-          <div class="phase-badge">Phase 5: 差异归因与三步收尾交付 (正向研发)</div>
+          <div class="phase-badge">Phase 5: 差异归因、验收核查与收尾交付 (正向研发)</div>
 
           <div class="node-card node-ai bg-red-third">
-            <div class="node-header text-red-600"><Target class="w-5 h-5" /> AI & 系统：Delta 工作台四维差异归因</div>
-            <div class="node-desc">逐行分类：逻辑纠偏 / 边界补充 / 规范对齐 / 视觉美化</div>
+            <div class="node-header text-red-600"><Target class="w-5 h-5" /> AI & 系统：Delta 工作台与本地交接四维归因</div>
+            <div class="node-desc">自动汇总 AI 提议、本地手改交接与终稿：逻辑纠偏 / 边界补充 / 规范对齐 / 视觉美化</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-decision">
-            <div class="node-header txt-decision"><ListChecks class="w-5 h-5" /> 用户与系统：三步收尾工作流 (Closeout)</div>
-            <div class="node-subtext">基准对比 (Baseline) → 专家审查 (Review) → 最终摘要 (Summary)</div>
+            <div class="node-header txt-decision"><ListChecks class="w-5 h-5" /> 用户与系统：三步收尾、需求验收与 Webhook 广播</div>
+            <div class="node-subtext">基准比对 → 专家复核 → 最终摘要，支持公网机器人及桌面回环代理实时触达</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-sys">
-            <div class="node-header txt-sys"><CheckCircle class="w-5 h-5" /> 系统：固化交付证据链与 100% 全链路追溯覆盖</div>
-            <div class="node-subtext">生成不可篡改复盘审计报告，需求与代码双向闭环</div>
+            <div class="node-header txt-sys"><CheckCircle class="w-5 h-5" /> 系统：固化受控证据附件与 100% 全链路追溯</div>
+            <div class="node-subtext">任务内上传受控下载，生成不可篡改复盘审计报告，需求与代码双向闭环</div>
           </div>
         </div>
 
@@ -308,26 +308,26 @@ onMounted(() => {
 
           <div class="node-card node-decision border-red-400 bg-red-white">
             <div class="node-header text-red-700"><Bug class="w-5 h-5 text-red-500 animate-pulse" /> 异常阻断：CI 爆红 / 线上抛出告警</div>
-            <div class="node-desc">现场立卷：提取错误堆栈、失败用例及环境快照进案例中心</div>
+            <div class="node-desc">现场立卷：提取错误堆栈、失败用例及环境快照进案例中心（支持诊断守卫）</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-ai bg-ai-half glow-ai">
-            <div class="node-header txt-ai"><Search class="w-5 h-5" /> AI：基于 RAG 检索知识库与排障剧本</div>
-            <div class="node-desc">以异常特征在向量库中秒级检索历史相似故障 Case</div>
+            <div class="node-header txt-ai"><Search class="w-5 h-5" /> AI：PostgreSQL 18 混合检索（双击 Shift 秒搜）</div>
+            <div class="node-desc">pg_jieba 全文 + pgvector 向量 RRF 融合，多语料分区秒级命中相似历史故障 Case</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-decision">
             <div class="node-header txt-decision"><ClipboardList class="w-5 h-5" /> 专家 / AI：命中并激活标准排障剧本 (Playbook SOP)</div>
-            <div class="node-subtext">自动装配排查清单、诊断命令与根因检验模板</div>
+            <div class="node-subtext">自动装配排查清单、逐条证据链行动板与根因检验模板</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-human">
             <div class="node-header txt-human"><Pencil class="w-5 h-5" /> 开发者 & AI：多维溯源诊断与沙箱热修复</div>
             <div class="node-desc">溯源根因：① 需求规格漏项 ② API 契约破损 ③ 编码 Delta 盲区</div>
-            <div class="node-subtext">Git 隔离沙箱内依剧本 SOP 热修复并验证单测绿灯通过</div>
+            <div class="node-subtext">分阶段验证假说或自动推进，Git 隔离沙箱内依 SOP 热修复并验证绿灯</div>
           </div>
         </div>
 
@@ -336,17 +336,17 @@ onMounted(() => {
 
         <!-- ================= 阶段 7：案例沉淀与剧本反哺闭环 ================= -->
         <div class="phase-group" style="margin-bottom: 0;">
-          <div class="phase-badge purple">Phase 7: 案例沉淀与剧本反哺闭环 (经验资产化)</div>
+          <div class="phase-badge purple">Phase 7: 案例沉淀与后台并行提炼闭环 (经验资产化)</div>
 
           <div class="node-card node-sys">
-            <div class="node-header txt-sys"><Archive class="w-5 h-5" /> 系统：生成故障诊断报告 (Case Report)</div>
-            <div class="node-desc">记录完整根因链、修复 Patch、单测验证证据与排障耗时</div>
+            <div class="node-header txt-sys"><Archive class="w-5 h-5" /> 系统：生成结构化诊断报告与统一队列后台提炼</div>
+            <div class="node-desc">记录逐条证据链、修复建议与验证耗时；规程晋升并入 sdd_ai_jobs 队列并支持浮窗并行</div>
           </div>
           <div class="flow-line" style="height: 40px;"></div><div class="flow-arrow"></div>
 
           <div class="node-card node-decision">
             <div class="node-header txt-decision"><GitMerge class="w-5 h-5 text-orange-500" /> 专家评审：案例经验晋升为标准化排障剧本</div>
-            <div class="node-subtext">沉淀入四维知识库，反哺后续研发，彻底杜绝同类故障复发</div>
+            <div class="node-subtext">支持持久草案与放弃重写，经评审沉淀入知识中心，反哺后续研发阻断故障复发</div>
           </div>
         </div>
 

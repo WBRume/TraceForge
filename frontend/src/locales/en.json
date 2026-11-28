@@ -202,9 +202,10 @@
   },
   "portal": {
     "title": "TraceForge",
-    "subtitle": "Development Asset Management + AI Traceable Collaboration Platform",
-    "hero_title": "TraceForge",
-    "hero_desc": "Structuring requirements, specs, decisions, and evidence into traceable assets. AI collaborates with developers throughout — observable processes, auditable decisions, reusable experience.",
+    "subtitle": "Development Asset Management · AI Traceable Collaboration",
+    "hero_title_top": "Traceable AI Coding,",
+    "hero_title_accent": "Built on Real Collaboration",
+    "hero_desc": "Unite asset whiteboards, native document review, team task sessions, and desktop local collaboration—bridging teammates, AI, and your local IDE.",
     "enter_workspace": "Enter Workspace",
     "start_building": "Start Building Now",
     "documentation": "Documentation",
@@ -219,66 +220,173 @@
     "has_account": "Already have an account?",
     "switch_to_register": "Register via Email",
     "switch_to_login": "Login Now",
-    "highlights": {
-      "asset_title": "Asset-Driven · No Black-Box Code",
-      "asset_desc": "Structure requirements, specs, decisions, runtime evidence, and deltas into reusable assets. The coverage matrix connects the full chain so every change is traceable and auditable.",
-      "traceable_title": "Intelligent Collaboration · HITL Controlled",
-      "traceable_desc": "Terminal-grade CLI with real-time speech input. High-risk actions trigger HITL pauses for human confirmation, bidirectional clarifications, and snapshot change tracking.",
-      "knowledge_title": "Delta Attribution · Playbook Distillation",
-      "knowledge_desc": "Delta workbench quantifies human modifications against AI proposals. Closeout workflows auto-generate audits and distill 4D knowledge assets and playbooks for cross-project reuse."
-    },
-    "features": {
-      "asset_traceability": {
-        "title": "Asset Management & Traceability",
-        "desc": "Transform requirements, architecture decisions, human deltas, and execution evidence into structured digital assets with 100% full-chain traceability.",
-        "tag": "Assets & Matrix",
-        "points": [
-          "Hierarchical Splitting & Spec Review",
-          "Architecture ADRs & Evidence Registry",
-          "Full-Chain Coverage Matrix"
+    "hero_metrics": [
+      { "value": "100%", "label": "End-to-End Traceability" },
+      { "value": "Cloud × Local", "label": "IPC Local Collaboration" },
+      { "value": "Human × AI", "label": "Co-Engineering Loop" }
+    ],
+    "stage": {
+      "tabs": {
+        "sessionCollab": "Session Collab",
+        "docReview": "Doc Review",
+        "localCollab": "Local Collab",
+        "whiteboard": "Whiteboard"
+      },
+      "sessionCollab": {
+        "badge": "Pre-Input · Step Flow",
+        "steps": [
+          "01 Draft",
+          "02 Append",
+          "03 Send AI",
+          "04 Steer"
+        ],
+        "preinput": {
+          "title": "Pre-Input",
+          "countdown": "01:45",
+          "seg_alex": "Refactor guard: block empty token,",
+          "seg_lin": "reject expired JWT (401),",
+          "seg_maya": "add 401 tests.",
+          "tag_alex": "Alex",
+          "tag_lin": "+ Lin",
+          "tag_maya": "+ Maya",
+          "status_merged": "Merged & Sent",
+          "hint_wait": "Waiting for teammates to append into shared draft…",
+          "hint_ready": "3 inputs appended cleanly — merging to TraceForge AI"
+        },
+        "roles": {
+          "merged": "Merged Prompt · Sent",
+          "collaborator": "Lin · Collaborator",
+          "owner": "Alex · Steer",
+          "ai": "TraceForge AI"
+        },
+        "merged_msg": "Refactor guard: block empty token, reject expired JWT (401), add 401 tests.",
+        "collab_msg": "Please also allow 30s refresh grace window",
+        "annotation": "guard.ts:L41 Note",
+        "owner_msg": "Steer added: handle grace window in this turn",
+        "ai_msg": "Updating guard.ts & unit tests, verifying checks…"
+      },
+      "docReview": {
+        "badge": "DOCX / MD Native Canvas · Joint Revision",
+        "doc_title": "§3.2 Order Idempotency & Locking",
+        "doc_before": "Verify lock state before database commit.",
+        "doc_del": "- Verify lock state before database commit.",
+        "doc_add": "+ Verify lock state and 24h idempotency TTL before commit.",
+        "comment_author": "Lin · Architect",
+        "comment_text": "Suggestion adopted into itemized patch",
+        "resolved": "2/2 Resolved",
+        "proposal_btn": "Apply Joint Revision"
+      },
+      "localCollab": {
+        "badge": "Cloud ↔ Local · Live Diff",
+        "steps": [
+          "01 Push",
+          "02 Local Edit",
+          "03 Handoff",
+          "04 Synced"
+        ],
+        "cloud_title": "Cloud Worktree",
+        "local_title": "Local VS Code",
+        "cloud_states": {
+          "v1": "Agent v1 · Ready",
+          "wait": "Cloud Base v1",
+          "merging": "IPC 3-Way Merge",
+          "synced": "Synced · v2 Clean"
+        },
+        "local_states": {
+          "recv": "Backup Saved",
+          "dirty": "Local Edited +2",
+          "pushing": "IPC Pushing",
+          "synced": "VS Code L42"
+        },
+        "ipc_labels": {
+          "down": "IPC Push v1",
+          "idle": "FS Watching",
+          "up": "IPC Patch Up",
+          "clean": "3-Way Clean"
+        },
+        "footer_labels": [
+          "Cloud Agent produces v1 change & syncs via pure IPC with local backup",
+          "Developer edits L42 in local VS Code: adds expiry check & 401 reject",
+          "Local patch hands off back to Cloud Worktree via IPC, triggering 3-way merge",
+          "Cloud & local guard.ts converge cleanly; AI keeps running unit tests"
         ]
       },
-      "terminal_hitl": {
-        "title": "Terminal Collab & Human-In-The-Loop",
-        "desc": "Deep Claude CLI interactive integration with speech-to-text. High-risk decisions trigger authorization pauses, clearing ambiguity with bidirectional clarifications.",
-        "tag": "Collab & Safety",
-        "points": [
-          "PTY Terminal Session & Token Attribution",
-          "Web Direct & Offline Whisper Speech",
-          "HITL Authorization & Clarification Thread"
-        ]
-      },
-      "contract_mock": {
-        "title": "Contract Isolation & Dynamic Gateway",
-        "desc": "Automatically infer data entities and multi-scenario mock cases from OpenAPI specs. Dynamic gateway supports per-endpoint routing, decoupling frontend and backend.",
-        "tag": "Contract-First",
-        "points": [
-          "OpenAPI Parsing & Entity Inference",
-          "Multi-Scenario Mock Cases",
-          "Mock / Proxy Traffic Switching & Chaos"
-        ]
-      },
-      "delta_playbook": {
-        "title": "Delta Attribution & Case Playbooks",
-        "desc": "Diff AI proposals against final human code with 4D root-cause attribution. Three-step closeout solidifies audits, distilling production incident SOP playbooks.",
-        "tag": "Experience Distillation",
-        "points": [
-          "ChangeProposal AST Attribution",
-          "3-Step Closeout (Baseline/Review/Summary)",
-          "Case Center & Reusable Playbooks"
-        ]
+      "whiteboard": {
+        "badge": "Live Graph · 2 Collaborators Online",
+        "nodes": ["Split Req", "DOCX Selection", "Task Run", "Playbook"]
       }
     },
-    "version_badge": "Development Asset Management · Enterprise Platform",
-    "show_demo": "View Architecture",
-    "core_drivers_title": "Core Capability Matrix",
-    "core_drivers_desc": "Four core engineering pillars covering development assetization and production incident diagnosis",
-    "stats": {
-      "productivity": "End-to-End Asset Traceability",
-      "traceable": "Contract-Driven Parallel Dev",
-      "quality": "AI+HITL Deterministic Quality"
+    "bento": {
+      "eyebrow": "COLLABORATION CORE",
+      "title": "Built Around Real Engineering Collaboration",
+      "desc": "Connecting team sessions, native document reviews, local IDE sync, and live asset graphs",
+      "cards": {
+        "sessionCollab": {
+          "tag": "Session Collab",
+          "title": "Team Sessions, Annotations & Guest Sharing",
+          "desc": "Collaborate via {'@'}-mentions in pre-input, send inline message/diff annotations, steer running turns, answer durable HITL prompts, and adopt guest suggestions via share links.",
+          "meta": "Co-Prompting · Diff Notes · Live Steering · Guest Share"
+        },
+        "docReview": {
+          "tag": "Doc Review",
+          "title": "DOCX / MD Native Canvas & Joint Revisions",
+          "desc": "Annotate original Word and Markdown layouts with precise selection threads; turn resolved discussions into itemized AI joint revisions while preserving original formatting.",
+          "meta": "Precise Selection · Inline Threads · Joint Revisions · Private Drafts"
+        },
+        "localCollab": {
+          "tag": "Cloud & Local",
+          "title": "Desktop Local Collab, 3-Way Merge & Delivery",
+          "desc": "Edit in your local IDE while Agents run on the server, with turn backups, VS Code/IDEA jump-to-line, 3-way baseline updates, 4D delta attribution, and ZIP deliverable exports.",
+          "meta": "IPC Local Collab · 3-Way Merge · IDE Jump · Delta & Export"
+        },
+        "assets": {
+          "tag": "Asset Graph",
+          "title": "Asset Whiteboards & Live Relationships",
+          "desc": "Switch freely between tables and infinite whiteboards, expanding quarterly links across requirements, docs, tasks, and playbooks with live online presence and workload views.",
+          "meta": "Asset Whiteboard · Live Presence · Acceptance Flow · Member Workload"
+        }
+      }
     },
-    "footer_tagline": "TraceForge · Engineering Process Digitization & Asset Platform",
+    "trace_rail": {
+      "eyebrow": "END-TO-END TRACEABILITY",
+      "title": "One Collaborative Flow, Every Artifact Linked",
+      "desc": "From requirement splitting to playbook promotion, every edit, note, and handoff stays auditable",
+      "nodes": [
+        {
+          "code": "CHAT",
+          "label": "Session Collab",
+          "artifact": "Multi-role {'@'} mentions · Diff notes · Guest inputs captured"
+        },
+        {
+          "code": "DOC",
+          "label": "Doc Review",
+          "artifact": "DOCX §3.2 threads resolved · Joint revision v2 published"
+        },
+        {
+          "code": "SYNC",
+          "label": "Local Collab",
+          "artifact": "guard.ts local edits handed off · 3-way merge & backup ready"
+        },
+        {
+          "code": "DELTA",
+          "label": "Delta Audit",
+          "artifact": "ChangeProposal & final edits attributed across 4 dimensions"
+        },
+        {
+          "code": "GRAPH",
+          "label": "Whiteboard",
+          "artifact": "Requirements, docs, tasks & evidence projected on live graph"
+        },
+        {
+          "code": "SOP",
+          "label": "Playbooks",
+          "artifact": "Root cause & verification distilled into reusable Playbook SOP"
+        }
+      ]
+    },
+    "version_badge": "Full-Chain Engineering Collaboration · Traceable Assets",
+    "show_demo": "Explore Architecture",
+    "footer_tagline": "TraceForge · Digitized & Traceable Engineering Platform",
     "email_placeholder": "name{'@'}example.com",
     "password_placeholder": "******",
     "switch_lang_title": "Switch to Chinese"

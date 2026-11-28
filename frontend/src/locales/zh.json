@@ -202,9 +202,10 @@
   },
   "portal": {
     "title": "TraceForge",
-    "subtitle": "开发态资产管理 + AI 开发过程可追溯协作平台",
-    "hero_title": "TraceForge",
-    "hero_desc": "将开发过程中产生的需求、规范、决策、证据等结构化管理为可追溯资产；AI 与开发者全程协同，过程可观测、决策可审查、经验可沉淀。",
+    "subtitle": "开发态资产管理 · AI 可追溯协作平台",
+    "hero_title_top": "让每次 AI 协作",
+    "hero_title_accent": "沉淀为可追溯资产",
+    "hero_desc": "围绕资产白板、原文审阅、任务会话与桌面本地协同，打通人与 AI、团队成员与本机 IDE 之间的全链路协作。",
     "enter_workspace": "进入工作区",
     "start_building": "立即开始构建",
     "documentation": "文档",
@@ -219,66 +220,173 @@
     "has_account": "已经有账号了？",
     "switch_to_register": "通过邮箱注册",
     "switch_to_login": "立即登录",
-    "highlights": {
-      "asset_title": "资产驱动 · 告别代码黑盒",
-      "asset_desc": "将需求拆分、任务规格、关键决策、运行证据与人机差异沉淀为结构化资产。覆盖度矩阵贯穿全链路，每次变更皆可追溯，每次交付皆有据可查。",
-      "traceable_title": "智能协同 · 人在回路可控",
-      "traceable_desc": "终端级 CLI 实时协同，支持自然语音转录输入。关键决策与高风险操作触发 HITL 暂停确认，双向澄清需求歧义，计划文档快照高亮变更。",
-      "knowledge_title": "差异归因 · 故障剧本反哺",
-      "knowledge_desc": "人机差异工作台量化 AI 提议与人工最终修改，收尾工作流自动生成审计与摘要。沉淀四维知识资产与排障剧本 (Playbook)，实现经验跨项目复用。"
-    },
-    "features": {
-      "asset_traceability": {
-        "title": "开发态资产管理与全链路追溯",
-        "desc": "将需求拆分、架构决策、人机差异与执行证据转化为结构化数字资产。覆盖度矩阵贯穿全链路，消除开发黑盒，让每次交付都有据可查。",
-        "tag": "资产与追溯",
-        "points": [
-          "需求树状拆分与块级评审",
-          "架构决策 (ADR) 与证据注册",
-          "全链路追溯覆盖度矩阵"
+    "hero_metrics": [
+      { "value": "100%", "label": "全链路资产追溯" },
+      { "value": "云端 × 本机", "label": "纯 IPC 本地协同" },
+      { "value": "人 × AI", "label": "多引擎协同闭环" }
+    ],
+    "stage": {
+      "tabs": {
+        "sessionCollab": "会话协作",
+        "docReview": "原文审阅",
+        "localCollab": "本地协同",
+        "whiteboard": "资产白板"
+      },
+      "sessionCollab": {
+        "badge": "协作预输入 · 分步协同",
+        "steps": [
+          "01 起草",
+          "02 接续补充",
+          "03 送 AI",
+          "04 批注引导"
+        ],
+        "preinput": {
+          "title": "协作预输入",
+          "countdown": "01:45",
+          "seg_alex": "重构鉴权守卫：拦截空令牌，",
+          "seg_lin": "校验过期 JWT 返回 401，",
+          "seg_maya": "补充 401 单测。",
+          "tag_alex": "Alex 起草",
+          "tag_lin": "+ Lin",
+          "tag_maya": "+ Maya",
+          "status_merged": "已合并提交",
+          "hint_wait": "等待 {'@'}Lin / {'@'}Maya 在同一草稿内接续补充…",
+          "hint_ready": "3 段输入已拼接就绪，合并发送给 TraceForge AI"
+        },
+        "roles": {
+          "merged": "协同指令 · 已合并发送",
+          "collaborator": "Lin · 协作者",
+          "owner": "Alex · 引导",
+          "ai": "TraceForge AI"
+        },
+        "merged_msg": "重构鉴权守卫：拦截空令牌，校验过期 JWT 返回 401，补充 401 单测。",
+        "collab_msg": "请顺便兼容 30s 刷新令牌宽限窗口",
+        "annotation": "guard.ts:L41 批注",
+        "owner_msg": "已补充运行引导，本轮一并兼容宽限期",
+        "ai_msg": "已更新 guard.ts 并补充单测草稿，验证执行中…"
+      },
+      "docReview": {
+        "badge": "DOCX / MD 原文画布 · 联合修订",
+        "doc_title": "§3.2 订单幂等与并发控制",
+        "doc_before": "创建订单须校验锁状态后执行落库。",
+        "doc_del": "- 校验锁状态后执行落库。",
+        "doc_add": "+ 校验锁状态与 24h 幂等键 TTL 后再落库。",
+        "comment_author": "Lin · 架构评审",
+        "comment_text": "已采纳批注并完成片段改写",
+        "resolved": "2/2 已解决",
+        "proposal_btn": "应用联合修订"
+      },
+      "localCollab": {
+        "badge": "云地协同 · 实时代码流转",
+        "steps": [
+          "01 云端下发",
+          "02 本机改写",
+          "03 IPC 交接",
+          "04 云地一致"
+        ],
+        "cloud_title": "云端 Worktree",
+        "local_title": "本机 VS Code",
+        "cloud_states": {
+          "v1": "Agent v1 · 就绪",
+          "wait": "云端基线 v1",
+          "merging": "IPC 三方合并",
+          "synced": "云地一致 · v2"
+        },
+        "local_states": {
+          "recv": "已存轮次备份",
+          "dirty": "本机已改 +2",
+          "pushing": "IPC 推回云端",
+          "synced": "VS Code L42"
+        },
+        "ipc_labels": {
+          "down": "IPC 下发 v1",
+          "idle": "文件监听中",
+          "up": "IPC 交接补丁",
+          "clean": "三方合并 Clean"
+        },
+        "footer_labels": [
+          "云端 Agent 生成 v1，经纯 IPC 通道同步到本机工作区并保存备份",
+          "开发者在本机 VS Code 第 42 行直接改写：追加过期检查与 401 拒绝",
+          "本地改写实时经 IPC 交接回服务器 Worktree，自动执行三方合并",
+          "服务器与本机 guard.ts 完全对齐，云端 AI 继续跑通单元测试"
         ]
       },
-      "terminal_hitl": {
-        "title": "终端协同会话与人在回路 (HITL)",
-        "desc": "深度桥接 Claude CLI 交互式终端，支持在线与离线语音输入。关键高风险决策人工授权拦截，双向澄清歧义，计划快照高亮变更。",
-        "tag": "协同与安全",
-        "points": [
-          "PTY 终端会话与 Token 归因",
-          "Web 直连与离线 Whisper 语音",
-          "HITL 关键授权与双向澄清问答"
-        ]
-      },
-      "contract_mock": {
-        "title": "契约隔离与动态代理网关",
-        "desc": "基于 OpenAPI 规范自动推导数据实体与多场景 Mock 用例。动态切流网关支持单接口按需路由，彻底解耦前后端联调依赖。",
-        "tag": "契约先行",
-        "points": [
-          "OpenAPI 规范导入与实体推导",
-          "多分支 Mock Case 场景推导",
-          "Mock / Proxy 灵活切流与混沌测试"
-        ]
-      },
-      "delta_playbook": {
-        "title": "人机差异归因与故障排障剧本",
-        "desc": "精确比对 AI 提议与人工最终代码并四维归因。三步收尾工作流固化证据，将真实生产排障攻坚沉淀为可复用 SOP 剧本 (Playbook)。",
-        "tag": "经验沉淀",
-        "points": [
-          "ChangeProposal AST 差异归因",
-          "三步收尾工作流 (基准/审查/摘要)",
-          "案例中心与排障剧本 (Playbook)"
-        ]
+      "whiteboard": {
+        "badge": "实时关系图谱 · 2 人在线协同",
+        "nodes": ["需求拆分", "DOCX 原文选区", "任务执行", "排障剧本"]
       }
     },
-    "version_badge": "开发态资产管理 · 企业级协作平台",
-    "show_demo": "查看架构",
-    "core_drivers_title": "核心能力矩阵",
-    "core_drivers_desc": "抽象聚合四大核心工程支柱，覆盖研发资产化与线上排障全生命周期",
-    "stats": {
-      "productivity": "全链路资产追溯覆盖",
-      "traceable": "契约驱动并行联调",
-      "quality": "AI+HITL 确定性交付保障"
+    "bento": {
+      "eyebrow": "COLLABORATION CORE",
+      "title": "以协作为核，贯通研发全链路",
+      "desc": "聚焦会话共创、文档共审、本地同步与白板图谱，让个人与团队高效配合 AI 落地交付",
+      "cards": {
+        "sessionCollab": {
+          "tag": "会话共创",
+          "title": "任务会话协作与免登录分享",
+          "desc": "支持协作预输入 {'@'} 提及、历史消息与代码 Diff 选中批注、运行中追加引导及 HITL 确认回执；支持只读与邀请输入分享并采纳外部建议。",
+          "meta": "协作预输入 · Diff 批注 · 运行引导 · 会话分享与 Webhook"
+        },
+        "docReview": {
+          "tag": "文档共审",
+          "title": "DOCX / MD 原文画布与联合修订",
+          "desc": "直接渲染原版 Word 与 Markdown 画布进行精确选区与同位置讨论；聚合多条已解决讨论后台生成联合修订提案，逐项采纳并保留原格式。",
+          "meta": "精确选区 · 同位置讨论 · 联合修订提案 · 私有草稿发布"
+        },
+        "localCollab": {
+          "tag": "云地一体",
+          "title": "桌面本地协同、三方合并与交付闭环",
+          "desc": "Agent 在服务器执行的同时在本机 IDE 改代码，支持轮次备份、VS Code/IDEA 直达、远端基线三方合并、Delta 归因及产物预览导出。",
+          "meta": "纯 IPC 本地协同 · 基线三方合并 · IDE 直达 · 差异归因与产物导出"
+        },
+        "assets": {
+          "tag": "资产协同",
+          "title": "资产白板与业务关系图谱",
+          "desc": "支持列表与无限白板切换，按季度增量展开需求、文档、任务与排障规程关系；成员在线实时同步，跨工作区工作负载与验收进度一目了然。",
+          "meta": "无限资产白板 · 在线实时协同 · 需求验收流转 · 成员工作负载"
+        }
+      }
     },
-    "footer_tagline": "TraceForge · 研发过程数字化与资产化平台",
+    "trace_rail": {
+      "eyebrow": "END-TO-END TRACEABILITY",
+      "title": "一次协作，产物自动贯通全链路",
+      "desc": "从需求拆解到排障剧本，每一步修改、批注与代码交接皆留痕可验",
+      "nodes": [
+        {
+          "code": "CHAT",
+          "label": "会话协作",
+          "artifact": "多角色 {'@'} 提及 · Diff 批注 · 免登录邀请输入已记录"
+        },
+        {
+          "code": "DOC",
+          "label": "原文审阅",
+          "artifact": "DOCX §3.2 选区讨论已解决 · 联合修订版本 v2 已发布"
+        },
+        {
+          "code": "SYNC",
+          "label": "本地协同",
+          "artifact": "guard.ts 本地修改已交接 · 三方基线合并与轮次备份就绪"
+        },
+        {
+          "code": "DELTA",
+          "label": "差异归因",
+          "artifact": "ChangeProposal 与人工终稿完成四维归因与三步审计"
+        },
+        {
+          "code": "GRAPH",
+          "label": "资产白板",
+          "artifact": "需求、文档、任务与证据链节点已全量投影至关系图谱"
+        },
+        {
+          "code": "SOP",
+          "label": "剧本反哺",
+          "artifact": "故障根因与修复验证已后台并行提炼为可复用 Playbook"
+        }
+      ]
+    },
+    "version_badge": "全链路研发协作 · 资产可追溯平台",
+    "show_demo": "探索系统架构",
+    "footer_tagline": "TraceForge · 研发过程数字化与可追溯协作平台",
     "email_placeholder": "name{'@'}example.com",
     "password_placeholder": "******",
     "switch_lang_title": "切换至英文"
