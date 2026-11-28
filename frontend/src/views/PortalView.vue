@@ -28,6 +28,8 @@ const toggleLanguage = () => {
 
 const authMode = shallowRef<PortalAuthMode | null>(null)
 const scrolled = ref(false)
+const portalRoot = ref<HTMLElement | null>(null)
+let revealObserver: IntersectionObserver | null = null
 
 const prefersReducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
@@ -113,18 +115,43 @@ const onScroll = () => {
   scrolled.value = window.scrollY > 12
 }
 
+const setupScrollReveal = () => {
+  const root = portalRoot.value
+  if (!root) return
+  const targets = Array.from(root.querySelectorAll<HTMLElement>('.reveal-on-scroll'))
+  if (!targets.length) return
+
+  if (prefersReducedMotion() || typeof IntersectionObserver === 'undefined') {
+    targets.forEach((el) => el.classList.add('is-revealed'))
+    return
+  }
+
+  revealObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting) return
+      entry.target.classList.add('is-revealed')
+      revealObserver?.unobserve(entry.target)
+    })
+  }, { threshold: 0.15, rootMargin: '0px 0px -8% 0px' })
+
+  targets.forEach((el) => revealObserver?.observe(el))
+}
+
 onMounted(() => {
   window.addEventListener('scroll', onScroll, { passive: true })
   onScroll()
+  setupScrollReveal()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('scroll', onScroll)
+  revealObserver?.disconnect()
+  revealObserver = null
 })
 </script>
 
 <template>
-  <div class="portal-container">
+  <div ref="portalRoot" class="portal-container">
     <!-- Subtle Atmospheric Backdrop -->
     <div class="ambient-backdrop" aria-hidden="true">
       <div class="ambient-grid"></div>
@@ -210,8 +237,8 @@ onBeforeUnmount(() => {
       </section>
 
       <!-- Focused Asymmetric Bento Grid (4 Pillars, No Clutter) -->
-      <section class="bento-section reveal-section">
-        <div class="section-header">
+      <section class="bento-section">
+        <div class="section-header reveal-on-scroll">
           <div class="section-eyebrow">{{ $t('portal.bento.eyebrow') }}</div>
           <h2 class="section-title">{{ $t('portal.bento.title') }}</h2>
           <p>{{ $t('portal.bento.desc') }}</p>
@@ -221,9 +248,9 @@ onBeforeUnmount(() => {
           <article
             v-for="(card, index) in bentoCards"
             :key="card.key"
-            class="bento-card"
+            class="bento-card reveal-on-scroll"
             :class="card.span"
-            :style="{ '--stagger': `${index * 80}ms` }"
+            :style="{ '--reveal-delay': `${index * 110}ms` }"
             @mousemove="handleCardPointerMove"
             @mouseleave="handleCardPointerLeave"
           >
@@ -246,7 +273,7 @@ onBeforeUnmount(() => {
       </section>
 
       <!-- Interactive Execution Core & Asset Intelligence Showcase -->
-      <section class="trace-section reveal-section">
+      <section class="trace-section reveal-on-scroll">
         <PortalExecutionMatrix />
       </section>
     </main>
@@ -888,15 +915,20 @@ onBeforeUnmount(() => {
   color: #94a3b8;
 }
 
-/* Section Entrance (always visible fallback-safe) */
-.reveal-section {
-  animation: sectionEnter 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
+/* Scroll-triggered entrance (IntersectionObserver adds .is-revealed) */
+.reveal-on-scroll {
+  opacity: 0;
 }
 
-@keyframes sectionEnter {
+.reveal-on-scroll.is-revealed {
+  opacity: 1;
+  animation: revealUp 0.72s cubic-bezier(0.22, 1, 0.36, 1) var(--reveal-delay, 0ms) backwards;
+}
+
+@keyframes revealUp {
   from {
     opacity: 0;
-    transform: translateY(16px);
+    transform: translateY(26px);
   }
   to {
     opacity: 1;
@@ -912,14 +944,13 @@ onBeforeUnmount(() => {
   .aurora-glow,
   .pulse-dot::after,
   .text-gradient,
-  .cta-band::before,
   .hero-reveal,
-  .reveal-section {
+  .reveal-on-scroll {
     animation: none !important;
   }
 
   .hero-reveal,
-  .reveal-section,
+  .reveal-on-scroll,
   .bento-card {
     opacity: 1 !important;
     transform: none !important;
