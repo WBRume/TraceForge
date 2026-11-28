@@ -3,7 +3,7 @@ import { computed, onMounted, onScopeDispose, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Search } from '@/components/icons'
+import { Search, User } from '@/components/icons'
 import AppSwitcherDropdown from '@/components/AppSwitcherDropdown.vue'
 import UserMenu from '@/components/user/UserMenu.vue'
 import { useDesktopTabs } from '@/desktop/workspaceTabs'
@@ -124,7 +124,8 @@ onScopeDispose(() => {
       variant="titlebar"
     />
     <button v-else-if="showLogin" class="titlebar-account titlebar-login" type="button" aria-haspopup="dialog" @click="emit('login')">
-      {{ t('common.login') }}
+      <span class="titlebar-login-avatar" aria-hidden="true"><User /></span>
+      <span class="titlebar-login-label">{{ t('common.login') }}</span>
     </button>
     <DesktopCaptionButtons v-if="desktop?.runtime === 'tauri'" :api="windows.api" @error="error" />
     <div v-else class="caption-reserve" aria-hidden="true"></div>
@@ -139,21 +140,51 @@ onScopeDispose(() => {
 .workspace-switcher { flex: none; border-right: 1px solid #e2e8f0; padding-right: 7px; }
 .titlebar-account { flex: none; -webkit-app-region: no-drag; app-region: no-drag; }
 .titlebar-login {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   height: 30px;
-  padding: 0 9px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: inherit;
+  padding: 0 10px 0 5px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #334155;
   font: inherit;
   font-weight: 600;
   white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition: background-color 140ms, border-color 140ms, color 140ms, box-shadow 140ms;
 }
-.titlebar-login:hover { border-color: #cbd5e1; background: #eef2f7; }
+.titlebar-login-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #e0f2fe;
+  color: #0369a1;
+  transition: background-color 140ms, color 140ms;
+}
+.titlebar-login-avatar :deep(svg) { width: 13px; height: 13px; }
+.titlebar-login:hover {
+  border-color: #bae6fd;
+  background: #f8fafc;
+  color: #0f172a;
+  box-shadow: 0 1px 3px rgba(14, 165, 233, 0.14);
+}
+.titlebar-login:hover .titlebar-login-avatar { background: #bae6fd; color: #0284c7; }
+.titlebar-login:active { background: #f1f5f9; box-shadow: none; }
 .titlebar-search { flex: none; display: flex; height: 29px; align-items: center; gap: 7px; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0 8px; font-size: 12px; color: #475569; background: #ffffff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03); transition: background-color 140ms, border-color 140ms, color 140ms; }
 .titlebar-search:hover { background: #ffffff; border-color: #bae6fd; color: #0f172a; }
 .titlebar-search svg { width: 15px; height: 15px; }
 .titlebar-search kbd { margin-left: 6px; padding: 2px 4px; border: 1px solid #e2e8f0; border-radius: 4px; background: #f8fafc; color: #64748b; font: 10px 'Segoe UI', sans-serif; }
 @media (max-width: 850px) { .titlebar-search kbd { display: none; } }
-@media (prefers-reduced-motion: reduce) { .titlebar-search { transition: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .titlebar-login,
+  .titlebar-login-avatar,
+  .titlebar-search { transition: none; }
+}
 </style>

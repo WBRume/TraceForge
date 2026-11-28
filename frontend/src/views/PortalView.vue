@@ -148,7 +148,7 @@ onBeforeUnmount(() => {
         </template>
         <template v-else>
           <button v-if="!openDesktopAuthDialog" class="btn-ghost" @click="openAuthModal('login')">{{ $t('common.login') }}</button>
-          <button class="btn-primary" @click="openAuthModal('register')">{{ $t('portal.start_building') }}</button>
+          <button class="btn-primary" @click="handleStartBuilding">{{ $t('portal.start_building') }}</button>
         </template>
         
         <!-- Language Switcher：登录后语言设置统一收敛到用户设置页 -->
