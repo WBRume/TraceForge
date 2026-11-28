@@ -268,15 +268,27 @@
         "ai_msg": "Updating guard.ts & unit tests, verifying checks…"
       },
       "docReview": {
-        "badge": "DOCX / MD Native Canvas · Joint Revision",
-        "doc_title": "§3.2 Order Idempotency & Locking",
-        "doc_before": "Verify lock state before database commit.",
-        "doc_del": "- Verify lock state before database commit.",
-        "doc_add": "+ Verify lock state and 24h idempotency TTL before commit.",
-        "comment_author": "Lin · Architect",
-        "comment_text": "Suggestion adopted into itemized patch",
-        "resolved": "2/2 Resolved",
-        "proposal_btn": "Apply Joint Revision"
+        "steps": [
+          "01 Select",
+          "02 Thread",
+          "03 Tracked Diff",
+          "04 Publish"
+        ],
+        "file_name": "order-spec.docx",
+        "section_title": "§3.2 Idempotency & Locks",
+        "version_old": "v1.2",
+        "version_new": "v1.3",
+        "doc_prefix": "On order creation, ",
+        "doc_target_old": "check lock before commit",
+        "doc_target_new": "verify lock and 24h idempotency TTL before commit",
+        "doc_suffix": ".",
+        "thread_selected": "Selection anchored · Start thread",
+        "thread_lin": "Lin: Add 24h idempotency key TTL check",
+        "thread_ai": "AI: Ready for joint revision draft",
+        "thread_resolved": "Resolved",
+        "rev_item": "Inline rewrite · §3.2",
+        "rev_accept": "Accept Revision",
+        "rev_published": "Applied in-place · v1.3 published"
       },
       "localCollab": {
         "badge": "Cloud ↔ Local · Live Diff",

@@ -268,15 +268,27 @@
         "ai_msg": "已更新 guard.ts 并补充单测草稿，验证执行中…"
       },
       "docReview": {
-        "badge": "DOCX / MD 原文画布 · 联合修订",
-        "doc_title": "§3.2 订单幂等与并发控制",
-        "doc_before": "创建订单须校验锁状态后执行落库。",
-        "doc_del": "- 校验锁状态后执行落库。",
-        "doc_add": "+ 校验锁状态与 24h 幂等键 TTL 后再落库。",
-        "comment_author": "Lin · 架构评审",
-        "comment_text": "已采纳批注并完成片段改写",
-        "resolved": "2/2 已解决",
-        "proposal_btn": "应用联合修订"
+        "steps": [
+          "01 原文划词",
+          "02 同位置讨论",
+          "03 融合修订",
+          "04 发布新版"
+        ],
+        "file_name": "订单规格.docx",
+        "section_title": "§3.2 订单并发与幂等",
+        "version_old": "v1.2",
+        "version_new": "v1.3",
+        "doc_prefix": "创建订单",
+        "doc_target_old": "须校验分布式锁后落库",
+        "doc_target_new": "须校验分布式锁与 24h 幂等键 TTL 后落库",
+        "doc_suffix": "，异常请求立即拦截。",
+        "thread_selected": "已选中选区 · 发起行内批注",
+        "thread_lin": "Lin：需补充 24h 幂等键 TTL 约束",
+        "thread_ai": "AI 助手：已整理结论，待生成修订稿",
+        "thread_resolved": "已解决",
+        "rev_item": "片段改写 · §3.2",
+        "rev_accept": "采纳修订",
+        "rev_published": "已原位更新并发布 v1.3"
       },
       "localCollab": {
         "badge": "云地协同 · 实时代码流转",

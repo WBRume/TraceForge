@@ -18,8 +18,10 @@ const reducedMotion = ref(false)
 
 const sessionStep = ref(0)
 const mayaJoined = ref(false)
+const docStep = ref(0)
 const localStep = ref(0)
 const sessionManualHoldUntil = ref(0)
+const docManualHoldUntil = ref(0)
 const localManualHoldUntil = ref(0)
 
 let deckTimerId: number | null = null
@@ -37,6 +39,7 @@ const cards = computed(() => [
 ])
 
 const sessionSteps = computed(() => [0, 1, 2, 3].map((i) => t(`portal.stage.sessionCollab.steps.${i}`)))
+const docSteps = computed(() => [0, 1, 2, 3].map((i) => t(`portal.stage.docReview.steps.${i}`)))
 const localSteps = computed(() => [0, 1, 2, 3].map((i) => t(`portal.stage.localCollab.steps.${i}`)))
 
 watch(sessionStep, (step) => {
@@ -65,6 +68,7 @@ const selectCard = (idx: number) => {
   activeIndex.value = safe
   if (!reducedMotion.value) {
     if (CARD_ORDER[safe] === 'sessionCollab') sessionStep.value = 0
+    if (CARD_ORDER[safe] === 'docReview') docStep.value = 0
     if (CARD_ORDER[safe] === 'localCollab') localStep.value = 0
   }
 }
@@ -78,24 +82,37 @@ const selectSessionStep = (idx: number) => {
   sessionManualHoldUntil.value = Date.now() + 6000
 }
 
+const selectDocStep = (idx: number) => {
+  docStep.value = idx
+  docManualHoldUntil.value = Date.now() + 6000
+}
+
 const selectLocalStep = (idx: number) => {
   localStep.value = idx
   localManualHoldUntil.value = Date.now() + 6000
 }
 
-// Positive-Z 3D Stacked Perspective Geometry
+// Keep front card (slot 0) strictly 1:1 non-rotated & non-scaled so text is razor-sharp,
+// while stacked cards (slots 1..3) recede in true 3D perspective behind it.
 const slotConfigs = [
-  { x: 0, y: 0, z: 96, ry: -2.2, rx: 0.8, scale: 0.934, opacity: 1, zIndex: 40 },
-  { x: 24, y: -31, z: 62, ry: -5.5, rx: 2.2, scale: 0.915, opacity: 0.97, zIndex: 30 },
-  { x: 46, y: -60, z: 30, ry: -8.5, rx: 3.6, scale: 0.89, opacity: 0.9, zIndex: 20 },
-  { x: 66, y: -87, z: 4, ry: -11.5, rx: 5.0, scale: 0.865, opacity: 0.82, zIndex: 10 }
+  { x: 0, y: 0, z: 0, ry: 0, rx: 0, scale: 1, opacity: 1, zIndex: 40 },
+  { x: 24, y: -31, z: -48, ry: -4.2, rx: 1.6, scale: 0.96, opacity: 0.97, zIndex: 30 },
+  { x: 46, y: -60, z: -96, ry: -7.2, rx: 3.0, scale: 0.92, opacity: 0.9, zIndex: 20 },
+  { x: 66, y: -87, z: -144, ry: -10.0, rx: 4.2, scale: 0.88, opacity: 0.82, zIndex: 10 }
 ]
 
 const getCardStyle = (idx: number): CSSProperties => {
   const offset = getRelativeOffset(idx)
+  if (offset === 0) {
+    return {
+      transform: 'none',
+      zIndex: 40,
+      opacity: 1
+    }
+  }
   const slot = slotConfigs[offset] ?? slotConfigs[3]
-  const px = offset === 0 ? parallax.value.ry * 0.55 : parallax.value.ry * (1 + offset * 0.25)
-  const py = offset === 0 ? parallax.value.rx * 0.55 : parallax.value.rx * (1 + offset * 0.25)
+  const px = parallax.value.ry * (1 + offset * 0.25)
+  const py = parallax.value.rx * (1 + offset * 0.25)
   return {
     transform: `translate3d(${slot.x}px, ${slot.y}px, ${slot.z}px) rotateY(${slot.ry + px}deg) rotateX(${slot.rx + py}deg) scale(${slot.scale})`,
     zIndex: slot.zIndex,
@@ -111,7 +128,7 @@ const handleMouseMove = (e: MouseEvent) => {
   if (!rect.width || !rect.height) return
   const nx = ((e.clientX - rect.left) / rect.width - 0.5) * 2
   const ny = ((e.clientY - rect.top) / rect.height - 0.5) * 2
-  parallax.value = { rx: -ny * 2.4, ry: nx * 3.0 }
+  parallax.value = { rx: -ny * 2.2, ry: nx * 2.8 }
 }
 
 const handleMouseLeave = () => {
@@ -150,6 +167,7 @@ onMounted(() => {
   if (reducedMotion.value) {
     sessionStep.value = 3
     mayaJoined.value = true
+    docStep.value = 3
     localStep.value = 3
     return
   }
@@ -158,6 +176,8 @@ onMounted(() => {
     const now = Date.now()
     if (activeCardId.value === 'sessionCollab' && now >= sessionManualHoldUntil.value) {
       sessionStep.value = (sessionStep.value + 1) % 4
+    } else if (activeCardId.value === 'docReview' && now >= docManualHoldUntil.value) {
+      docStep.value = (docStep.value + 1) % 4
     } else if (activeCardId.value === 'localCollab' && now >= localManualHoldUntil.value) {
       localStep.value = (localStep.value + 1) % 4
     }
@@ -326,33 +346,93 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- CARD 2: Native DOCX / MD Document Review -->
+          <!-- CARD 2: Authentic DOCX / MD Canvas Annotation, Inline Discussion & In-Place Tracked Revision -->
           <div v-else-if="card.id === 'docReview'" class="scene scene-doc">
-            <div class="doc-canvas-box">
-              <div class="doc-header-row">
-                <span class="doc-heading">{{ $t('portal.stage.docReview.doc_title') }}</span>
-                <span class="thread-status">
-                  <Check class="w-3 h-3" />
-                  {{ $t('portal.stage.docReview.resolved') }}
+            <div class="flow-tabs" role="group" aria-label="Document Review Flow Steps">
+              <button
+                v-for="(label, sIdx) in docSteps"
+                :key="sIdx"
+                type="button"
+                class="flow-tab"
+                :class="{ active: docStep === sIdx, done: docStep > sIdx }"
+                @click.stop="selectDocStep(sIdx)"
+              >
+                {{ label }}
+              </button>
+            </div>
+
+            <!-- Rendered Original Document Sheet + Right Reviewer Gutter -->
+            <div class="doc-sheet">
+              <div class="doc-sheet-head">
+                <span class="doc-file">
+                  <FileText class="w-3 h-3 text-slate-500" />
+                  <span>{{ $t('portal.stage.docReview.file_name') }}</span>
+                </span>
+                <span class="doc-ver" :class="{ published: docStep === 3 }">
+                  {{ docStep === 3 ? $t('portal.stage.docReview.version_new') : $t('portal.stage.docReview.version_old') }}
                 </span>
               </div>
 
-              <div class="doc-orig-line">
-                <span class="doc-selection-sweep">{{ $t('portal.stage.docReview.doc_before') }}</span>
-                <span class="doc-comment-author">{{ $t('portal.stage.docReview.comment_author') }}</span>
-              </div>
+              <div class="doc-sheet-body">
+                <div class="doc-paper">
+                  <div class="doc-sec-title">{{ $t('portal.stage.docReview.section_title') }}</div>
+                  <p class="doc-paragraph">
+                    <span>{{ $t('portal.stage.docReview.doc_prefix') }}</span>
+                    <mark v-if="docStep === 0" class="doc-mark sweep">{{ $t('portal.stage.docReview.doc_target_old') }}</mark>
+                    <mark v-else-if="docStep === 1" class="doc-mark anchored">{{ $t('portal.stage.docReview.doc_target_old') }}</mark>
+                    <template v-else-if="docStep === 2">
+                      <del class="inline-del">{{ $t('portal.stage.docReview.doc_target_old') }}</del>
+                      <ins class="inline-ins">{{ $t('portal.stage.docReview.doc_target_new') }}</ins>
+                    </template>
+                    <span v-else class="inline-clean">{{ $t('portal.stage.docReview.doc_target_new') }}</span>
+                    <span>{{ $t('portal.stage.docReview.doc_suffix') }}</span>
+                  </p>
+                </div>
 
-              <div class="doc-diff-patch">
-                <div class="patch-line del">{{ $t('portal.stage.docReview.doc_del') }}</div>
-                <div class="patch-line add">{{ $t('portal.stage.docReview.doc_add') }}</div>
+                <!-- Right Annotation Avatar Rail (mirrors ReviewAnnotationRail.vue) -->
+                <div class="doc-rail" aria-hidden="true">
+                  <span class="rail-avatar l" :class="{ resolved: docStep >= 2 }">L</span>
+                  <span v-if="docStep >= 1" class="rail-avatar a" :class="{ resolved: docStep >= 2 }">A</span>
+                </div>
               </div>
             </div>
 
-            <div class="doc-action-row">
-              <span class="proposal-btn">
-                <Check class="w-3 h-3" />
-                {{ $t('portal.stage.docReview.proposal_btn') }}
-              </span>
+            <!-- Contextual Thread / Native Revision Acceptance Zone -->
+            <div class="doc-thread-zone">
+              <Transition name="batch-swap" mode="out-in">
+                <div v-if="docStep === 0" key="doc-step-0" class="doc-thread-row muted">
+                  <span class="t-dot sky"></span>
+                  <span>{{ $t('portal.stage.docReview.thread_selected') }}</span>
+                </div>
+
+                <div v-else-if="docStep === 1" key="doc-step-1" class="doc-thread-card">
+                  <div class="t-msg">
+                    <span class="t-dot emerald"></span>
+                    <span class="t-text">{{ $t('portal.stage.docReview.thread_lin') }}</span>
+                  </div>
+                  <div class="t-msg">
+                    <span class="t-dot sky"></span>
+                    <span class="t-text">{{ $t('portal.stage.docReview.thread_ai') }}</span>
+                    <span class="t-status">
+                      <Check class="w-3 h-3" />
+                      {{ $t('portal.stage.docReview.thread_resolved') }}
+                    </span>
+                  </div>
+                </div>
+
+                <div v-else-if="docStep === 2" key="doc-step-2" class="doc-rev-bar">
+                  <span class="rev-meta">{{ $t('portal.stage.docReview.rev_item') }}</span>
+                  <span class="rev-accept-btn">
+                    <Check class="w-3 h-3" />
+                    {{ $t('portal.stage.docReview.rev_accept') }}
+                  </span>
+                </div>
+
+                <div v-else key="doc-step-3" class="doc-thread-row success">
+                  <Check class="w-3.5 h-3.5 text-emerald-600" />
+                  <span>{{ $t('portal.stage.docReview.rev_published') }}</span>
+                </div>
+              </Transition>
             </div>
           </div>
 
@@ -596,7 +676,6 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 482px;
   perspective: 1450px;
-  transform-style: preserve-3d;
 }
 
 .deck-floor-glow {
@@ -607,7 +686,6 @@ onBeforeUnmount(() => {
   height: 34px;
   background: radial-gradient(ellipse at center, rgba(15, 23, 42, 0.14) 0%, transparent 72%);
   filter: blur(14px);
-  transform: translate3d(0, 10px, 0px);
   z-index: 1;
   pointer-events: none;
 }
@@ -628,13 +706,12 @@ onBeforeUnmount(() => {
   flex-direction: column;
   overflow: hidden;
   transform-origin: 50% 0%;
-  will-change: transform, opacity;
   transition:
-    transform 0.62s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.48s ease,
-    background-color 0.45s ease,
-    box-shadow 0.48s ease,
-    border-color 0.4s ease;
+    transform 0.58s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.42s ease,
+    background-color 0.4s ease,
+    box-shadow 0.4s ease,
+    border-color 0.35s ease;
 }
 
 .deck-card.is-front {
@@ -642,6 +719,7 @@ onBeforeUnmount(() => {
   box-shadow:
     0 28px 56px -20px rgba(15, 23, 42, 0.18),
     0 10px 24px -10px rgba(15, 23, 42, 0.08);
+  -webkit-font-smoothing: antialiased;
 }
 
 .deck-card.is-back { cursor: pointer; }
@@ -687,7 +765,7 @@ onBeforeUnmount(() => {
   padding: 0.85rem 1.05rem;
   background: #ffffff;
   overflow: hidden;
-  transition: opacity 0.35s ease;
+  transition: opacity 0.32s ease;
 }
 
 .deck-card[data-slot='1'] .card-body { opacity: 0.12; pointer-events: none; }
@@ -812,13 +890,7 @@ onBeforeUnmount(() => {
   transition: color 0.22s ease;
 }
 
-.m-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 9999px;
-  background: #cbd5e1;
-}
-
+.m-dot { width: 6px; height: 6px; border-radius: 9999px; background: #cbd5e1; }
 .m-alex.done { color: #0369a1; }
 .m-alex.done .m-dot { background: #0284c7; }
 .m-lin.done { color: #047857; }
@@ -846,12 +918,7 @@ onBeforeUnmount(() => {
   padding: 0.36rem 0.54rem;
 }
 
-.doc-seg {
-  display: inline;
-  padding: 1px 2px;
-  border-bottom: 2px solid transparent;
-  margin-right: 2px;
-}
+.doc-seg { display: inline; padding: 1px 2px; border-bottom: 2px solid transparent; margin-right: 2px; }
 .seg-alex { background: rgba(14, 165, 233, 0.08); border-bottom-color: #0284c7; }
 .seg-lin { background: rgba(16, 185, 129, 0.1); border-bottom-color: #10b981; }
 .seg-maya { background: rgba(245, 158, 11, 0.1); border-bottom-color: #f59e0b; }
@@ -880,13 +947,7 @@ onBeforeUnmount(() => {
   color: #64748b;
 }
 
-.wait-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 9999px;
-  background: #94a3b8;
-  flex-shrink: 0;
-}
+.wait-dot { width: 6px; height: 6px; border-radius: 9999px; background: #94a3b8; flex-shrink: 0; }
 .wait-dot.ready { background: #10b981; }
 
 .chat-batches,
@@ -962,68 +1023,228 @@ onBeforeUnmount(() => {
 @keyframes dotBounce { 0%, 80%, 100% { opacity: 0.3; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
 .bubble-copy { font-weight: 500; }
 
-/* Scene 2: Doc Review */
-.doc-canvas-box {
+/* Scene 2: Authentic DOCX / MD Canvas Review & In-Place Tracked Revision */
+.doc-sheet {
   flex: 1;
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
-  padding: 0.9rem 1rem;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  overflow: hidden;
 }
-.doc-header-row { display: flex; align-items: center; justify-content: space-between; }
-.doc-heading { font-size: 0.8rem; font-weight: 700; color: #0f172a; }
-.thread-status {
+
+.doc-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 0.72rem;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.doc-file {
   display: inline-flex;
   align-items: center;
-  gap: 0.2rem;
+  gap: 0.3rem;
   font-size: 0.65rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.doc-ver {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.doc-ver.published { color: #059669; }
+
+.doc-sheet-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem 0.85rem;
+}
+
+.doc-paper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.doc-sec-title {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.doc-paragraph {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.85;
+  color: #334155;
+}
+
+.doc-mark {
+  background: transparent;
+  color: #0f172a;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.doc-mark.sweep {
+  border-bottom: 2px solid #0ea5e9;
+  background: linear-gradient(90deg, rgba(186, 230, 253, 0.55) 50%, rgba(241, 245, 249, 0.3) 50%);
+  background-size: 200% 100%;
+  animation: selectSweep 2.6s ease-in-out infinite;
+}
+
+@keyframes selectSweep {
+  0%, 15% { background-position: 100% 0; }
+  55%, 85% { background-position: 0% 0; }
+  100% { background-position: 100% 0; }
+}
+
+.doc-mark.anchored {
+  background: rgba(254, 243, 199, 0.75);
+  border-bottom: 2px solid #f59e0b;
+}
+
+.inline-del {
+  background: #fef2f2;
+  color: #b91c1c;
+  padding: 1px 4px;
+  border-radius: 3px;
+  text-decoration: line-through;
+  margin-right: 3px;
+}
+
+.inline-ins {
+  background: #ecfdf5;
+  color: #047857;
   font-weight: 600;
+  padding: 1px 4px;
+  border-radius: 3px;
+  text-decoration: none;
+  border-bottom: 2px solid #10b981;
+}
+
+.inline-clean {
+  color: #047857;
+  font-weight: 600;
+  border-bottom: 1.5px solid #a7f3d0;
+}
+
+/* Right Reviewer Gutter */
+.doc-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding-left: 0.55rem;
+  border-left: 1px solid #f1f5f9;
+}
+
+.rail-avatar {
+  width: 21px;
+  height: 21px;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.58rem;
+  font-weight: 700;
+  color: #ffffff;
+  transition: opacity 0.25s ease;
+}
+
+.rail-avatar.l { background: #10b981; }
+.rail-avatar.a { background: #0f172a; }
+.rail-avatar.resolved { opacity: 0.45; }
+
+/* Bottom Thread / Revision Zone */
+.doc-thread-zone {
+  min-height: 54px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.doc-thread-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.67rem;
+  font-weight: 600;
+  padding: 0.4rem 0.2rem;
+}
+
+.doc-thread-row.muted { color: #64748b; }
+.doc-thread-row.success { color: #047857; }
+
+.doc-thread-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.36rem 0.65rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+}
+
+.t-msg {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.65rem;
+  color: #334155;
+}
+
+.t-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+.t-dot.emerald { background: #10b981; }
+.t-dot.sky { background: #0ea5e9; }
+
+.t-text { flex: 1; font-weight: 500; }
+
+.t-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.18rem;
+  font-size: 0.62rem;
+  font-weight: 700;
   color: #059669;
 }
 
-.doc-orig-line { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.73rem; }
-.doc-selection-sweep {
-  padding: 2px 6px;
-  border-radius: 3px;
-  color: #0f172a;
-  border-bottom: 2px solid #0ea5e9;
-  background: linear-gradient(90deg, rgba(186, 230, 253, 0.55) 50%, rgba(241, 245, 249, 0.35) 50%);
-  background-size: 200% 100%;
-  animation: selectSweep 3.8s ease-in-out infinite;
-}
-@keyframes selectSweep { 0%, 15% { background-position: 100% 0; } 45%, 85% { background-position: 0% 0; } 100% { background-position: 100% 0; } }
-
-.doc-comment-author {
-  font-size: 0.64rem;
-  font-weight: 600;
-  color: #475569;
-  white-space: nowrap;
-}
-
-.doc-diff-patch { border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0; font-size: 0.7rem; }
-.patch-line { padding: 0.36rem 0.65rem; font-weight: 500; }
-.patch-line.del { background: #fef2f2; color: #b91c1c; text-decoration: line-through; opacity: 0.85; }
-.patch-line.add { background: #ecfdf5; color: #047857; font-weight: 600; animation: lineGlow 2.8s ease-in-out infinite alternate; }
-@keyframes lineGlow { 0% { background: #ecfdf5; } 100% { background: #d1fae5; } }
-
-.doc-action-row {
+.doc-rev-bar {
   display: flex;
-  justify-content: flex-end;
-  padding-top: 0.1rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.38rem 0.68rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
 }
 
-.proposal-btn {
+.rev-meta { font-size: 0.66rem; font-weight: 600; color: #334155; }
+
+.rev-accept-btn {
   display: inline-flex;
   align-items: center;
-  gap: 0.26rem;
-  padding: 0.32rem 0.72rem;
-  border-radius: 7px;
+  gap: 0.24rem;
+  padding: 0.26rem 0.64rem;
+  border-radius: 6px;
   background: #0ea5e9;
   color: #ffffff;
-  font-size: 0.68rem;
+  font-size: 0.65rem;
   font-weight: 600;
 }
 
@@ -1222,8 +1443,7 @@ onBeforeUnmount(() => {
   .typing-caret,
   .chat-row,
   .ai-live-dots i,
-  .doc-selection-sweep,
-  .patch-line.add,
+  .doc-mark.sweep,
   .animated-insert,
   .synced-ok,
   .wb-cursor {
