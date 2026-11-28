@@ -361,41 +361,12 @@
         }
       }
     },
-    "trace_rail": {
-      "eyebrow": "END-TO-END TRACEABILITY",
-      "title": "一次协作，产物自动贯通全链路",
-      "desc": "从需求拆解到排障剧本，每一步修改、批注与代码交接皆留痕可验",
-      "nodes": [
-        {
-          "code": "CHAT",
-          "label": "会话协作",
-          "artifact": "多角色 {'@'} 提及 · Diff 批注 · 免登录邀请输入已记录"
-        },
-        {
-          "code": "DOC",
-          "label": "原文审阅",
-          "artifact": "DOCX §3.2 选区讨论已解决 · 联合修订版本 v2 已发布"
-        },
-        {
-          "code": "SYNC",
-          "label": "本地协同",
-          "artifact": "guard.ts 本地修改已交接 · 三方基线合并与轮次备份就绪"
-        },
-        {
-          "code": "DELTA",
-          "label": "差异归因",
-          "artifact": "ChangeProposal 与人工终稿完成四维归因与三步审计"
-        },
-        {
-          "code": "GRAPH",
-          "label": "资产白板",
-          "artifact": "需求、文档、任务与证据链节点已全量投影至关系图谱"
-        },
-        {
-          "code": "SOP",
-          "label": "剧本反哺",
-          "artifact": "故障根因与修复验证已后台并行提炼为可复用 Playbook"
-        }
+    "showcase_bottom": {
+      "items": [
+        { "kicker": "全端支持", "value": "Web · Electron · Tauri 2" },
+        { "kicker": "多引擎调度", "value": "Claude Code · OpenCode · DSH" },
+        { "kicker": "桌面运行时", "value": "纯 IPC 通道 · 无端口占用" },
+        { "kicker": "可信工具链", "value": "MCP · OpenAPI · SenseVoice" }
       ]
     },
     "version_badge": "全链路研发协作 · 资产可追溯平台",

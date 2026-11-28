@@ -361,41 +361,12 @@
         }
       }
     },
-    "trace_rail": {
-      "eyebrow": "END-TO-END TRACEABILITY",
-      "title": "One Collaborative Flow, Every Artifact Linked",
-      "desc": "From requirement splitting to playbook promotion, every edit, note, and handoff stays auditable",
-      "nodes": [
-        {
-          "code": "CHAT",
-          "label": "Session Collab",
-          "artifact": "Multi-role {'@'} mentions · Diff notes · Guest inputs captured"
-        },
-        {
-          "code": "DOC",
-          "label": "Doc Review",
-          "artifact": "DOCX §3.2 threads resolved · Joint revision v2 published"
-        },
-        {
-          "code": "SYNC",
-          "label": "Local Collab",
-          "artifact": "guard.ts local edits handed off · 3-way merge & backup ready"
-        },
-        {
-          "code": "DELTA",
-          "label": "Delta Audit",
-          "artifact": "ChangeProposal & final edits attributed across 4 dimensions"
-        },
-        {
-          "code": "GRAPH",
-          "label": "Whiteboard",
-          "artifact": "Requirements, docs, tasks & evidence projected on live graph"
-        },
-        {
-          "code": "SOP",
-          "label": "Playbooks",
-          "artifact": "Root cause & verification distilled into reusable Playbook SOP"
-        }
+    "showcase_bottom": {
+      "items": [
+        { "kicker": "CROSS-PLATFORM", "value": "Web · Electron · Tauri 2" },
+        { "kicker": "MULTI-ENGINE", "value": "Claude Code · OpenCode · DSH" },
+        { "kicker": "LOCAL RUNTIME", "value": "Pure IPC · Zero Port Binding" },
+        { "kicker": "TOOLCHAIN", "value": "MCP · OpenAPI · SenseVoice" }
       ]
     },
     "version_badge": "Full-Chain Engineering Collaboration · Traceable Assets",

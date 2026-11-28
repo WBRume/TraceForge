@@ -11,7 +11,7 @@ import { isDesktop } from '@/utils/runtime'
 import UserMenu from '@/components/user/UserMenu.vue'
 import PortalAuthDialog from '@/components/auth/PortalAuthDialog.vue'
 import PortalShowcaseStage from '@/components/portal/PortalShowcaseStage.vue'
-import PortalTraceabilityRail from '@/components/portal/PortalTraceabilityRail.vue'
+import PortalExecutionMatrix from '@/components/portal/PortalExecutionMatrix.vue'
 import { openDesktopAuthDialogKey, type PortalAuthMode } from '@/components/auth/portalAuthDialog'
 
 const { locale, t } = useI18n()
@@ -245,9 +245,9 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <!-- Interactive End-to-End Traceability Rail -->
+      <!-- Interactive Execution Core & Asset Intelligence Showcase -->
       <section class="trace-section reveal-section">
-        <PortalTraceabilityRail />
+        <PortalExecutionMatrix />
       </section>
     </main>
 
@@ -269,14 +269,12 @@ onBeforeUnmount(() => {
 
 <style scoped src="../components/auth/portalPrimaryButton.css"></style>
 <style scoped>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@600;700;800&display=swap');
-
 .portal-container {
   min-height: 100vh;
   background-color: #ffffff;
   display: flex;
   flex-direction: column;
-  font-family: 'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   color: #0f172a;
   position: relative;
   overflow-x: hidden;
@@ -843,9 +841,9 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 8px rgba(14, 165, 233, 0.7);
 }
 
-/* Traceability Rail Section */
+/* Bottom Platform Strip Section */
 .trace-section {
-  padding: 0 4rem 5rem;
+  padding: 0 4rem 3.5rem;
 }
 
 /* Footer */
