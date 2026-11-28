@@ -226,6 +226,8 @@
       { "value": "Human × AI", "label": "Co-Engineering Loop" }
     ],
     "stage": {
+      "deck_prev": "Previous showcase card",
+      "deck_next": "Next showcase card",
       "tabs": {
         "sessionCollab": "Session Collab",
         "docReview": "Doc Review",

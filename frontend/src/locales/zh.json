@@ -226,6 +226,8 @@
       { "value": "人 × AI", "label": "多引擎协同闭环" }
     ],
     "stage": {
+      "deck_prev": "上一张场景卡片",
+      "deck_next": "下一张场景卡片",
       "tabs": {
         "sessionCollab": "会话协作",
         "docReview": "原文审阅",
